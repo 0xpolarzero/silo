@@ -1,8 +1,8 @@
-import { workspaceTarget } from "./remote-computers"
+import { workspaceTarget } from "./connections"
 import type { ApplicationSource, ApplicationWorkspace } from "./application-source"
 
 export interface WorkspaceAvailability {
-  /** Work is running on the sandbox (or its computer); the row shows progress. */
+  /** Work is running on the sandbox (or its device); the row shows progress. */
   busy: boolean
   canOpen: boolean
   canStart: boolean
@@ -16,17 +16,17 @@ const lifecycleProgress = { start: "starting", stop: "stopping", restart: "resta
 
 /** Why nothing can be done with the sandbox right now, or undefined when it is free. */
 function blockedReason(workspace: ApplicationWorkspace, source: ApplicationSource): string | undefined {
-  const { computer, machine } = workspace
-  if (!computer && source.runtimeRepair) return "Resolve the system issue first."
-  if (!computer && source.sandboxConfigurationOperation) {
+  const { device, machine } = workspace
+  if (!device && source.runtimeRepair) return "Resolve the system issue first."
+  if (!device && source.sandboxConfigurationOperation) {
     return source.sandboxConfigurationOperation.status === "failed" ? "Dismiss the sandbox changes error first." : "Wait for sandbox changes to finish."
   }
   if (workspace.lifecycleAction) return `${machine.name} is ${lifecycleProgress[workspace.lifecycleAction]}.`
   if (workspace.checkpointOperation?.status === "running") return "Wait for the checkpoint to finish."
-  if (computer?.busy) return `${computer.name} is updating. Wait before changing this sandbox.`
+  if (device?.busy) return `${device.name} is updating. Wait before changing this sandbox.`
   if (workspace.state === "starting") return `Wait for ${machine.name} to finish ${workspace.stateDetail === "Stopping" ? "stopping" : "starting"}.`
   if (source.activities.some((activity) => activity.category === "sandbox" && activity.workspace === workspaceTarget(workspace) && activity.status === "running")) return "Wait for the current operation to finish."
-  if (workspace.freshness === "stale") return computer && !computer.connected ? `${computer.name} is offline. Reconnect it to manage this sandbox.` : "Silo could not refresh this sandbox’s status."
+  if (workspace.freshness === "stale") return device && !device.connected ? `${device.name} is offline. Reconnect it to manage this sandbox.` : "Silo could not refresh this sandbox’s status."
   return undefined
 }
 
@@ -38,7 +38,7 @@ function blockedReason(workspace: ApplicationWorkspace, source: ApplicationSourc
  */
 export function workspaceAvailability(workspace: ApplicationWorkspace, source: ApplicationSource): WorkspaceAvailability {
   const { state, machine } = workspace
-  const busy = Boolean(workspace.computer?.busy) || Boolean(workspace.lifecycleAction) || workspace.checkpointOperation?.status === "running" || state === "starting"
+  const busy = Boolean(workspace.device?.busy) || Boolean(workspace.lifecycleAction) || workspace.checkpointOperation?.status === "running" || state === "starting"
     || source.activities.some((activity) => activity.category === "sandbox" && activity.workspace === workspaceTarget(workspace) && activity.status === "running")
   const blocked = blockedReason(workspace, source)
   const error = workspace.attention?.level === "error" ? workspace.attention.message : undefined

@@ -4,7 +4,7 @@ import { DropdownMenu } from "radix-ui"
 
 import { CopyButton } from "@/components/copy-button"
 import { Button } from "@/components/ui/button"
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 import { cn } from "@/lib/utils"
 import type { WorkspaceMenuProps } from "./status-bar-types"
 import { workspaceMenuItems, type WorkspaceMenuItem } from "./workspace-menu-items"

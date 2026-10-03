@@ -10,21 +10,21 @@ export function DependenciesStep({
   applicationPreferences,
   onApplicationPreferencesChange,
   onRetry,
-  onConnectComputer,
+  onConnectDevice,
 }: {
   groups: DependencyGroupView[]
   applicationPreferences: ApplicationPreferenceSelection
   onApplicationPreferencesChange: (preferences: ApplicationPreferenceSelection) => void
   onRetry?: () => void
-  onConnectComputer?: () => void
+  onConnectDevice?: () => void
 }) {
   const retryGroup = groups.find(({ status }) => status === "failed")?.id
   return (
     <section aria-labelledby="dependencies-title">
       <h2 id="dependencies-title" className="sr-only" data-visual-heading="hidden">Dependencies</h2>
-      {onConnectComputer && <div className="mb-5 grid justify-items-start gap-2">
-        <Button variant="outline" size="sm" onClick={onConnectComputer}>Connect another computer…</Button>
-        <p className="text-xs text-muted-foreground">Use sandboxes on another computer without setting up local sandboxes.</p>
+      {onConnectDevice && <div className="mb-5 grid justify-items-start gap-2">
+        <Button variant="outline" size="sm" onClick={onConnectDevice}>Connect another device…</Button>
+        <p className="text-xs text-muted-foreground">Use sandboxes on another device without setting up local sandboxes.</p>
       </div>}
       <div className="grid gap-2">
         {groups.map((group) => <DependencyDisclosure key={group.id} group={group} onRetry={group.id === retryGroup ? onRetry : undefined} />)}

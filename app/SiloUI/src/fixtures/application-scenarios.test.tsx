@@ -77,7 +77,7 @@ describe("application state fixtures", () => {
     expect(githubManagementFixtureModeFromSearch("?github-operation=unknown")).toBeUndefined()
     expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "disabled").github.accessEnabled).toBe(false)
     expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "connected-empty").github.workspaces?.every(({ repositories }) => repositories.length === 0)).toBe(true)
-    expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "missing-host-identity").github.hostIdentity).toBeNull()
+    expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "missing-device-identity").github.deviceIdentity).toBeNull()
     expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "catalog-unavailable").github.repositoryCatalogStatus?.status).toBe("unavailable")
   })
 

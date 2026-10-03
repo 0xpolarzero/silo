@@ -19,24 +19,24 @@ function deferred<T>() {
 afterEach(() => vi.useRealTimers())
 
 describe("cached log history", () => {
-  it.each([false, true])("names the owning computers for equally named sandbox failures (older page: %s)", async older => {
+  it.each([false, true])("names the owning devices for equally named sandbox failures (older page: %s)", async older => {
     const { options, workspace } = fixture()
-    const remote = { ...workspace, machine: { ...workspace.machine, id: "remote" }, computer: { id: "office", name: "Office Mac", address: "owner@office", connected: true, vmId: "vm-1" } }
+    const remote = { ...workspace, machine: { ...workspace.machine, id: "remote" }, device: { id: "office", name: "Office Mac", address: "owner@office", connected: true, vmId: "vm-1" } }
     options.workspaces = [workspace, remote]
     let fail = !older
     options.loader = vi.fn(async request => {
       if (fail) throw new Error("Connection lost")
-      return fixtureLogPage(request.computerId ? remote : workspace, { ...request, limit: 2 })
+      return fixtureLogPage(request.deviceId ? remote : workspace, { ...request, limit: 2 })
     })
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     if (older) { fail = true; await act(() => view.result.current.loadOlder()) }
-    expect(view.result.current.error).toBe(`${workspace.machine.name} (This computer): Connection lost; ${workspace.machine.name} (Office Mac): Connection lost`)
+    expect(view.result.current.error).toBe(`${workspace.machine.name} (This device): Connection lost; ${workspace.machine.name} (Office Mac): Connection lost`)
   })
 
   it.each([false, true])("preserves a structured failure message and retries the failed read (older page: %s)", async older => {
     const { options, workspace, loader } = fixture()
-    const message = "The connection was lost. Reconnect this computer, then retry."
+    const message = "The connection was lost. Reconnect this device, then retry."
     if (!older) loader.mockRejectedValueOnce({ code: "internal", message })
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
@@ -73,7 +73,7 @@ describe("cached log history", () => {
     options.loader = vi.fn(async request => {
       const offset = Number(request.cursor ?? 0)
       return {
-        entries: Array.from({ length: Math.min(200, 50_000 - offset) }, (_, index) => ({ id: String(offset + index), line: `record ${offset + index}`, occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" })),
+        entries: Array.from({ length: Math.min(200, 50_000 - offset) }, (_, index) => ({ id: String(offset + index), line: `record ${offset + index}`, occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), sandboxId: workspace.machine.id, deviceId: "local", source: "output" })),
         nextCursor: offset + 200 < 50_000 ? String(offset + 200) : null,
         totalMatches: 50_000, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
       }
@@ -137,7 +137,7 @@ describe("cached log history", () => {
       const quietOwner = request.sandboxId === "quiet"
       const total = quietOwner ? 1000 : 6000
       return {
-        entries: Array.from({ length: Math.min(200, total - offset) }, (_, index) => ({ id: sameTime ? String(7000 - offset - index - (quietOwner ? 6000 : 0)).padStart(6, "0") : `${request.sandboxId}:${offset + index}`, line: "record", occurredAt: new Date(1700000000000 - (sameTime ? 0 : offset + index + (quietOwner ? 6000 : 0)) * 1000).toISOString(), sandboxId: request.sandboxId, computerId: "local", source: "output" })),
+        entries: Array.from({ length: Math.min(200, total - offset) }, (_, index) => ({ id: sameTime ? String(7000 - offset - index - (quietOwner ? 6000 : 0)).padStart(6, "0") : `${request.sandboxId}:${offset + index}`, line: "record", occurredAt: new Date(1700000000000 - (sameTime ? 0 : offset + index + (quietOwner ? 6000 : 0)) * 1000).toISOString(), sandboxId: request.sandboxId, deviceId: "local", source: "output" })),
         nextCursor: offset + 200 < total ? String(offset + 200) : null,
         totalMatches: total, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
       }
@@ -160,7 +160,7 @@ describe("cached log history", () => {
     options.loader = vi.fn(async request => {
       const offset = Number(request.cursor ?? 0)
       return {
-        entries: [{ id: String(offset), line: "record", occurredAt: new Date(1700000000000 - offset * 1000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" }],
+        entries: [{ id: String(offset), line: "record", occurredAt: new Date(1700000000000 - offset * 1000).toISOString(), sandboxId: workspace.machine.id, deviceId: "local", source: "output" }],
         nextCursor: String(offset + 1), totalMatches: 10_000, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
       }
     })
@@ -168,11 +168,11 @@ describe("cached log history", () => {
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     options.loader.mockImplementation(async request => {
       const offset = Number(request.cursor ?? 0)
-      return { ...fixtureLogPage(workspace, request), entries: Array.from({ length: 200 }, (_, index) => ({ id: String(offset + index), line: "record", occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" })), nextCursor: String(offset + 200) }
+      return { ...fixtureLogPage(workspace, request), entries: Array.from({ length: 200 }, (_, index) => ({ id: String(offset + index), line: "record", occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), sandboxId: workspace.machine.id, deviceId: "local", source: "output" })), nextCursor: String(offset + 200) }
     })
     for (let page = 0; page < 70; page++) await act(() => view.result.current.loadOlder())
     expect(view.result.current.rows.some(row => row.entry.id === "0")).toBe(false)
-    const cycle = { ...fixtureLogPage(workspace, { sandboxId: workspace.machine.id }), entries: [{ id: "0", line: "old cycle", occurredAt: new Date(1700000000000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" }], nextCursor: "1" }
+    const cycle = { ...fixtureLogPage(workspace, { sandboxId: workspace.machine.id }), entries: [{ id: "0", line: "old cycle", occurredAt: new Date(1700000000000).toISOString(), sandboxId: workspace.machine.id, deviceId: "local", source: "output" }], nextCursor: "1" }
     options.loader.mockResolvedValueOnce(cycle)
     await act(() => view.result.current.loadOlder())
     expect(view.result.current.hasOlder).toBe(false)

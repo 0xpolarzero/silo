@@ -1,6 +1,6 @@
 import { Logs, type LogWindow } from "./logs-page"
 import { visibleText } from "@/lib/visible-text"
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 import { NetworkPage } from "./network-page"
 import { FolderActions } from "@/features/application/components/folder-actions"
 import { WorkspaceFileTree } from "@/features/application/components/workspace-file-tree"
@@ -125,7 +125,7 @@ function Files({
                     const push = (target: RepositoryPushTarget) => onPushRepository(workspaceTarget(workspace), repository.path, operation?.commitCount ?? repository.ahead, target)
                     // Same gate and name as the status bar: identical buttons need the repository and sandbox.
                     const canPush = workspaceAvailability(workspace, source).canOpen
-                    const sandbox = workspace.computer ? `${workspace.machine.name} on ${workspace.computer.name}` : workspace.machine.name
+                    const sandbox = workspace.device ? `${workspace.machine.name} on ${workspace.device.name}` : workspace.machine.name
                     return (
                       <div key={`${workspace.machine.id}:${repository.path}`} role="listitem" aria-busy={operation?.status === "pushing" || undefined} className="group/folder transition-colors hover:bg-muted/35 focus-within:bg-muted/35">
                         <ListRow
@@ -136,7 +136,7 @@ function Files({
                             <TooltipContent className="max-w-sm break-all">{visibleText(repository.path)}</TooltipContent>
                           </Tooltip></TooltipProvider>}
                           detail={`${repository.branch} · ${repository.ahead} ahead, ${repository.behind} behind`}
-                          actions={<><FolderActions editor={editor} path={repository.path} onOpen={() => onOpenEditor(workspaceTarget(workspace), repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></>}
+                          actions={<><FolderActions editor={editor} path={repository.path} onOpen={() => onOpenEditor(workspaceTarget(workspace), repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} device={workspace.device} /></>}
                         />
                         {(operation || repository.ahead > 0) && (
                           <div className="flex min-h-6 items-start pr-2 pb-2 pl-10" data-repository-actions>
@@ -294,7 +294,7 @@ function ActivityLog({ workspaces, sourceActivities, filtered, onShowLogs }: { w
                     <time dateTime={item.occurredAt} className="text-[10px] text-muted-foreground">{new Date(item.occurredAt).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" })}</time>
                     <div className="flex flex-wrap justify-end gap-1">
                       {item.workspace && (workspace
-                        ? <WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} />
+                        ? <WorkspaceBadge name={workspace.machine.name} state={workspace.state} device={workspace.device} />
                         : <StatusBadge indicator={<Box className="size-2.5" />} aria-label={`Sandbox: ${item.workspace}`}>{item.workspace}</StatusBadge>)}
                       <StatusBadge indicator={<CategoryIcon className="size-2.5" />} aria-label={`Category: ${category.label}`}>{category.label}</StatusBadge>
                     </div>

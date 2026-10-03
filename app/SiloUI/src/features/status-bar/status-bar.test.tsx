@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import type { ApplicationSource } from "@/features/application/model/application-source"
-import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
+import { remoteWorkspaceTarget } from "@/features/application/model/connections"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { fixtureDirectoryLoader } from "@/fixtures/directory-loader"
 import { StatusBar } from "./status-bar-popover"
@@ -32,7 +32,7 @@ describe("status bar", () => {
       await user.click(screen.getByRole("menuitem", { name: "Start" }))
     } else await user.click(screen.getByRole("button", { name: "Start dev" }))
     expect(actions.startWorkspace).not.toHaveBeenCalled()
-    const prompt = screen.getByRole("group", { name: "Starting dev may slow this computer" })
+    const prompt = screen.getByRole("group", { name: "Starting dev may slow this device" })
     expect(prompt).toHaveTextContent("32 GiB")
     await user.click(within(prompt).getByRole("button", { name: "Start anyway" }))
     expect(actions.startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
@@ -74,9 +74,9 @@ describe("status bar", () => {
 
   it("keeps a remote Start independent of same-named local guards (I-04)", async () => {
     const base = applicationSourceForScenario("complete")
-    const computer = { id: "office", name: "office-mac", address: "office.local", connected: true, vmId: "vm-1" }
+    const device = { id: "office", name: "office-mac", address: "office.local", connected: true, vmId: "vm-1" }
     const { user, actions } = setup({
-      workspaces: [{ ...base.workspaces[0]!, computer, state: "stopped" }],
+      workspaces: [{ ...base.workspaces[0]!, device, state: "stopped" }],
       vmOperationsUnavailable: "Local VMs unavailable.",
       resourceNotice: { kind: "start-memory", sandbox: "dev", memoryGiB: 32 },
     })
@@ -169,10 +169,10 @@ describe("status bar", () => {
     expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
   })
 
-  it("names a remote sandbox's failed push by sandbox and computer, not its internal target", async () => {
+  it("names a remote sandbox's failed push by sandbox and device, not its internal target", async () => {
     const base = applicationSourceForScenario("complete")
-    const computer = { id: "office", name: "office-mac", address: "office.local", connected: true, vmId: "vm-1" }
-    const remote = { ...base.workspaces[0]!, computer }
+    const device = { id: "office", name: "office-mac", address: "office.local", connected: true, vmId: "vm-1" }
+    const remote = { ...base.workspaces[0]!, device }
     const target = remoteWorkspaceTarget("office", "vm-1")
     const { user, actions } = setup({
       workspaces: [remote],
@@ -180,11 +180,11 @@ describe("status bar", () => {
         { workspace: target, repositoryPath: "acme/silo", commitCount: 2, status: "failed", message: "Remote unavailable." },
         { workspace: remoteWorkspaceTarget("office", "gone"), repositoryPath: "acme/old", commitCount: 1, status: "failed", message: "Remote unavailable." },
       ],
-      remoteComputers: [computer],
+      devices: [device],
     })
     const issue = screen.getByRole("alert", { name: "Push failed · dev on office-mac" })
     expect(issue).not.toHaveTextContent("silo-remote")
-    // A push whose sandbox is no longer listed still names its computer.
+    // A push whose sandbox is no longer listed still names its device.
     expect(screen.getByRole("alert", { name: "Push failed · a sandbox on office-mac" })).not.toHaveTextContent("silo-remote")
     await user.click(within(issue).getByRole("button", { name: "Review push failure for dev on office-mac, acme/silo" }))
     expect(actions.openSilo).toHaveBeenCalledWith({ workspace: target, workspaceSection: "files" })

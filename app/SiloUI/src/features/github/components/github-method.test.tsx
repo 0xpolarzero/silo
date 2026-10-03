@@ -9,7 +9,7 @@ it("defaults to OAuth, gates each connection independently, and hides OAuth rest
   const props = {
     workspaces: [{ name: "dev" }], connectionState: "connected" as const,
     tokenConnected: false, repositoryOptions: [], workspaceSelections: {}, workspaceIdentities: {},
-    currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(),
+    currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(),
     onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
     onWorkspaceRepositoryAccessChange: change,
   }

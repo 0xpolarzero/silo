@@ -11,7 +11,7 @@ export function ForkBody({ sandboxName, title, description, disabled = false, ta
   title?: string
   description?: string
   disabled?: boolean
-  /** Sandbox names already used on the computer that will own the fork. */
+  /** Sandbox names already used on the device that will own the fork. */
   takenNames?: readonly string[]
   onFork: (name: string) => void | Promise<void>
   onClose: () => void

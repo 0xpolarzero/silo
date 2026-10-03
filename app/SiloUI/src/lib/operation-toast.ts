@@ -59,7 +59,7 @@ type OperationAction = { label: string; onClick: (event: MouseEvent<HTMLButtonEl
 
 /**
  * Notifications about a specific sandbox, so they can be dismissed when it is deleted (their
- * actions would point at a sandbox that no longer exists). Current sandbox targets by toast ID. Remote targets include their computer and VM IDs.
+ * actions would point at a sandbox that no longer exists). Current sandbox targets by toast ID. Remote targets include their device and VM IDs.
  */
 const toastSandboxes = new Map<string, { targets: Set<string>; sandboxId?: string }>()
 
@@ -98,7 +98,7 @@ export function dismissSandboxToasts(target: string) {
   }
 }
 
-/** Dismiss notifications belonging to this sandbox incarnation, across names and computers. */
+/** Dismiss notifications belonging to this sandbox incarnation, across names and devices. */
 export function dismissSandboxToastsById(sandboxId: string) {
   for (const [id, owner] of toastSandboxes) {
     if (owner.sandboxId === sandboxId) dismissOperationToast(id)

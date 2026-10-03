@@ -3,7 +3,7 @@ import type { OperationQueue } from "./operation-queue"
 import type { WorkspaceStorageState } from "./workspace-storage"
 import type { CheckpointUsage, PendingCheckpointRestore, UnfinishedRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
 import type { LogLoader, LogQuery } from "./logs"
-import type { RemoteComputer, RemoteManagement, WorkspaceComputer } from "./remote-computers"
+import type { Device, ConnectionsStatus, WorkspaceDevice } from "./connections"
 import type { DirectoryLoader } from "./directory-store"
 import type {
   SetupMachineConfiguration,
@@ -15,7 +15,7 @@ import type {
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 
 export type ApplicationTab = "workspaces" | "github" | "secrets" | "system" | "settings"
-export type SettingsSection = "general" | "computers" | "notifications"
+export type SettingsSection = "general" | "devices" | "notifications"
 export type WorkspaceSection = "overview" | "files" | "logs" | "network" | "activity"
 export type WorkspaceDetailSection = Exclude<WorkspaceSection, "overview">
 /** Tabs on a single sandbox's detail page, reached from the Sandboxes overview. */
@@ -110,7 +110,7 @@ export interface SshAccessWorkspace {
   unavailable?: string
   workspace: string; enabled: boolean; port: number; bindAddress: string; keys: string[]
   state: "disabled" | "waiting" | "listening" | "error"; message: string | null
-  fingerprint: string | null; computerName: string; addresses: string[]
+  fingerprint: string | null; deviceName: string; addresses: string[]
   /** Guest account SSH clients log in as; older owners omit it. */
   user?: string
 }
@@ -159,7 +159,7 @@ export interface ApplicationActivity {
 }
 
 export interface ApplicationWorkspace {
-  computer?: WorkspaceComputer
+  device?: WorkspaceDevice
   machine: SetupMachineConfiguration
   purpose: string
   state: WorkspaceState
@@ -248,7 +248,7 @@ export interface ApplicationGitHubWorkspacePolicy {
  */
 export interface ApplicationGitHubConfiguration {
   baseRevision?: number
-  hostIdentity: ApplicationGitIdentity | null
+  deviceIdentity: ApplicationGitIdentity | null
   workspaces: readonly ApplicationGitHubWorkspacePolicy[]
 }
 
@@ -266,17 +266,17 @@ export type GitHubRepositoryCatalogStatus =
   | { status: "unavailable"; message: string; canRetry: boolean }
 
 export interface ApplicationSource {
-  remoteComputers?: RemoteComputer[]
-  remoteManagement?: RemoteManagement
-  remoteManagementError?: string
-  /** Silo could not read its list of connected computers; the listed ones are the last known. */
-  remoteComputersError?: string
+  devices?: Device[]
+  connections?: ConnectionsStatus
+  connectionsError?: string
+  /** Silo could not read its list of connected devices; the listed ones are the last known. */
+  devicesError?: string
   sshAccess?: SshAccessState
   sshAccessError?: string | null
   network?: NetworkState
   networkError?: string | null
   runtimeRepair: RuntimeRepairPresentation | null
-  /** Ordered admission queue for VM-changing operations on this computer. */
+  /** Ordered admission queue for VM-changing operations on this device. */
   operationQueue?: OperationQueue
   workspaces: ApplicationWorkspace[]
   activities: ApplicationActivity[]
@@ -291,7 +291,7 @@ export interface ApplicationSource {
     accessEnabled?: boolean
     repositoryCatalog?: readonly string[]
     repositoryCatalogStatus?: GitHubRepositoryCatalogStatus
-    hostIdentity?: ApplicationGitIdentity | null
+    deviceIdentity?: ApplicationGitIdentity | null
     workspaces?: readonly ApplicationGitHubWorkspacePolicy[]
     workspaceOperations?: readonly GitHubWorkspaceOperation[]
   }
@@ -307,8 +307,8 @@ export interface ApplicationSource {
     | { kind: "create-storage"; sandbox: string; requiredGB: number; availableGB: number; volume: string }
     | { kind: "start-memory"; sandbox: string; memoryGiB: number }
   vmOperationsUnavailable?: string
-  /** This computer's limits for sandbox CPU and memory ceilings (D-46); absent when unmeasured. */
-  hostCapacity?: { logicalCpus: number; physicalMemoryBytes: number; maxMemoryGib: number }
+  /** This device's limits for sandbox CPU and memory ceilings (D-46); absent when unmeasured. */
+  deviceCapacity?: { logicalCpus: number; physicalMemoryBytes: number; maxMemoryGib: number }
   preferences: ApplicationPreferenceSelection & {
     launchAtLogin: boolean
     startWorkspacesAtLaunch: boolean
@@ -321,11 +321,11 @@ export interface ApplicationActions {
   createCheckpoint?: (workspace: string, name: string) => Promise<void>
   forkCheckpoint?: (workspace: string, checkpointId: string | null, newName: string) => Promise<void>
   restoreCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
-  /** Give up an unfinished Restore of a sandbox on this computer, keeping its current state. */
+  /** Give up an unfinished Restore of a sandbox on this device, keeping its current state. */
   abandonRestore?: (workspace: string) => Promise<void>
-  /** Delete one checkpoint of a sandbox on this computer. */
+  /** Delete one checkpoint of a sandbox on this device. */
   deleteCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
-  /** Checkpoint sizes and Delete availability for a sandbox on this computer, by its ID. */
+  /** Checkpoint sizes and Delete availability for a sandbox on this device, by its ID. */
   readCheckpointUsage?: (workspaceId: string) => Promise<CheckpointUsage>
   readWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   reclaimWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
@@ -334,13 +334,13 @@ export interface ApplicationActions {
   cancelLogExport?: () => Promise<void>
   queryLogs?: LogLoader
   exportLogs?: (requests: LogQuery[]) => Promise<boolean>
-  setRemoteManagement?: (enabled: boolean) => Promise<void>
-  setupComputerKey?: (address: string) => Promise<void>
-  authorizeComputer?: (address: string) => Promise<void>
-  connectComputer?: (address: string, options?: { replaceAddress?: boolean }) => Promise<void>
-  removeComputer?: (hostId: string) => Promise<void>
-  saveRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
-  deleteRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration) => Promise<void>
+  setConnectionsEnabled?: (enabled: boolean) => Promise<void>
+  setupDeviceKey?: (address: string) => Promise<void>
+  authorizeDevice?: (address: string) => Promise<void>
+  connectDevice?: (address: string, options?: { replaceAddress?: boolean }) => Promise<void>
+  removeDevice?: (deviceId: string) => Promise<void>
+  saveRemoteMachine?: (deviceId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
+  deleteRemoteMachine?: (deviceId: string, machine: SetupMachineConfiguration) => Promise<void>
   sshConnection?: (workspace: string, download: boolean, network?: boolean) => Promise<string | null>
   refreshSshAccess?: (options?: { background?: boolean }) => Promise<void>
   saveSshAccess?: (request: SshAccessRequest) => Promise<void>

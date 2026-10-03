@@ -32,8 +32,8 @@ function initializationHandlers() {
     read_setup_activity: () => [],
     read_network_state: () => ({ workspaces: [] }),
     remote_network_state: () => ({ workspaces: [] }),
-    remote_host_list: () => [],
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }),
+    device_list: () => [],
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "developer@laptop" }),
     read_operation_queue: () => ({ running: [], waiting: [] }),
   }
 }
@@ -60,7 +60,7 @@ describe("production application bridge", () => {
     expect(() => parseApplicationSource({ ...response, workspaces: [{ ...response.workspaces[0], pendingSecretRevocations: [123] }] })).toThrow()
   })
 
-  it("publishes remote pending revocation and clears it after Restart on the owning computer", async () => {
+  it("publishes remote pending revocation and clears it after Restart on the owning device", async () => {
     const remote = structuredClone(source)
     remote.workspaces = [{ ...remote.workspaces[0], pendingSecretRevocations: ["REMOVED_TOKEN"], attention: { level: "warning", message: "May still have access to REMOVED_TOKEN until it restarts." } }]
     const vmId = remote.workspaces[0].machine.id
@@ -68,8 +68,8 @@ describe("production application bridge", () => {
     let restarted = false
     const settled = () => ({ ...remote, workspaces: remote.workspaces.map(workspace => ({ ...workspace, pendingSecretRevocations: undefined, attention: undefined })) })
     const mock = native({}, {
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: () => restarted ? settled() : remote,
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: () => restarted ? settled() : remote,
       remote_workspace_action: () => { restarted = true; return settled() },
     })
     const store = createProductionSource(mock.bridge)
@@ -79,7 +79,7 @@ describe("production application bridge", () => {
       await vi.waitFor(() => expect(row()?.pendingSecretRevocations).toEqual(["REMOVED_TOKEN"]))
       expect(row()?.attention?.message).toContain("REMOVED_TOKEN")
       store.applicationActions.restartWorkspace(target)
-      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("remote_workspace_action", { hostId: "office", vmId, action: "restart", name: "dev" }))
+      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("remote_workspace_action", { deviceId: "office", vmId, action: "restart", name: "dev" }))
       await vi.waitFor(() => expect(row()?.pendingSecretRevocations).toBeUndefined())
     } finally { store.dispose() }
   })
@@ -95,8 +95,8 @@ describe("production application bridge", () => {
     let unavailable = false
     let revoked = false
     const mock = native({}, {
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: () => {
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: () => {
         if (unavailable) throw cause
         return revoked ? { ...remote, workspaces: remote.workspaces.map(workspace => ({ ...workspace, pendingSecretRevocations: undefined, attention: undefined })) } : remote
       },
@@ -198,8 +198,8 @@ describe("production application bridge", () => {
     const mock = native()
     let complete: ((value: unknown) => void) | undefined
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-      if (command === "remote_host_snapshot") return structuredClone(source)
+      if (command === "device_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+      if (command === "device_snapshot") return structuredClone(source)
       if (command === "remote_checkpoint_action") return new Promise(resolve => { complete = resolve })
       return mock.invoke(command, args)
     })
@@ -224,8 +224,8 @@ describe("production application bridge", () => {
     let snapshotReads = 0
     let finishAction!: () => void
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-      if (command === "remote_host_snapshot") {
+      if (command === "device_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+      if (command === "device_snapshot") {
         snapshotReads++
         if (snapshotReads === 2) throw { code: "update_in_progress", message: "Please wait for configuration." }
         return structuredClone(source)
@@ -241,19 +241,19 @@ describe("production application bridge", () => {
       expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)).toMatchObject({
         state: source.workspaces[0].state,
         freshness: "fresh",
-        computer: { connected: true },
+        device: { connected: true },
       })
 
       store.applicationActions.startWorkspace!(target)
       expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.lifecycleAction).toBe("start")
       await store.refresh()
-      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.computer?.busy).toBe(true))
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.device?.busy).toBe(true))
       const refreshing = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
       expect(refreshing).toMatchObject({
         state: source.workspaces[0].state,
         stateDetail: "Updating…",
         freshness: "stale",
-        computer: { connected: true, busy: true },
+        device: { connected: true, busy: true },
         lifecycleAction: "start",
       })
 
@@ -265,21 +265,21 @@ describe("production application bridge", () => {
         state: source.workspaces[0].state,
         stateDetail: source.workspaces[0].stateDetail,
         freshness: "fresh",
-        computer: { connected: true },
+        device: { connected: true },
         lifecycleAction: "start",
       })
-      expect(refreshed?.computer).not.toHaveProperty("busy")
+      expect(refreshed?.device).not.toHaveProperty("busy")
 
       finishAction()
       await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.lifecycleAction).toBeUndefined())
     } finally { store.dispose() }
   })
 
-  it("records a failed remote lifecycle action on the VM without marking its computer offline", async () => {
+  it("records a failed remote lifecycle action on the VM without marking its device offline", async () => {
     const mock = native()
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-      if (command === "remote_host_snapshot") return structuredClone(source)
+      if (command === "device_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+      if (command === "device_snapshot") return structuredClone(source)
       if (command === "remote_workspace_action") throw new Error("insufficient memory")
       return mock.invoke(command, args)
     })
@@ -290,19 +290,19 @@ describe("production application bridge", () => {
       store.applicationActions.startWorkspace!(target)
       await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)?.lifecycleFailure).toContain("insufficient memory"))
       const row = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
-      expect(row).toMatchObject({ lifecycleFailureAction: "start", computer: { connected: true } })
+      expect(row).toMatchObject({ lifecycleFailureAction: "start", device: { connected: true } })
     } finally { store.dispose() }
   })
 
-  it("routes checkpoint actions through the owning remote computer", async () => {
+  it("routes checkpoint actions through the owning remote device", async () => {
     const mock = native({}, { remote_checkpoint_action: () => undefined })
     const store = createProductionSource(mock.bridge)
     await store.applicationActions.createCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point")
     await store.applicationActions.forkCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-id", "branch")
     await store.applicationActions.restoreCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-id")
-    expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "create", name: "point" })
-    expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "fork", checkpointId: "point-id", newName: "branch" })
-    expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "restore", checkpointId: "point-id" })
+    expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { deviceId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "create", name: "point" })
+    expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { deviceId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "fork", checkpointId: "point-id", newName: "branch" })
+    expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { deviceId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "restore", checkpointId: "point-id" })
     expect(mock.invoke.mock.calls.some(([command]) => ["create_checkpoint", "fork_checkpoint", "restore_checkpoint"].includes(command as string))).toBe(false)
     store.dispose()
   })
@@ -321,7 +321,7 @@ describe("production application bridge", () => {
       await store.applicationActions.deleteCheckpoint!("dev", "point-1")
       expect(invoke).toHaveBeenCalledWith("delete_checkpoint", { workspaceId: source.workspaces[0].machine.id, checkpointId: "point-1" })
       expect(await store.applicationActions.readCheckpointUsage!(source.workspaces[0].machine.id)).toEqual(usage)
-      await expect(store.applicationActions.deleteCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-1")).rejects.toThrow("on its own computer")
+      await expect(store.applicationActions.deleteCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-1")).rejects.toThrow("on its own device")
       expect(invoke.mock.calls.some(([command, args]) => command === "remote_checkpoint_action" && (args as Record<string, unknown>)?.action === "delete")).toBe(false)
     } finally { store.dispose() }
   })
@@ -390,31 +390,31 @@ describe("production application bridge", () => {
     } finally { store.dispose() }
   })
 
-  it("polls remote computers once per visible tick, pauses while hidden, and coalesces event bursts", async () => {
+  it("polls remote devices once per visible tick, pauses while hidden, and coalesces event bursts", async () => {
     vi.useFakeTimers()
     const mock = native()
     const handlers = new Map<string, () => void>()
-    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "remote_host_list" ? [] : mock.invoke(command, args))
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "device_list" ? [] : mock.invoke(command, args))
     const listen = vi.fn(async (name: string, handler: () => void) => { handlers.set(name, handler); return () => { handlers.delete(name) } })
     const store = createProductionSource({ invoke, listen } as unknown as ProductionBridge)
     const count = (name: string) => invoke.mock.calls.filter(([command]) => command === name).length
     try {
       await store.initialize()
       await vi.advanceTimersByTimeAsync(0)
-      let hosts = count("remote_host_list")
+      let listedDevices = count("device_list")
       await vi.advanceTimersByTimeAsync(10_000)
-      expect(count("remote_host_list")).toBe(hosts + 1)
-      hosts = count("remote_host_list")
+      expect(count("device_list")).toBe(listedDevices + 1)
+      listedDevices = count("device_list")
       const reads = count("read_application_state")
       const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
       await vi.advanceTimersByTimeAsync(30_000)
-      expect(count("remote_host_list")).toBe(hosts)
+      expect(count("device_list")).toBe(listedDevices)
       expect(count("read_application_state")).toBe(reads)
       visibility.mockRestore()
       document.dispatchEvent(new Event("visibilitychange"))
       await vi.advanceTimersByTimeAsync(0)
       expect(count("read_application_state")).toBe(reads + 1)
-      expect(count("remote_host_list")).toBe(hosts + 1)
+      expect(count("device_list")).toBe(listedDevices + 1)
       const beforeBurst = count("read_application_state")
       for (let index = 0; index < 5; index++) handlers.get("silo://application-state-changed")?.()
       await vi.advanceTimersByTimeAsync(0)
@@ -472,8 +472,8 @@ describe("production application bridge", () => {
   it("bypasses local and remote repository caches for an explicit refresh", async () => {
     const mock = native()
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
-      if (command === "remote_host_snapshot") return structuredClone(source)
+      if (command === "device_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
+      if (command === "device_snapshot") return structuredClone(source)
       return mock.invoke(command, args)
     })
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
@@ -481,7 +481,7 @@ describe("production application bridge", () => {
       await store.initialize()
       await store.applicationActions.refreshRepositories!()
       expect(invoke).toHaveBeenCalledWith("read_application_state", { refreshRepositories: true })
-      expect(invoke).toHaveBeenCalledWith("remote_host_snapshot", { hostId: "office", refreshRepositories: true })
+      expect(invoke).toHaveBeenCalledWith("device_snapshot", { deviceId: "office", refreshRepositories: true })
     } finally { store.dispose() }
   })
 
@@ -497,7 +497,7 @@ describe("production application bridge", () => {
   it("reports desktop opening failure without changing the sandbox state", async () => {
     const mock = native()
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
-      if (command === "open_desktop") throw new Error("Owning computer unavailable")
+      if (command === "open_desktop") throw new Error("Owning device unavailable")
       return mock.invoke(command, args)
     })
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
@@ -505,7 +505,7 @@ describe("production application bridge", () => {
     const before = store.getSnapshot().source?.workspaces
     toasts.showOperationFailure.mockClear()
     await store.applicationActions.openDesktop!("dev")
-    expect(toasts.showOperationFailure).toHaveBeenCalledWith("open-desktop:dev", "Could not open the Linux desktop", { description: expect.stringContaining("Owning computer unavailable") })
+    expect(toasts.showOperationFailure).toHaveBeenCalledWith("open-desktop:dev", "Could not open the Linux desktop", { description: expect.stringContaining("Owning device unavailable") })
     expect(store.getSnapshot().error).toBeNull()
     expect(store.getSnapshot().source?.workspaces).toEqual(before)
     store.dispose()
@@ -517,17 +517,17 @@ describe("production application bridge", () => {
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
     expect(await store.applicationActions.sshConnection!("dev", false)).toContain("ssh -i")
     expect(invoke).toHaveBeenLastCalledWith("ssh_connection", { workspace: "dev", download: false })
-    const hostId = "00000000-0000-4000-8000-000000000010"
+    const deviceId = "00000000-0000-4000-8000-000000000010"
     const vmId = "00000000-0000-4000-8000-000000000011"
-    expect(await store.applicationActions.sshConnection!(`silo-remote:${hostId}:${vmId}`, true)).toBeNull()
-    expect(invoke).toHaveBeenLastCalledWith("ssh_connection", { hostId, vmId, download: true })
+    expect(await store.applicationActions.sshConnection!(`silo-remote:${deviceId}:${vmId}`, true)).toBeNull()
+    expect(invoke).toHaveBeenLastCalledWith("ssh_connection", { deviceId, vmId, download: true })
     store.dispose()
   })
 
   it("refreshes SSH state, persists explicit exposure, and preserves rows on refresh failure", async () => {
     const mock = native()
     let failed = false
-    const row = { workspace: "dev", enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "waiting", message: null, fingerprint: null, computerName: "Ada Mac", addresses: ["192.168.1.42"] }
+    const row = { workspace: "dev", enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "waiting", message: null, fingerprint: null, deviceName: "Ada Mac", addresses: ["192.168.1.42"] }
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
       if (command === "read_ssh_access_state") { if (failed) throw new Error("private runtime details"); return { workspaces: [row] } }
       if (command === "save_ssh_access") return { workspaces: [{ ...row, ...args }] }
@@ -589,7 +589,7 @@ describe("production application bridge", () => {
     store.statusActions.openSite("dev",3000)
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("open_network_port",{workspace:"dev",port:3000}))
     store.statusActions.openSite("silo-remote:office:vm-1",3000)
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_open_network_port",{hostId:"office",vmId:"vm-1",port:3000}))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_open_network_port",{deviceId:"office",vmId:"vm-1",port:3000}))
     store.dispose()
   })
 
@@ -972,7 +972,7 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     const catalog = store.getSnapshot().source?.github.repositoryCatalogStatus
-    await expect(store.applicationActions.saveGitHubConfiguration!({ hostIdentity: null, workspaces: [] })).rejects.toThrow("Invalid Git identity settings.")
+    await expect(store.applicationActions.saveGitHubConfiguration!({ deviceIdentity: null, workspaces: [] })).rejects.toThrow("Invalid Git identity settings.")
     expect(store.getSnapshot().source?.github.repositoryCatalogStatus).toEqual(catalog)
     expect(store.getSnapshot().error).toContain("Invalid Git identity settings.")
     store.dispose()
@@ -985,7 +985,7 @@ describe("production application bridge", () => {
     mock.invoke.mockImplementation((command, args) => command === "save_github_configuration" ? new Promise((resolve) => { pending.push(resolve) }) : original(command, args))
     const store = createProductionSource(mock.bridge)
     await store.initialize()
-    const configuration = { baseRevision: 0, hostIdentity: null, workspaces: [] }
+    const configuration = { baseRevision: 0, deviceIdentity: null, workspaces: [] }
     store.applicationActions.saveGitHubConfiguration!(configuration)
     store.applicationActions.saveGitHubConfiguration!({ ...configuration, baseRevision: 1 })
     pending[1]({ ...source.github, policyRevision: 2, accessEnabled: false })
@@ -999,7 +999,7 @@ describe("production application bridge", () => {
 
   it("keeps all-repository intent and waits for native acknowledgment before showing changed access", async () => {
     let resolveMutation!: (value: unknown) => void
-    const request = { hostIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }
+    const request = { deviceIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }
     const mock = native()
     const original = mock.invoke.getMockImplementation()!
     mock.invoke.mockImplementation((command, args) => command === "save_github_configuration" ? new Promise((resolve) => { resolveMutation = resolve }) : original(command, args))
@@ -1028,7 +1028,7 @@ describe("production application bridge", () => {
       listen: async (event, handler) => { events.set(event, handler); return () => events.delete(event) },
     } as ProductionBridge)
     await store.initialize()
-    store.applicationActions.saveGitHubConfiguration!({ hostIdentity: null, workspaces: [] })
+    store.applicationActions.saveGitHubConfiguration!({ deviceIdentity: null, workspaces: [] })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(store.getSnapshot().source?.github.workspaceOperations?.[0].status).toBe("applying")
     github = { ...github, workspaceOperations: [{ workspace: "dev", status: "succeeded", message: "Verified access" }] }
@@ -1098,27 +1098,27 @@ describe("production application bridge", () => {
   })
 
   it("keeps detected identity across VM results that omit it, then accepts a fresh missing identity", async () => {
-    const hostIdentity = { name: "Host Author", email: "host@example.test" }
-    let currentIdentity: typeof hostIdentity | undefined = hostIdentity
+    const deviceIdentity = { name: "Host Author", email: "host@example.test" }
+    let currentIdentity: typeof deviceIdentity | undefined = deviceIdentity
     const machineResult = structuredClone(source)
-    delete machineResult.github.hostIdentity
+    delete machineResult.github.deviceIdentity
     const mock = native({ invoke: nativeBridgeMock({
       ...initializationHandlers(),
-      read_application_state: () => ({ ...structuredClone(source), github: { ...source.github, hostIdentity: currentIdentity } }),
+      read_application_state: () => ({ ...structuredClone(source), github: { ...source.github, deviceIdentity: currentIdentity } }),
       read_backup_state: () => structuredClone(backup),
       read_setup_activity: () => [],
       change_machine_configuration: () => machineResult,
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
-    const committed = source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine)
+    const committed = source.workspaces.filter(({ device }) => !device).map(({ machine }) => machine)
     const first = committed[0]
     const edited = first.kind === "vm" ? { ...first, cpus: first.cpus === 1 ? 2 : 1 } : first
     await store.configureMachines({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })
-    expect(store.getSnapshot().source?.github.hostIdentity).toEqual(hostIdentity)
+    expect(store.getSnapshot().source?.github.deviceIdentity).toEqual(deviceIdentity)
     currentIdentity = undefined
     await store.refresh()
-    expect(store.getSnapshot().source?.github.hostIdentity).toBeUndefined()
+    expect(store.getSnapshot().source?.github.deviceIdentity).toBeUndefined()
     store.dispose()
   })
 
@@ -1145,7 +1145,7 @@ describe("production application bridge", () => {
     await store.initialize()
     const observed: number[] = []
     const unsubscribe = store.subscribe(() => observed.push(store.getSnapshot().source?.workspaces[0].logs.length ?? -1))
-    const committed = initial.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine)
+    const committed = initial.workspaces.filter(({ device }) => !device).map(({ machine }) => machine)
     const first = committed[0]
     const edited = first.kind === "vm" ? { ...first, cpus: first.cpus === 1 ? 2 : 1 } : first
     await store.configureMachines({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })
@@ -1190,7 +1190,7 @@ describe("production application bridge", () => {
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
-    const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.computer).map(({ machine }) => machine)
+    const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.device).map(({ machine }) => machine)
     const original = committed[0]
     if (original.kind !== "vm") throw new Error("The fixture's first machine is expected to be a VM.")
     const edited = { ...original, cpus: original.cpus === 1 ? 2 : 1 }
@@ -1214,7 +1214,7 @@ describe("production application bridge", () => {
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
-    const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.computer).map(({ machine }) => machine)
+    const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.device).map(({ machine }) => machine)
     const original = committed[0]
     if (original.kind !== "vm") throw new Error("The fixture's first machine is expected to be a VM.")
     const edited = { ...original, cpus: original.cpus === 1 ? 2 : 1 }
@@ -1237,7 +1237,7 @@ describe("production application bridge", () => {
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
-    const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.computer).map(({ machine }) => machine)
+    const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.device).map(({ machine }) => machine)
     const original = committed[0]
     if (original.kind !== "vm") throw new Error("The fixture's first machine is expected to be a VM.")
     // The user opened the editor while maxCPUs was 99; the live committed snapshot never
@@ -1508,7 +1508,7 @@ describe("remote SSH access", () => {
   const vmId = source.workspaces[0].machine.id
   const target = `silo-remote:office:${encodeURIComponent(vmId)}`
   const request = { workspace: target, enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [] }
-  const row = { ...request, state: "listening", message: null, fingerprint: "SHA256:fixture", computerName: "Office Mac", addresses: ["192.168.1.42"] }
+  const row = { ...request, state: "listening", message: null, fingerprint: "SHA256:fixture", deviceName: "Office Mac", addresses: ["192.168.1.42"] }
   function fixture() {
     const mock = native()
     let failOffice: unknown
@@ -1516,15 +1516,15 @@ describe("remote SSH access", () => {
     let officeRead: Promise<unknown> | undefined
     let officeSave: Promise<unknown> | undefined
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-      if (command === "remote_host_list") return [{ id: "office", name: "Office Mac", address: "user@office" }, { id: "lab", name: "Lab Mac", address: "user@lab" }]
-      if (command === "remote_host_snapshot") return { ...source, workspaces: [source.workspaces[0]] }
-      if (command === "read_ssh_access_state") { if (failLocal) throw new Error("Local failed"); return { workspaces: [{ ...row, workspace: "dev", computerName: "Laptop" }] } }
+      if (command === "device_list") return [{ id: "office", name: "Office Mac", address: "user@office" }, { id: "lab", name: "Lab Mac", address: "user@lab" }]
+      if (command === "device_snapshot") return { ...source, workspaces: [source.workspaces[0]] }
+      if (command === "read_ssh_access_state") { if (failLocal) throw new Error("Local failed"); return { workspaces: [{ ...row, workspace: "dev", deviceName: "Laptop" }] } }
       if (command === "remote_ssh_access_state") {
-        if (args?.hostId === "office") { if (failOffice) throw failOffice; if (officeRead) return officeRead }
-        return { workspaces: [{ ...row, workspace: `silo-remote:${args?.hostId}:${encodeURIComponent(vmId)}`, computerName: args?.hostId === "office" ? "Office Mac" : "Lab Mac" }] }
+        if (args?.deviceId === "office") { if (failOffice) throw failOffice; if (officeRead) return officeRead }
+        return { workspaces: [{ ...row, workspace: `silo-remote:${args?.deviceId}:${encodeURIComponent(vmId)}`, deviceName: args?.deviceId === "office" ? "Office Mac" : "Lab Mac" }] }
       }
-      if (command === "remote_save_ssh_access") { if (officeSave) return officeSave; const { hostId, vmId: id, ...settings } = args!; return { workspaces: [{ ...row, ...settings, workspace: `silo-remote:${hostId}:${encodeURIComponent(String(id))}` }] } }
-      if (command === "save_ssh_access") return { workspaces: [{ ...row, ...args, computerName: "Laptop" }] }
+      if (command === "remote_save_ssh_access") { if (officeSave) return officeSave; const { deviceId, vmId: id, ...settings } = args!; return { workspaces: [{ ...row, ...settings, workspace: `silo-remote:${deviceId}:${encodeURIComponent(String(id))}` }] } }
+      if (command === "save_ssh_access") return { workspaces: [{ ...row, ...args, deviceName: "Laptop" }] }
       return mock.invoke(command, args)
     })
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
@@ -1536,7 +1536,7 @@ describe("remote SSH access", () => {
       await store.initialize(); await store.applicationActions.refreshSshAccess!()
       expect(store.getSnapshot().source?.sshAccess?.workspaces.map(item => item.workspace)).toEqual(["dev", target, `silo-remote:lab:${encodeURIComponent(vmId)}`])
       await store.applicationActions.saveSshAccess!({ ...request, keys: ["ssh-ed25519 synthetic-public-key"] })
-      expect(invoke).toHaveBeenCalledWith("remote_save_ssh_access", { hostId: "office", vmId, enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: ["ssh-ed25519 synthetic-public-key"] })
+      expect(invoke).toHaveBeenCalledWith("remote_save_ssh_access", { deviceId: "office", vmId, enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: ["ssh-ed25519 synthetic-public-key"] })
       expect(invoke).not.toHaveBeenCalledWith("save_ssh_access", expect.anything())
       expect(store.getSnapshot().source?.sshAccess?.workspaces).toHaveLength(3)
       await store.applicationActions.saveSshAccess!({ ...request, workspace: "dev", enabled: false })
@@ -1598,7 +1598,7 @@ describe("remote SSH access", () => {
       await store.initialize(); await store.applicationActions.refreshSshAccess!()
       delayOffice(new Promise(resolve => { resolveRead = resolve }))
       const refresh = store.applicationActions.refreshSshAccess!()
-      await vi.waitFor(() => expect(invoke.mock.calls.filter(call => call[0] === "remote_ssh_access_state" && call[1]?.hostId === "office")).toHaveLength(2))
+      await vi.waitFor(() => expect(invoke.mock.calls.filter(call => call[0] === "remote_ssh_access_state" && call[1]?.deviceId === "office")).toHaveLength(2))
       await store.applicationActions.saveSshAccess!({ ...request, keys: [] })
       resolveRead({ workspaces: [{ ...row, keys: ["ssh-ed25519 revoked-key"] }] })
       await refresh
@@ -1608,11 +1608,11 @@ describe("remote SSH access", () => {
 })
 
 describe("retained log bridge", () => {
-  it("passes opaque computer and sandbox identities and rejects malformed pages", async () => {
+  it("passes opaque device and sandbox identities and rejects malformed pages", async () => {
     const mock = native()
     const invoke = nativeBridgeMock({ query_sandbox_logs: () => ({ entries: "not a log page" }) })
     const store = createProductionSource({ ...mock.bridge, invoke } as unknown as ProductionBridge)
-    const request = { sandboxId: "sandbox-id", computerId: "office-id", query: "old failure", limit: 200 }
+    const request = { sandboxId: "sandbox-id", deviceId: "office-id", query: "old failure", limit: 200 }
     await expect(store.applicationActions.queryLogs!(request)).rejects.toThrow()
     expect(invoke).toHaveBeenCalledWith("query_sandbox_logs", { request })
     store.dispose()

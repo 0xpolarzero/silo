@@ -10,7 +10,7 @@ import type { ApplicationActions, ApplicationSource, GitHubWorkspaceOperation } 
 import { GitHubPage } from "./github-page"
 
 const base = applicationSourceForScenario("complete")
-const workspace = base.workspaces.find((w) => !w.computer)!.machine.name
+const workspace = base.workspaces.find((w) => !w.device)!.machine.name
 
 function sourceWith(operations: GitHubWorkspaceOperation[], revision = 1): ApplicationSource {
   return { ...base, github: { ...base.github, state: "connected", account: "taylor", policyRevision: revision, workspaceOperations: operations } }

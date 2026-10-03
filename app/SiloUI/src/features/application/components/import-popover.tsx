@@ -29,7 +29,7 @@ export function ImportPopover({ source, review, anchor, onReview, onImport, onCl
   const isReview = review?.kind === "review" ? review : null
   const nameError = isReview ? validateSandboxName(isReview.newName) : undefined
   const nameConflict = isReview
-    ? source.workspaces.filter((w) => !w.computer).some(({ machine }) => machine.name.toLowerCase() === isReview.newName.toLowerCase())
+    ? source.workspaces.filter((w) => !w.device).some(({ machine }) => machine.name.toLowerCase() === isReview.newName.toLowerCase())
     : false
   const validationError = nameError ?? (isReview && nameConflict ? `A sandbox named ${isReview.newName} already exists.` : undefined)
   const title = isReview ? `Import ${isReview.archive.name}` : review?.kind === "invalid" ? "This export cannot be imported" : "Checking export"

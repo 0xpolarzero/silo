@@ -114,7 +114,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
     if (firstLoad && operation.kind !== "running" && !unseen) {
       // Stale result: stay silent, and clear it when the imported sandbox has since been deleted.
       const target = operation.operation === "restore" && operation.outcome === "success" ? operation.targetName : undefined
-      if (target && !optionsRef.current.source.workspaces.some(({ machine, computer }) => !computer && machine.name === target)) backupRef.current.actions.dismissOperation()
+      if (target && !optionsRef.current.source.workspaces.some(({ machine, device }) => !device && machine.name === target)) backupRef.current.actions.dismissOperation()
       return
     }
 
@@ -153,7 +153,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
             if (!name || !optionsRef.current.openSandbox) return undefined
             return { label: "Open", onClick: () => {
               const { source, openSandbox } = optionsRef.current
-              const match = source.workspaces.find(({ machine, computer }) => !computer && machine.name === name)
+              const match = source.workspaces.find(({ machine, device }) => !device && machine.name === name)
               if (match && openSandbox) openSandbox(match.machine.id)
               else showActionFailure(`Could not open ${name}`, "Silo does not list this sandbox yet. Refresh, then open it from the sandbox list.", undefined, { native: false })
             } }

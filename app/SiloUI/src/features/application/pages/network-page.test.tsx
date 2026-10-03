@@ -5,7 +5,7 @@ import { toast } from "sonner"
 import { Toaster } from "@/components/ui/sonner"
 import { SettingsProvider } from "@/features/preferences/settings-store"
 import { NetworkPage } from "./network-page"
-import { remoteWorkspaceTarget } from "../model/remote-computers"
+import { remoteWorkspaceTarget } from "../model/connections"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions, NetworkState } from "../model/application-source"
 afterEach(() => { toast.dismiss() })
@@ -93,7 +93,7 @@ describe("Network", () => {
     const {user,actions} = setup()
     await user.click(screen.getByRole("button",{name:"Remove port 3000 from dev"}))
     expect(screen.getByText("Remove port 3000?")).toBeVisible()
-    expect(screen.getByText(/It stops forwarding to this (Mac|computer)\./)).toBeVisible()
+    expect(screen.getByText(/It stops forwarding to this (Mac|device)\./)).toBeVisible()
     expect(screen.getByRole("button",{name:"Cancel"})).toBeVisible()
     expect(actions.removeNetworkPort).not.toHaveBeenCalled()
     await user.click(screen.getByRole("button",{name:"Cancel"}))
@@ -139,7 +139,7 @@ describe("Network", () => {
 
 it("forwards a detected port immediately without a form", async () => {
   const {user,actions} = setup()
-  await user.click(screen.getByRole("button",{name:/^Forward port 8080 to this (Mac|computer)$/}))
+  await user.click(screen.getByRole("button",{name:/^Forward port 8080 to this (Mac|device)$/}))
   expect(await screen.findByText("Port 8080 forwarded · dev")).toBeVisible()
   expect(actions.saveNetworkPort).toHaveBeenCalledWith({workspace:"dev",port:8080,hostPort:null,scheme:"http"})
   expect(screen.queryByRole("spinbutton",{name:"Port"})).not.toBeInTheDocument()
@@ -223,10 +223,10 @@ it("disables adding ports with a tooltip while the sandbox is stopped", async ()
 })
 
 
-it.each(["local", "remote"])("isolates %s discovery errors from a healthy same-named sandbox on another computer", async failing => {
+it.each(["local", "remote"])("isolates %s discovery errors from a healthy same-named sandbox on another device", async failing => {
   const local = workspaces[0]
   const target = remoteWorkspaceTarget("office", local.machine.id)
-  const remote = { ...local, machine: { ...local.machine, id: target }, computer: { id: "office", name: "Office Mac", address: "user@office", connected: true, vmId: local.machine.id } }
+  const remote = { ...local, machine: { ...local.machine, id: target }, device: { id: "office", name: "Office Mac", address: "user@office", connected: true, vmId: local.machine.id } }
   const state: NetworkState = { workspaces: [
     { workspace: "dev", error: failing === "local" ? "Local discovery failed" : null, ports: [network.workspaces[0].ports[0]] },
     { workspace: target, error: failing === "remote" ? "Remote discovery failed" : null, ports: [{ ...network.workspaces[0].ports[0], hostPort: 44000 }] },
@@ -278,7 +278,7 @@ it("shows an empty filter result without waiting for unrelated network discovery
 
 it("keeps a filtered remote sandbox loading until its own network result arrives", () => {
   const local = workspaces[0]
-  const remote = { ...local, computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true } }
+  const remote = { ...local, device: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true } }
   const target = remoteWorkspaceTarget("office", local.machine.id)
   const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
   const localOnly = { workspaces: [{ workspace: "dev", error: null, ports: [] }] }

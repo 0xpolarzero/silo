@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
+import { remoteWorkspaceTarget } from "@/features/application/model/connections"
 import type { NetworkState, SshAccessState } from "@/features/application/model/application-source"
 import { assertNativeBridgeMocksHandled, nativeBridgeMock } from "@/test/native-bridge-mock"
 import { createProductionSource, type ProductionBridge } from "./production-source"
@@ -17,7 +17,7 @@ function networkState(workspace: string, hostPort = 3000): NetworkState {
   return { workspaces: [{ workspace, error: null, ports: [{ port: 3000, hostPort, scheme: "http", configured: true, state: "reachable" }] }] }
 }
 function sshState(workspace: string, enabled = true): SshAccessState {
-  return { workspaces: [{ workspace, enabled, port: 2222, bindAddress: "127.0.0.1", keys: [], state: enabled ? "listening" : "disabled", message: null, fingerprint: null, computerName: "Fixture", addresses: ["127.0.0.1"] }] }
+  return { workspaces: [{ workspace, enabled, port: 2222, bindAddress: "127.0.0.1", keys: [], state: enabled ? "listening" : "disabled", message: null, fingerprint: null, deviceName: "Fixture", addresses: ["127.0.0.1"] }] }
 }
 
 it.each([false, true])("publishes healthy owners while a remote stays pending and rejects late replies (save: %s)", async save => {
@@ -36,13 +36,13 @@ it.each([false, true])("publishes healthy owners while a remote stays pending an
     read_backup_state: () => ({ snapshotId: "fixture", availability: "available", archives: [], operation: null }),
     read_operation_queue: () => ({ running: [], waiting: [] }),
     read_setup_activity: () => [],
-    remote_host_list: () => ["slow", "healthy"].map(id => ({ id, name: id, address: `user@${id}` })),
-    remote_host_snapshot: () => local,
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+    device_list: () => ["slow", "healthy"].map(id => ({ id, name: id, address: `user@${id}` })),
+    device_snapshot: () => local,
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
     read_network_state: () => networkState(name, hostPort),
-    remote_network_state: args => args?.hostId === "slow" ? hold ? pendingNetwork.promise : networkState(slow) : networkState(healthy, hostPort),
+    remote_network_state: args => args?.deviceId === "slow" ? hold ? pendingNetwork.promise : networkState(slow) : networkState(healthy, hostPort),
     read_ssh_access_state: () => sshState(name, enabled),
-    remote_ssh_access_state: args => args?.hostId === "slow" ? hold ? pendingSsh.promise : sshState(slow) : sshState(healthy, enabled),
+    remote_ssh_access_state: args => args?.deviceId === "slow" ? hold ? pendingSsh.promise : sshState(slow) : sshState(healthy, enabled),
     remote_save_network_port: () => networkState(slow, 4200),
     remote_save_ssh_access: () => sshState(slow, false),
   })

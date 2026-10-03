@@ -8,7 +8,7 @@ import { OverviewPage } from "./overview-page"
 
 function sourceWith(change: (workspace: ApplicationWorkspace) => void): ApplicationSource {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
+  source.devices = []
   source.runtimeRepair = null
   source.sandboxConfigurationOperation = null
   source.activities = []

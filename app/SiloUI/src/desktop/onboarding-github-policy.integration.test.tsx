@@ -31,8 +31,8 @@ it.each(["connected", "disconnected"] as const)("keeps token policy through the 
     read_setup_activity: () => [],
     read_network_state: () => ({ workspaces: [] }),
     remote_network_state: () => ({ workspaces: [] }),
-    remote_host_list: () => [],
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }),
+    device_list: () => [],
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "developer@laptop" }),
     read_operation_queue: () => ({ running: [], waiting: [] }),
     verify_workspace_identities: () => true,
     configure_workspace_identities: () => undefined,
@@ -54,7 +54,7 @@ it.each(["connected", "disconnected"] as const)("keeps token policy through the 
     expect(screen.getByRole("radio", { name: "Use token for dev" })).toBeEnabled()
     await user.click(screen.getByRole("button", { name: "Continue" }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_github_configuration", {
-      configuration: { baseRevision: 10, hostIdentity: live.github.hostIdentity ?? null, workspaces: [policy] },
+      configuration: { baseRevision: 10, deviceIdentity: live.github.deviceIdentity ?? null, workspaces: [policy] },
     }))
     expect(source.getSnapshot().source?.github.workspaces).toEqual([policy])
     if (oauthState === "disconnected") {

@@ -12,7 +12,7 @@ describe("remote saves use the editing baseline", () => {
   it("sends the values the editor opened with as the expected state", async () => {
     const commit = vi.fn().mockResolvedValue(undefined)
     const list = (machines: SetupVirtualMachineConfiguration[]) => <TooltipProvider><MachineList machines={machines} onMachinesChange={vi.fn()} onCommitMachine={commit}
-      getComputerId={() => "office"} isMachineCreated={() => true} isMachineRunning={() => false}
+      getDeviceId={() => "office"} isMachineCreated={() => true} isMachineRunning={() => false}
       getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>
     const { rerender } = render(list([machine]))
     const user = userEvent.setup()

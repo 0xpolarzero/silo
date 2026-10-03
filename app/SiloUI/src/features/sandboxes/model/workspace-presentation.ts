@@ -20,8 +20,8 @@ export function sandboxBusyReason(workspace?: ApplicationWorkspace): string | un
   if (workspace.state === "starting" || action === "start") return `Wait until ${workspace.machine.name} finishes starting.`
   if (action === "stop") return `Wait until ${workspace.machine.name} finishes stopping.`
   if (action === "restart") return `Wait until ${workspace.machine.name} finishes restarting.`
-  if (workspace.freshness === "stale") return workspace.computer && !workspace.computer.connected
-    ? `${workspace.computer.name} is offline. Reconnect it to manage this sandbox.`
+  if (workspace.freshness === "stale") return workspace.device && !workspace.device.connected
+    ? `${workspace.device.name} is offline. Reconnect it to manage this sandbox.`
     : "Silo could not refresh this sandbox’s status."
   return undefined
 }

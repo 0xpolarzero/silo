@@ -103,7 +103,7 @@ it("keeps stress-fixture activity collapsed until requested and filters unsafe o
   expect(panel.queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
   expect(panel.getByLabelText("Elapsed time")).toHaveTextContent("02:18")
   expect(panel.getByText("27 of 36 operations complete")).toBeVisible()
-  expect(panel.getByText("12 sandboxes · 12 on this computer · 0 on other computers · 0 SSH hosts")).toBeVisible()
+  expect(panel.getByText("12 sandboxes · 12 on this device · 0 on other devices · 0 SSH hosts")).toBeVisible()
   const list = panel.getByRole("list", { name: "Configured sandboxes" })
   expect(within(list).getAllByRole("listitem")).toHaveLength(12)
   expect(within(list).getByText("client-alpha-integration")).toBeVisible()
@@ -247,7 +247,7 @@ it("does not treat CLI workspace completion as completion of later setup work", 
     ...source,
     bootstrapState: {
       ...source.bootstrapState,
-      completedPhases: ["preflight", "toolchain", "hostIntegration", "workspaces"],
+      completedPhases: ["preflight", "toolchain", "deviceIntegration", "workspaces"],
     },
   }, "connected")
 

@@ -34,8 +34,8 @@ function bridge(handler: Handler = () => undefined) {
     if (command === "read_setup_activity") return []
     if (command === "read_network_state") return { workspaces: [] }
     if (command === "read_operation_queue") return { running: [], waiting: [] }
-    if (command === "remote_host_list") return []
-    if (command === "remote_management_status") return { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
+    if (command === "device_list") return []
+    if (command === "connections_status") return { enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }
     return undefined
   })
   const listen = vi.fn(async (name: string, handler: (event?: { payload: unknown }) => void) => { handlers.set(name, handler); return () => { handlers.delete(name) } })
@@ -119,7 +119,7 @@ describe("machine configuration jobs", () => {
 const pushTarget = { repository: "octo/repo", branch: "main", commit: "0123456789abcdef0123456789abcdef01234567" }
 const office = { id: "office", name: "Office Mac", address: "user@office" }
 const studio = { id: "studio", name: "Studio", address: "user@studio" }
-const remoteTarget = (hostId: string) => `silo-remote:${hostId}:${source.workspaces[0].machine.id}`
+const remoteTarget = (deviceId: string) => `silo-remote:${deviceId}:${source.workspaces[0].machine.id}`
 function remoteSource(patch: Partial<(typeof source)["workspaces"][number]> = {}) {
   const remote = structuredClone(source)
   remote.workspaces = [{ ...remote.workspaces[0], ...patch }]
@@ -131,45 +131,45 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-describe("remote computer refresh", () => {
-  it("refreshes each computer independently and keeps polling while one is slow (H-05)", async () => {
+describe("remote device refresh", () => {
+  it("refreshes each device independently and keeps polling while one is slow (H-05)", async () => {
     vi.useFakeTimers()
     let studioState: "running" | "stopped" = "running"
     const mock = bridge((command, args) => {
-      if (command === "remote_host_list") return [office, studio]
-      if (command === "remote_host_snapshot") return args?.hostId === "office" ? new Promise(() => {}) : remoteSource({ state: studioState })
+      if (command === "device_list") return [office, studio]
+      if (command === "device_snapshot") return args?.deviceId === "office" ? new Promise(() => {}) : remoteSource({ state: studioState })
     })
     const store = createProductionSource(mock.native)
-    const row = (hostId: string) => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget(hostId))
+    const row = (deviceId: string) => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget(deviceId))
     try {
       let initialized = false
       const started = store.initialize().then(() => { initialized = true })
       await vi.advanceTimersByTimeAsync(0)
       expect(row("studio")?.state).toBe("running")
       studioState = "stopped"
-      // Polling runs before the first loads finish, and the slow computer does not hold it back.
+      // Polling runs before the first loads finish, and the slow device does not hold it back.
       await vi.advanceTimersByTimeAsync(10_000)
       expect(initialized).toBe(false)
       expect(row("studio")?.state).toBe("stopped")
       await vi.advanceTimersByTimeAsync(5_000)
       await started
-      expect(store.getSnapshot().source?.remoteComputers?.find(computer => computer.id === "office")?.error).toContain("not responding")
+      expect(store.getSnapshot().source?.devices?.find(device => device.id === "office")?.error).toContain("not responding")
       await vi.advanceTimersByTimeAsync(20_000)
-      // The slow computer keeps one read in flight instead of piling up SSH requests.
-      expect(mock.invoke.mock.calls.filter(([command, args]) => command === "remote_host_snapshot" && args?.hostId === "office")).toHaveLength(1)
+      // The slow device keeps one read in flight instead of piling up SSH requests.
+      expect(mock.invoke.mock.calls.filter(([command, args]) => command === "device_snapshot" && args?.deviceId === "office")).toHaveLength(1)
     } finally {
       store.dispose()
       vi.useRealTimers()
     }
   })
 
-  it("marks a slow computer's rows stale and clears that once it answers (H-05)", async () => {
+  it("marks a slow device's rows stale and clears that once it answers (H-05)", async () => {
     vi.useFakeTimers()
     const answer = deferred<unknown>()
     let reads = 0
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return ++reads === 1 ? remoteSource() : answer.promise
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return ++reads === 1 ? remoteSource() : answer.promise
     })
     const store = createProductionSource(mock.native)
     const row = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))
@@ -183,22 +183,22 @@ describe("remote computer refresh", () => {
       answer.resolve(remoteSource({ stateDetail: "Answered" }))
       await vi.advanceTimersByTimeAsync(0)
       expect(row()).toMatchObject({ freshness: "fresh", stateDetail: "Answered" })
-      expect(store.getSnapshot().source?.remoteComputers?.[0].error).toBeUndefined()
+      expect(store.getSnapshot().source?.devices?.[0].error).toBeUndefined()
     } finally {
       store.dispose()
       vi.useRealTimers()
     }
   })
 
-  it("skips network reads for an offline computer (H-05)", async () => {
+  it("skips network reads for an offline device (H-05)", async () => {
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") throw new Error("Connection timed out")
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") throw new Error("Connection timed out")
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      expect(store.getSnapshot().source?.remoteComputers?.[0].connected).toBe(false)
+      expect(store.getSnapshot().source?.devices?.[0].connected).toBe(false)
       mock.invoke.mockClear()
       await store.applicationActions.refreshNetwork!()
       expect(count(mock.invoke, "read_network_state")).toBe(1)
@@ -209,8 +209,8 @@ describe("remote computer refresh", () => {
   it("accepts a repeated remote action while the follow-up refresh is still running (H-05)", async () => {
     let reads = 0
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return ++reads === 1 ? remoteSource() : new Promise(() => {})
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return ++reads === 1 ? remoteSource() : new Promise(() => {})
       if (command === "remote_workspace_action") return remoteSource()
     })
     const store = createProductionSource(mock.native)
@@ -230,8 +230,8 @@ describe("remote computer refresh", () => {
     let reads = 0
     let current = remoteSource({ purpose: "Before" })
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return ++reads === 2 ? stale.promise : structuredClone(current)
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return ++reads === 2 ? stale.promise : structuredClone(current)
       if (command === "remote_upsert_machine") { current = remoteSource({ purpose: "Edited" }); return structuredClone(current) }
     })
     const store = createProductionSource(mock.native)
@@ -256,15 +256,15 @@ describe("remote computer refresh", () => {
     } finally { store.dispose() }
   })
 
-  it("does not bring back a computer removed while the list was being read (H-06)", async () => {
+  it("does not bring back a device removed while the list was being read (H-06)", async () => {
     vi.useFakeTimers()
     const list = deferred<unknown>()
     let lists = 0
-    let hosts = [office]
+    let listedDevices = [office]
     const mock = bridge(command => {
-      if (command === "remote_host_list") return ++lists === 2 ? list.promise : structuredClone(hosts)
-      if (command === "remote_host_snapshot") return remoteSource()
-      if (command === "remove_remote_host") { hosts = []; return null }
+      if (command === "device_list") return ++lists === 2 ? list.promise : structuredClone(listedDevices)
+      if (command === "device_snapshot") return remoteSource()
+      if (command === "remove_device") { listedDevices = []; return null }
     })
     const store = createProductionSource(mock.native)
     try {
@@ -272,81 +272,81 @@ describe("remote computer refresh", () => {
       const refreshing = store.refresh()
       await vi.advanceTimersByTimeAsync(0)
       expect(lists).toBe(2)
-      await store.applicationActions.removeComputer!("office")
+      await store.applicationActions.removeDevice!("office")
       list.resolve([office])
       await refreshing
       await vi.advanceTimersByTimeAsync(0)
       expect(lists).toBe(3)
-      expect(store.getSnapshot().source?.remoteComputers).toEqual([])
-      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer)).toBe(false)
+      expect(store.getSnapshot().source?.devices).toEqual([])
+      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.device)).toBe(false)
     } finally { store.dispose() }
   })
 
-  it("lists a newly connected computer when connecting resolves, even during a refresh (H-06)", async () => {
+  it("lists a newly connected device when connecting resolves, even during a refresh (H-06)", async () => {
     const list = deferred<unknown>()
     let lists = 0
-    let hosts: typeof office[] = []
+    let listedDevices: typeof office[] = []
     const mock = bridge(command => {
-      if (command === "remote_host_list") return ++lists === 2 ? list.promise : structuredClone(hosts)
-      if (command === "remote_host_snapshot") return remoteSource()
-      if (command === "connect_remote_host") { hosts = [office]; return office }
+      if (command === "device_list") return ++lists === 2 ? list.promise : structuredClone(listedDevices)
+      if (command === "device_snapshot") return remoteSource()
+      if (command === "connect_device") { listedDevices = [office]; return office }
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
       void store.refresh()
       await vi.waitFor(() => expect(lists).toBe(2))
-      const connecting = store.applicationActions.connectComputer!("user@office")
+      const connecting = store.applicationActions.connectDevice!("user@office")
       list.resolve([])
       await connecting
-      expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
+      expect(store.getSnapshot().source?.devices?.map(device => device.id)).toEqual(["office"])
       expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.machine.id === remoteTarget("office"))).toBe(true)
     } finally { store.dispose() }
   })
 
-  it("lists a newly connected computer after a superseded computer-list read fails", async () => {
+  it("lists a newly connected device after a superseded device-list read fails", async () => {
     const late = deferred<unknown>()
     let lists = 0
-    let hosts: typeof office[] = []
+    let listedDevices: typeof office[] = []
     const mock = bridge(command => {
-      if (command === "remote_host_list") return ++lists === 2 ? late.promise.then(() => { throw new Error("Old list unavailable") }) : structuredClone(hosts)
-      if (command === "remote_host_snapshot") return remoteSource()
-      if (command === "connect_remote_host") { hosts = [office]; return office }
+      if (command === "device_list") return ++lists === 2 ? late.promise.then(() => { throw new Error("Old list unavailable") }) : structuredClone(listedDevices)
+      if (command === "device_snapshot") return remoteSource()
+      if (command === "connect_device") { listedDevices = [office]; return office }
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
       const refresh = store.applicationActions.refreshRepositories!()
       await vi.waitFor(() => expect(lists).toBe(2))
-      const connecting = store.applicationActions.connectComputer!("user@office")
-      await vi.waitFor(() => expect(count(mock.invoke, "remote_management_status")).toBeGreaterThan(2))
+      const connecting = store.applicationActions.connectDevice!("user@office")
+      await vi.waitFor(() => expect(count(mock.invoke, "connections_status")).toBeGreaterThan(2))
       late.resolve(null)
       await connecting
       await refresh
-      expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
-      expect(store.getSnapshot().source?.remoteComputersError).toBeUndefined()
+      expect(store.getSnapshot().source?.devices?.map(device => device.id)).toEqual(["office"])
+      expect(store.getSnapshot().source?.devicesError).toBeUndefined()
     } finally { store.dispose() }
   })
 
-  it("reports a failed computer list separately from remote management (H-22)", async () => {
+  it("reports a failed device list separately from remote management (H-22)", async () => {
     let failList = false
     const mock = bridge(command => {
-      if (command === "remote_host_list") { if (failList) throw new Error("hosts file unreadable"); return [office] }
-      if (command === "remote_host_snapshot") return remoteSource()
-      if (command === "remote_management_status") return { enabled: true, hostId: "local", name: "Laptop", address: "user@laptop" }
+      if (command === "device_list") { if (failList) throw new Error("listedDevices file unreadable"); return [office] }
+      if (command === "device_snapshot") return remoteSource()
+      if (command === "connections_status") return { enabled: true, deviceId: "local", name: "Laptop", address: "user@laptop" }
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
       failList = true
       await store.refresh()
-      await vi.waitFor(() => expect(store.getSnapshot().source?.remoteComputersError).toContain("hosts file unreadable"))
-      expect(store.getSnapshot().source?.remoteManagementError).toBeUndefined()
-      expect(store.getSnapshot().source?.remoteManagement?.enabled).toBe(true)
-      expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
+      await vi.waitFor(() => expect(store.getSnapshot().source?.devicesError).toContain("listedDevices file unreadable"))
+      expect(store.getSnapshot().source?.connectionsError).toBeUndefined()
+      expect(store.getSnapshot().source?.connections?.enabled).toBe(true)
+      expect(store.getSnapshot().source?.devices?.map(device => device.id)).toEqual(["office"])
       failList = false
       await store.refresh()
-      await vi.waitFor(() => expect(store.getSnapshot().source?.remoteComputersError).toBeUndefined())
+      await vi.waitFor(() => expect(store.getSnapshot().source?.devicesError).toBeUndefined())
     } finally { store.dispose() }
   })
 
@@ -354,8 +354,8 @@ describe("remote computer refresh", () => {
     const plain = deferred<unknown>()
     let reads = 0
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return ++reads === 2 ? plain.promise : remoteSource()
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return ++reads === 2 ? plain.promise : remoteSource()
     })
     const store = createProductionSource(mock.native)
     try {
@@ -366,7 +366,7 @@ describe("remote computer refresh", () => {
       const second = store.applicationActions.refreshRepositories!()
       plain.resolve(remoteSource())
       await Promise.all([first, second])
-      const repositoryReads = mock.invoke.mock.calls.filter(([command, args]) => command === "remote_host_snapshot" && args?.refreshRepositories === true)
+      const repositoryReads = mock.invoke.mock.calls.filter(([command, args]) => command === "device_snapshot" && args?.refreshRepositories === true)
       expect(repositoryReads).toHaveLength(1)
       expect(reads).toBe(3)
     } finally { store.dispose() }
@@ -436,11 +436,11 @@ describe("repository push status", () => {
     }
   })
 
-  it("stops polling a remote push when its computer is removed (H-08)", async () => {
+  it("stops polling a remote push when its device is removed (H-08)", async () => {
     vi.useFakeTimers()
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return remoteSource()
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return remoteSource()
       if (command === "start_repository_push" || command === "repository_push_status") throw new Error("host unreachable")
     })
     const store = createProductionSource(mock.native)
@@ -449,7 +449,7 @@ describe("repository push status", () => {
       store.applicationActions.pushRepository(remoteTarget("office"), "/workspace/repo", pushTarget)
       await vi.advanceTimersByTimeAsync(0)
       expect(pushOf(store, remoteTarget("office"))?.status).toBe("pushing")
-      await store.applicationActions.removeComputer!("office")
+      await store.applicationActions.removeDevice!("office")
       expect(pushOf(store, remoteTarget("office"))).toBeUndefined()
       const polls = count(mock.invoke, "repository_push_status") + count(mock.invoke, "start_repository_push")
       await vi.advanceTimersByTimeAsync(10 * 60_000)
@@ -485,16 +485,16 @@ describe("derived view", () => {
     } finally { store.dispose() }
   })
 
-  it("derives remote rows from their computer without writing them back (H-30)", async () => {
+  it("derives remote rows from their device without writing them back (H-30)", async () => {
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return remoteSource()
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return remoteSource()
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
       for (let index = 0; index < 3; index++) await store.refresh()
-      const remote = store.getSnapshot().source?.workspaces.filter(workspace => workspace.computer) ?? []
+      const remote = store.getSnapshot().source?.workspaces.filter(workspace => workspace.device) ?? []
       expect(remote.map(workspace => workspace.machine.id)).toEqual([remoteTarget("office")])
       expect(store.getSnapshot().source?.activities.filter(activity => activity.id.startsWith("silo-remote-activity:")).length).toBe(source.activities.length)
     } finally { store.dispose() }
@@ -525,14 +525,14 @@ describe("mutation responses", () => {
     } finally { store.dispose() }
   })
 
-  it("keeps a remote computer's enrichment across a remote edit response (H-36)", async () => {
+  it("keeps a remote device's enrichment across a remote edit response (H-36)", async () => {
     const remote = remoteSource()
     remote.github = { ...remote.github, state: "connected", account: "octo", policyRevision: 2 }
     const edited = { ...structuredClone(remote), github: { state: "disconnected" }, workspaces: remote.workspaces.map(workspace => ({ ...workspace, purpose: "Edited", repositories: [] })) }
     let reads = 0
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return ++reads === 1 ? structuredClone(remote) : new Promise(() => {})
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return ++reads === 1 ? structuredClone(remote) : new Promise(() => {})
       if (command === "remote_upsert_machine") return structuredClone(edited)
     })
     const store = createProductionSource(mock.native)
@@ -557,8 +557,8 @@ describe("overlapping lifecycle responses", () => {
     const restarted = deferred<unknown>()
     let reads = 0
     const mock = bridge((command, args) => {
-      if (command === "remote_host_list") return remote ? [office] : []
-      if (command === (remote ? "remote_host_snapshot" : "read_application_state")) return ++reads === 1 ? initial : new Promise(() => {})
+      if (command === "device_list") return remote ? [office] : []
+      if (command === (remote ? "device_snapshot" : "read_application_state")) return ++reads === 1 ? initial : new Promise(() => {})
       if (command === (remote ? "remote_workspace_action" : "workspace_action")) {
         if (args?.action === "start") return restarted.promise
         return (args?.name === a.machine.name ? older : newer).promise
@@ -589,29 +589,29 @@ describe("remote management response ordering", () => {
     { when: "before", fails: false }, { when: "before", fails: true },
     { when: "during", fails: false }, { when: "during", fails: true },
   ])("ignores an older status reply started $when a toggle (failure: $fails)", async ({ when, fails }) => {
-    const status = { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
+    const status = { enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }
     const late = deferred<unknown>()
     const toggle = deferred<unknown>()
     let delayed = false
     const mock = bridge(command => {
-      if (command === "remote_management_status") return delayed ? late.promise.then(value => { if (fails) throw new Error("Old status unavailable"); return value }) : status
-      if (command === "set_remote_management") return toggle.promise
+      if (command === "connections_status") return delayed ? late.promise.then(value => { if (fails) throw new Error("Old status unavailable"); return value }) : status
+      if (command === "set_connections_enabled") return toggle.promise
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
       delayed = true
-      const changing = when === "during" ? store.applicationActions.setRemoteManagement!(true) : undefined
+      const changing = when === "during" ? store.applicationActions.setConnectionsEnabled!(true) : undefined
       const refresh = store.applicationActions.refreshRepositories!()
-      await vi.waitFor(() => expect(count(mock.invoke, "remote_management_status")).toBeGreaterThan(1))
-      const saving = changing ?? store.applicationActions.setRemoteManagement!(true)
+      await vi.waitFor(() => expect(count(mock.invoke, "connections_status")).toBeGreaterThan(1))
+      const saving = changing ?? store.applicationActions.setConnectionsEnabled!(true)
       toggle.resolve({ ...status, enabled: true })
       await saving
-      expect(store.getSnapshot().source?.remoteManagement?.enabled).toBe(true)
+      expect(store.getSnapshot().source?.connections?.enabled).toBe(true)
       late.resolve(status)
       await refresh
-      expect(store.getSnapshot().source?.remoteManagement?.enabled).toBe(true)
-      expect(store.getSnapshot().source?.remoteManagementError).toBeUndefined()
+      expect(store.getSnapshot().source?.connections?.enabled).toBe(true)
+      expect(store.getSnapshot().source?.connectionsError).toBeUndefined()
     } finally { store.dispose() }
   })
 })
@@ -625,8 +625,8 @@ describe("remote machine mutation response ordering", () => {
     let reads = 0
     const newer = { ...initial, workspaces: [a, { ...b, state: "stopped" }] }
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return ++reads === 1 ? initial : new Promise(() => {})
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return ++reads === 1 ? initial : new Promise(() => {})
       if (command === "remote_workspace_action") return newer
       if (command === "remote_upsert_machine" || command === "remote_delete_machine") return late.promise
     })
@@ -662,12 +662,12 @@ describe("SSH save response ordering", () => {
     const initial = structuredClone(source)
     initial.workspaces = initial.workspaces.filter(row => row.machine.kind === "vm").slice(0, 2)
     const target = (workspace: typeof initial.workspaces[number]) => remote ? `silo-remote:office:${workspace.machine.id}` : workspace.machine.name
-    const rows = initial.workspaces.map(workspace => ({ workspace: target(workspace), enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, computerName: "Laptop", addresses: [] }))
+    const rows = initial.workspaces.map(workspace => ({ workspace: target(workspace), enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, deviceName: "Laptop", addresses: [] }))
     const older = deferred<unknown>()
     const newer = deferred<unknown>()
     const mock = bridge((command, args) => {
-      if (command === "remote_host_list") return remote ? [office] : []
-      if (command === "remote_host_snapshot") return initial
+      if (command === "device_list") return remote ? [office] : []
+      if (command === "device_snapshot") return initial
       if (command === "read_ssh_access_state") return { workspaces: remote ? [] : rows }
       if (command === "remote_ssh_access_state") return { workspaces: rows }
       if (command === "save_ssh_access" || command === "remote_save_ssh_access") return args?.port === 2223 ? older.promise : newer.promise
@@ -785,13 +785,13 @@ describe("overlapping state reads", () => {
     local.workspaces[0].freshness = "stale"
     const capacity = { logicalCpus: 8, physicalMemoryBytes: 16 * 1024 ** 3, maxMemoryGib: 16 }
     const mock = bridge(command => {
-      if (command === "read_application_state") return { ...local, hostCapacity: capacity }
+      if (command === "read_application_state") return { ...local, deviceCapacity: capacity }
       if (command === "read_network_state") return { workspaces: [{ workspace: local.workspaces[0].machine.name, host: "dev.localhost", error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", state: "reachable", configured: true }] }] }
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      expect(store.getSnapshot().source!.hostCapacity).toEqual(capacity)
+      expect(store.getSnapshot().source!.deviceCapacity).toEqual(capacity)
       expect(store.getSnapshot().source!.workspaces[0]).toMatchObject({ freshness: "stale", ports: [{ host: "dev.localhost", hostPort: 43000 }] })
     } finally { store.dispose() }
   })
@@ -978,10 +978,10 @@ describe("cancelled lifecycle actions", () => {
     } finally { store.dispose() }
   })
 
-  it("keeps an older computer's unclassified cancellation text as a failure (H-34)", async () => {
+  it("keeps an older device's unclassified cancellation text as a failure (H-34)", async () => {
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return remoteSource({ state: "stopped", lifecycleFailure: "Stop failed: stop dev was cancelled." })
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return remoteSource({ state: "stopped", lifecycleFailure: "Stop failed: stop dev was cancelled." })
     })
     const store = createProductionSource(mock.native)
     try {
@@ -1007,7 +1007,7 @@ describe("cancelled lifecycle actions", () => {
 })
 
 describe("native state validation", () => {
-  it("keeps a newer computer available when it reports values this version does not know (H-17)", async () => {
+  it("keeps a newer device available when it reports values this version does not know (H-17)", async () => {
     const newer = remoteSource()
     const known = newer.workspaces[0]
     const payload = {
@@ -1021,16 +1021,16 @@ describe("native state validation", () => {
       repositoryPushOperations: [{ workspace: known.machine.name, repositoryPath: "acme/silo", commitCount: 1, status: "queued" }],
     }
     const mock = bridge(command => {
-      if (command === "remote_host_list") return [office]
-      if (command === "remote_host_snapshot") return payload
+      if (command === "device_list") return [office]
+      if (command === "device_snapshot") return payload
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
       const view = store.getSnapshot().source!
-      expect(view.remoteComputers?.[0]).toMatchObject({ connected: true })
-      expect(view.remoteComputers?.[0].error).toBeUndefined()
-      const rows = view.workspaces.filter(workspace => workspace.computer)
+      expect(view.devices?.[0]).toMatchObject({ connected: true })
+      expect(view.devices?.[0].error).toBeUndefined()
+      const rows = view.workspaces.filter(workspace => workspace.device)
       expect(rows).toHaveLength(1)
       expect(rows[0]).toMatchObject({ state: "stopped", freshness: "stale", stateDetail: "Hibernating since 10:00", attention: { level: "warning" } })
       const activity = view.activities.find(item => item.id.endsWith(encodeURIComponent("a-1")))

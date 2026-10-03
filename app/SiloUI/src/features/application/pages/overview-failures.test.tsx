@@ -89,10 +89,10 @@ it("reports a cancelled lifecycle action as a neutral toast, not an error", asyn
   expect(within(screen.getByText("dev").closest("li")!).queryByRole("alert")).not.toBeInTheDocument()
 })
 
-it("keeps a known lifecycle action visible while its remote computer refreshes status", () => {
+it("keeps a known lifecycle action visible while its remote device refreshes status", () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.name === "dev")!
-  workspace.computer = { id: "office", name: "Office", address: "office.example", connected: true, busy: true, vmId: workspace.machine.id }
+  workspace.device = { id: "office", name: "Office", address: "office.example", connected: true, busy: true, vmId: workspace.machine.id }
   workspace.freshness = "stale"
   workspace.lifecycleAction = "start"
   const actions = {} as ApplicationActions

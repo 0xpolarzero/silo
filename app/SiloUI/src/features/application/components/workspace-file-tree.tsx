@@ -1,4 +1,4 @@
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 import { visibleText } from "@/lib/visible-text"
 import { FolderActions } from "./folder-actions"
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"

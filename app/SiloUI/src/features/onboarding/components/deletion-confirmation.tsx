@@ -10,7 +10,7 @@ function joinNames(names: string[]): string {
 }
 
 /**
- * Asked before a setup submission that would delete sandboxes already on this computer
+ * Asked before a setup submission that would delete sandboxes already on this device
  * which the user did not delete explicitly (the draft no longer lists them, for example
  * because it was saved before they loaded). Keeping them is the default.
  */
@@ -27,7 +27,7 @@ export function DeletionConfirmation({ machines, onKeep, onDelete }: {
         className="grid grid-cols-[auto_minmax(0,1fr)] gap-y-2 sm:flex"
         icon={<ListRowIcon className="bg-destructive/10 text-destructive" aria-hidden="true"><CircleAlert className="size-3.5" /></ListRowIcon>}
         title={<h3>{one ? `Delete ${names}?` : `Delete ${machines.length} sandboxes?`}</h3>}
-        detail={`${names} already ${one ? "exists" : "exist"} on this computer but ${one ? "is" : "are"} no longer listed in setup. Continuing as listed deletes ${one ? "it and its" : "them and their"} files. Keep ${one ? "it" : "them"} to continue without deleting anything.`}
+        detail={`${names} already ${one ? "exists" : "exist"} on this device but ${one ? "is" : "are"} no longer listed in setup. Continuing as listed deletes ${one ? "it and its" : "them and their"} files. Keep ${one ? "it" : "them"} to continue without deleting anything.`}
         detailClassName="whitespace-normal break-words"
         actions={<div className="col-start-2 flex shrink-0 gap-2">
           <Button type="button" variant="outline" size="xs" autoFocus onClick={onKeep}>{one ? "Keep sandbox" : "Keep sandboxes"}</Button>

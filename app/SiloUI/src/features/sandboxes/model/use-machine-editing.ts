@@ -11,7 +11,7 @@ import {
 } from "@/features/onboarding/model/machine-configuration"
 import { isStaleConfigurationError } from "@/features/application/model/machine-change"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
-import { fitMachineToCapacity, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
+import { fitMachineToCapacity, type DeviceCapacity } from "@/features/sandboxes/model/machine-limits"
 import { rebaseMachineDraft, type MachineReview } from "@/features/sandboxes/model/machine-review"
 import { useMachineEditorDrafts } from "@/features/sandboxes/model/editor-drafts-context"
 
@@ -19,19 +19,19 @@ export const defaultSaveBlockedReason = "Saving is paused while another sandbox 
 
 export interface MachineEditingOptions {
   machines: readonly SetupMachineConfiguration[]
-  getComputerId?: (machine: SetupMachineConfiguration) => string | undefined
-  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
+  getDeviceId?: (machine: SetupMachineConfiguration) => string | undefined
+  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, deviceId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
   onDeleteMachine?: (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => Promise<void>
   onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
-  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
+  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, deviceId?: string) => string | undefined
   isMachineRunning?: (machine: SetupMachineConfiguration) => boolean
   onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
   initialEditorDraft?: MachineEditorDraft | null
   interactionDisabled?: boolean
   /** Why `interactionDisabled` blocks saving an open editor; a generic reason by default. */
   interactionDisabledReason?: string
-  /** The capacity of a computer ("" is this one), when known, so new sandboxes fit it. */
-  getHostCapacity?: (computerId: string) => HostCapacity | undefined
+  /** The capacity of a device ("" is this one), when known, so new sandboxes fit it. */
+  getDeviceCapacity?: (deviceId: string) => DeviceCapacity | undefined
   /** Why a sandbox cannot be edited or deleted now (it is starting or stopping), if so. */
   getMachineBusyReason?: (machine: SetupMachineConfiguration) => string | undefined
   /**
@@ -44,13 +44,13 @@ export interface MachineEditingOptions {
 
 /**
  * Owns every piece of the sandbox editing flow — draft state, validation, stale-baseline
- * conflict detection and review, committing/deleting, and the Run-on computer selection —
+ * conflict detection and review, committing/deleting, and the Run-on device selection —
  * so the sandbox list and the sandbox detail page share exactly the same behaviour. The
  * caller renders `MachineEditor` with the returned state and wires its handlers.
  */
 export function useMachineEditing({
   machines,
-  getComputerId,
+  getDeviceId,
   onCommitMachine,
   onDeleteMachine,
   onMachinesChange,
@@ -60,14 +60,14 @@ export function useMachineEditing({
   initialEditorDraft = null,
   interactionDisabled = false,
   interactionDisabledReason = defaultSaveBlockedReason,
-  getHostCapacity,
+  getDeviceCapacity,
   getMachineBusyReason,
   draftKey,
 }: MachineEditingOptions) {
   // Restore an editor left open on this surface earlier (see editor-drafts-context.ts).
   const drafts = useMachineEditorDrafts()
   const [stored] = useState(() => !initialEditorDraft && draftKey ? drafts?.get(draftKey) : undefined)
-  const [computerId, setComputerId] = useState(stored?.computerId ?? "")
+  const [deviceId, setDeviceId] = useState(stored?.deviceId ?? "")
   const [committing, setCommitting] = useState(Boolean(stored?.pendingSave))
   const mounted = useRef(true)
   useEffect(() => {
@@ -94,9 +94,9 @@ export function useMachineEditing({
   const [editorReview, setEditorReview] = useState<MachineReview | null>(stored?.editorReview ?? null)
   useEffect(() => {
     if (!draftKey || !drafts) return
-    if (editor) drafts.set(draftKey, { editor, editorBaseline, editorConflict, editorReview, baseline: baselineRef.current, computerId, pendingSave: drafts.get(draftKey)?.pendingSave })
+    if (editor) drafts.set(draftKey, { editor, editorBaseline, editorConflict, editorReview, baseline: baselineRef.current, deviceId, pendingSave: drafts.get(draftKey)?.pendingSave })
     else drafts.delete(draftKey)
-  }, [drafts, draftKey, editor, editorBaseline, editorConflict, editorReview, computerId])
+  }, [drafts, draftKey, editor, editorBaseline, editorConflict, editorReview, deviceId])
   const [editorResetToken, setEditorResetToken] = useState(0)
 
   const completeRestoredSave = useEffectEvent(() => { setEditor(null); setCommitting(false) })
@@ -153,7 +153,7 @@ export function useMachineEditing({
     beginOperation()
     captureBaseline()
     setEditorBaseline(structuredClone(machine))
-    setComputerId(getComputerId?.(machine) ?? "")
+    setDeviceId(getDeviceId?.(machine) ?? "")
     setEditor({
       draft: structuredClone(machine),
       originalID: machine.id,
@@ -165,10 +165,10 @@ export function useMachineEditing({
     if (disabled) return
     beginOperation()
     captureBaseline()
-    setComputerId("")
+    setDeviceId("")
     setEditor({
-      // New sandboxes start on this computer, so fit the defaults to it.
-      draft: kind === "vm" ? fitMachineToCapacity(newVirtualMachine(machines), getHostCapacity?.("")) : newSSHMachine(machines),
+      // New sandboxes start on this device, so fit the defaults to it.
+      draft: kind === "vm" ? fitMachineToCapacity(newVirtualMachine(machines), getDeviceCapacity?.("")) : newSSHMachine(machines),
       insertAt: machines.length,
     })
   }
@@ -178,15 +178,15 @@ export function useMachineEditing({
     beginOperation()
     captureBaseline()
     const sourceIndex = machines.findIndex(({ id }) => id === machine.id)
-    setComputerId(getComputerId?.(machine) ?? "")
+    setDeviceId(getDeviceId?.(machine) ?? "")
     setEditor({ draft: duplicateMachine(machine, machines), insertAt: sourceIndex + 1, displayAfterID: machine.id })
   }
 
   // Restrict a captured baseline to the machines this list actually commits (local vs a
-  // single remote computer), matching the list the save is derived against.
-  function scopedBaseline(baseline = baselineRef.current, targetComputerId = computerId): SetupMachineConfiguration[] | undefined {
+  // single remote device), matching the list the save is derived against.
+  function scopedBaseline(baseline = baselineRef.current, targetDeviceId = deviceId): SetupMachineConfiguration[] | undefined {
     if (!baseline) return undefined
-    return getComputerId ? baseline.filter(machine => (getComputerId(machine) ?? "") === targetComputerId) : baseline
+    return getDeviceId ? baseline.filter(machine => (getDeviceId(machine) ?? "") === targetDeviceId) : baseline
   }
 
   /** Applies a whole-list change; returns its settlement (failures already reported) when asynchronous. */
@@ -200,12 +200,12 @@ export function useMachineEditing({
     return undefined
   }
 
-  async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetComputerId = computerId) {
+  async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetDeviceId = deviceId) {
     if (committing) return
     // Also covers menu saves with no editor open (Add Linux desktop).
     const blockedReason = saveBlockedReason ?? (originalID ? busyReason(machines.find(({ id }) => id === originalID)) : undefined)
     if (blockedReason) { showActionFailure(`Could not save ${machine.name}`, blockedReason, undefined, { native: false }); return }
-    const blocked = validateOperation?.(machine, !originalID, targetComputerId)
+    const blocked = validateOperation?.(machine, !originalID, targetDeviceId)
     if (blocked) { showActionFailure(`Could not save ${machine.name}`, blocked, undefined, { native: false }); return }
     const baseline = baselineRef.current ?? undefined
     if (onCommitMachine) {
@@ -215,7 +215,7 @@ export function useMachineEditing({
         // The expected state is what the editor opened with, so a concurrent change is
         // rejected as stale instead of silently overwritten.
         const original = baseline?.find(item => item.id === originalID) ?? machines.find(item => item.id === originalID)
-        pendingSave = onCommitMachine(machine, original, targetComputerId, baseline)
+        pendingSave = onCommitMachine(machine, original, targetDeviceId, baseline)
         const cached = draftKey ? drafts?.get(draftKey) : undefined
         if (cached && draftKey && cached.editor === editorRef.current) drafts?.set(draftKey, { ...cached, pendingSave })
         await pendingSave
@@ -243,7 +243,7 @@ export function useMachineEditing({
     } else {
       updated.splice(editor?.insertAt ?? updated.length, 0, machine)
     }
-    dispatchChange(configurationRequest(getComputerId ? updated.filter(machine => !getComputerId(machine)) : updated).machines, baseline ? scopedBaseline() : undefined, machine)
+    dispatchChange(configurationRequest(getDeviceId ? updated.filter(machine => !getDeviceId(machine)) : updated).machines, baseline ? scopedBaseline() : undefined, machine)
     setEditor(null)
   }
 
@@ -289,12 +289,12 @@ export function useMachineEditing({
   // failures propagate to the dialog instead of the inline notice.
   async function deleteMachineNow(machine: SetupMachineConfiguration) {
     if (disabled) throw new Error(interactionDisabledReason)
-    const blocked = validateOperation?.(machine, false, getComputerId?.(machine) ?? "")
+    const blocked = validateOperation?.(machine, false, getDeviceId?.(machine) ?? "")
     if (blocked) throw new Error(blocked)
     const baseline = structuredClone(machines as SetupMachineConfiguration[])
     if (onDeleteMachine) { await onDeleteMachine(machine, baseline); return }
     const next = configurationRequest(baseline.filter(({ id }) => id !== machine.id)).machines
-    const outcome = onMachinesChange(next, scopedBaseline(baseline, getComputerId?.(machine) ?? ""))
+    const outcome = onMachinesChange(next, scopedBaseline(baseline, getDeviceId?.(machine) ?? ""))
     if (outcome) await outcome
   }
 
@@ -321,7 +321,7 @@ export function useMachineEditing({
   }
 
   return {
-    computerId, setComputerId,
+    deviceId, setDeviceId,
     committing,
     interactionDisabled: disabled,
     saveBlockedReason,

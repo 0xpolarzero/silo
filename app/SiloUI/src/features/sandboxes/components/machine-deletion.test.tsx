@@ -7,11 +7,11 @@ import { MachineList } from "./machine-list"
 
 function popoverButton(name: string) { return within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name }) }
 
-it("identifies the remote computer and describes both destructive choices", async () => {
+it("identifies the remote device and describes both destructive choices", async () => {
   const machine = productionMachineDefaults[0]
   const user = userEvent.setup()
   render(<TooltipProvider><MachineList machines={[machine]} onMachinesChange={vi.fn()}
-    computers={[{ id: "office", name: "Office", connected: true }]} getComputerId={() => "office"}
+    devices={[{ id: "office", name: "Office", connected: true }]} getDeviceId={() => "office"}
     getRowPresentation={() => ({ menuActions: [], deleteDetails: { checkpoints: 2, exportFirst: vi.fn().mockResolvedValue(true) } })} /></TooltipProvider>)
   await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${machine.name} on Office` }))
@@ -64,13 +64,13 @@ it("blocks a deletion if the VM starts before confirmation", async () => {
   expect(save).not.toHaveBeenCalled()
 })
 
-it.each(["configuration lock", "offline computer"])("blocks deletion when a %s appears before confirmation", async reason => {
+it.each(["configuration lock", "offline device"])("blocks deletion when a %s appears before confirmation", async reason => {
   const machine = productionMachineDefaults[0]
   const save = vi.fn()
   const view = (blocked: boolean) => <TooltipProvider><MachineList machines={[machine]} onMachinesChange={vi.fn()} onDeleteMachine={save}
     interactionDisabled={reason === "configuration lock" && blocked}
-    getComputerId={() => "office"}
-    validateOperation={() => reason === "offline computer" && blocked ? "Office is offline." : undefined}
+    getDeviceId={() => "office"}
+    validateOperation={() => reason === "offline device" && blocked ? "Office is offline." : undefined}
     isMachineRunning={() => false} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>
   const { rerender } = render(view(false))
   const user = userEvent.setup()

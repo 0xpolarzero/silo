@@ -67,15 +67,15 @@ it("distinguishes host allocation from guest usage and reports measured recovery
   expect(screen.getByText("2.00 GiB")).toBeVisible()
 })
 
-it("names the owning computer instead of this computer for a remote sandbox", async () => {
+it("names the owning device instead of this device for a remote sandbox", async () => {
   const read = vi.fn().mockResolvedValue(storage)
-  const { unmount } = render(<Panel workspaceId="vm-id" running computerName="studio" read={read} />)
+  const { unmount } = render(<Panel workspaceId="vm-id" running deviceName="studio" read={read} />)
   expect(await screen.findByText("36.00 GiB")).toBeVisible()
   expect(screen.getByText("studio")).toBeVisible()
-  expect(screen.queryByText("This computer")).not.toBeInTheDocument()
+  expect(screen.queryByText("This device")).not.toBeInTheDocument()
   unmount()
   render(<Panel workspaceId="vm-id" running read={read} />)
-  expect(await screen.findByText("This computer")).toBeVisible()
+  expect(await screen.findByText("This device")).toBeVisible()
 })
 
 it("requires a running sandbox without starting it and hides stale guest usage", async () => {
@@ -121,10 +121,10 @@ it("opens storage from a local sandbox menu and sends its managed ID", async () 
   expect(read).toHaveBeenCalledExactlyOnceWith(workspace.machine.id)
 })
 
-it("does not offer storage reclamation on remote computers", async () => {
+it("does not offer storage reclamation on remote devices", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
-  workspace.computer = { id: "remote", vmId: workspace.machine.id, name: "Other computer", address: "other.test", connected: true }
+  workspace.device = { id: "remote", vmId: workspace.machine.id, name: "Other device", address: "other.test", connected: true }
   const read = vi.fn()
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ readWorkspaceStorage: read } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
@@ -192,7 +192,7 @@ it("shows how much space the sandbox's checkpoints use and where to delete them"
   render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue(storage)} />)
   expect(await screen.findByText("3.00 GiB")).toBeVisible()
   expect(screen.getByText("Checkpoints")).toBeVisible()
-  expect(screen.getByText(/2 checkpoints saved on this computer/)).toBeVisible()
+  expect(screen.getByText(/2 checkpoints saved on this device/)).toBeVisible()
   expect(screen.getByText(/Delete ones you no longer need in Checkpoints/)).toBeVisible()
 })
 

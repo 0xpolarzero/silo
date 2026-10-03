@@ -46,7 +46,7 @@ describe("splitErrorDetails", () => {
 
 describe("ErrorDetails", () => {
   it("keeps the full recovery and partial-change warning when diagnostics are separate", async () => {
-    const message = "Creating the sandbox: Sandbox CPU, memory, or storage limits could not be validated. Review the sandbox resources against this computer's limits and retry. Completed changes were kept; reload the sandbox list before retrying."
+    const message = "Creating the sandbox: Sandbox CPU, memory, or storage limits could not be validated. Review the sandbox resources against this device's limits and retry. Completed changes were kept; reload the sandbox list before retrying."
     render(<ErrorDetails message={message} diagnostic={stderr} />)
     expect(screen.getByText(message)).toBeVisible()
     expect(screen.queryByText(/krun: step 39/)).not.toBeInTheDocument()

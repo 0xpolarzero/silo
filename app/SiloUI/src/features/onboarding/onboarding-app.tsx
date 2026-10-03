@@ -38,7 +38,7 @@ export interface OnboardingAppProps {
   tokenConnected?: boolean
   onOpenApp?: () => void
   onRetryDependencies?: () => void
-  onConnectComputer?: () => void
+  onConnectDevice?: () => void
 }
 
 function OnboardingPanel({ step, activeStep, notice, children }: { step: OnboardingStep; activeStep: OnboardingStep; notice?: ReactNode; children: ReactNode }) {
@@ -98,7 +98,7 @@ function initialWorkspaceSelections(source: OnboardingSource): Record<string, Wo
 }
 
 function defaultWorkspaceIdentity(source: OnboardingSource): WorkspaceGitIdentity {
-  const { name = "", email = "" } = source.currentHostGitIdentity ?? {}
+  const { name = "", email = "" } = source.currentDeviceGitIdentity ?? {}
   return { name, email, apply: Boolean(name.trim() && email.trim()) }
 }
 
@@ -160,7 +160,7 @@ export function OnboardingApp({
   tokenConnected = false,
   onOpenApp,
   onRetryDependencies,
-  onConnectComputer,
+  onConnectDevice,
 }: OnboardingAppProps) {
   const { settings, onboardingDraft, updateSettings, updateOnboardingDraft } = useSettings(source.applicationPreferences)
   const [draft, setDraft] = useState<OnboardingDraft>(() => {
@@ -175,7 +175,7 @@ export function OnboardingApp({
     return completed ? { ...restored, currentStep: "review" } : restored
   })
   // A restored draft is the user's; otherwise the draft is seeded again from this
-  // computer's sandboxes once they load (a fallback seed is only a placeholder).
+  // device's sandboxes once they load (a fallback seed is only a placeholder).
   const machinesInitialized = useRef(onboardingDraft !== null || (draft.machines.length > 0 && source.machinesAuthoritative !== false))
   const currentDraft = useRef(draft)
   const editedIdentities = useRef(new Set(Object.keys(onboardingDraft?.workspaceIdentities ?? {})))
@@ -274,7 +274,7 @@ export function OnboardingApp({
   }, [completed, repositoryPolicies, machines, updateOnboardingDraft])
 
   useEffect(() => {
-    const host = source.currentHostGitIdentity
+    const host = source.currentDeviceGitIdentity
     if (completed || !host) return
     const current = currentDraft.current
     const identities = { ...current.workspaceIdentities }
@@ -290,7 +290,7 @@ export function OnboardingApp({
     currentDraft.current = next
     setDraft(next)
     void updateOnboardingDraft(next)
-  }, [completed, source.currentHostGitIdentity, machines, updateOnboardingDraft])
+  }, [completed, source.currentDeviceGitIdentity, machines, updateOnboardingDraft])
 
   // Completion comes from the existing action's result, never from a recovered
   // draft. A failed or unfinished completion leaves recovery data intact.
@@ -411,8 +411,8 @@ export function OnboardingApp({
   }
 
   function resetWorkspaceIdentity(workspace: string) {
-    if (!source.currentHostGitIdentity) return
-    updateWorkspaceIdentity(workspace, { ...(workspaceValue(currentDraft.current.workspaceIdentities, workspace) ?? { apply: false }), ...source.currentHostGitIdentity })
+    if (!source.currentDeviceGitIdentity) return
+    updateWorkspaceIdentity(workspace, { ...(workspaceValue(currentDraft.current.workspaceIdentities, workspace) ?? { apply: false }), ...source.currentDeviceGitIdentity })
   }
 
   function completionRequest(): OnboardingCompletionRequest {
@@ -511,11 +511,11 @@ export function OnboardingApp({
             void updateSettings(applicationPreferenceChanges(applicationPreferences, preferences))
           }}
           onRetry={onRetryDependencies}
-          onConnectComputer={onConnectComputer}
+          onConnectDevice={onConnectDevice}
         />
       </OnboardingPanel>
       <OnboardingPanel step="workspaces" activeStep={activeStep} notice={deletionNotice}>
-        <WorkspacesStep onConnectComputer={onConnectComputer} machines={machines} progress={viewModel.workspaceProgress} onMachinesChange={saveMachines} onRetry={retrySetup} initialEditorDraft={draft.unfinishedMachineEditor} onEditorDraftChange={(unfinishedMachineEditor) => updateDraft({ unfinishedMachineEditor })} />
+        <WorkspacesStep onConnectDevice={onConnectDevice} machines={machines} progress={viewModel.workspaceProgress} onMachinesChange={saveMachines} onRetry={retrySetup} initialEditorDraft={draft.unfinishedMachineEditor} onEditorDraftChange={(unfinishedMachineEditor) => updateDraft({ unfinishedMachineEditor })} />
       </OnboardingPanel>
       <OnboardingPanel step="github" activeStep={activeStep} notice={deletionNotice}>
         <GitHubStep
@@ -534,7 +534,7 @@ export function OnboardingApp({
             updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })
           }}
           workspaceIdentities={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceIdentities, name) ?? { name: "", email: "", apply: false }]))}
-          currentHostGitIdentity={source.currentHostGitIdentity}
+          currentDeviceGitIdentity={source.currentDeviceGitIdentity}
           onConnect={actions.connectGitHub}
           onCancelConnection={actions.cancelGitHubConnection}
           onReopenAuthorization={actions.reopenGitHubAuthorization}

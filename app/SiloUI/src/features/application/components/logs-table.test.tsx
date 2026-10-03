@@ -14,7 +14,7 @@ const workspace = applicationSourceForScenario("running").workspaces[0]
 function rows(count: number): LogRow[] {
   return Array.from({ length: count }, (_, index) => ({ workspace, entry: {
     id: String(index), line: `record ${index}`, occurredAt: "2026-09-22T10:00:00Z",
-    computerId: "local", sandboxId: workspace.machine.id, source: "runtime",
+    deviceId: "local", sandboxId: workspace.machine.id, source: "runtime",
   } }))
 }
 function props(entries = rows(1)) {
@@ -70,7 +70,7 @@ describe("logs table", () => {
     const cells = within(row).getAllByRole("cell")
     expect(cells).toHaveLength(5)
     expect(cells[3]).toHaveTextContent("runtime")
-    expect(cells[2]).not.toHaveTextContent("This computer")
+    expect(cells[2]).not.toHaveTextContent("This device")
     const buttons = within(row).getAllByRole("button")
     expect(buttons[0]).toHaveAccessibleName(/^Copy log line/)
     expect(buttons[1]).toHaveAccessibleName(/^Expand log from dev at /)
@@ -89,13 +89,13 @@ describe("logs table", () => {
     expect(screen.queryByRole("button", { name: "Load older" })).not.toBeInTheDocument()
   })
 
-  it("distinguishes a same-named remote sandbox and reveals its computer on hover or focus", async () => {
+  it("distinguishes a same-named remote sandbox and reveals its device on hover or focus", async () => {
     const entries = rows(2)
-    entries[1].workspace = { ...workspace, computer: { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: "remote-dev" } }
-    entries[1].entry = { ...entries[1].entry, computerId: "office", sandboxId: "remote-dev" }
+    entries[1].workspace = { ...workspace, device: { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: "remote-dev" } }
+    entries[1].entry = { ...entries[1].entry, deviceId: "office", sandboxId: "remote-dev" }
     const user = userEvent.setup()
     render(<LogsTable {...props(entries)} />)
-    expect(screen.queryByRole("columnheader", { name: "Computer" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("columnheader", { name: "Device" })).not.toBeInTheDocument()
     const local = screen.getByLabelText("dev, Running")
     const remote = screen.getByLabelText("dev, Running, on Office Mac")
     expect(local).toHaveTextContent(/^dev$/)

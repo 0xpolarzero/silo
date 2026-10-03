@@ -11,14 +11,14 @@ import { OverviewPage } from "./overview-page"
 function sourceWithRemote(): ApplicationSource {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const remote = source.workspaces.find(({ machine }) => machine.name === "personal")!
-  remote.computer = { id: "office", vmId: "vm-1", name: "Office", address: "office.test", connected: true }
-  source.remoteComputers = [{ id: "office", name: "Office", address: "office.test", connected: true } as NonNullable<ApplicationSource["remoteComputers"]>[number]]
+  remote.device = { id: "office", vmId: "vm-1", name: "Office", address: "office.test", connected: true }
+  source.devices = [{ id: "office", name: "Office", address: "office.test", connected: true } as NonNullable<ApplicationSource["devices"]>[number]]
   return source
 }
 
 const rowNames = () => [...screen.getByRole("list", { name: "Configured sandboxes" }).querySelectorAll("li[data-sandbox-name]")].map(row => row.getAttribute("data-sandbox-name"))
 
-it("keys local sandboxes by id and remote ones by computer and sandbox id", () => {
+it("keys local sandboxes by id and remote ones by device and sandbox id", () => {
   const source = sourceWithRemote()
   const local = source.workspaces.find(({ machine }) => machine.name === "playgrounds")!
   const remote = source.workspaces.find(({ machine }) => machine.name === "personal")!
@@ -30,7 +30,7 @@ it("keeps saved keys of rows that are not shown after the rows that are", () => 
   expect(nextSandboxOrder(["remote:gone:1", "local:a", "local:b"], ["local:b", "local:a"])).toEqual(["local:b", "local:a", "remote:gone:1"])
 })
 
-it("reorders a remote sandbox in this computer's own order without changing any configuration", async () => {
+it("reorders a remote sandbox in this device's own order without changing any configuration", async () => {
   const source = sourceWithRemote()
   const store = createMemorySettingsStore()
   const onMachinesChange = vi.fn()

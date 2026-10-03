@@ -9,7 +9,7 @@ import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { ExportIncompleteError, type BackupController, type BackupOperation } from "../model/backup-source"
 
 const source = applicationSourceForScenario("running")
-const localVm = source.workspaces.find((w) => !w.computer && w.machine.kind === "vm")!
+const localVm = source.workspaces.find((w) => !w.device && w.machine.kind === "vm")!
 const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GiB", destination: "/backups", sandboxes: ["dev"] }
 
 function controller(overrides: Partial<BackupController["state"]> = {}, actions: Partial<BackupController["actions"]> = {}): BackupController {

@@ -52,7 +52,7 @@ export function QuitRequestConfirmation({ connect }: { connect?: ConnectQuitConf
 
   const detail = pending?.names.length
     ? quitConfirmationDetail(pending.names)
-    : "Silo could not check which sandboxes are running. Quitting stops any sandboxes running on this computer."
+    : "Silo could not check which sandboxes are running. Quitting stops any sandboxes running on this device."
 
   return <AlertDialog.Root open={pending !== null} onOpenChange={(open) => { if (!open) pending?.answer(false) }}>
     <AlertDialog.Portal>

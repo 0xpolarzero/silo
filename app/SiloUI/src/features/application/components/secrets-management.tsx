@@ -51,9 +51,9 @@ export function SecretRow({ secret, manager }: { secret: ApplicationSecret; mana
         detail={<div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
           <div className="flex min-w-0 flex-wrap gap-1" role="group" aria-label={`Sandboxes for ${secret.name}`}>
             {secret.workspaces.map((name) => {
-              const workspace = source.workspaces.find(({ machine, computer }) => !computer && machine.kind === "vm" && machine.name === name)
+              const workspace = source.workspaces.find(({ machine, device }) => !device && machine.kind === "vm" && machine.name === name)
               return workspace
-                ? <WorkspaceBadge key={name} name={name} state={workspace.state} computer={workspace.computer} />
+                ? <WorkspaceBadge key={name} name={name} state={workspace.state} device={workspace.device} />
                 : <StatusBadge key={name} indicator={<Box className="size-2" />}>{name}</StatusBadge>
             })}
           </div>

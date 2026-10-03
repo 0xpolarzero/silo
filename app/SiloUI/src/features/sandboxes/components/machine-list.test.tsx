@@ -43,7 +43,7 @@ it("keeps row controls mounted and in place across a busy transition", async () 
   expect(reorder).toHaveAttribute("tabindex", "0")
 })
 
-it("reorders only this computer's sandboxes, around remote rows", async () => {
+it("reorders only this device's sandboxes, around remote rows", async () => {
   const { default: userEvent } = await import("@testing-library/user-event")
   const base = productionMachineDefaults[0]
   const first = { ...base, id: "00000000-0000-4000-8000-00000000000a", name: "first" }
@@ -51,8 +51,8 @@ it("reorders only this computer's sandboxes, around remote rows", async () => {
   const second = { ...base, id: "00000000-0000-4000-8000-00000000000c", name: "second" }
   const onMachinesChange = vi.fn()
   render(<TooltipProvider><MachineList machines={[first, remote, second]} onMachinesChange={onMachinesChange}
-    getComputerId={(machine) => machine.id === remote.id ? "office" : undefined} /></TooltipProvider>)
-  // A remote sandbox's order is its own computer's: it offers no reorder control.
+    getDeviceId={(machine) => machine.id === remote.id ? "office" : undefined} /></TooltipProvider>)
+  // A remote sandbox's order is its own device's: it offers no reorder control.
   expect(screen.queryByRole("button", { name: "Reorder remote" })).not.toBeInTheDocument()
   screen.getByRole("button", { name: "Reorder first" }).focus()
   await userEvent.setup().keyboard("{ArrowDown}")
@@ -96,7 +96,7 @@ it("counts SSH hosts separately from local and remote sandboxes", () => {
   const remote = { ...local, id: "00000000-0000-4000-8000-00000000000b", name: "remote" }
   const ssh = { kind: "ssh" as const, id: "00000000-0000-4000-8000-00000000000c", name: "server", host: "server.example", user: "dev", port: 22 }
   render(<TooltipProvider><MachineList machines={[local, remote, ssh]} onMachinesChange={vi.fn()}
-    getComputerId={machine => machine.id === remote.id ? "office" : undefined} /></TooltipProvider>)
-  expect(screen.getByText("2 sandboxes · 1 on this computer · 1 on other computers · 1 SSH host")).toBeVisible()
+    getDeviceId={machine => machine.id === remote.id ? "office" : undefined} /></TooltipProvider>)
+  expect(screen.getByText("2 sandboxes · 1 on this device · 1 on other devices · 1 SSH host")).toBeVisible()
   expect(screen.getByText("SSH host")).toBeVisible()
 })

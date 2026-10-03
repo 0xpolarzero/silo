@@ -33,7 +33,7 @@ describe("production onboarding", () => {
   })
 
   it("never adopts remote VMs into local setup or counts them as configured", () => {
-    const remote = { ...application.workspaces[0], computer: { id: "office", vmId: "remote-vm", name: "Office", address: "owner@office", connected: true }, machine: { ...application.workspaces[0].machine, id: "silo-remote:office:remote-vm", name: "remote-build" } }
+    const remote = { ...application.workspaces[0], device: { id: "office", vmId: "remote-vm", name: "Office", address: "owner@office", connected: true }, machine: { ...application.workspaces[0].machine, id: "silo-remote:office:remote-vm", name: "remote-build" } }
     const source = productionOnboardingSource({ ...application, workspaces: [remote] }, { checks: [], retry: vi.fn() }, application.preferences)
     expect(source.machineConfigurations).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "remote-build" })]))
     expect(source.readyToFinish).toBe(false)
@@ -82,7 +82,7 @@ describe("production onboarding", () => {
     const starting = productionOnboardingSource(withDev({ state: "starting" }), dependencies, application.preferences)
     expect(starting.finishBlocker).toMatchObject({ workspace: dev.machine.name, action: null, message: `Waiting for ${dev.machine.name} to start…` })
     expect(projectOnboarding(failed, "disconnected").finishBlocker).toEqual(failed.finishBlocker)
-    // Nothing blocks a configured computer, and a running setup explains itself.
+    // Nothing blocks a configured device, and a running setup explains itself.
     expect(productionOnboardingSource(application, dependencies, application.preferences).finishBlocker).toBeNull()
     const applying = { ...withDev({ state: "starting" }), sandboxConfigurationOperation: { id: "a", status: "applying", candidate: { schemaVersion: 1, machines: [] }, progressEvents: [], result: null, error: null } } as typeof application
     expect(productionOnboardingSource(applying, dependencies, application.preferences).finishBlocker).toBeNull()
@@ -98,7 +98,7 @@ describe("production onboarding", () => {
     const beforeLoad = productionOnboardingSource(null, dependencies, application.preferences, snapshot({ savedMachines: [machines[1]] }))
     expect(beforeLoad).toMatchObject({ machinesAuthoritative: false, existingMachines: [], machineConfigurations: [machines[1]] })
 
-    // While this computer's sandboxes update, the shell has no local rows: not an empty computer.
+    // While this device's sandboxes update, the shell has no local rows: not an empty device.
     const shell = { ...application, workspaces: [] }
     const updating = productionOnboardingSource(shell, dependencies, application.preferences, snapshot({ localUpdating: true }))
     expect(updating.machinesAuthoritative).toBe(false)
@@ -106,7 +106,7 @@ describe("production onboarding", () => {
     expect(unreadable.machinesAuthoritative).toBe(false)
     expect(unreadable.machineConfigurations.map(({ name }) => name)).toEqual(["dev"])
 
-    // A loaded computer with no sandboxes offers the default, as setup of this computer.
+    // A loaded device with no sandboxes offers the default, as setup of this device.
     expect(productionOnboardingSource(shell, dependencies, application.preferences, snapshot({})).machinesAuthoritative).toBe(true)
   })
 

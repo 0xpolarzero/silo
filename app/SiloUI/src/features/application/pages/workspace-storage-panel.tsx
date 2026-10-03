@@ -25,8 +25,8 @@ interface StoragePanelProps {
   /** Names the sandbox in the system notification. */
   sandboxName?: string
   running: boolean
-  /** The computer that owns the sandbox; omitted for a sandbox on this computer. */
-  computerName?: string
+  /** The device that owns the sandbox; omitted for a sandbox on this device. */
+  deviceName?: string
   disabled?: boolean
   read: (workspaceId: string) => Promise<WorkspaceStorageState>
   reclaim?: (workspaceId: string) => Promise<WorkspaceStorageState>
@@ -36,9 +36,9 @@ export function WorkspaceStoragePanel(props: StoragePanelProps) {
   return <WorkspaceStorageContent key={`${props.workspaceId}:${props.running}`} {...props} />
 }
 
-function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerName, disabled = false, read, reclaim }: StoragePanelProps) {
-  const location = computerName ?? 'This computer'
-  const where = computerName ? `on ${computerName}` : 'on this computer'
+function WorkspaceStorageContent({ workspaceId, sandboxName, running, deviceName, disabled = false, read, reclaim }: StoragePanelProps) {
+  const location = deviceName ?? 'This device'
+  const where = deviceName ? `on ${deviceName}` : 'on this device'
 
   const [storage, setStorage] = useState<WorkspaceStorageState | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)

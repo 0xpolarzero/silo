@@ -15,7 +15,7 @@ describe("GitHubAccessEditor", () => {
       workspaces={[{ name: "dev" }]} connectionState="connected"
       repositoryOptions={[]} workspaceSelections={{}}
       workspaceIdentities={{ dev: { name: "Taylor", email: "taylor@example.com", apply: true } }}
-      currentHostGitIdentity={null} onConnect={vi.fn()}
+      currentDeviceGitIdentity={null} onConnect={vi.fn()}
       onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
       onCommitWorkspaceIdentity={onCommit}
     />)
@@ -35,7 +35,7 @@ describe("GitHubAccessEditor", () => {
     render(<GitHubAccessEditor
       workspaces={[{ name: "dev" }]} connectionState="connected"
       repositoryOptions={["acme/first", "acme/second"]} workspaceSelections={{}} workspaceIdentities={{}}
-      currentHostGitIdentity={null} onConnect={vi.fn()}
+      currentDeviceGitIdentity={null} onConnect={vi.fn()}
       onWorkspaceSelectionsChange={onSelections} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
     />)
     const input = screen.getByRole("combobox", { name: "Add repository to dev" })
@@ -64,7 +64,7 @@ describe("GitHubAccessEditor", () => {
     const props = {
       workspaces: [{ name: "dev" }], connectionState: "connected" as const,
       repositoryOptions, workspaceSelections: {}, workspaceIdentities: {},
-      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
       onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
     }
     const view = render(<GitHubAccessEditor {...props} />)
@@ -85,7 +85,7 @@ describe("GitHubAccessEditor", () => {
     render(<GitHubAccessEditor
       workspaces={[{ name: "dev" }]} connectionState="connected"
       repositoryOptions={repositoryOptions} workspaceSelections={{}} workspaceIdentities={{}}
-      currentHostGitIdentity={null} onConnect={vi.fn()}
+      currentDeviceGitIdentity={null} onConnect={vi.fn()}
       onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
       onManageRepositories={vi.fn()}
     />)
@@ -103,7 +103,7 @@ describe("GitHubAccessEditor", () => {
     render(<GitHubAccessEditor
       workspaces={[{ name: "dev" }]} connectionState="connected"
       repositoryOptions={Array.from({ length: 30 }, (_, index) => `acme/repo-${index}`)}
-      workspaceSelections={{}} workspaceIdentities={{}} currentHostGitIdentity={null}
+      workspaceSelections={{}} workspaceIdentities={{}} currentDeviceGitIdentity={null}
       onConnect={vi.fn()} onWorkspaceSelectionsChange={vi.fn()}
       onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()} onManageRepositories={onManage}
     />)
@@ -128,7 +128,7 @@ describe("GitHubAccessEditor", () => {
     const props = {
       workspaces: [{ name: "dev" }], connectionState: "connected" as const,
       repositoryOptions: ["acme/silo"], workspaceSelections: { dev: [] }, workspaceIdentities: {},
-      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(),
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(),
       onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
       onWorkspaceRepositoryAccessChange: vi.fn(),
     }
@@ -148,7 +148,7 @@ describe("GitHubAccessEditor", () => {
       workspaceSelections={{ constructor: [{ repository: "acme/silo", allowPushes: true }] }}
       workspaceIdentities={{ constructor: { name: "Taylor", email: "taylor@example.com", apply: false } }}
       workspaceRepositoryAccess={{ constructor: { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false } }}
-      currentHostGitIdentity={null} onConnect={vi.fn()}
+      currentDeviceGitIdentity={null} onConnect={vi.fn()}
       onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
       onWorkspaceRepositoryAccessChange={vi.fn()}
     />)
@@ -162,7 +162,7 @@ describe("GitHubAccessEditor", () => {
     const source = applicationSourceForScenario("running", "connected")
     const actions = {} as ApplicationActions
     const view = render(<GitHubPage source={source} actions={actions} />)
-    const workspace = source.workspaces.find(item => !item.computer)!
+    const workspace = source.workspaces.find(item => !item.device)!
     const incoming = { ...source, workspaces: [...source.workspaces, {
       ...workspace, machine: { ...workspace.machine, name: "constructor", id: "new-constructor" },
     }] }
@@ -177,7 +177,7 @@ describe("GitHubAccessEditor", () => {
     const props = {
       workspaces: [{ name: "dev" }], connectionState: "connected" as const,
       repositoryOptions: ["acme/base", "acme/silo"], workspaceSelections: {}, workspaceIdentities: {},
-      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
       onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
     }
     const view = render(<GitHubAccessEditor {...props} />)
@@ -195,7 +195,7 @@ describe("GitHubAccessEditor", () => {
     const props = {
       workspaces: [{ name: "dev" }], connectionState: "connected" as const,
       repositoryOptions: ["acme/silo", "acme/other"], workspaceSelections: {}, workspaceIdentities: {},
-      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
       onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
     }
     const view = render(<GitHubAccessEditor {...props} />)
@@ -215,7 +215,7 @@ describe("GitHubAccessEditor", () => {
     const props = {
       workspaces: [{ name: "dev" }], connectionState: "connected" as const,
       repositoryOptions: ["acme/silo"], workspaceSelections: {}, workspaceIdentities: {},
-      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
       onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(), onManageRepositories: onManage,
     }
     const view = render(<GitHubAccessEditor {...props} />)
@@ -234,7 +234,7 @@ describe("GitHubAccessEditor", () => {
     render(<GitHubAccessEditor
       workspaces={[{ name: "dev" }]} connectionState="connected"
       repositoryOptions={["acme/silo"]} workspaceSelections={{}} workspaceIdentities={{}}
-      currentHostGitIdentity={null} onConnect={vi.fn()}
+      currentDeviceGitIdentity={null} onConnect={vi.fn()}
       onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
       onManageRepositories={onManageRepositories}
     />)
@@ -258,7 +258,7 @@ describe("GitHubAccessEditor", () => {
     const props = {
       workspaces: [{ name: "dev" }], connectionState: "connected" as const,
       repositoryOptions: ["acme/silo"], workspaceSelections: { dev: [{ repository: "acme/silo", allowPushes: true }] },
-      workspaceIdentities: {}, currentHostGitIdentity: null,
+      workspaceIdentities: {}, currentDeviceGitIdentity: null,
       onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(), onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
       onWorkspaceRepositoryAccessChange: onAccess,
     }
@@ -284,7 +284,7 @@ describe("GitHubAccessEditor", () => {
         repositoryOptions={["acme/silo", "acme/design-system"]}
         workspaceSelections={{ dev: [{ repository: "acme/silo", allowPushes: true }] }}
         workspaceIdentities={{ dev: { name: "Taylor Example", email: "taylor@example.com", apply: true } }}
-        currentHostGitIdentity={{ name: "Taylor Example", email: "taylor@example.com" }}
+        currentDeviceGitIdentity={{ name: "Taylor Example", email: "taylor@example.com" }}
         onConnect={vi.fn()}
         onWorkspaceSelectionsChange={vi.fn()}
         onWorkspaceIdentityChange={vi.fn()}
@@ -329,7 +329,7 @@ describe("GitHubAccessEditor", () => {
           dev: { name: "Taylor Example", email: "taylor@example.com", apply: true },
           playgrounds: { name: "Taylor Example", email: "taylor@example.com", apply: true },
         }}
-        currentHostGitIdentity={{ name: "Taylor Example", email: "taylor@example.com" }}
+        currentDeviceGitIdentity={{ name: "Taylor Example", email: "taylor@example.com" }}
         onConnect={vi.fn()}
         onWorkspaceSelectionsChange={vi.fn()}
         onWorkspaceIdentityChange={vi.fn()}

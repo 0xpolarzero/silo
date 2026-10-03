@@ -1,4 +1,4 @@
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 import { fixtureLogPage, type LogLoader } from "@/features/application/model/logs"
 import { useMemo, useState } from "react"
 import { fixtureDirectoryLoader } from "./directory-loader"
@@ -64,11 +64,11 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
     const target = workspaceTarget(w)
     const seeded = fixture.source.sshAccess?.workspaces.find(access => access.workspace === target)
     const settings = sshSettings.get(target) ?? seeded ?? { workspace: target, enabled: index === 0, port: 2222 + index, bindAddress: "127.0.0.1", keys: [] }
-    return { ...settings, keys: settings.keys ?? [], state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, computerName: seeded?.computerName ?? w.computer?.name ?? "Ada’s Mac mini", addresses: seeded?.addresses ?? ["127.0.0.1", "192.168.1.42"] }
+    return { ...settings, keys: settings.keys ?? [], state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, deviceName: seeded?.deviceName ?? w.device?.name ?? "Ada’s Mac mini", addresses: seeded?.addresses ?? ["127.0.0.1", "192.168.1.42"] }
   }) }
 
   const queryLogs = useMemo<LogLoader>(() => async request => {
-    const workspace = fixture.source.workspaces.find(item => (item.computer?.vmId ?? item.machine.id) === request.sandboxId && item.computer?.id === request.computerId)
+    const workspace = fixture.source.workspaces.find(item => (item.device?.vmId ?? item.machine.id) === request.sandboxId && item.device?.id === request.deviceId)
     if (!workspace) throw new Error("Sandbox unavailable")
     return fixtureLogPage(workspace, request)
   }, [fixture.source.workspaces])

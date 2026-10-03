@@ -218,7 +218,7 @@ export interface GitHubAccessEditorProps {
   workspaceRepositoryAccess?: Readonly<Record<string, GitHubRepositoryAccess>>
   onWorkspaceRepositoryAccessChange?: (workspace: string, access: GitHubRepositoryAccess) => void
   workspaceIdentities: Readonly<Record<string, GitHubIdentity>>
-  currentHostGitIdentity: { name: string; email: string } | null
+  currentDeviceGitIdentity: { name: string; email: string } | null
   onCancelConnection?: () => void
   onManageRepositories?: () => void
   onReopenAuthorization?: () => void
@@ -252,7 +252,7 @@ export function GitHubAccessEditor({
   workspaceIdentities,
   workspaceRepositoryAccess = {},
   onWorkspaceRepositoryAccessChange,
-  currentHostGitIdentity,
+  currentDeviceGitIdentity,
   onConnect,
   onCancelConnection,
   onReopenAuthorization,
@@ -389,15 +389,15 @@ export function GitHubAccessEditor({
                           <TooltipTrigger asChild>
                             <span
                               className="inline-flex shrink-0"
-                              tabIndex={currentHostGitIdentity ? undefined : 0}
-                              aria-label={currentHostGitIdentity ? undefined : `Reset Git identity for ${name}`}
+                              tabIndex={currentDeviceGitIdentity ? undefined : 0}
+                              aria-label={currentDeviceGitIdentity ? undefined : `Reset Git identity for ${name}`}
                             >
                               <Button
                                 type="button"
                                 variant="ghost"
                                 size="icon-xs"
                                 aria-label={`Reset Git identity for ${name}`}
-                                disabled={workspaceDisabled || !currentHostGitIdentity}
+                                disabled={workspaceDisabled || !currentDeviceGitIdentity}
                                 onClick={() => onResetWorkspaceIdentity(name)}
                               >
                                 <RotateCcw aria-hidden="true" className="size-3" />

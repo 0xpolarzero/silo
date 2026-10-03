@@ -11,7 +11,7 @@ const backup = { state: { snapshotId: "1", availability: "available", archives: 
 
 function setup(desktop: boolean) {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
+  source.devices = []
   source.runtimeRepair = null
   source.sandboxConfigurationOperation = null
   source.activities = []

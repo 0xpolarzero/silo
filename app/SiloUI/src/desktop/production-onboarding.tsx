@@ -1,5 +1,5 @@
 import { SiloWindow } from "@/components/silo-window"
-import { ConnectComputerForm } from "@/features/application/components/remote-computers-settings"
+import { ConnectDeviceForm } from "@/features/application/components/connections-settings"
 import { useEffect, useMemo, useRef, useState } from "react"
 
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
@@ -32,10 +32,10 @@ type Submission = {
   run: (request?: OnboardingCompletionRequest, options?: OnboardingSubmissionOptions) => Promise<unknown>
 }
 
-/** Sandboxes that exist on this computer, as committed configuration. */
+/** Sandboxes that exist on this device, as committed configuration. */
 function existingLocalMachines(application: ApplicationSource | null): SetupMachineConfiguration[] {
-  return (application?.workspaces ?? []).flatMap(({ computer, machine }) => {
-    if (computer) return []
+  return (application?.workspaces ?? []).flatMap(({ device, machine }) => {
+    if (device) return []
     const parsed = setupMachineConfigurationSchema.safeParse(machine)
     return parsed.success ? [parsed.data] : []
   })
@@ -56,11 +56,11 @@ function assertConfirmedDeletions(committed: ApplicationSource | null, machines:
 
 // oxlint-disable-next-line react/only-export-components
 export function productionOnboardingSource(application: ApplicationSource | null, dependencies: DependencyRuntime, applicationPreferences: OnboardingSource["applicationPreferences"], setup?: ProductionSnapshot): OnboardingSource {
-  // Setup on this computer must never adopt another computer's VM identities.
-  if (application) application = { ...application, workspaces: application.workspaces.filter(workspace => !workspace.computer) }
+  // Setup on this device must never adopt another device's VM identities.
+  if (application) application = { ...application, workspaces: application.workspaces.filter(workspace => !workspace.device) }
   const operation = application?.sandboxConfigurationOperation
   const existingMachines = existingLocalMachines(application)
-  // Only a real read of this computer's state says which sandboxes exist. Before it, or
+  // Only a real read of this device's state says which sandboxes exist. Before it, or
   // while it is replaced by a shell (local state updating, or unreadable), the saved list
   // or defaults are a placeholder seed that is replaced once the real state loads.
   const machinesAuthoritative = application !== null && !setup?.localUpdating && !(setup?.error && existingMachines.length === 0)
@@ -69,7 +69,7 @@ export function productionOnboardingSource(application: ApplicationSource | null
   const emptyConfigurationVerified = setup?.setupCandidate?.machines.length === 0
     && ["workspaceRun", "workspaceVerify"].every((id) => setup.setupQueue.some((item) => item.id === id && item.status === "succeeded"))
   const configured = !!application && (application.workspaces.length > 0 || emptyConfigurationVerified) && application.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
-  const completedPhases = configured ? ["preflight", "toolchain", "hostIntegration", "workspaces"] as const : []
+  const completedPhases = configured ? ["preflight", "toolchain", "deviceIntegration", "workspaces"] as const : []
   const workspaceSetupPending = setup?.setupQueue.some(({ id, status }) => ["workspaceRun", "workspaceVerify"].includes(id) && (status === "running" || status === "queued" || status === "failed")) ?? false
   // Sandbox setup itself explains running, queued and failed work; otherwise say which
   // sandbox keeps Finish unavailable and how to resolve it.
@@ -105,7 +105,7 @@ export function productionOnboardingSource(application: ApplicationSource | null
     activityEvents: setup?.setupActivity,
     activityError: setup?.setupActivityError,
     githubPolicies: [],
-    currentHostGitIdentity: application?.github.hostIdentity ?? null,
+    currentDeviceGitIdentity: application?.github.deviceIdentity ?? null,
     applicationPreferences,
     bootstrapResult: configured ? { resumed: false, phase: "complete", requiresApproval: false, vmsStarted: false, message: "Sandbox configuration verified." } : operation?.status === "awaiting-approval" ? operation.result : null,
     error: operation?.status === "failed" ? operation.error : null,
@@ -124,7 +124,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
   const { settings, onboardingDraft, updateSettings, store } = useSettings()
   const lastSubmission = useRef<Submission | null>(null)
   const [completed, setCompleted] = useState(false)
-  const [connectingComputer, setConnectingComputer] = useState(false)
+  const [connectingDevice, setConnectingDevice] = useState(false)
   const submissionSequence = useRef(0)
   const [finishing, setFinishing] = useState(false)
   const [operationError, setOperationError] = useState<string | null>(null)
@@ -191,12 +191,12 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     })
   }
 
-  if (connectingComputer && source.applicationActions.connectComputer) {
-    return <SiloWindow title="Silo" label="Connect another computer">
+  if (connectingDevice && source.applicationActions.connectDevice) {
+    return <SiloWindow title="Silo" label="Connect another device">
       <div className="mx-auto w-full max-w-lg p-6">
-        <h1 className="mb-3 text-sm font-semibold">Connect another computer</h1>
-        <ConnectComputerForm authorize={source.applicationActions.authorizeComputer} onClose={() => setConnectingComputer(false)} connect={async (address, options) => {
-          await (options ? source.applicationActions.connectComputer!(address, options) : source.applicationActions.connectComputer!(address))
+        <h1 className="mb-3 text-sm font-semibold">Connect another device</h1>
+        <ConnectDeviceForm authorize={source.applicationActions.authorizeDevice} onClose={() => setConnectingDevice(false)} connect={async (address, options) => {
+          await (options ? source.applicationActions.connectDevice!(address, options) : source.applicationActions.connectDevice!(address))
           await updateSettings({ onboardingComplete: true })
           await store.flush()
           const error = store.getSnapshot().saveError
@@ -207,7 +207,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     </SiloWindow>
   }
   return <OnboardingApp
-    onConnectComputer={source.applicationActions.connectComputer ? () => setConnectingComputer(true) : undefined}
+    onConnectDevice={source.applicationActions.connectDevice ? () => setConnectingDevice(true) : undefined}
     source={onboarding}
     completed={completed}
     onOpenApp={onOpenApp}

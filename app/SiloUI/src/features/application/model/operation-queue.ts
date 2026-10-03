@@ -30,10 +30,10 @@ export interface OperationEntry {
   label: string
   /** What the operation is; see {@link OperationKind}. Unknown or missing reads as `other`. */
   kind: OperationKind
-  /** Stable VM id this operation is scoped to; `null` for computer-wide operations. */
+  /** Stable VM id this operation is scoped to; `null` for device-wide operations. */
   vmId: string | null
   /** VM display name captured when the operation was admitted; `null` for
-   * computer-wide operations. For display only — matching keys on `vmId`. */
+   * device-wide operations. For display only — matching keys on `vmId`. */
   vmName: string | null
   /** Unix epoch milliseconds when the operation started running or began waiting. */
   sinceMs: number
@@ -105,8 +105,8 @@ export function toastableQueue(queue: OperationQueue): OperationQueue {
 }
 
 /**
- * The runtime gate lets a VM-scoped operation run when nothing computer-wide and
- * nothing for the same VM is ahead of it. A computer-wide operation conflicts with
+ * The runtime gate lets a VM-scoped operation run when nothing device-wide and
+ * nothing for the same VM is ahead of it. A device-wide operation conflicts with
  * everything. This mirrors the backend `Scope::conflicts` rule.
  */
 function operationsConflict(a: OperationEntry, b: OperationEntry): boolean {
@@ -127,8 +127,8 @@ export function blockingOperations(queue: OperationQueue, entry: OperationEntry)
 /**
  * True when `entry`'s scope is the VM with stable id `vmId`. The runtime gate keys
  * per-VM entries by the stable id, so matching is by id alone and survives a rename.
- * Callers must not pass a remote computer's VM here: those operations run on that
- * computer's own gate and never appear in this local queue.
+ * Callers must not pass a remote device's VM here: those operations run on that
+ * device's own gate and never appear in this local queue.
  */
 export function operationMatchesVm(entry: OperationEntry, vmId: string): boolean {
   return entry.vmId === vmId
@@ -136,7 +136,7 @@ export function operationMatchesVm(entry: OperationEntry, vmId: string): boolean
 
 /**
  * The waiting operation that a VM row should surface: the earliest waiter whose
- * scope is this sandbox. Computer-wide waiters are reported by the global indicator.
+ * scope is this sandbox. Device-wide waiters are reported by the global indicator.
  */
 export function waitingOperationForVm(queue: OperationQueue, vmId: string): OperationEntry | undefined {
   return queue.waiting.find((entry) => operationMatchesVm(entry, vmId))

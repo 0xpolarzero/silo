@@ -22,10 +22,10 @@ async function enterCustom(user: ReturnType<typeof userEvent.setup>, label: stri
 }
 
 describe("machine editor resource fields", () => {
-  it("caps presets at the runtime limit on a computer with more CPUs", async () => {
+  it("caps presets at the runtime limit on a device with more CPUs", async () => {
     const onMachinesChange = vi.fn()
     render(<TooltipProvider><MachineList machines={[]} onMachinesChange={onMachinesChange}
-      getHostCapacity={() => ({ logicalCPUs: 512, memoryGiB: 64 })} /></TooltipProvider>)
+      getDeviceCapacity={() => ({ logicalCPUs: 512, memoryGiB: 64 })} /></TooltipProvider>)
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
@@ -38,11 +38,11 @@ describe("machine editor resource fields", () => {
     expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ maxCPUs: 255 })])
   })
 
-  it("shows the selected ceiling when switching to a computer with fewer CPUs", async () => {
+  it("shows the selected ceiling when switching to a device with fewer CPUs", async () => {
     const onCommitMachine = vi.fn().mockResolvedValue(undefined)
     render(<TooltipProvider><MachineList machines={[]} onMachinesChange={vi.fn()} onCommitMachine={onCommitMachine}
-      computers={[{ id: "office", name: "Office", connected: true }]}
-      getHostCapacity={computer => computer === "" ? { logicalCPUs: 4, memoryGiB: 16 } : undefined} /></TooltipProvider>)
+      devices={[{ id: "office", name: "Office", connected: true }]}
+      getDeviceCapacity={device => device === "" ? { logicalCPUs: 4, memoryGiB: 16 } : undefined} /></TooltipProvider>)
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
@@ -91,9 +91,9 @@ describe("machine editor resource fields", () => {
     expect(storage).toHaveAccessibleDescription("Enter a whole number of GiB from 1 to 4,194,303.")
   })
 
-  it("fits a new sandbox to a small computer so Create succeeds", async () => {
+  it("fits a new sandbox to a small device so Create succeeds", async () => {
     const onMachinesChange = vi.fn()
-    render(<TooltipProvider><MachineList machines={[]} onMachinesChange={onMachinesChange} getHostCapacity={(computer) => computer === "" ? { logicalCPUs: 8, memoryGiB: 16 } : undefined} /></TooltipProvider>)
+    render(<TooltipProvider><MachineList machines={[]} onMachinesChange={onMachinesChange} getDeviceCapacity={(device) => device === "" ? { logicalCPUs: 8, memoryGiB: 16 } : undefined} /></TooltipProvider>)
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
@@ -106,9 +106,9 @@ describe("machine editor resource fields", () => {
     expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ cpus: 4, maxCPUs: 8, memoryGiB: 8, maxMemoryGiB: 16 })])
   })
 
-  it("rejects a ceiling above the computer before the runtime does", async () => {
+  it("rejects a ceiling above the device before the runtime does", async () => {
     const onMachinesChange = vi.fn()
-    render(<TooltipProvider><MachineList machines={[]} onMachinesChange={onMachinesChange} getHostCapacity={() => ({ logicalCPUs: 8, memoryGiB: 16 })} /></TooltipProvider>)
+    render(<TooltipProvider><MachineList machines={[]} onMachinesChange={onMachinesChange} getDeviceCapacity={() => ({ logicalCPUs: 8, memoryGiB: 16 })} /></TooltipProvider>)
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
@@ -116,7 +116,7 @@ describe("machine editor resource fields", () => {
     expect(input).toHaveAttribute("max", "8")
     await user.click(screen.getByRole("button", { name: "Create" }))
     expect(onMachinesChange).not.toHaveBeenCalled()
-    expect(input).toHaveAccessibleDescription("This computer has 8 CPUs. Choose 8 or fewer.")
+    expect(input).toHaveAccessibleDescription("This device has 8 CPUs. Choose 8 or fewer.")
   })
 
   it("saves a valid whole custom value", async () => {

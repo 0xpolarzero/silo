@@ -84,14 +84,14 @@ it("starts a new sandbox from the palette", async () => {
   expect(await screen.findByRole("textbox", { name: "Sandbox name" })).toBeVisible()
 })
 
-it("keeps same-named sandboxes on different computers apart", async () => {
+it("keeps same-named sandboxes on different devices apart", async () => {
   const user = userEvent.setup()
   const openTerminal = vi.fn()
   const source = structuredClone(applicationSourceForScenario("running"))
   const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
-  const twin = (id: string) => ({ ...structuredClone(dev), machine: { ...dev.machine, id: `remote-${id}` }, computer: { id, vmId: `vm-${id}`, name: "Office", address: `${id}.test`, connected: true } })
+  const twin = (id: string) => ({ ...structuredClone(dev), machine: { ...dev.machine, id: `remote-${id}` }, device: { id, vmId: `vm-${id}`, name: "Office", address: `${id}.test`, connected: true } })
   source.workspaces = [twin("first"), twin("second")]
-  source.remoteComputers = [{ id: "first", name: "Office", address: "first.test", connected: true }, { id: "second", name: "Office", address: "second.test", connected: true }]
+  source.devices = [{ id: "first", name: "Office", address: "first.test", connected: true }, { id: "second", name: "Office", address: "second.test", connected: true }]
   render(<ApplicationPreview source={source} actions={{ openTerminal }} />)
   await user.click(screen.getByRole("button", { name: "Search or jump to" }))
   await user.type(screen.getByRole("combobox", { name: "Search commands" }), "dev terminal")

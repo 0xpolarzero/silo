@@ -87,7 +87,7 @@ const siloBootstrapPhaseSchema = z.enum([
   "welcome",
   "preflight",
   "toolchain",
-  "hostIntegration",
+  "deviceIntegration",
   "workspaces",
   "github",
   "identity",

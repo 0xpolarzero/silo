@@ -18,7 +18,7 @@ function pushConfirmation(target: RepositoryPushTarget, commitCount: number) {
   }
 }
 
-const UNCONFIRMABLE = "Silo cannot tell where this repository pushes. It needs a GitHub origin; refresh repositories, or update Silo on the computer that runs this sandbox."
+const UNCONFIRMABLE = "Silo cannot tell where this repository pushes. It needs a GitHub origin; refresh repositories, or update Silo on the device that runs this sandbox."
 
 /**
  * The push button: asks for confirmation naming the repository, branch and commit, then pushes that

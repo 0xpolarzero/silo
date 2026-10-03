@@ -1,7 +1,7 @@
 import { showActionFailure, showOperationFailure } from "@/lib/operation-toast"
 
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace } from "./application-source"
-import { workspaceTarget } from "./remote-computers"
+import { workspaceTarget } from "./connections"
 import { workspaceAvailability } from "./workspace-availability"
 
 export type LifecycleAction = "start" | "stop" | "restart"
@@ -22,7 +22,7 @@ export type LifecycleCheck =
 type LifecycleActions = Pick<ApplicationActions, "startWorkspace" | "stopWorkspace" | "restartWorkspace">
 
 function sandboxName(workspace: ApplicationWorkspace) {
-  return workspace.computer ? `${workspace.machine.name} on ${workspace.computer.name}` : workspace.machine.name
+  return workspace.device ? `${workspace.machine.name} on ${workspace.device.name}` : workspace.machine.name
 }
 
 /**
@@ -32,12 +32,12 @@ function sandboxName(workspace: ApplicationWorkspace) {
  * running sandbox always asks first (decision 8). Start and Open never ask otherwise.
  */
 export function lifecycleCheck(source: ApplicationSource, workspace: ApplicationWorkspace, action: LifecycleAction): LifecycleCheck {
-  const local = !workspace.computer
+  const local = !workspace.device
   if (local && source.vmOperationsUnavailable) return { kind: "unavailable", title: "Sandbox operation unavailable", message: source.vmOperationsUnavailable }
   const notice = source.resourceNotice
   if (action === "start" && local && notice?.kind === "start-memory" && notice.sandbox === workspace.machine.name) {
     return { kind: "confirm", prompt: {
-      title: `Starting ${workspace.machine.name} may slow this computer`,
+      title: `Starting ${workspace.machine.name} may slow this device`,
       description: `Silo found high memory pressure now. This sandbox can use up to ${notice.memoryGiB} GiB. Close memory-heavy apps, or start anyway.`,
       confirmLabel: "Start anyway",
       tone: "default",
@@ -53,7 +53,7 @@ export function interruptionPrompt(workspace: ApplicationWorkspace, action: "sto
   return { title: `${label} ${sandboxName(workspace)}?`, description: "Running processes will be interrupted.", confirmLabel: label, tone: "destructive" }
 }
 
-/** Sends the action to the sandbox's own computer. */
+/** Sends the action to the sandbox's own device. */
 export function runLifecycle(actions: LifecycleActions, workspace: ApplicationWorkspace, action: LifecycleAction) {
   const target = workspaceTarget(workspace)
   if (action === "start") actions.startWorkspace(target)

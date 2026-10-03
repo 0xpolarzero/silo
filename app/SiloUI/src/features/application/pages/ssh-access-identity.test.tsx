@@ -9,7 +9,7 @@ import { createApplicationActionsMock } from "@/test/application-actions"
 import type { ApplicationWorkspace, SshAccessWorkspace } from "../model/application-source"
 import { SshAccessPanel } from "./ssh-access-panel"
 
-const access: SshAccessWorkspace = { workspace: "dev", enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: "SHA256:fixture", computerName: "Fixture computer", addresses: ["127.0.0.1"] }
+const access: SshAccessWorkspace = { workspace: "dev", enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: "SHA256:fixture", deviceName: "Fixture device", addresses: ["127.0.0.1"] }
 afterEach(() => { toast.dismiss(); vi.restoreAllMocks() })
 
 describe("SSH row sandbox identity", () => {
@@ -21,7 +21,7 @@ describe("SSH row sandbox identity", () => {
     const page = (current: ApplicationWorkspace) => <><Toaster /><SshAccessPanel workspaces={[current]} state={{ workspaces: [access] }} actions={actions} active={false} /></>
     const view = render(page(workspace))
     await user.click(screen.getByRole("button", { name: "SSH access controls for dev" }))
-    await user.click(screen.getByRole("switch", { name: "Allow SSH from Fixture computer" }))
+    await user.click(screen.getByRole("switch", { name: "Allow SSH from Fixture device" }))
     const retry = await screen.findByRole("button", { name: "Retry" })
     view.rerender(page({ ...workspace, machine: { ...workspace.machine, id: "replacement-id" } }))
     await user.click(retry)

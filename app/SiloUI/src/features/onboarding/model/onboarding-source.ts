@@ -32,10 +32,10 @@ export const onboardingSourceSchema = z.object({
   }).strict().nullable().optional(),
   /**
    * False while `machineConfigurations` is a fallback (saved list or defaults) because
-   * this computer's sandboxes have not loaded; the draft is seeded again once they do.
+   * this device's sandboxes have not loaded; the draft is seeded again once they do.
    */
   machinesAuthoritative: z.boolean().optional(),
-  /** Sandboxes that already exist on this computer. Dropping one from the draft deletes it. */
+  /** Sandboxes that already exist on this device. Dropping one from the draft deletes it. */
   existingMachines: setupMachineConfigurationRequestSchema.shape.machines.optional(),
   setupQueue: z.array(z.object({ id: setupQueueItemIdSchema, status: z.enum(["idle", "queued", "running", "succeeded", "failed"]), failure: z.string().optional() }).strict()).optional(),
   machineConfigurations: setupMachineConfigurationRequestSchema.shape.machines,
@@ -46,7 +46,7 @@ export const onboardingSourceSchema = z.object({
   activityEvents: z.array(siloProgressEventSchema).optional(),
   activityError: z.string().optional(),
   githubPolicies: z.array(githubWorkspacePolicySchema),
-  currentHostGitIdentity: z.object({
+  currentDeviceGitIdentity: z.object({
     name: z.string(),
     email: z.string(),
   }).strict().nullable(),

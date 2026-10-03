@@ -3,7 +3,7 @@ import { CircleAlert, Monitor } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
-import { computerOfWorkspace, useChatGptApp, useComputerUseBridge, type ChatGptAppStore } from "./computer-use-bridge"
+import { deviceOfWorkspace, useChatGptApp, useComputerUseBridge, type ChatGptAppStore } from "./computer-use-bridge"
 import { ComputerUseApprovalSwitch, approvalStatus, useComputerUseApproval, type ComputerUseApprovalController } from "./computer-use-approval"
 import type { ChatGptAppStatus } from "./linux-desktop-state"
 
@@ -46,7 +46,7 @@ export function ChatGptAppProgress({ status, busy = false, onRetry }: { status: 
   }
 }
 
-/** The progress of the ChatGPT download of a sandbox's computer. `retry` adds Retry to a failure, which acts on that computer's download.
+/** The progress of the ChatGPT download of a sandbox's device. `retry` adds Retry to a failure, which acts on that device's download.
  * `fallbackReason` is shown with Retry until the status itself is read. */
 export function ChatGptAppStatusView({ store, retry = false, fallbackReason, active = true }: { store: ChatGptAppStore | undefined; retry?: boolean; fallbackReason?: string | null; active?: boolean }) {
   const { status, busy, error, loadError, subscriptionError } = useChatGptApp(store, active)
@@ -82,7 +82,7 @@ function Problem({ message, title, tone = "error", actionLabel, onAction, action
 /** Presentational: the approval switch of one sandbox's computer use, and a line only when something needs attention. */
 export function ComputerUsePanel({ approval, chatGpt }: {
   approval: ComputerUseApprovalController
-  /** The ChatGPT download of this sandbox's computer: how to retry it, and whether a retry is under way. */
+  /** The ChatGPT download of this sandbox's device: how to retry it, and whether a retry is under way. */
   chatGpt?: { retry: () => void; busy: boolean; error?: string | null }
 }) {
   const { computerUse, running, busy, error, loadError } = approval
@@ -113,9 +113,9 @@ export function ComputerUsePanel({ approval, chatGpt }: {
 export function ComputerUseSection({ workspace, pollMs = 5000, active = true }: { workspace: string; pollMs?: number; active?: boolean }) {
   const bridge = useComputerUseBridge()
   const approval = useComputerUseApproval(workspace, pollMs, active)
-  // Only a failed download needs the computer's ChatGPT status, for its Retry.
+  // Only a failed download needs the device's ChatGPT status, for its Retry.
   const downloadFailed = approval?.computerUse?.state === "failed" && approval.computerUse.cause === "app-download"
-  const store = downloadFailed ? bridge?.chatGptFor(computerOfWorkspace(workspace)) : undefined
+  const store = downloadFailed ? bridge?.chatGptFor(deviceOfWorkspace(workspace)) : undefined
   const chatGpt = useChatGptApp(store, active)
   if (!approval || (!approval.computerUse && !approval.loadError)) return null
   if (!approval.computerUse && approval.state) return null

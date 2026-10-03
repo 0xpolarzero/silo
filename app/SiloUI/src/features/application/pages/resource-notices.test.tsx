@@ -21,7 +21,7 @@ describe("operation-owned resource notices", () => {
     expect(screen.queryByText(/memory pressure/i)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Start dev" }))
     // The question opens next to the Start button that asked it.
-    const prompt = screen.getByText("Starting dev may slow this computer").closest<HTMLElement>("[data-slot=popover-content]")!
+    const prompt = screen.getByText("Starting dev may slow this device").closest<HTMLElement>("[data-slot=popover-content]")!
     expect(prompt).toHaveTextContent("32 GiB")
     expect(startWorkspace).not.toHaveBeenCalledWith("dev")
     fireEvent.click(within(prompt).getByRole("button", { name: "Start anyway" }))

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { createDirectoryStore, directoryKey } from "@/features/application/model/directory-store"
-import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
+import { remoteWorkspaceTarget } from "@/features/application/model/connections"
 import { applicationSourceForScenario } from "./application-scenarios"
 import { fixtureDirectoryLoader } from "./directory-loader"
 
@@ -52,7 +52,7 @@ describe("native directory fixture behavior", () => {
   it("uses the qualified remote target when local and remote sandboxes share a name", async () => {
     const { workspace } = fixture()
     workspace.files = [{ name: "local", kind: "file" }]
-    const remote = { ...workspace, computer: { id: "office", vmId: "remote-vm", name: "Office", address: "office.test", connected: true }, files: [{ name: "remote", kind: "file" as const }] }
+    const remote = { ...workspace, device: { id: "office", vmId: "remote-vm", name: "Office", address: "office.test", connected: true }, files: [{ name: "remote", kind: "file" as const }] }
     const loader = fixtureDirectoryLoader([workspace, remote])
     expect((await loader(remoteWorkspaceTarget("office", "remote-vm"), "/workspace", 0)).entries[0].name).toBe("remote")
   })

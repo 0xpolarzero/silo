@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
-import { ComputerBadge } from "./computer-badge"
+import { DeviceBadge } from "./device-badge"
 import { MachineList } from "./machine-list"
 import { SandboxListRow } from "./sandbox-list"
 
@@ -30,9 +30,9 @@ it("names each sandbox list group with its own heading", () => {
   }
 })
 
-it("exposes the focusable computer badge as a named note with connection context", async () => {
+it("exposes the focusable device badge as a named note with connection context", async () => {
   const user = userEvent.setup()
-  render(<ComputerBadge computer={{ id: "office", name: "Office", address: "office.example", connected: false, vmId: "dev" }} />)
+  render(<DeviceBadge device={{ id: "office", name: "Office", address: "office.example", connected: false, vmId: "dev" }} />)
   const note = screen.getByRole("note", { name: "Sandbox on Office · Offline · last known status · office.example" })
   await user.tab()
   expect(note).toHaveFocus()

@@ -1,4 +1,4 @@
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react"
 import { ArrowLeft, ChevronRight, Code, Folder, Search } from "lucide-react"
 

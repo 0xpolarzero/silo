@@ -25,7 +25,7 @@ const HEADER_HEIGHT = 32
 const OVERSCAN = 8
 const PREFETCH_DISTANCE = ROW_HEIGHT * 6
 const ESTIMATED_DETAILS_HEIGHT = 120
-function rowKey({ entry }: LogRow) { return JSON.stringify([entry.computerId, entry.sandboxId, entry.id]) }
+function rowKey({ entry }: LogRow) { return JSON.stringify([entry.deviceId, entry.sandboxId, entry.id]) }
 
 function rowAtOffset(offsets: number[], offset: number) {
   let low = 0, high = offsets.length - 1
@@ -63,7 +63,7 @@ function LogRecord({ row, rowIndex, open, onOpenChange, onHeightChange }: {
       <tr role="row" aria-rowindex={rowIndex} style={{ height: ROW_HEIGHT }} className="group/log-row border-b border-border hover:bg-muted/55 focus-within:bg-muted/55">
         <td role="cell" title={entry.guestTimestamp ? `${entry.occurredAt} (time reported by the sandbox)` : entry.occurredAt} className="px-3 font-mono whitespace-nowrap text-muted-foreground"><time dateTime={entry.occurredAt}>{time}</time><span className="block text-[10px]">{timestamp.toLocaleDateString("en", { month: "short", day: "numeric" })}</span></td>
         <td role="cell" title={`${entry.source}${entry.session ? ` · session ${entry.session}` : ""}\n${entry.line}`} className="max-w-0 truncate px-3 font-mono">{embedded?.[2] ?? entry.line}</td>
-        <td role="cell" className="px-3 whitespace-nowrap"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></td>
+        <td role="cell" className="px-3 whitespace-nowrap"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} device={workspace.device} /></td>
         <td role="cell" className="px-3 whitespace-nowrap text-muted-foreground">{entry.source}</td>
         <td role="cell" className="px-3"><div className="flex w-12 items-center justify-end">
           <CopyButton size="icon-xs" variant="ghost" className="opacity-0 group-hover/log-row:opacity-100 group-focus-within/log-row:opacity-100" value={() => formatLog(entry)} labels={{ idle: `Copy log line from ${workspace.machine.name} at ${time}`, copied: "Log line copied", failed: "Copy log line failed" }} />

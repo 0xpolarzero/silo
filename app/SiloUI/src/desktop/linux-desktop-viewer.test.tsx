@@ -7,7 +7,7 @@ import type { LinuxDesktopState } from "./linux-desktop-state"
 function viewer(state: LinuxDesktopState, error: string | null = null, busy = false) {
   const onAction = vi.fn()
   const onRetry = vi.fn()
-  render(<LinuxDesktopViewer name="dev · Build computer" state={state} busy={busy} error={error} onAction={onAction} onRetry={onRetry} onFullscreen={vi.fn()} />)
+  render(<LinuxDesktopViewer name="dev · Build device" state={state} busy={busy} error={error} onAction={onAction} onRetry={onRetry} onFullscreen={vi.fn()} />)
   return { onAction, onRetry }
 }
 

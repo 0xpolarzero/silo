@@ -55,7 +55,7 @@ describe("Finish blocked by a sandbox after setup", () => {
 })
 
 describe("onboarding with sandboxes that already exist", () => {
-  it("replaces a placeholder seed with this computer's sandboxes once they load", async () => {
+  it("replaces a placeholder seed with this device's sandboxes once they load", async () => {
     const store = createMemorySettingsStore()
     const handlers = actions()
     const view = render(onboarding(store, handlers, { machineConfigurations: [placeholder], machinesAuthoritative: false }))

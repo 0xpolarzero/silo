@@ -14,7 +14,7 @@ function bridge(options: { failListen?: (name: string) => boolean; invoke?: (com
     if (custom) return custom
     if (command === "read_application_state") return structuredClone(source)
     if (command === "read_backup_state") return structuredClone(backup)
-    if (command === "remote_host_list") return []
+    if (command === "device_list") return []
     if (command === "read_operation_queue") return { running: [], waiting: [] }
     return undefined
   })
@@ -44,9 +44,9 @@ describe("production setup drain", () => {
     try {
       await store.initialize()
       const request = {
-        machineConfiguration: { schemaVersion: 1 as const, machines: source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine) },
+        machineConfiguration: { schemaVersion: 1 as const, machines: source.workspaces.filter(({ device }) => !device).map(({ machine }) => machine) },
         applications: source.preferences,
-        github: { connectionState: "connected" as const, workspaces: source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => ({ workspace: machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
+        github: { connectionState: "connected" as const, workspaces: source.workspaces.filter(({ device }) => !device).map(({ machine }) => ({ workspace: machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
       }
       const finished = store.finishSetup(request, vi.fn(async () => {}))
       void finished.catch(() => {})
@@ -81,7 +81,7 @@ describe("production setup drain", () => {
     const store = createProductionSource(mock.bridge)
     try {
       await store.initialize()
-      const machines = source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine)
+      const machines = source.workspaces.filter(({ device }) => !device).map(({ machine }) => machine)
       const step = store.submitSetupStep("github", {
         machineConfiguration: { schemaVersion: 1, machines },
         applications: source.preferences,
@@ -115,15 +115,15 @@ describe("local state updating at launch", () => {
     let updatingReads = options.updatingReads ?? Number.POSITIVE_INFINITY
     return bridge({ invoke: (command, args) => {
       if (command === "read_application_state") return updatingReads-- > 0 ? Promise.reject({ code: "update_in_progress", message: "Sandbox settings are changing." }) : Promise.resolve(structuredClone(source))
-      if (command === "remote_host_list") return Promise.resolve(options.remotes ? [office] : [])
-      if (command === "remote_host_snapshot") return Promise.resolve(structuredClone(source))
-      if (command === "remote_management_status") return Promise.resolve({ enabled: false, hostId: "this-mac", name: "This Mac", address: "this-mac.local" })
+      if (command === "device_list") return Promise.resolve(options.remotes ? [office] : [])
+      if (command === "device_snapshot") return Promise.resolve(structuredClone(source))
+      if (command === "connections_status") return Promise.resolve({ enabled: false, deviceId: "this-mac", name: "This Mac", address: "this-mac.local" })
       if (command === "read_application_shell") return Promise.resolve({ ...structuredClone(source), workspaces: [], runtimeRepair: { status: "unavailable", reason: String(args?.error) } })
       return undefined
     } })
   }
 
-  it("shows connected computers, not a skeleton, while this computer's sandboxes update", async () => {
+  it("shows connected devices, not a skeleton, while this device's sandboxes update", async () => {
     const mock = updating({ remotes: true, updatingReads: 2 })
     const store = createProductionSource(mock.bridge)
     try {
@@ -137,18 +137,18 @@ describe("local state updating at launch", () => {
       expect(snapshot.source?.runtimeRepair).toBeNull()
       expect(snapshot.source?.vmOperationsUnavailable).toMatch(/updating/)
       expect(snapshot.source?.workspaces.length).toBeGreaterThan(0)
-      expect(snapshot.source?.workspaces.every((workspace) => workspace.computer?.id === "office")).toBe(true)
+      expect(snapshot.source?.workspaces.every((workspace) => workspace.device?.id === "office")).toBe(true)
       // Still updating: the shell stays.
       await store.refresh()
       expect(store.getSnapshot().localUpdating).toBe(true)
       // The update finished: the real local state replaces the shell.
       await store.refresh()
       expect(store.getSnapshot().localUpdating).toBe(false)
-      expect(store.getSnapshot().source?.workspaces.some((workspace) => !workspace.computer)).toBe(true)
+      expect(store.getSnapshot().source?.workspaces.some((workspace) => !workspace.device)).toBe(true)
     } finally { store.dispose() }
   })
 
-  it("keeps loading without connected computers", async () => {
+  it("keeps loading without connected devices", async () => {
     const mock = updating({ remotes: false })
     const store = createProductionSource(mock.bridge)
     try {

@@ -83,7 +83,7 @@ it("backs off failed desktop health reads, resets after recovery, and stops on c
   let reachable = false
   invoke.mockImplementation(async command => {
     if (command === "read_desktop_state") {
-      if (!reachable) throw new Error("Computer disconnected")
+      if (!reachable) throw new Error("Device disconnected")
       return { installed: true, autoStart: true, state: "vm-stopped" }
     }
   })
@@ -114,13 +114,13 @@ it("backs off failed desktop health reads, resets after recovery, and stops on c
   } finally { view.unmount(); vi.useRealTimers() }
 })
 
-it("reattaches a retired transport when the computer recovers with unchanged guest state", async () => {
+it("reattaches a retired transport when the device recovers with unchanged guest state", async () => {
   vi.useFakeTimers()
   let reachable = true
   let connected = false
   invoke.mockImplementation(async command => {
     if (command === "read_desktop_state") {
-      if (!reachable) throw new Error("Computer disconnected")
+      if (!reachable) throw new Error("Device disconnected")
       return { installed: true, autoStart: true, state: "running", sessionState: "running", streamState: "running" }
     }
     if (command === "desktop_viewer_attach") connected = true
@@ -134,7 +134,7 @@ it("reattaches a retired transport when the computer recovers with unchanged gue
     reachable = false
     connected = false
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-    expect(screen.getByRole("alert")).toHaveTextContent("Computer disconnected")
+    expect(screen.getByRole("alert")).toHaveTextContent("Device disconnected")
     expect(connected).toBe(false)
     reachable = true
     await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
@@ -221,10 +221,10 @@ it("uses a native dropdown without reconnecting or resizing the guest", async ()
 
 it("does not turn a guest status error into a tool failure", async () => {
   invoke.mockImplementation(async command => {
-    if (command === "read_desktop_state") throw new Error("Computer disconnected")
+    if (command === "read_desktop_state") throw new Error("Device disconnected")
   })
   render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
-  expect(await screen.findByRole("alert")).toHaveTextContent("Computer disconnected")
+  expect(await screen.findByRole("alert")).toHaveTextContent("Device disconnected")
   expect(screen.queryByRole("button", { name: /agent tools/ })).not.toBeInTheDocument()
 })
 

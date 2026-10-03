@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
-import { workspaceTarget } from "../model/remote-computers"
+import { workspaceTarget } from "../model/connections"
 import { applicationCommands } from "./application-commands"
 
 function remoteRunningSource() {
@@ -9,10 +9,10 @@ function remoteRunningSource() {
   source.runtimeRepair = null
   source.sandboxConfigurationOperation = null
   source.activities = []
-  const local = source.workspaces.find(item => item.machine.kind === "vm" && !item.computer)!
+  const local = source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
   const remote = structuredClone(local)
   remote.machine = { ...remote.machine, id: `${local.machine.id}-office` }
-  remote.computer = { id: "office", vmId: "vm-office", name: "Office", address: "office.test", connected: true }
+  remote.device = { id: "office", vmId: "vm-office", name: "Office", address: "office.test", connected: true }
   for (const workspace of [local, remote]) {
     workspace.state = "running"
     workspace.freshness = "fresh"
@@ -23,7 +23,7 @@ function remoteRunningSource() {
   return { source, local, remote }
 }
 
-it("addresses a remote sandbox by its computer target and names the computer", () => {
+it("addresses a remote sandbox by its device target and names the device", () => {
   const { source, remote } = remoteRunningSource()
   const actions = { openTerminal: vi.fn(), openEditor: vi.fn(), startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn() } as unknown as ApplicationActions
   const commands = applicationCommands(source, actions, vi.fn())

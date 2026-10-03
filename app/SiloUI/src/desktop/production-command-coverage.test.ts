@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { BackupState } from "@/features/application/model/backup-source"
-import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
+import { remoteWorkspaceTarget } from "@/features/application/model/connections"
 import { assertNativeBridgeMocksHandled, nativeBridgeMock, type NativeCommandHandlers } from "@/test/native-bridge-mock"
 import { createProductionSource, type ProductionBridge } from "./production-source"
 
@@ -18,8 +18,8 @@ function bridge(handlers: NativeCommandHandlers = {}) {
     read_setup_activity: () => [],
     read_network_state: () => ({ workspaces: [] }),
     remote_network_state: () => ({ workspaces: [] }),
-    remote_host_list: () => [],
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }),
+    device_list: () => [],
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "developer@laptop" }),
     read_operation_queue: () => ({ running: [], waiting: [] }),
     ...handlers,
   })
@@ -141,8 +141,8 @@ describe("production archive inspection", () => {
 
 describe("production command behavior", () => {
   it.each([
-    ["authorizeComputer", "remote_authorize_ssh"],
-    ["setupComputerKey", "remote_setup_ssh_key"],
+    ["authorizeDevice", "authorize_device"],
+    ["setupDeviceKey", "setup_device_key"],
   ] as const)("passes the address to %s and preserves a failed repair for the caller to retry", async (action, command) => {
     const failure = { code: "ssh_authentication_failed", message: "Unlock your SSH key" }
     let attempts = 0
@@ -156,21 +156,21 @@ describe("production command behavior", () => {
     } finally { store.dispose() }
   })
 
-  it.each([false, true])("connects a computer with explicit address replacement=%s and publishes its authoritative list", async replaceAddress => {
-    const computer = { id: "office", name: "Office", address: "owner@office" }
+  it.each([false, true])("connects a device with explicit address replacement=%s and publishes its authoritative list", async replaceAddress => {
+    const device = { id: "office", name: "Office", address: "owner@office" }
     let connected = false
     const native = bridge({
-      connect_remote_host: () => { connected = true; return computer },
-      remote_host_list: () => connected ? [computer] : [],
-      remote_host_snapshot: () => structuredClone(source),
+      connect_device: () => { connected = true; return device },
+      device_list: () => connected ? [device] : [],
+      device_snapshot: () => structuredClone(source),
     })
     const store = createProductionSource(native)
     try {
       await store.initialize()
-      await store.applicationActions.connectComputer!(computer.address, replaceAddress ? { replaceAddress } : undefined)
-      expect(native.invoke).toHaveBeenCalledWith("connect_remote_host", { address: computer.address, replace: replaceAddress })
-      await vi.waitFor(() => expect(store.getSnapshot().source?.remoteComputers).toContainEqual(expect.objectContaining({ id: "office", connected: true })))
-      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer?.id === "office")).toBe(true)
+      await store.applicationActions.connectDevice!(device.address, replaceAddress ? { replaceAddress } : undefined)
+      expect(native.invoke).toHaveBeenCalledWith("connect_device", { address: device.address, replace: replaceAddress })
+      await vi.waitFor(() => expect(store.getSnapshot().source?.devices).toContainEqual(expect.objectContaining({ id: "office", connected: true })))
+      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.device?.id === "office")).toBe(true)
     } finally { store.dispose() }
   })
 
@@ -253,21 +253,21 @@ describe("production command behavior", () => {
     expect(native.invoke.mock.calls.map(([command]) => command)).toEqual(["save_secret"])
   })
 
-  it("preserves a computer and its rows when native connection removal is rejected", async () => {
+  it("preserves a device and its rows when native connection removal is rejected", async () => {
     const failure = { code: "settings_write_failed", message: "Connection not saved" }
     const native = bridge({
-      remote_host_list: () => [{ id: "office", name: "Office", address: "owner@office" }],
-      remote_host_snapshot: () => structuredClone(source),
-      remove_remote_host: () => { throw failure },
+      device_list: () => [{ id: "office", name: "Office", address: "owner@office" }],
+      device_snapshot: () => structuredClone(source),
+      remove_device: () => { throw failure },
     })
     const store = createProductionSource(native)
     try {
       await store.initialize()
-      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer?.id === "office")).toBe(true))
-      await expect(store.applicationActions.removeComputer!("office")).rejects.toBe(failure)
-      expect(native.invoke).toHaveBeenCalledWith("remove_remote_host", { hostId: "office" })
-      expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
-      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer?.id === "office")).toBe(true)
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.device?.id === "office")).toBe(true))
+      await expect(store.applicationActions.removeDevice!("office")).rejects.toBe(failure)
+      expect(native.invoke).toHaveBeenCalledWith("remove_device", { deviceId: "office" })
+      expect(store.getSnapshot().source?.devices?.map(device => device.id)).toEqual(["office"])
+      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.device?.id === "office")).toBe(true)
     } finally { store.dispose() }
   })
 
@@ -279,8 +279,8 @@ describe("production command behavior", () => {
     let holdRefresh!: () => void
     const refreshed = new Promise<void>(resolve => { holdRefresh = resolve })
     const native = bridge({
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: async () => { if (reads++ > 0) await refreshed; return structuredClone(remote) },
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: async () => { if (reads++ > 0) await refreshed; return structuredClone(remote) },
       dismiss_repository_push: () => undefined,
     })
     const store = createProductionSource(native)
@@ -302,7 +302,7 @@ describe("production command behavior", () => {
 
   it("stops GitHub verification at 300 seconds and leaves setup incomplete", async () => {
     vi.useFakeTimers()
-    const machines = source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine)
+    const machines = source.workspaces.filter(({ device }) => !device).map(({ machine }) => machine)
     const github = { ...source.github, policyRevision: 3, workspaceOperations: machines.map(({ name }) => ({ workspace: name, status: "applying", message: "Applying access" })) }
     const native = bridge({
       configure_workspace_identities: () => undefined,

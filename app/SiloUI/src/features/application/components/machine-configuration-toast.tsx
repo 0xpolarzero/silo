@@ -6,7 +6,7 @@ import { dismissOperationToast, showOperationFailure, showOperationProgress, sho
 
 import type { ApplicationWorkspace, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { chatGptFailure, computerUsePending, describeConfiguration, waitingForChatGpt } from "@/features/application/model/machine-configuration-progress"
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 
 const TOAST_ID = "machine-configuration"
 /** A settings change that finishes within this time never flashes a notification. */
@@ -23,7 +23,7 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
   onOpen?: (machineId: string) => void
 }) {
   const bridge = useComputerUseBridge()
-  const local = new Map(workspaces.filter(workspace => !workspace.computer).map(workspace => [workspace.machine.id, workspace.machine.name]))
+  const local = new Map(workspaces.filter(workspace => !workspace.device).map(workspace => [workspace.machine.id, workspace.machine.name]))
   const description = operation ? describeConfiguration(operation, local) : null
   const applying = operation?.status === "applying"
   const [debounced, setDebounced] = useState(false)
@@ -80,7 +80,7 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
     tracked.current = null
     if (!finished?.shown) return
     const { workspaces: current, bridge: computerUse, onOpen: open } = latest.current
-    const created = finished.creating.flatMap(name => current.filter(workspace => !workspace.computer && workspace.machine.name === name))
+    const created = finished.creating.flatMap(name => current.filter(workspace => !workspace.device && workspace.machine.name === name))
     if (created.length === 0) { dismissOperationToast(TOAST_ID); return }
     const [first] = created
     const single = created.length === 1

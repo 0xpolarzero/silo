@@ -4,7 +4,7 @@ import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { MoreHorizontal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { showActionFailure, showQuickConfirmation } from "@/lib/operation-toast"
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 import type { WorkspaceMenuProps } from "@/features/status-bar/status-bar-types"
 import { workspaceMenuItems, type WorkspaceMenuItem } from "@/features/status-bar/workspace-menu-items"
 

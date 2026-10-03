@@ -1,4 +1,4 @@
-import { parseRemoteWorkspaceTarget } from "@/features/application/model/remote-computers"
+import { parseRemoteWorkspaceTarget } from "@/features/application/model/connections"
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 import { Monitor, Server, Square } from "lucide-react"
 
@@ -22,7 +22,7 @@ import { divergentMachineFields, sameMachineConfiguration } from "@/features/app
 import { useChatGptApp, useComputerUseBridge } from "@/desktop/computer-use-bridge"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 import { machineFieldLabel, type MachineReview } from "@/features/sandboxes/model/machine-review"
-import { parseWholeNumber, presetsWithin, resourceFields, resourceMaximums, runtimeLimits, validateMachineResources, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
+import { parseWholeNumber, presetsWithin, resourceFields, resourceMaximums, runtimeLimits, validateMachineResources, type DeviceCapacity } from "@/features/sandboxes/model/machine-limits"
 
 function SelectField({ label, value, values, suffix, max, error, readOnly = false, custom = false, onChange }: {
   label: string
@@ -102,7 +102,7 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, review, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName, computerId }: {
+export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, review, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, deviceName, deviceId }: {
   saving?: boolean
   /** Why Save is unavailable right now (another change locks editing); the draft is kept. */
   blockedReason?: string
@@ -111,13 +111,13 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   focusRequest: number
   created: boolean
   running: boolean
-  /** The CPUs and memory of the computer the sandbox runs on, when known. */
-  capacity?: HostCapacity
-  /** That computer's name for messages; defaults to "This computer". */
-  computerName?: string
-  /** The host id of the other computer a new sandbox will run on; empty or omitted is this one. */
-  computerId?: string
-  /** The computer the sandbox will run on; empty or omitted is this one. */
+  /** The CPUs and memory of the device the sandbox runs on, when known. */
+  capacity?: DeviceCapacity
+  /** That device's name for messages; defaults to "This device". */
+  deviceName?: string
+  /** The device id of the other device a new sandbox will run on; empty or omitted is this one. */
+  deviceId?: string
+  /** The device the sandbox will run on; empty or omitted is this one. */
   machines: readonly SetupMachineConfiguration[]
   /** The VM's saved configuration when this editor opened, for divergence detection. */
   baselineMachine?: SetupMachineConfiguration
@@ -149,12 +149,12 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   // A VM whose desktop is built into its image always starts it; only older VMs are configured here.
   const builtInDesktop = created && original?.kind === "vm" && original.desktop?.builtIn === true
   const computerUse = useComputerUseBridge()
-  // A new sandbox gets the built-in desktop only if the computer it runs on can provide it.
-  // This computer follows the build; another computer is asked, because it may run an
+  // A new sandbox gets the built-in desktop only if the device it runs on can provide it.
+  // This device follows the build; another device is asked, because it may run an
   // older Silo (and guest image) without computer use.
-  const remoteOwner = !created && draft.kind === "vm" && computerId ? computerId : undefined
+  const remoteOwner = !created && draft.kind === "vm" && deviceId ? deviceId : undefined
   const ownerApp = useChatGptApp(remoteOwner && computerUse ? computerUse.chatGptFor(remoteOwner) : undefined)
-  const ownerName = computerName ?? "that computer"
+  const ownerName = deviceName ?? "that device"
   const newVmSupport: "yes" | "no" | "checking" = !computerUse ? "no"
     : !remoteOwner ? "yes"
     : ownerApp.status ? (ownerApp.status.state === "unknown" ? "no" : "yes")
@@ -181,7 +181,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   // Save becomes blocked while it is shown.
   const stopPending = confirmingStop && requiresStop && !saving && !blockedReason && !deletedElsewhere
   if (confirmingStop && !stopPending) setConfirmingStop(false)
-  const stopTarget = `${draft.name}${computerName ? ` on ${computerName}` : ""}`
+  const stopTarget = `${draft.name}${deviceName ? ` on ${deviceName}` : ""}`
   const cancelStop = useRef<HTMLButtonElement>(null)
   const saveButton = useRef<HTMLButtonElement>(null)
   const returnFocusToSave = useRef(false)
@@ -193,7 +193,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
     returnFocusToSave.current = true
     setConfirmingStop(false)
   }
-  // Offer only what the computer can run; the runtime rejects ceilings above it.
+  // Offer only what the device can run; the runtime rejects ceilings above it.
   const maximums = resourceMaximums(capacity)
   const cpuPresets = presetsWithin(supportedCPUs, capacity ? maximums.cpus : undefined)
   const memoryPresets = presetsWithin(supportedMemoryGiB, capacity ? maximums.memoryGiB : undefined)
@@ -231,7 +231,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
     if (draft.kind === "vm") {
       // Resource fields get readable range messages instead of the contract schema's.
       for (const field of resourceFields) delete nextErrors[field]
-      Object.assign(nextErrors, validateMachineResources(draft, capacity, computerName))
+      Object.assign(nextErrors, validateMachineResources(draft, capacity, deviceName))
     }
     const capacityError = machineCapacityError(machines.length, editor.originalID)
     if (capacityError) nextErrors.form = capacityError

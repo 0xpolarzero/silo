@@ -1,8 +1,8 @@
 import type { ApplicationWorkspace } from "./application-source"
 
-/** Only sandboxes on this computer can start when Silo opens. */
+/** Only sandboxes on this device can start when Silo opens. */
 export function startupWorkspaceCandidates(workspaces: readonly ApplicationWorkspace[]): ApplicationWorkspace[] {
-  return workspaces.filter(workspace => !workspace.computer && workspace.machine.kind === "vm")
+  return workspaces.filter(workspace => !workspace.device && workspace.machine.kind === "vm")
 }
 
 /** The startup selection before the user chooses one: the local "dev" sandbox, else the first local one. */

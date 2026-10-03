@@ -121,9 +121,9 @@ describe("status panel without application state", () => {
   })
 })
 
-describe("local sandboxes updating while connected computers are shown", () => {
+describe("local sandboxes updating while connected devices are shown", () => {
   it("explains the missing local sandboxes in the main window and the tray", () => {
-    state.source = { workspaces: [], remoteComputers: [{ id: "office", connected: true }] }
+    state.source = { workspaces: [], devices: [{ id: "office", connected: true }] }
     state.localUpdating = true
     const settings = createMemorySettingsStore({ onboardingComplete: true })
     const main = render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
@@ -169,8 +169,8 @@ describe("production dependency recovery", () => {
     expect(source.initialize).toHaveBeenCalledOnce()
     expect(screen.queryByRole("button", { name: /repair/i })).not.toBeInTheDocument()
   })
-  it("does not block remote-only use when this computer lacks virtualization", async () => {
-    state.source = { workspaces: [], remoteComputers: [{ id: "office", connected: true }] }
+  it("does not block remote-only use when this device lacks virtualization", async () => {
+    state.source = { workspaces: [], devices: [{ id: "office", connected: true }] }
     state.checks = [failure]
     await act(async () => { render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>) })
     expect(screen.getByText("Main app")).toBeVisible()

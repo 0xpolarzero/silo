@@ -34,7 +34,7 @@ interface GitHubDraft {
 
 function draftFromSource(
   policiesSnapshot: ApplicationSource["github"]["workspaces"],
-  hostIdentity: ApplicationSource["github"]["hostIdentity"],
+  deviceIdentity: ApplicationSource["github"]["deviceIdentity"],
   workspaces: ApplicationSource["workspaces"],
 ): GitHubDraft {
   const policies = workspaces.map((workspace) => policiesSnapshot?.find((policy) => policy.workspace === workspace.machine.name) ?? ({
@@ -42,9 +42,9 @@ function draftFromSource(
     repositoryMode: "selected" as const,
     allRepositoriesAllowChanges: false,
     identity: {
-      name: hostIdentity?.name ?? "",
-      email: hostIdentity?.email ?? "",
-      apply: Boolean(hostIdentity?.name.trim() && hostIdentity.email.trim()),
+      name: deviceIdentity?.name ?? "",
+      email: deviceIdentity?.email ?? "",
+      apply: Boolean(deviceIdentity?.name.trim() && deviceIdentity.email.trim()),
     },
     repositories: workspace.githubRepositories.map((repository) => ({ repository, allowPushes: false })),
   }))
@@ -79,8 +79,8 @@ function copyDraft(draft: GitHubDraft): GitHubDraft {
 function configurationFromDraft(source: ApplicationSource, draft: GitHubDraft, changed: ReadonlySet<string>): ApplicationGitHubConfiguration {
   return {
     baseRevision: source.github.policyRevision,
-    hostIdentity: source.github.hostIdentity ?? null,
-    workspaces: source.workspaces.filter((w) => !w.computer && changed.has(w.machine.name)).map(({ machine }) => ({
+    deviceIdentity: source.github.deviceIdentity ?? null,
+    workspaces: source.workspaces.filter((w) => !w.device && changed.has(w.machine.name)).map(({ machine }) => ({
       workspace: machine.name,
       ...(draft.access[machine.name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }),
       identity: draft.identities[machine.name] ?? { name: "", email: "", apply: false },
@@ -131,11 +131,11 @@ export function GitHubPage({
   onBusyChange?: (busy: boolean) => void
 }) {
   const sourceDraft = useMemo(
-    () => draftFromSource(source.github.workspaces, source.github.hostIdentity, source.workspaces.filter(w => !w.computer)),
-    [source.github.hostIdentity, source.github.workspaces, source.workspaces],
+    () => draftFromSource(source.github.workspaces, source.github.deviceIdentity, source.workspaces.filter(w => !w.device)),
+    [source.github.deviceIdentity, source.github.workspaces, source.workspaces],
   )
   const workspaceOwners = useMemo(
-    () => new Map(source.workspaces.filter(workspace => !workspace.computer).map(({ machine }) => [machine.name, machine.id])),
+    () => new Map(source.workspaces.filter(workspace => !workspace.device).map(({ machine }) => [machine.name, machine.id])),
     [source.workspaces],
   )
   const [draft, setDraft] = useState(() => copyDraft(sourceDraft))
@@ -234,7 +234,7 @@ export function GitHubPage({
       toastWorkspaces.current.add(name)
       if (operation.status !== "applying") userInitiated.current.delete(name)
       const id = `github-apply:${name}`
-      const machine = workspacesRef.current.find((workspace) => !workspace.computer && workspace.machine.name === name)?.machine
+      const machine = workspacesRef.current.find((workspace) => !workspace.device && workspace.machine.name === name)?.machine
       const noticeSandbox = machine ? { id: machine.id, name: machine.name } : undefined
       if (operation.status === "applying") showOperationProgress(id, { title: operation.message, step: name, sandbox: name })
       else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name, sandbox: name, persist: true, noticeSandbox })
@@ -245,7 +245,7 @@ export function GitHubPage({
           sandbox: name,
           noticeSandbox,
           retry: failure.canRetry && machine ? () => {
-            const current = workspacesRef.current.find(workspace => !workspace.computer && workspace.machine.name === name)
+            const current = workspacesRef.current.find(workspace => !workspace.device && workspace.machine.name === name)
             if (current?.machine.id === machine.id) retryRef.current(name)
           } : undefined,
         })
@@ -322,8 +322,8 @@ export function GitHubPage({
   }
 
   function resetIdentity(workspace: string) {
-    if (!source.github.hostIdentity) return
-    const identity = { ...source.github.hostIdentity, apply: true }
+    if (!source.github.deviceIdentity) return
+    const identity = { ...source.github.deviceIdentity, apply: true }
     const nextDraft = {
       ...draft,
       identities: { ...draft.identities, [workspace]: identity },
@@ -347,7 +347,7 @@ export function GitHubPage({
 
   function toggleAccess() {
     const nextEnabled = !accessEnabled
-    source.workspaces.filter((w) => !w.computer).forEach(({ machine }) => userInitiated.current.add(machine.name))
+    source.workspaces.filter((w) => !w.device).forEach(({ machine }) => userInitiated.current.add(machine.name))
     actions.setGitHubAccessEnabled?.(nextEnabled)
   }
 
@@ -384,12 +384,12 @@ export function GitHubPage({
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="mb-2 flex shrink-0 items-center justify-between gap-3">
-        <p className="text-[11px] text-muted-foreground">GitHub access for sandboxes on this computer.</p>
+        <p className="text-[11px] text-muted-foreground">GitHub access for sandboxes on this device.</p>
         {connectionState !== "connected" && tokenConnected && accessToggle}
       </div>
       <GitHubAccessEditor
         compactConnection
-        workspaces={source.workspaces.filter(w => !w.computer).map(({ machine }) => ({ name: machine.name }))}
+        workspaces={source.workspaces.filter(w => !w.device).map(({ machine }) => ({ name: machine.name }))}
         connectionState={connectionState}
         tokenConnected={tokenConnected}
         tokenConnection={<PersonalTokenConnection status={source.github.personalToken}
@@ -399,7 +399,7 @@ export function GitHubPage({
         workspaceRepositoryAccess={draft.access}
         onWorkspaceRepositoryAccessChange={(workspace, access) => applyWorkspaceDraft(workspace, { ...draft, access: { ...draft.access, [workspace]: access } }, "Applying repository access…")}
         workspaceIdentities={draft.identities}
-        currentHostGitIdentity={source.github.hostIdentity ?? null}
+        currentDeviceGitIdentity={source.github.deviceIdentity ?? null}
         onConnect={() => {
           setConnectionState("connecting")
           actions.connectGitHub?.()

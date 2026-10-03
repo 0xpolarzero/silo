@@ -28,12 +28,12 @@ type CheckpointUsageEntry = CheckpointUsage["checkpoints"][number]
 function deleteDescription(checkpoint: WorkspaceCheckpoint, info: CheckpointUsageEntry | undefined) {
   const recovery = checkpoint.reason === "before-restore" ? "This is the recovery point saved before a Restore; you can no longer undo the Restore it was saved for. " : ""
   const freed = info?.sizeBytes != null ? `, freeing up to ${formatStorageBytes(info.sizeBytes)}` : ""
-  return `${recovery}Its saved state is removed from this computer${freed}. This can’t be undone.`
+  return `${recovery}Its saved state is removed from this device${freed}. This can’t be undone.`
 }
 
 export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false, forkedAction, restoredAction, takenNames }: {
   workspace: ApplicationWorkspace
-  /** Sandbox names already used on this sandbox's computer, so a fork name conflict shows inline. */
+  /** Sandbox names already used on this sandbox's device, so a fork name conflict shows inline. */
   takenNames?: readonly string[]
   target: string
   actions: ApplicationActions
@@ -55,12 +55,12 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
   const running = operation?.status === "running"
   const busy = pending || running
   const locked = disabled || busy
-  const isLocal = !workspace.computer
+  const isLocal = !workspace.device
   const sandbox = workspace.machine.name
   const noticeSandbox = { id: workspace.machine.id, name: sandbox }
 
   // Sizes and Delete availability come from the native store, so they are read on demand
-  // for checkpoints on this computer and again after every checkpoint change.
+  // for checkpoints on this device and again after every checkpoint change.
   const [usage, setUsage] = useState<ReadonlyMap<string, CheckpointUsageEntry>>(new Map())
   const [usageRequest, setUsageRequest] = useState(0)
   const canReadUsage = isLocal && Boolean(actions.readCheckpointUsage)
@@ -265,7 +265,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                   items={[
                     ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
                     ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),
-                    // Delete runs on this computer only; a pinned checkpoint says what still needs it.
+                    // Delete runs on this device only; a pinned checkpoint says what still needs it.
                     ...(isLocal && actions.deleteCheckpoint ? [{ label: "Delete…", accessibleLabel: `Delete ${checkpoint.name}`, destructive: true, separatorBefore: true, disabled: locked || Boolean(info?.deleteBlocker), tooltip: info?.deleteBlocker, popover: "delete" }] : []),
                   ]}
                 />

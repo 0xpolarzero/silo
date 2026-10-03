@@ -6,7 +6,7 @@ export const settingSchemas = {
   launchAtLogin: z.boolean(),
   startWorkspacesAtLaunch: z.boolean(),
   startupWorkspaceIds: z.array(z.string().min(1).max(256)).max(256),
-  /** This computer's order for the sandbox list, local and remote, by `sandboxOrderKey`. */
+  /** This device's order for the sandbox list, local and remote, by `sandboxOrderKey`. */
   sandboxOrder: z.array(z.string().min(1).max(512)).max(1024),
   terminal: z.string().min(1).max(256),
   editor: z.string().min(1).max(256),
@@ -18,7 +18,7 @@ export const settingSchemas = {
   editorUseSystemDefault: z.boolean(),
   browserUseSystemDefault: z.boolean(),
   reduceMotion: z.boolean(),
-  /** Whether sandboxes created or imported on this computer start with agents allowed to use the desktop without asking. */
+  /** Whether sandboxes created or imported on this device start with agents allowed to use the desktop without asking. */
   computerUseAutoApproval: z.boolean(),
   notificationsEnabled: z.boolean(),
   notifyFailures: z.boolean(),

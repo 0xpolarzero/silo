@@ -7,7 +7,7 @@ import { deleteSandboxDescription, deleteSandboxTitle, formatSandboxSize } from 
 export interface DeleteSandboxDetails {
   /** Checkpoints deleted with the sandbox, when known. */
   checkpoints?: number
-  /** Reads the sandbox's size on this computer, in bytes. Shown when it resolves. */
+  /** Reads the sandbox's size on this device, in bytes. Shown when it resolves. */
   readSize?: () => Promise<number | null>
   /** Exports the sandbox and resolves true only once the export was verified. */
   exportFirst?: () => Promise<boolean>

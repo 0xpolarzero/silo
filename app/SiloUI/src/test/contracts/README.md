@@ -10,7 +10,7 @@ runtime runner and temporary metadata, checkpoint, lifecycle, and secret stores.
 The test fixes the measured host capacity before serialization because the
 machine running the test changes that value. The remote snapshot fixtures apply
 the same `ApplicationSource` to JSON conversion as `runtime.snapshot` dispatch;
-`remote_host_snapshot` passes that payload through. They cover the wire contract,
+`device_snapshot` passes that payload through. They cover the wire contract,
 not SSH transport or live VM health.
 
 SSH access, network state, and operation queue fixtures serialize the native

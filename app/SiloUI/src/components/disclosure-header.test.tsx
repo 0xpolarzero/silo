@@ -24,7 +24,7 @@ describe("shared disclosure header", () => {
   })
 
   it("reveals complete text titles and captions when they are truncated", () => {
-    const title = "Remote computer name ".repeat(15)
+    const title = "Remote device name ".repeat(15)
     const detail = "Connection details ".repeat(20)
     render(<Collapsible><DisclosureHeader title={title} detail={detail} /></Collapsible>)
     expect(screen.getByText(title.trim())).toHaveAttribute("title", title)

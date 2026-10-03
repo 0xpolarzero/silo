@@ -1,7 +1,7 @@
 import type { OperationQueue } from "@/features/application/model/operation-queue"
 
 /**
- * Deterministic operation-queue fixture: a computer-wide backup running while a
+ * Deterministic operation-queue fixture: a device-wide backup running while a
  * restart of "dev" and a checkpoint of "playgrounds" wait their turn behind it.
  * Times are relative to `now` so the preview shows realistic elapsed durations.
  */

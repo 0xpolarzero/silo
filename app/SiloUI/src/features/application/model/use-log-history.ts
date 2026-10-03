@@ -5,7 +5,7 @@ import { isUnsupportedRemote, logIdentity, LOG_ROW_HEIGHT, type LogEntry, type L
 
 export type LogHistoryRow = { entry: LogEntry; workspace: ApplicationWorkspace }
 export type LogHistoryResult = { workspace: ApplicationWorkspace; page: LogPage; request: LogQuery }
-type OrderKey = Pick<LogEntry, "occurredAt" | "id" | "computerId" | "sandboxId">
+type OrderKey = Pick<LogEntry, "occurredAt" | "id" | "deviceId" | "sandboxId">
 type CachedResult = LogHistoryResult & { cursors: Set<string>; frontier?: OrderKey }
 type Options = {
   workspaces: ApplicationWorkspace[]
@@ -44,33 +44,33 @@ function unsupportedPage(): LogPage {
 function list(names: string[]): string {
   return names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`
 }
-/** One plain notice per computer whose Silo cannot serve logs, instead of a raw error per sandbox. */
+/** One plain notice per device whose Silo cannot serve logs, instead of a raw error per sandbox. */
 export function unsupportedLogsNotice(results: LogHistoryResult[]): string {
-  const byComputer = new Map<string, string[]>()
+  const byDevice = new Map<string, string[]>()
   for (const { workspace, page } of results) {
     if (!page.unsupported) continue
-    const computer = workspace.computer?.name ?? "that computer"
-    byComputer.set(computer, [...(byComputer.get(computer) ?? []), workspace.machine.name])
+    const device = workspace.device?.name ?? "that device"
+    byDevice.set(device, [...(byDevice.get(device) ?? []), workspace.machine.name])
   }
-  return [...byComputer].map(([computer, names]) => `Update Silo on ${computer} to see logs for ${list(names)}.`).join(" ")
+  return [...byDevice].map(([device, names]) => `Update Silo on ${device} to see logs for ${list(names)}.`).join(" ")
 }
 function ownerKey(workspace: ApplicationWorkspace): string {
   const identity = logIdentity(workspace)
-  return JSON.stringify([identity.computerId ?? "local", identity.sandboxId])
+  return JSON.stringify([identity.deviceId ?? "local", identity.sandboxId])
 }
 function entryKey(entry: LogEntry): string {
-  return JSON.stringify([entry.computerId, entry.sandboxId, entry.id])
+  return JSON.stringify([entry.deviceId, entry.sandboxId, entry.id])
 }
 function descending(a: string, b: string): number { return a === b ? 0 : a < b ? 1 : -1 }
 function newestFirst(a: { entry: OrderKey }, b: { entry: OrderKey }): number {
   return descending(a.entry.occurredAt, b.entry.occurredAt)
     || descending(a.entry.id, b.entry.id)
-    || descending(a.entry.computerId, b.entry.computerId)
+    || descending(a.entry.deviceId, b.entry.deviceId)
     || descending(a.entry.sandboxId, b.entry.sandboxId)
 }
 function pageFrontier(page: LogPage): OrderKey | undefined {
   const entry = page.nextCursor ? page.entries.at(-1) : undefined
-  return entry && { occurredAt: entry.occurredAt, id: entry.id, computerId: entry.computerId, sandboxId: entry.sandboxId }
+  return entry && { occurredAt: entry.occurredAt, id: entry.id, deviceId: entry.deviceId, sandboxId: entry.sandboxId }
 }
 function chronologicalRows(results: CachedResult[]): LogHistoryRow[] {
   // Buffer older rows until every owner's unread history is older as well, so
@@ -84,7 +84,7 @@ function chronologicalRows(results: CachedResult[]): LogHistoryRow[] {
     .sort(newestFirst)
 }
 function entryBytes(entry: LogEntry): number {
-  return 256 + 2 * (entry.line.length + entry.id.length + entry.occurredAt.length + entry.source.length + (entry.session?.length ?? 0) + entry.computerId.length + entry.sandboxId.length + (entry.computerName?.length ?? 0) + (entry.sandboxName?.length ?? 0))
+  return 256 + 2 * (entry.line.length + entry.id.length + entry.occurredAt.length + entry.source.length + (entry.session?.length ?? 0) + entry.deviceId.length + entry.sandboxId.length + (entry.deviceName?.length ?? 0) + (entry.sandboxName?.length ?? 0))
 }
 function prune(cache: Map<string, HistoryStore>) {
   const now = Date.now()
@@ -142,7 +142,7 @@ class HistoryStore {
   private sandboxLabel(workspace: ApplicationWorkspace) {
     const name = workspace.machine.name
     const ambiguous = this.requests.some(request => ownerKey(request.workspace) !== ownerKey(workspace) && request.workspace.machine.name === name)
-    return ambiguous ? `${name} (${workspace.computer?.name ?? "This computer"})` : name
+    return ambiguous ? `${name} (${workspace.device?.name ?? "This device"})` : name
   }
   private retain(results: CachedResult[], older: boolean): Partial<Snapshot> {
     const ordered = results.flatMap(result => result.page.entries.map(entry => ({ entry }))).sort(newestFirst)
@@ -210,7 +210,7 @@ class HistoryStore {
         if (isUnsupportedRemote(cause)) completed.set(key, { workspace, request, cursors: new Set(), page: unsupportedPage() })
         else this.errors.set(key, `${this.sandboxLabel(workspace)}: ${errorMessage(cause)}`)
       }
-      // Each computer publishes independently; an unavailable owner cannot hide fresh logs.
+      // Each device publishes independently; an unavailable owner cannot hide fresh logs.
       publish()
     }))
     if (!this.requests.length) publish()

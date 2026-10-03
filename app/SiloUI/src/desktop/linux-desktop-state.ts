@@ -31,8 +31,8 @@ export type ComputerUseState = z.infer<typeof computerUseSchema>
 /** The modes a user can set; `ComputerUseState.approval` adds "unknown" for an unreadable policy. */
 export type ComputerUseApproval = Exclude<ComputerUseState["approval"], "unknown">
 
-// The official ChatGPT Linux app, downloaded automatically by every computer that runs Silo.
-// "unknown" is a computer whose status cannot be read (an older Silo, or a newer state this
+// The official ChatGPT Linux app, downloaded automatically by every device that runs Silo.
+// "unknown" is a device whose status cannot be read (an older Silo, or a newer state this
 // one does not know): it is never an error.
 export const chatGptAppStatusSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("unknown") }),

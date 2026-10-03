@@ -59,7 +59,7 @@ it("shows a missing recovered Git identity as unapplied, matching the submission
     currentStep: "github", machines: source.machineConfigurations, unfinishedMachineEditor: null,
     workspaceSelections: {}, workspaceIdentities: {},
   }
-  const view = setup({ ...source, currentHostGitIdentity: null }, [], restored)
+  const view = setup({ ...source, currentDeviceGitIdentity: null }, [], restored)
 
   expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
   await view.user.click(screen.getByRole("button", { name: "Continue" }))
@@ -72,7 +72,7 @@ it("shows a missing recovered Git identity as unapplied, matching the submission
 })
 
 it("skips applying a blank host identity and adopts an identity that loads later", async () => {
-  const view = setup({ ...source, currentHostGitIdentity: null }, [])
+  const view = setup({ ...source, currentDeviceGitIdentity: null }, [])
   await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
   expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
   await view.user.click(screen.getByRole("button", { name: "Continue" }))
@@ -85,7 +85,7 @@ it("skips applying a blank host identity and adopts an identity that loads later
   await act(async () => { view.rerender(view.wrap(source, [])) })
   await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
   expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).toBeChecked()
-  expect(screen.getByLabelText("Git name for dev")).toHaveValue(source.currentHostGitIdentity!.name)
+  expect(screen.getByLabelText("Git name for dev")).toHaveValue(source.currentDeviceGitIdentity!.name)
 })
 
 it("finishes with current application preferences after keeping omitted sandboxes", async () => {
@@ -147,7 +147,7 @@ it("loads untouched policy fields without replacing explicit edits made during l
   await view.user.click(screen.getByRole("button", { name: "Continue" }))
   expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
     github: expect.objectContaining({ workspaces: expect.arrayContaining([
-      { ...policies[0], repositoryMode: "all", identity: { ...onboardingScenarios.complete.currentHostGitIdentity, name: "My Author", apply: true } },
+      { ...policies[0], repositoryMode: "all", identity: { ...onboardingScenarios.complete.currentDeviceGitIdentity, name: "My Author", apply: true } },
       { ...policies[1], repositories: [{ repository: "acme/silo", allowPushes: false }] },
     ]) }),
   }))

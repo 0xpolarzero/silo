@@ -5,7 +5,7 @@ import type { SetupMachineConfiguration, SetupVirtualMachineConfiguration } from
 
 export interface SandboxEditMenuOptions {
   machine: SetupMachineConfiguration
-  /** Names the sandbox with its computer when remote ("dev on Office"). */
+  /** Names the sandbox with its device when remote ("dev on Office"). */
   displayName: string
   disabled: boolean
   /** Why edits, desktop installation and deletion must wait. Duplication remains available. */

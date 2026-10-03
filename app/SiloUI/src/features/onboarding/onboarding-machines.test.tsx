@@ -363,7 +363,7 @@ it("blocks duplicate names and invalid VM resource ranges", async () => {
 
 it("reports the machine capacity in the draft instead of throwing across the action boundary", async () => {
   // Model tests cover the real 64-slot policy. Here the validator reports a
-  // full computer while the UI renders only the ordinary three-card fixture.
+  // full device while the UI renders only the ordinary three-card fixture.
   vi.spyOn(machineConfiguration, "machineCapacityError").mockReturnValue("Configure no more than 64 sandboxes.")
   const saveMachineConfiguration = vi.fn()
   const user = userEvent.setup()

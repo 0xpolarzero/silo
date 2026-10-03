@@ -3,7 +3,7 @@ import { Profiler } from "react"
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
-import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
+import { ConnectionsSettings } from "@/features/application/components/connections-settings"
 import type { ApplicationActions } from "@/features/application/model/application-source"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { createFixtureComputerUseBackend, fixtureDesktopState } from "@/fixtures/computer-use"
@@ -74,7 +74,7 @@ it("keeps remote download consumers stable until progress or a read error change
   let receivedBytes = 1
   let unavailable = false
   const read = vi.fn(async () => {
-    if (unavailable) throw new Error("Computer disconnected")
+    if (unavailable) throw new Error("Device disconnected")
     return { state: "downloading", receivedBytes, totalBytes: 10 }
   })
   const store = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 }).chatGptFor("office")
@@ -94,7 +94,7 @@ it("keeps remote download consumers stable until progress or a read error change
     expect(view.result.current.status).toMatchObject({ receivedBytes: 2 })
     unavailable = true
     await advance(1000)
-    expect(view.result.current.loadError).toBe("Computer disconnected")
+    expect(view.result.current.loadError).toBe("Device disconnected")
     const errorRenders = renders
     await advance(2000)
     expect(renders).toBe(errorRenders)
@@ -106,7 +106,7 @@ it("keeps remote download consumers stable until progress or a read error change
 })
 
 it("backs off failed remote download reads to a cap and restores polling after recovery", async () => {
-  const read = vi.fn(async (): Promise<unknown> => { throw new Error("Computer disconnected") })
+  const read = vi.fn(async (): Promise<unknown> => { throw new Error("Device disconnected") })
   const store = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 }).chatGptFor("office")
   const stop = store.subscribe(() => {})
   try {
@@ -119,7 +119,7 @@ it("backs off failed remote download reads to a cap and restores polling after r
       await advance(1)
       expect(read).toHaveBeenCalledTimes(calls + 1)
     }
-    expect(store.getSnapshot().loadError).toBe("Computer disconnected")
+    expect(store.getSnapshot().loadError).toBe("Device disconnected")
     read.mockResolvedValue({ state: "idle" })
     await advance(30000)
     expect(store.getSnapshot().loadError).toBeNull()
@@ -275,14 +275,14 @@ it("pauses remote download status polling when hidden and still settles an expli
   } finally { stop() }
 })
 
-it("releases remote download polling while Computers settings are inactive", async () => {
-  const read = vi.fn(async (_computer?: string) => ({ state: "downloading", receivedBytes: 1, totalBytes: 10 }))
+it("releases remote download polling while Devices settings are inactive", async () => {
+  const read = vi.fn(async (_device?: string) => ({ state: "downloading", receivedBytes: 1, totalBytes: 10 }))
   const bridge = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 })
-  const source = { ...applicationSourceForScenario("running"), remoteComputers: [{ id: "office", name: "Office", address: "owner@office", connected: true }] }
-  const page = (active: boolean) => <ComputerUseProvider bridge={bridge}><RemoteComputersSettings source={source} actions={{} as ApplicationActions} active={active} /></ComputerUseProvider>
+  const source = { ...applicationSourceForScenario("running"), devices: [{ id: "office", name: "Office", address: "owner@office", connected: true }] }
+  const page = (active: boolean) => <ComputerUseProvider bridge={bridge}><ConnectionsSettings source={source} actions={{} as ApplicationActions} active={active} /></ComputerUseProvider>
   const view = render(page(true))
   await advance(0)
-  const reads = () => read.mock.calls.filter(([computer]) => computer === "office")
+  const reads = () => read.mock.calls.filter(([device]) => device === "office")
   expect(reads()).toHaveLength(1)
   view.rerender(page(false))
   await advance(15_000)
@@ -294,7 +294,7 @@ it("releases remote download polling while Computers settings are inactive", asy
 
 it("keeps one remote polling schedule when visibility returns during a read", async () => {
   let finish!: (value: unknown) => void
-  const read = vi.fn(async (_computer?: string): Promise<unknown> => ({ state: "idle" }))
+  const read = vi.fn(async (_device?: string): Promise<unknown> => ({ state: "idle" }))
   read.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
   const store = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 }).chatGptFor("office")
   const stop = store.subscribe(() => {})

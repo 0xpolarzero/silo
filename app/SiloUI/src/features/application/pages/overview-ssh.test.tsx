@@ -11,12 +11,12 @@ import { NetworkPage } from "./network-page"
 it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
-  source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "192.168.1.42", keys: [], state: "listening", message: null, fingerprint: null, computerName: "Ada Mac", addresses: ["127.0.0.1", "192.168.1.42"] }] }
+  source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "192.168.1.42", keys: [], state: "listening", message: null, fingerprint: null, deviceName: "Ada Mac", addresses: ["127.0.0.1", "192.168.1.42"] }] }
   const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
   // The list row keeps a single scope badge and no inline SSH access controls.
-  const row = within(screen.getByLabelText("SSH from Ada Mac and other computers").closest("li")!)
+  const row = within(screen.getByLabelText("SSH from Ada Mac and other devices").closest("li")!)
   expect(row.queryByRole("switch")).not.toBeInTheDocument()
   expect(row.queryByRole("button", { name: /SSH access controls/ })).not.toBeInTheDocument()
 
@@ -43,7 +43,7 @@ it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", asy
 it("opens the sandbox's SSH tab from the SSH badge in the list and on the sandbox page", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
-  source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "10.211.55.2", keys: [], state: "error", message: "The selected network address is unavailable. Choose an active interface.", fingerprint: null, computerName: "Ada Mac", addresses: ["127.0.0.1"] }] }
+  source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "10.211.55.2", keys: [], state: "error", message: "The selected network address is unavailable. Choose an active interface.", fingerprint: null, deviceName: "Ada Mac", addresses: ["127.0.0.1"] }] }
   const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
@@ -77,7 +77,7 @@ it("keeps Network limited to service ports", () => {
 
 it("allows read-only SSH disclosure without refreshing, copying, or changing the sandbox", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.sshAccess = { workspaces: [{ workspace: "dev", enabled: true, port: 2222, bindAddress: "192.168.1.42", keys: [], state: "listening", message: null, fingerprint: null, computerName: "This computer", addresses: ["127.0.0.1", "192.168.1.42"] }] }
+  source.sshAccess = { workspaces: [{ workspace: "dev", enabled: true, port: 2222, bindAddress: "192.168.1.42", keys: [], state: "listening", message: null, fingerprint: null, deviceName: "This device", addresses: ["127.0.0.1", "192.168.1.42"] }] }
   const actions = { refreshSshAccess: vi.fn(), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn(), stopWorkspace: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
   render(<OverviewPage readOnly source={source} actions={actions} onMachinesChange={vi.fn()} />)
@@ -97,17 +97,17 @@ it.each([
   [false, "off"], [false, "host"], [false, "network"],
   [true, "off"], [true, "host"], [true, "network"],
 ] as const)("communicates remote=%s with SSH scope=%s", (remote, scope) => {
-  const host = remote ? "Office Mac" : "This computer"
+  const host = remote ? "Office Mac" : "This device"
   const { container } = render(<>
     <ConnectionIcon kind="vm" network={remote} label={remote ? "Remote VM" : "Local VM"} />
-    <SshAccessBadges access={{ workspace: "dev", enabled: scope !== "off", port: 2222, bindAddress: scope === "network" ? "192.168.1.42" : "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, computerName: host, addresses: [] }} />
+    <SshAccessBadges access={{ workspace: "dev", enabled: scope !== "off", port: 2222, bindAddress: scope === "network" ? "192.168.1.42" : "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, deviceName: host, addresses: [] }} />
   </>)
   expect(screen.getByRole("img", { name: remote ? "Remote VM" : "Local VM" })).toBeVisible()
   expect(container.querySelector(remote ? ".lucide-server" : ".lucide-monitor")).toBeInTheDocument()
   if (scope === "off") expect(screen.queryByText("SSH")).not.toBeInTheDocument()
   else {
     expect(screen.getAllByText("SSH")).toHaveLength(1)
-    expect(screen.getByLabelText(`SSH from ${host}${scope === "network" ? " and other computers" : " only"}`)).toBeVisible()
+    expect(screen.getByLabelText(`SSH from ${host}${scope === "network" ? " and other devices" : " only"}`)).toBeVisible()
   }
   expect(container.querySelectorAll(".lucide-network")).toHaveLength(scope === "network" ? 1 : 0)
 })

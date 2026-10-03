@@ -44,7 +44,7 @@ export const githubManagementFixtureModes = [
   "failed",
   "disabled",
   "connected-empty",
-  "missing-host-identity",
+  "missing-device-identity",
   "catalog-unavailable",
 ] as const
 export type GitHubManagementFixtureMode = (typeof githubManagementFixtureModes)[number]
@@ -339,7 +339,7 @@ const githubWorkspacePolicies: readonly ApplicationGitHubWorkspacePolicy[] = [
 ]
 
 function githubWorkspaceOperationsForFixture(mode?: GitHubManagementFixtureMode): readonly GitHubWorkspaceOperation[] {
-  if (!mode || mode === "idle" || mode === "disabled" || mode === "connected-empty" || mode === "missing-host-identity" || mode === "catalog-unavailable") return []
+  if (!mode || mode === "idle" || mode === "disabled" || mode === "connected-empty" || mode === "missing-device-identity" || mode === "catalog-unavailable") return []
   if (mode === "applying") {
     return [{ workspace: "dev", status: "applying", message: "Applying repository access…" }]
   }
@@ -366,7 +366,7 @@ function githubWorkspacePoliciesForFixture(mode?: GitHubManagementFixtureMode): 
   if (mode === "connected-empty") {
     return githubWorkspacePolicies.map((policy) => ({ ...policy, repositories: [] }))
   }
-  if (mode === "missing-host-identity") {
+  if (mode === "missing-device-identity") {
     return githubWorkspacePolicies.map((policy) => ({
       ...policy,
       identity: { name: "", email: "", apply: false },
@@ -429,7 +429,7 @@ export function applicationSourceForScenario(
       repositoryCatalogStatus: githubManagementMode === "catalog-unavailable"
         ? { status: "unavailable", message: "GitHub repositories could not be loaded.", canRetry: true }
         : { status: "available" },
-      hostIdentity: githubManagementMode === "missing-host-identity"
+      deviceIdentity: githubManagementMode === "missing-device-identity"
         ? null
         : { name: "Taylor Example", email: "taylor@example.com" },
       workspaces: githubWorkspacePoliciesForFixture(githubManagementMode),

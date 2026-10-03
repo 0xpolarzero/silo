@@ -73,7 +73,7 @@ describe("retained logs", () => {
     const { workspace, actions } = fixture()
     const occurredAt = "2020-01-01T00:00:00.000000000Z"
     const page = logPageSchema.parse({
-      entries: [{ id: "1", line: "forged time", occurredAt, sandboxId: workspace.machine.id, computerId: "local", source: "kernel", guestTimestamp: true }],
+      entries: [{ id: "1", line: "forged time", occurredAt, sandboxId: workspace.machine.id, deviceId: "local", source: "kernel", guestTimestamp: true }],
       nextCursor: null, oldestAvailableTimestamp: occurredAt, newestAvailableTimestamp: occurredAt, totalMatches: 1, timestampEstimated: false, unreadableRecords: true,
     })
     actions.queryLogs = vi.fn(async () => page)
@@ -299,7 +299,7 @@ describe("retained logs", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument()
     expect(screen.queryByText(/No matching logs/)).not.toBeInTheDocument()
   })
-  it("keeps healthy computer results visible when another owner is unavailable", async () => {
+  it("keeps healthy device results visible when another owner is unavailable", async () => {
     const { workspace, actions } = fixture()
     workspace.logs = workspace.logs.slice(0, 2)
     const remote = { ...workspace, machine: { ...workspace.machine, id: "remote", name: "remote sandbox" } }
@@ -425,23 +425,23 @@ describe("retained logs", () => {
 
   it("addresses a same-named remote sandbox by owner and VM identity when filtering sources", async () => {
     const { workspace, actions } = fixture()
-    const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:office:remote-vm" }, computer: { id: "office", vmId: "remote-vm", name: "Office", address: "office.local", connected: true } }
+    const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:office:remote-vm" }, device: { id: "office", vmId: "remote-vm", name: "Office", address: "office.local", connected: true } }
     const queryLogs = vi.fn(async () => ({ entries: [], nextCursor: null, oldestAvailableTimestamp: null, newestAvailableTimestamp: null, totalMatches: 0, timestampEstimated: false }))
     actions.queryLogs = queryLogs
     render(<Logs workspaces={[remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
-    await waitFor(() => expect(queryLogs).toHaveBeenCalledWith(expect.objectContaining({ computerId: "office", sandboxId: "remote-vm" })))
+    await waitFor(() => expect(queryLogs).toHaveBeenCalledWith(expect.objectContaining({ deviceId: "office", sandboxId: "remote-vm" })))
     fireEvent.click(screen.getByRole("combobox", { name: "Filter logs" }))
     fireEvent.click(screen.getByRole("option", { name: "Source: runtime" }))
-    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ computerId: "office", sandboxId: "remote-vm", source: "runtime" })))
+    await waitFor(() => expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ deviceId: "office", sandboxId: "remote-vm", source: "runtime" })))
   })
 
-  it("shows one update notice per computer instead of raw errors when its Silo cannot serve logs", async () => {
+  it("shows one update notice per device instead of raw errors when its Silo cannot serve logs", async () => {
     const { workspace, actions } = fixture()
     workspace.logs = workspace.logs.slice(0, 2)
-    const remote = (name: string) => ({ ...workspace, machine: { ...workspace.machine, id: `silo-remote:zeronival:${name}`, name }, computer: { id: "zeronival", vmId: name, name: "zeronival", address: "zeronival.local", connected: true } })
+    const remote = (name: string) => ({ ...workspace, machine: { ...workspace.machine, id: `silo-remote:zeronival:${name}`, name }, device: { id: "zeronival", vmId: name, name: "zeronival", address: "zeronival.local", connected: true } })
     const empty = { entries: [], nextCursor: null, oldestAvailableTimestamp: null, newestAvailableTimestamp: null, totalMatches: 0, timestampEstimated: false }
     actions.queryLogs = vi.fn(async (request: LogQuery) => {
-      if (request.computerId === "zeronival") return { ...empty, unsupported: true }
+      if (request.deviceId === "zeronival") return { ...empty, unsupported: true }
       return fixtureLogPage(workspace, request)
     })
     render(<Logs workspaces={[workspace, remote("dev-zeronival"), remote("trade-zeronival")]} actions={actions} active query="" onQueryChange={vi.fn()} />)
@@ -452,8 +452,8 @@ describe("retained logs", () => {
 
   it.each(["", "needle"])("uses the unsupported remote error code as an update hint without claiming empty logs (query: %s)", async query => {
     const { workspace, actions } = fixture()
-    const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:zeronival:dev-zeronival", name: "dev-zeronival" }, computer: { id: "zeronival", vmId: "dev-zeronival", name: "zeronival", address: "zeronival.local", connected: true } }
-    actions.queryLogs = vi.fn(async () => { throw { code: "unsupported_remote_operation", message: "This computer cannot query logs." } })
+    const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:zeronival:dev-zeronival", name: "dev-zeronival" }, device: { id: "zeronival", vmId: "dev-zeronival", name: "zeronival", address: "zeronival.local", connected: true } }
+    actions.queryLogs = vi.fn(async () => { throw { code: "unsupported_remote_operation", message: "This device cannot query logs." } })
     render(<Logs workspaces={[remote]} actions={actions} active query={query} onQueryChange={vi.fn()} />)
     expect(await screen.findByText("Update Silo on zeronival to see logs for dev-zeronival.")).toBeVisible()
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()

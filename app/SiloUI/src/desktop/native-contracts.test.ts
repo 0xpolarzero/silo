@@ -87,7 +87,7 @@ describe("Rust-emitted native wire contracts", () => {
     expect(states.map(state => state.workspaces[0].fingerprint)).toEqual([null, null, "SHA256:contract-public-fingerprint", null])
     expect(states.map(state => state.workspaces[0].message)).toEqual([null, null, null, "SSH listener could not start."])
     for (const state of states) {
-      expect(state.workspaces[0]).toMatchObject({ workspace: "dev", port: 2222, bindAddress: "127.0.0.1", computerName: "Contract computer", addresses: ["192.0.2.10"], user: "silo" })
+      expect(state.workspaces[0]).toMatchObject({ workspace: "dev", port: 2222, bindAddress: "127.0.0.1", deviceName: "Contract device", addresses: ["192.0.2.10"], user: "silo" })
     }
   })
 

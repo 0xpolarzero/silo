@@ -1,6 +1,6 @@
 import { useLifecycleToasts } from "./model/use-lifecycle-toasts"
 import { useRepositoryPushToasts } from "./components/use-repository-push-toasts"
-import { workspaceTarget } from "./model/remote-computers"
+import { workspaceTarget } from "./model/connections"
 import { useBackendNotices } from "@/features/application/model/use-backend-notices"
 import { useUpdates } from "@/features/updates/update-store"
 import { updateCommands } from "@/features/updates/update-commands"
@@ -24,7 +24,7 @@ import { useApplicationNavigation, type ApplicationInitialRoute } from "@/featur
 import { defaultStartupWorkspaceIds } from "@/features/application/model/startup-workspaces"
 import { AlphaNotice } from "@/features/application/components/alpha-notice"
 import { EditorIncludeNotice } from "@/features/application/components/editor-include-notice"
-import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
+import { ConnectionsSettings } from "@/features/application/components/connections-settings"
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
 import { NotificationsPage } from "@/features/application/pages/notifications-page"
@@ -424,7 +424,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <div hidden={settingsSection !== "general"}>
           <GeneralPage source={source} applicationPreferences={applicationPreferences} onApplicationPreferencesChange={changeApplicationPreferences} reduceMotion={reduceMotion} onReduceMotionChange={(enabled) => { void updateSettings({ reduceMotion: enabled }) }} />
         </div>
-        <div hidden={settingsSection !== "computers"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><RemoteComputersSettings source={source} actions={actions} active={visibleTab === "settings" && settingsSection === "computers"} /></div>
+        <div hidden={settingsSection !== "devices"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><ConnectionsSettings source={source} actions={actions} active={visibleTab === "settings" && settingsSection === "devices"} /></div>
         <div hidden={settingsSection !== "notifications"}><NotificationsPage /></div>
       </section>
     </ApplicationShell>

@@ -28,17 +28,17 @@ describe("optional Linux desktop", () => {
     await user.click(screen.getByRole("menuitem", { name: "Add Linux desktop" }))
     expect(save).toHaveBeenCalledWith([{ ...machine, desktop: { startWithSandbox: true } }], [machine])
   })
-  it("routes menu installation to the owning computer and surfaces failures", async () => {
-    const save = vi.fn().mockRejectedValue(new Error("Computer disconnected"))
+  it("routes menu installation to the owning device and surfaces failures", async () => {
+    const save = vi.fn().mockRejectedValue(new Error("Device disconnected"))
     const localSave = vi.fn()
     render(<TooltipProvider><Toaster /><MachineList machines={[machine]} onMachinesChange={localSave}
-      onCommitMachine={save} getComputerId={() => "remote-computer"}
+      onCommitMachine={save} getDeviceId={() => "remote-device"}
       isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
     await user.click(screen.getByRole("menuitem", { name: "Add Linux desktop" }))
-    expect(save).toHaveBeenCalledWith({ ...machine, desktop: { startWithSandbox: true } }, machine, "remote-computer", [machine])
-    expect(await screen.findByText("Computer disconnected")).toBeVisible()
+    expect(save).toHaveBeenCalledWith({ ...machine, desktop: { startWithSandbox: true } }, machine, "remote-device", [machine])
+    expect(await screen.findByText("Device disconnected")).toBeVisible()
     expect(localSave).not.toHaveBeenCalled()
   })
   it("does not offer installation when the desktop is already configured", async () => {
@@ -57,7 +57,7 @@ describe("optional Linux desktop", () => {
   })
   it("checks operation eligibility before installing", async () => {
     const save = vi.fn()
-    const validate = vi.fn().mockReturnValue("This computer is unavailable.")
+    const validate = vi.fn().mockReturnValue("This device is unavailable.")
     render(<TooltipProvider><Toaster /><MachineList machines={[machine]} onMachinesChange={save}
       validateOperation={validate} isMachineCreated={() => true}
       getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
@@ -65,7 +65,7 @@ describe("optional Linux desktop", () => {
     await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
     await user.click(screen.getByRole("menuitem", { name: "Add Linux desktop" }))
     expect(validate).toHaveBeenCalledWith({ ...machine, desktop: { startWithSandbox: true } }, false, "")
-    expect(await screen.findByText("This computer is unavailable.")).toBeVisible()
+    expect(await screen.findByText("This device is unavailable.")).toBeVisible()
     expect(save).not.toHaveBeenCalled()
   })
   it("keeps legacy configurations desktop-free and retains an explicit startup policy", () => {

@@ -5,7 +5,7 @@ import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { useRepositoryPushToasts } from "../components/use-repository-push-toasts"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
-import { remoteWorkspaceTarget } from "../model/remote-computers"
+import { remoteWorkspaceTarget } from "../model/connections"
 import { OverviewPage } from "./overview-page"
 
 const actions = {} as ApplicationActions
@@ -18,13 +18,13 @@ function Host({ source }: { source: ApplicationSource }) {
   return <><OverviewPage source={source} actions={actions} onMachinesChange={onMachinesChange} /><Toaster /></>
 }
 
-it.each(["failed", "succeeded"] as const)("removes a remote %s push notification on deletion while preserving a same-named computer's notification", async (status) => {
+it.each(["failed", "succeeded"] as const)("removes a remote %s push notification on deletion while preserving a same-named device's notification", async (status) => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const local = source.workspaces.find(workspace => workspace.machine.kind === "vm")!
   const remote = {
     ...structuredClone(local),
     machine: { ...local.machine, id: remoteWorkspaceTarget("office", "remote-vm") },
-    computer: { id: "office", vmId: "remote-vm", name: "Office", address: "office.test", connected: true },
+    device: { id: "office", vmId: "remote-vm", name: "Office", address: "office.test", connected: true },
   }
   source.workspaces = [local, remote]
   const push = { workspace: remote.machine.id, repositoryPath: "/workspace/remote-repo", commitCount: 1, target: { repository: "acme/silo", branch: "main", commit: "a".repeat(40) } }

@@ -6,7 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import { MachineList } from "@/features/sandboxes/components/machine-list"
 import { computerUseFixtureNames, createFixtureComputerUseBackend, fixtureChatGptStatus, fixtureComputerUse, fixtureDesktopState } from "@/fixtures/computer-use"
-import { computerOfWorkspace, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
+import { deviceOfWorkspace, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
 import { ComputerUseProvider } from "./computer-use-provider"
 import { CHATGPT_DOWNLOAD_NOTE, ChatGptAppProgress, ChatGptAppStatusView, ComputerUsePanel, ComputerUseSection } from "./computer-use-panel"
 import { chatGptStatusText } from "./computer-use-labels"
@@ -122,13 +122,13 @@ describe("computer use panel", () => {
     expect(retry).toHaveBeenCalledOnce()
   })
   it("disables Retry while a retry is under way and shows a rejected one", () => {
-    renderPanel(fixtureComputerUse("app-failed"), {}, { retry: vi.fn(), busy: true, error: "The computer is offline." })
+    renderPanel(fixtureComputerUse("app-failed"), {}, { retry: vi.fn(), busy: true, error: "The device is offline." })
     expect(screen.getByRole("button", { name: "Retry" })).toBeDisabled()
-    expect(screen.getByText("The computer is offline.")).toBeVisible()
+    expect(screen.getByText("The device is offline.")).toBeVisible()
   })
-  it("shows errors from the owning computer as they came, and reads that fail with Try again", async () => {
-    const approval = renderPanel(ready, { error: "Computer disconnected: office-mac", loadError: "Connection lost" })
-    expect(screen.getAllByRole("alert").map(alert => alert.textContent)).toEqual([expect.stringContaining("Computer disconnected: office-mac"), expect.stringContaining("Connection lost")])
+  it("shows errors from the owning device as they came, and reads that fail with Try again", async () => {
+    const approval = renderPanel(ready, { error: "Device disconnected: office-mac", loadError: "Connection lost" })
+    expect(screen.getAllByRole("alert").map(alert => alert.textContent)).toEqual([expect.stringContaining("Device disconnected: office-mac"), expect.stringContaining("Connection lost")])
     await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }))
     expect(approval.refresh).toHaveBeenCalledOnce()
     await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss error" }))
@@ -213,7 +213,7 @@ describe("computer use section", () => {
   function section(b: ComputerUseBackend) {
     render(wrap(b, <ComputerUseSection workspace="office/vm-1" pollMs={60_000} />))
   }
-  it("sets the approval mode through the owning computer's command and shows the result", async () => {
+  it("sets the approval mode through the owning device's command and shows the result", async () => {
     const setApproval = vi.fn(async (_workspace: string, mode: "ask" | "auto") => ({ ...fixtureDesktopState("ready"), computerUse: { ...ready, approval: mode } }))
     section(backend({ readDesktopState: async () => fixtureDesktopState("ready"), setApproval }))
     const toggle = await screen.findByRole("switch", { name: /Allow without asking/ })
@@ -249,7 +249,7 @@ describe("computer use section", () => {
     expect(await screen.findByText("The sandbox stopped.")).toBeVisible()
   })
   it("retries a failed ChatGPT download without offering setup", async () => {
-    const retry = vi.fn(async (_computer?: string) => ({}))
+    const retry = vi.fn(async (_device?: string) => ({}))
     section(backend({ readDesktopState: async () => fixtureDesktopState("app-failed"), chatGptStatus: async () => fixtureChatGptStatus("failed-final"), retry }))
     expect(await screen.findByText("ChatGPT download failed.")).toBeVisible()
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument()
@@ -356,17 +356,17 @@ describe("sandbox settings for v3 and v4", () => {
   })
 })
 
-describe("creating a sandbox on the selected computer", () => {
+describe("creating a sandbox on the selected device", () => {
   const machine = productionMachineDefaults[0]
-  const computers = [{ id: "11111111-1111-4111-8111-111111111111", name: "Linux box", connected: true }]
+  const devices = [{ id: "11111111-1111-4111-8111-111111111111", name: "Linux box", connected: true }]
   function creating(status: unknown, draft: typeof machine = machine, onMachinesChange = vi.fn()) {
-    const bridgeBackend = backend({ chatGptStatus: async computer => computer ? status : { state: "ready" } })
-    render(wrap(bridgeBackend, <TooltipProvider><MachineList machines={[]} computers={computers} getComputerId={() => undefined} onMachinesChange={onMachinesChange}
+    const bridgeBackend = backend({ chatGptStatus: async device => device ? status : { state: "ready" } })
+    render(wrap(bridgeBackend, <TooltipProvider><MachineList machines={[]} devices={devices} getDeviceId={() => undefined} onMachinesChange={onMachinesChange}
       isMachineCreated={() => false} isMachineRunning={() => false}
       initialEditorDraft={{ draft, insertAt: 0 }} /></TooltipProvider>))
     return onMachinesChange
   }
-  const choose = (user: ReturnType<typeof userEvent.setup>) => user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), computers[0]!.id)
+  const choose = (user: ReturnType<typeof userEvent.setup>) => user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), devices[0]!.id)
 
   it("offers the optional desktop and says to update an older remote owner", async () => {
     creating({ state: "unknown" })
@@ -411,15 +411,15 @@ const OTHER = "22222222-2222-4222-8222-222222222222"
 const VM = "33333333-3333-4333-8333-333333333333"
 const remoteVm = `silo-remote:${HOST}:${VM}`
 
-describe("ChatGPT app store per computer", () => {
-  it("addresses a computer by its host id, never a placeholder sandbox, and keeps one store per computer", async () => {
+describe("ChatGPT app store per device", () => {
+  it("addresses a device by its device id, never a placeholder sandbox, and keeps one store per device", async () => {
     const calls: Array<[string, string | undefined]> = []
     const bridge = createComputerUseBridge(backend({
-      chatGptStatus: async computer => { calls.push(["status", computer]); return { state: "failed", reason: "Offline.", retryable: true } },
-      retry: async computer => { calls.push(["retry", computer]) },
+      chatGptStatus: async device => { calls.push(["status", device]); return { state: "failed", reason: "Offline.", retryable: true } },
+      retry: async device => { calls.push(["retry", device]) },
     }))
     expect(bridge.chatGptFor()).toBe(bridge.chatGptFor())
-    expect(bridge.chatGptFor(HOST)).toBe(bridge.chatGptFor(computerOfWorkspace(remoteVm)))
+    expect(bridge.chatGptFor(HOST)).toBe(bridge.chatGptFor(deviceOfWorkspace(remoteVm)))
     expect(bridge.chatGptFor(HOST)).not.toBe(bridge.chatGptFor())
     expect(bridge.chatGptFor(HOST)).not.toBe(bridge.chatGptFor(OTHER))
     await bridge.chatGptFor(HOST).retry()
@@ -428,12 +428,12 @@ describe("ChatGPT app store per computer", () => {
     expect(calls.at(-1)).toEqual(["status", undefined])
     expect(JSON.stringify(calls)).not.toContain("silo-remote")
   })
-  it("finds the owning computer of a sandbox", () => {
-    expect(computerOfWorkspace(remoteVm)).toBe(HOST)
-    expect(computerOfWorkspace("dev")).toBeUndefined()
-    expect(computerOfWorkspace(undefined)).toBeUndefined()
+  it("finds the owning device of a sandbox", () => {
+    expect(deviceOfWorkspace(remoteVm)).toBe(HOST)
+    expect(deviceOfWorkspace("dev")).toBeUndefined()
+    expect(deviceOfWorkspace(undefined)).toBeUndefined()
   })
-  it("applies a status event only to this computer", async () => {
+  it("applies a status event only to this device", async () => {
     const handlers: Array<(payload: unknown) => void> = []
     const emit = (payload: unknown) => handlers.forEach(handler => handler(payload))
     const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "idle" }), listenStatus: async handler => { handlers.push(handler); return () => {} } }), { busy: 60_000, idle: 60_000 })
@@ -446,7 +446,7 @@ describe("ChatGPT app store per computer", () => {
     expect(remote.getSnapshot().status).toEqual({ state: "idle" })
     unsubscribe.forEach(stop => stop())
   })
-  it("reads a remote computer's status again on a schedule, faster while it works", async () => {
+  it("reads a remote device's status again on a schedule, faster while it works", async () => {
     vi.useFakeTimers()
     const statuses: unknown[] = [{ state: "downloading", receivedBytes: 1, totalBytes: 10 }, { state: "downloading", receivedBytes: 5, totalBytes: 10 }, { state: "ready", path: "/p", version: "1" }]
     const read = vi.fn(async () => statuses.shift() ?? { state: "ready", path: "/p", version: "1" })
@@ -474,7 +474,7 @@ describe("ChatGPT app store per computer", () => {
       expect(read).toHaveBeenCalledTimes(4)
     } finally { stop() }
   })
-  it("does not poll this computer: it has events", async () => {
+  it("does not poll this device: it has events", async () => {
     vi.useFakeTimers()
     const read = vi.fn(async () => ({ state: "idle" }))
     const bridge = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 10, idle: 10 })
@@ -495,7 +495,7 @@ describe("ChatGPT app store per computer", () => {
 })
 
 describe("fixture for an unreadable remote status", () => {
-  it("is readable once, then every read of a remote computer fails, while this computer stays readable", async () => {
+  it("is readable once, then every read of a remote device fails, while this device stays readable", async () => {
     const fixture = createFixtureComputerUseBackend("ready", "ready", "ready-then-unreadable")
     await expect(fixture.chatGptStatus("11111111-1111-4111-8111-111111111111")).resolves.toMatchObject({ state: "ready" })
     await expect(fixture.chatGptStatus("11111111-1111-4111-8111-111111111111")).rejects.toThrow("connection")
@@ -666,14 +666,14 @@ describe("ChatGPT app errors", () => {
     const read = vi.fn().mockImplementationOnce(() => initial.promise).mockRejectedValue(new Error("Status unavailable."))
     const store = createComputerUseBridge(backend({
       chatGptStatus: read,
-      retry: async () => { throw new Error("Update Silo on that computer to use computer use.") },
+      retry: async () => { throw new Error("Update Silo on that device to use computer use.") },
     })).chatGptFor(HOST)
     const view = render(<ChatGptAppStatusView store={store} retry fallbackReason="Download failed." />)
     try {
       await waitFor(() => expect(read).toHaveBeenCalledOnce())
       await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
       await waitFor(() => expect(store.getSnapshot().loadError).toBe("Status unavailable."))
-      expect(screen.getAllByRole("alert").map(alert => alert.textContent).join(" ")).toContain("Update Silo on that computer to use computer use.")
+      expect(screen.getAllByRole("alert").map(alert => alert.textContent).join(" ")).toContain("Update Silo on that device to use computer use.")
       await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss error" }))
       expect(screen.getByRole("alert")).toHaveTextContent("Status unavailable.")
     } finally { view.unmount(); initial.resolve({ state: "idle" }) }
@@ -683,7 +683,7 @@ describe("ChatGPT app errors", () => {
     let attempted = false
     const retry = vi.fn(async () => {
       attempted = true
-      throw new Error("Update Silo on that computer to use computer use.")
+      throw new Error("Update Silo on that device to use computer use.")
     })
     const read = vi.fn(async () => attempted ? { state } : { state: "failed", reason: "Download failed.", retryable: false })
     const store = createComputerUseBridge(backend({ chatGptStatus: read, retry })).chatGptFor(HOST)
@@ -692,7 +692,7 @@ describe("ChatGPT app errors", () => {
     try {
       await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
       await waitFor(() => expect(store.getSnapshot().status).toMatchObject({ state }))
-      expect(screen.getByRole("alert")).toHaveTextContent("Update Silo on that computer to use computer use.")
+      expect(screen.getByRole("alert")).toHaveTextContent("Update Silo on that device to use computer use.")
       expect(retry).toHaveBeenCalledOnce()
       await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss error" }))
       expect(screen.queryByRole("alert")).not.toBeInTheDocument()
@@ -715,15 +715,15 @@ describe("ChatGPT app errors", () => {
     } finally { view.unmount() }
   })
   it("shows a rejected Retry and keeps it until dismissed", async () => {
-    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "failed", reason: "Offline.", retryable: true }), retry: async () => { throw new Error("Silo could not reach the other computer.") } }))
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "failed", reason: "Offline.", retryable: true }), retry: async () => { throw new Error("Silo could not reach the other device.") } }))
     const store = bridge.chatGptFor(HOST)
     await store.refresh()
     await store.retry()
-    expect(store.getSnapshot().error).toBe("Silo could not reach the other computer.")
+    expect(store.getSnapshot().error).toBe("Silo could not reach the other device.")
     store.dismissError()
     expect(store.getSnapshot().error).toBeNull()
   })
-  it("keeps a failed first status read for this computer, and recovers with the next", async () => {
+  it("keeps a failed first status read for this device, and recovers with the next", async () => {
     const reads = [() => Promise.reject(new Error("Silo could not read the status.")), () => Promise.resolve({ state: "idle" })]
     const bridge = createComputerUseBridge(backend({ chatGptStatus: () => reads.shift()!() }))
     render(<ChatGptAppStatusView store={bridge.chatGptFor()} />)
@@ -792,8 +792,8 @@ describe("computer use section reads and errors", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Connection lost")
     expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeVisible()
   })
-  it("reads the ChatGPT status of the computer that owns the sandbox, only for a failed download", async () => {
-    const status = vi.fn(async (_computer?: string) => ({ state: "downloading", receivedBytes: 100_000_000, totalBytes: 200_000_000 }))
+  it("reads the ChatGPT status of the device that owns the sandbox, only for a failed download", async () => {
+    const status = vi.fn(async (_device?: string) => ({ state: "downloading", receivedBytes: 100_000_000, totalBytes: 200_000_000 }))
     render(wrap(backend({ readDesktopState: async () => fixtureDesktopState("app-failed"), chatGptStatus: status }), <ComputerUseSection workspace={remoteVm} pollMs={60_000} />))
     await screen.findByRole("button", { name: "Retry" })
     expect(status).toHaveBeenCalledWith(HOST)

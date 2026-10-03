@@ -10,16 +10,16 @@ import { Toaster } from "@/components/ui/sonner"
 import { SettingsProvider } from "@/features/preferences/settings-store"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
-import { remoteWorkspaceTarget, workspaceTarget } from "../model/remote-computers"
+import { remoteWorkspaceTarget, workspaceTarget } from "../model/connections"
 import { NetworkPage } from "../pages/network-page"
 
 afterEach(() => { toast.dismiss(); delivered.mockClear(); vi.restoreAllMocks() })
 
-it.each(["add", "edit", "remove"] as const)("names and links remote port %s progress and results using the owning computer", async operation => {
-  const local = structuredClone(applicationSourceForScenario("running").workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.computer)!)
+it.each(["add", "edit", "remove"] as const)("names and links remote port %s progress and results using the owning device", async operation => {
+  const local = structuredClone(applicationSourceForScenario("running").workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.device)!)
   const target = remoteWorkspaceTarget("office:main", "same:vm")
-  const remote = { ...local, machine: { ...local.machine, id: target }, computer: { id: "office:main", name: "Office Mac", address: "owner@office", connected: true, vmId: "same:vm" } }
-  const other = { ...local, machine: { ...local.machine, id: remoteWorkspaceTarget("laptop", "same:vm") }, computer: { id: "laptop", name: "Laptop", address: "owner@laptop", connected: true, vmId: "same:vm" } }
+  const remote = { ...local, machine: { ...local.machine, id: target }, device: { id: "office:main", name: "Office Mac", address: "owner@office", connected: true, vmId: "same:vm" } }
+  const other = { ...local, machine: { ...local.machine, id: remoteWorkspaceTarget("laptop", "same:vm") }, device: { id: "laptop", name: "Laptop", address: "owner@laptop", connected: true, vmId: "same:vm" } }
   let finish!: () => void
   const pending = new Promise<void>(resolve => { finish = resolve })
   const work = vi.fn(() => pending)
@@ -53,9 +53,9 @@ it.each(["add", "edit", "remove"] as const)("names and links remote port %s prog
 })
 
 it("keeps the remote native failure reason and retry identity beside same-named sandboxes", async () => {
-  const local = structuredClone(applicationSourceForScenario("running").workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.computer)!)
+  const local = structuredClone(applicationSourceForScenario("running").workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.device)!)
   const target = remoteWorkspaceTarget("office", "vm-1")
-  const remote = { ...local, machine: { ...local.machine, id: target }, computer: { id: "office", name: "Office Mac", address: "owner@office", connected: true, vmId: "vm-1" } }
+  const remote = { ...local, machine: { ...local.machine, id: target }, device: { id: "office", name: "Office Mac", address: "owner@office", connected: true, vmId: "vm-1" } }
   const message = "Another sandbox operation is still running. Wait for it to finish, then retry."
   const work = vi.fn().mockRejectedValueOnce({ code: "busy", message }).mockResolvedValue(undefined)
   render(<SettingsProvider initialSettings={{ theme: "light" }}><Toaster /><NetworkPage workspaces={[local, remote]} browser="Firefox" active={false} actions={{ saveNetworkPort: work } as unknown as ApplicationActions} network={{ workspaces: [] }} /></SettingsProvider>)
@@ -73,9 +73,9 @@ it("keeps the remote native failure reason and retry identity beside same-named 
   expect(work).toHaveBeenNthCalledWith(2, { workspace: target, port: 9000, hostPort: null, scheme: "http" })
 })
 
-it("keeps browser-open failures separate for equally named sandboxes and computers", async () => {
-  const local = structuredClone(applicationSourceForScenario("running").workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.computer)!)
-  const remotes = ["office-a", "office-b"].map(id => ({ ...local, machine: { ...local.machine, id: remoteWorkspaceTarget(id, "vm-1") }, computer: { id, name: "Office", address: `owner@${id}`, connected: true, vmId: "vm-1" } }))
+it("keeps browser-open failures separate for equally named sandboxes and devices", async () => {
+  const local = structuredClone(applicationSourceForScenario("running").workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.device)!)
+  const remotes = ["office-a", "office-b"].map(id => ({ ...local, machine: { ...local.machine, id: remoteWorkspaceTarget(id, "vm-1") }, device: { id, name: "Office", address: `owner@${id}`, connected: true, vmId: "vm-1" } }))
   const open = vi.fn().mockRejectedValue(new Error("Browser unavailable"))
   render(<SettingsProvider initialSettings={{ theme: "light" }}><Toaster /><NetworkPage workspaces={remotes} browser="Firefox" active={false} actions={{ openNetworkPort: open } as unknown as ApplicationActions}
     network={{ workspaces: remotes.map(workspace => ({ workspace: workspaceTarget(workspace), error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", state: "reachable", configured: true }] })) }} /></SettingsProvider>)

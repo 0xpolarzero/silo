@@ -6,10 +6,10 @@ import type { ApplicationActions, ApplicationWorkspace } from "../model/applicat
 import { OverviewPage } from "./overview-page"
 
 function localVm(source: ReturnType<typeof applicationSourceForScenario>, name: string): ApplicationWorkspace {
-  return source.workspaces.find(item => item.machine.kind === "vm" && !item.computer && item.machine.name === name)!
+  return source.workspaces.find(item => item.machine.kind === "vm" && !item.device && item.machine.name === name)!
 }
 
-it("rejects a current-state fork name that another sandbox on this computer already uses", async () => {
+it("rejects a current-state fork name that another sandbox on this device already uses", async () => {
   const forkCheckpoint = vi.fn()
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = localVm(source, "dev")
@@ -25,14 +25,14 @@ it("rejects a current-state fork name that another sandbox on this computer alre
   expect(forkCheckpoint).not.toHaveBeenCalled()
 })
 
-it("rejects a checkpoint fork name that another sandbox on this computer already uses", async () => {
+it("rejects a checkpoint fork name that another sandbox on this device already uses", async () => {
   const forkCheckpoint = vi.fn()
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = localVm(source, "dev")
   const office = { id: "office", name: "Office", address: "office.local", connected: true }
   const remote = structuredClone(localVm(source, "playgrounds"))
-  source.workspaces.push({ ...remote, machine: { ...remote.machine, id: "remote-vm", name: "remote-only" }, computer: { ...office, vmId: "remote-vm" } })
-  source.remoteComputers = [office]
+  source.workspaces.push({ ...remote, machine: { ...remote.machine, id: "remote-vm", name: "remote-only" }, device: { ...office, vmId: "remote-vm" } })
+  source.devices = [office]
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ forkCheckpoint } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
 
@@ -47,7 +47,7 @@ it("rejects a checkpoint fork name that another sandbox on this computer already
   expect(screen.getByText("A sandbox named personal already exists.")).toBeVisible()
   expect(screen.getByRole("button", { name: "Fork" })).toBeDisabled()
 
-  // A name that is only used on another computer stays available here.
+  // A name that is only used on another device stays available here.
   await user.clear(screen.getByRole("textbox", { name: "New sandbox name" }))
   await user.type(screen.getByRole("textbox", { name: "New sandbox name" }), "remote-only")
   expect(screen.queryByText(/already exists/)).toBeNull()

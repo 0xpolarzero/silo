@@ -5,18 +5,18 @@ import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
 import { OverviewPage } from "./overview-page"
-import { remoteWorkspaceTarget } from "../model/remote-computers"
+import { remoteWorkspaceTarget } from "../model/connections"
 
 function setup(connected = true) {
   const source = applicationSourceForScenario("running")
-  const computer = { id: "office", name: "Office Mac", address: "user@office", connected }
+  const device = { id: "office", name: "Office Mac", address: "user@office", connected }
   const remote = structuredClone(source.workspaces[0])
-  remote.computer = { ...computer, vmId: remote.machine.id }
-  remote.machine.id = remoteWorkspaceTarget(computer.id, remote.machine.id)
+  remote.device = { ...device, vmId: remote.machine.id }
+  remote.machine.id = remoteWorkspaceTarget(device.id, remote.machine.id)
   remote.freshness = connected ? "fresh" : "stale"
   source.workspaces.push(remote)
-  source.remoteComputers = [computer]
-  const actions = { saveRemoteMachine: vi.fn().mockResolvedValue(undefined), deleteRemoteMachine: vi.fn().mockResolvedValue(undefined), startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(), connectComputer: vi.fn() } as unknown as ApplicationActions
+  source.devices = [device]
+  const actions = { saveRemoteMachine: vi.fn().mockResolvedValue(undefined), deleteRemoteMachine: vi.fn().mockResolvedValue(undefined), startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(), connectDevice: vi.fn() } as unknown as ApplicationActions
   const onMachinesChange = vi.fn()
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={onMachinesChange} />)
   return { source, remote, actions, onMachinesChange, view, user: userEvent.setup() }
@@ -29,7 +29,7 @@ it("keeps the existing VM list and shows remote ownership through a focusable ba
   const row = within(badge.closest("li")!)
   expect(row.queryByText("Restart required")).not.toBeInTheDocument()
   await user.click(row.getByRole("button", { name: `Stop ${remote.machine.name}` }))
-  // Stopping a running sandbox confirms first, naming its computer (decision 8).
+  // Stopping a running sandbox confirms first, naming its device (decision 8).
   const stop = within((await screen.findByText(`Stop ${remote.machine.name} on Office Mac?`)).closest<HTMLElement>("[data-slot=popover-content]")!)
   expect(actions.stopWorkspace).not.toHaveBeenCalled()
   await user.click(stop.getByRole("button", { name: "Stop" }))
@@ -46,16 +46,16 @@ it("keeps the existing VM list and shows remote ownership through a focusable ba
   expect(actions.deleteRemoteMachine).toHaveBeenCalledWith("office", remote.machine)
 })
 
-it("disables remote lifecycle operations while preserving last-known rows when the computer is unavailable", () => {
+it("disables remote lifecycle operations while preserving last-known rows when the device is unavailable", () => {
   const { remote } = setup(false)
-  expect(screen.getByText("4 sandboxes · 3 on this computer · 1 on other computers · 0 SSH hosts")).toBeVisible()
+  expect(screen.getByText("4 sandboxes · 3 on this device · 1 on other devices · 0 SSH hosts")).toBeVisible()
   const row = within(screen.getByLabelText(/Sandbox on Office Mac/).closest("li")!)
   expect(row.getByText("Offline · last known status")).toBeVisible()
   expect(row.getByRole("button", { name: `Stop ${remote.machine.name}` })).toBeDisabled()
   expect(row.queryByRole("button", { name: `Delete ${remote.machine.name} on Office Mac` })).not.toBeInTheDocument()
 })
 
-it("creates a VM on the selected computer without rewriting the local inventory", async () => {
+it("creates a VM on the selected device without rewriting the local inventory", async () => {
   const { actions, onMachinesChange, user } = setup()
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
@@ -76,14 +76,14 @@ it("edits a remote VM with the same name as a local VM using its original config
   expect(actions.saveRemoteMachine).toHaveBeenCalledWith("office", remote.machine, remote.machine)
 })
 
-it("removes the last VM from a remote computer and can create from an empty list", async () => {
+it("removes the last VM from a remote device and can create from an empty list", async () => {
   const source = applicationSourceForScenario("running")
   const original = source.workspaces[0]
   original.state = "stopped"
-  const computer = { id: "office", name: "Office Mac", address: "user@office", connected: true }
-  const remote = { ...original, machine: { ...original.machine, id: remoteWorkspaceTarget("office", original.machine.id) }, computer: { ...computer, vmId: original.machine.id } }
+  const device = { id: "office", name: "Office Mac", address: "user@office", connected: true }
+  const remote = { ...original, machine: { ...original.machine, id: remoteWorkspaceTarget("office", original.machine.id) }, device: { ...device, vmId: original.machine.id } }
   source.workspaces = [remote]
-  source.remoteComputers = [computer]
+  source.devices = [device]
   const actions = { saveRemoteMachine: vi.fn().mockResolvedValue(undefined), deleteRemoteMachine: vi.fn().mockResolvedValue(undefined), stopWorkspace: vi.fn(), restartWorkspace: vi.fn() } as unknown as ApplicationActions
   const onMachinesChange = vi.fn()
   const user = userEvent.setup()
@@ -93,7 +93,7 @@ it("removes the last VM from a remote computer and can create from an empty list
   await user.click(within((await screen.findByText(`Delete ${remote.machine.name} on Office Mac permanently?`)).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete permanently" }))
   await waitFor(() => expect(actions.deleteRemoteMachine).toHaveBeenCalledWith("office", remote.machine))
   view.rerender(<OverviewPage source={{ ...source, workspaces: [] }} actions={actions} onMachinesChange={onMachinesChange} />)
-  expect(screen.getByText("0 sandboxes · 0 on this computer · 0 on other computers · 0 SSH hosts")).toBeVisible()
+  expect(screen.getByText("0 sandboxes · 0 on this device · 0 on other devices · 0 SSH hosts")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")
@@ -101,7 +101,7 @@ it("removes the last VM from a remote computer and can create from an empty list
   expect(actions.saveRemoteMachine).toHaveBeenCalledWith("office", expect.objectContaining({ kind: "vm" }), undefined)
 })
 
-it("permits removing the last local VM without affecting connected computers", async () => {
+it("permits removing the last local VM without affecting connected devices", async () => {
   const source = applicationSourceForScenario("running")
   source.workspaces = [source.workspaces[0]]
   source.workspaces[0].state = "stopped"
@@ -117,17 +117,17 @@ it("permits removing the last local VM without affecting connected computers", a
   expect(actions.deleteRemoteMachine).not.toHaveBeenCalled()
 })
 
-it("keeps a local edit scoped to local machines when a connected computer is removed", async () => {
+it("keeps a local edit scoped to local machines when a connected device is removed", async () => {
   const { source, actions, onMachinesChange, user, view } = setup()
   source.workspaces.forEach(workspace => { workspace.state = "stopped" })
   view.rerender(<OverviewPage source={{ ...source }} actions={actions} onMachinesChange={onMachinesChange} />)
-  const local = source.workspaces.filter(workspace => !workspace.computer).map(workspace => workspace.machine)
+  const local = source.workspaces.filter(workspace => !workspace.device).map(workspace => workspace.machine)
   const machine = local[0]!
   const row = within(document.querySelector<HTMLElement>(`li[data-machine-id="${machine.id}"]`)!)
   await user.click(row.getByRole("button", { name: `More actions for ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Edit ${machine.name}` }))
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
-  view.rerender(<OverviewPage source={{ ...source, workspaces: source.workspaces.filter(workspace => !workspace.computer), remoteComputers: [] }}
+  view.rerender(<OverviewPage source={{ ...source, workspaces: source.workspaces.filter(workspace => !workspace.device), devices: [] }}
     actions={actions} onMachinesChange={onMachinesChange} />)
   await user.click(screen.getByRole("button", { name: "Save" }))
   expect(onMachinesChange).toHaveBeenCalledExactlyOnceWith(local.map(item => item.id === machine.id ? { ...item, cpus: 4 } : item), local)
@@ -135,19 +135,19 @@ it("keeps a local edit scoped to local machines when a connected computer is rem
 })
 
 
-it("keeps a new sandbox draft when its selected computer is removed before Create", async () => {
+it("keeps a new sandbox draft when its selected device is removed before Create", async () => {
   const { source, actions, onMachinesChange, user, view } = setup()
   render(<Toaster />)
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "2")
-  view.rerender(<OverviewPage source={{ ...source, workspaces: source.workspaces.filter(workspace => !workspace.computer), remoteComputers: [] }}
+  view.rerender(<OverviewPage source={{ ...source, workspaces: source.workspaces.filter(workspace => !workspace.device), devices: [] }}
     actions={actions} onMachinesChange={onMachinesChange} />)
   await user.click(screen.getByRole("button", { name: "Create" }))
   expect(actions.saveRemoteMachine).not.toHaveBeenCalled()
   expect(onMachinesChange).not.toHaveBeenCalled()
-  expect(await screen.findByText("The selected computer was removed. Choose another computer before saving.")).toBeVisible()
+  expect(await screen.findByText("The selected device was removed. Choose another device before saving.")).toBeVisible()
   expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("2")
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "")
   await user.click(screen.getByRole("button", { name: "Create" }))

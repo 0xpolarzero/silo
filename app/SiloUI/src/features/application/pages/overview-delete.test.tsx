@@ -69,7 +69,7 @@ function storage(bytes: number): WorkspaceStorageState {
 
 function stoppedDev(): ApplicationSource {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
+  source.devices = []
   source.sandboxConfigurationOperation = null
   const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
   dev.state = "stopped"

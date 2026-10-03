@@ -2,10 +2,10 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 
 import { bridgeErrorMessage } from "@/contracts/bridge-error"
 import { errorMessage, showActionFailure, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 import type { ApplicationActions, ApplicationWorkspace, NetworkPort, NetworkState } from "@/features/application/model/application-source"
 
-/** Where a forwarded port is reached on this computer. Websites use their sandbox's own
+/** Where a forwarded port is reached on this device. Websites use their sandbox's own
  * `*.localhost` name when the backend supplies one, so browsers keep each sandbox's cookies
  * apart from other local services in every browser; plain TCP ports use 127.0.0.1. */
 export function networkAddress(port: NetworkPort, host?: string | null) {
@@ -27,7 +27,7 @@ export function networkPortState(workspace: ApplicationWorkspace, port: NetworkP
   return ({ reachable: "Reachable", waiting: "Waiting for service", unpublished: "Not forwarded", unknown: "Unknown" })[port.state]
 }
 
-interface PortOperationIdentity { computer?: { id: string; name: string }; sandboxId: string; displayName: string }
+interface PortOperationIdentity { device?: { id: string; name: string }; sandboxId: string; displayName: string }
 
 interface PortDraft { workspace: string; sandboxId: string; port: string; hostPort: string; scheme: string; editing: boolean }
 
@@ -55,7 +55,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
 
   function hasCurrentSandbox(identity: PortOperationIdentity) {
     return currentWorkspaces.current?.some(workspace => workspace.machine.id === identity.sandboxId
-      && workspace.computer?.id === identity.computer?.id && workspace.machine.name === identity.displayName)
+      && workspace.device?.id === identity.device?.id && workspace.machine.name === identity.displayName)
   }
   const changedSandbox = "This sandbox changed or is no longer available. Open its current Ports section and try again."
 
@@ -80,7 +80,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     pending.current = true
     setBusy(true)
     const sandbox = identity.displayName
-    const location = identity.computer ? `${sandbox} · ${identity.computer.name}` : sandbox
+    const location = identity.device ? `${sandbox} · ${identity.device.name}` : sandbox
     const noticeSandbox = { id: identity.sandboxId, name: sandbox }
     showOperationProgress(id, { title: `${copy.loading} · ${location}`, step: `${copy.step ?? copy.loading} · ${location}`, progress: null, sandbox })
     try {
@@ -98,9 +98,9 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
 
   /** Opening is instant, so it has no loading phase: a failure stays until closed, with Retry. */
   async function open(workspace: ApplicationWorkspace, port: number) {
-    const location = workspace.computer ? `${workspace.machine.name} · ${workspace.computer.name}` : workspace.machine.name
+    const location = workspace.device ? `${workspace.machine.name} · ${workspace.device.name}` : workspace.machine.name
     const attempt = async () => {
-      if (!hasCurrentSandbox({ computer: workspace.computer, sandboxId: workspace.machine.id, displayName: workspace.machine.name })) {
+      if (!hasCurrentSandbox({ device: workspace.device, sandboxId: workspace.machine.id, displayName: workspace.machine.name })) {
         showActionFailure(`Could not open port ${port} · ${location}`, changedSandbox, undefined, { id: `network-port-open:${workspace.machine.id}:${port}`, native: false })
         return
       }
@@ -114,14 +114,14 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   const loading = Boolean(refreshNetwork) && localWorkspaces.some(workspace => !network?.workspaces.some(item => item.workspace === workspaceTarget(workspace)))
   const rows = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))
-    return (item?.ports ?? []).map(port => ({ workspace, port, host: item?.host ?? null, error: item?.error ?? (workspace.computer ? null : error) }))
+    return (item?.ports ?? []).map(port => ({ workspace, port, host: item?.host ?? null, error: item?.error ?? (workspace.device ? null : error) }))
   })
     .sort((a, b) => a.workspace.machine.name.localeCompare(b.workspace.machine.name) || a.port.port - b.port.port)
   const errors = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))
     // A stopped sandbox has no live services to observe; its saved ports show as "Sandbox stopped".
     const ambiguous = workspaces.some(other => other !== workspace && other.machine.name === workspace.machine.name)
-    const name = ambiguous ? `${workspace.machine.name} (${workspace.computer?.name ?? "This computer"})` : workspace.machine.name
+    const name = ambiguous ? `${workspace.machine.name} (${workspace.device?.name ?? "This device"})` : workspace.machine.name
     return item?.error && workspace.state !== "stopped" ? [`${name}: ${item.error}`] : []
   })
 
@@ -141,7 +141,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   function cancelDraft() { setDraft(null) }
 
   return {
-    error: workspaces.some(workspace => !workspace.computer) ? error : null, draft, setDraft, fieldErrors, setFieldErrors, connecting, setConnecting, busy,
+    error: workspaces.some(workspace => !workspace.device) ? error : null, draft, setDraft, fieldErrors, setFieldErrors, connecting, setConnecting, busy,
     /** Always null: operation failures are shown as notifications, not rendered inline. */
     confirm, setConfirm,
     run, open, add, startEdit, cancelDraft, loading, localWorkspaces, runningLocalWorkspaces, addDisabledReason, rows, errors, actions,

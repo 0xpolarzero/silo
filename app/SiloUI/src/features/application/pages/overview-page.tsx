@@ -9,9 +9,9 @@ import { DisabledReason } from "../components/disabled-reason"
 import type { SandboxCommandRequest } from "../components/application-commands"
 import { LifecycleControl } from "../components/lifecycle-control"
 import { lifecycleGuard, type LifecycleAction, type LifecycleGuard } from "../model/lifecycle-guard"
-import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
-import { parseRemoteWorkspaceTarget, workspaceTarget } from "../model/remote-computers"
-import { ConnectComputerForm } from "../components/remote-computers-settings"
+import { DeviceBadge } from "@/features/sandboxes/components/device-badge"
+import { parseRemoteWorkspaceTarget, workspaceTarget } from "../model/connections"
+import { ConnectDeviceForm } from "../components/connections-settings"
 import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditing } from "./sandbox-detail-page"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { CircleAlert, Code, Download, GitFork, HardDrive, History, KeyRound, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
@@ -21,7 +21,7 @@ import { dismissOperationToast, dismissSandboxToasts, dismissSandboxToastsById, 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
 import { ConfirmBody } from "@/components/confirm-popover"
 import type { BackupController, VerifiedExport } from "../model/backup-source"
-import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "../model/checkpoint-source"
+import { sandboxNamesOnDevice, type WorkspaceCheckpoint } from "../model/checkpoint-source"
 
 import { configurationFailureDiagnostic } from "../model/configuration-failure"
 import { ErrorDetails } from "@/components/error-details"
@@ -44,7 +44,7 @@ import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/compo
 
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { sandboxBusyReason, workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
-import { hostCapacityFrom } from "@/features/sandboxes/model/machine-limits"
+import { deviceCapacityFrom } from "@/features/sandboxes/model/machine-limits"
 import { nextSandboxOrder, sandboxOrderKey, sandboxOrderRanks } from "@/features/sandboxes/model/sandbox-order"
 import { useSettings } from "@/features/preferences/settings-store"
 
@@ -328,12 +328,12 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
   /** The Fork popover body for a sandbox's ⋯ menu (row or detail page); state lives with that menu. */
   function forkPopovers(workspace: ApplicationWorkspace | undefined): MenuPopovers | undefined {
     if (!workspace || !actions.forkCheckpoint) return undefined
-    return { fork: close => <ForkBody sandboxName={workspace.machine.name} disabled={forkDisabled(workspace)} takenNames={sandboxNamesOnComputer(visibleWorkspaces, workspace.computer?.id)} onFork={name => forkCurrentState(workspace, name)} onClose={close} /> }
+    return { fork: close => <ForkBody sandboxName={workspace.machine.name} disabled={forkDisabled(workspace)} takenNames={sandboxNamesOnDevice(visibleWorkspaces, workspace.device?.id)} onFork={name => forkCurrentState(workspace, name)} onClose={close} /> }
   }
   const configurationOperation = source.sandboxConfigurationOperation
   const configurationLocked = readOnly || configurationOperation !== null
-  const getMachineComputerId = (machine: SetupMachineConfiguration) => parseRemoteWorkspaceTarget(machine.id)?.hostId ?? workspaces.get(machine.id)?.computer?.id
-  const localOnly = (list: readonly SetupMachineConfiguration[]) => list.filter(machine => !getMachineComputerId(machine))
+  const getMachineDeviceId = (machine: SetupMachineConfiguration) => parseRemoteWorkspaceTarget(machine.id)?.deviceId ?? workspaces.get(machine.id)?.device?.id
+  const localOnly = (list: readonly SetupMachineConfiguration[]) => list.filter(machine => !getMachineDeviceId(machine))
   const localMachines = localOnly(machines)
 
   // Return to the list if the open sandbox disappeared (deleted, or removed by a refresh).
@@ -357,7 +357,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
 
   // The sandbox editing callbacks, shared by the list and the detail page's in-place editor
   // and delete dialog so both commit, delete, and validate through exactly the same paths.
-  // This computer's own order of the list, local and remote sandboxes alike.
+  // This device's own order of the list, local and remote sandboxes alike.
   const { settings: { sandboxOrder }, updateSettings } = useSettings()
   const orderRanks = sandboxOrderRanks(sandboxOrder)
   const orderRank = (machine: SetupMachineConfiguration) => {
@@ -368,15 +368,15 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     const shown = ids.flatMap(id => { const workspace = workspaces.get(id); return workspace ? [sandboxOrderKey(workspace)] : [] })
     void updateSettings({ sandboxOrder: nextSandboxOrder(sandboxOrder, shown) })
   }
-  const commitMachine = actions.saveRemoteMachine ? async (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => {
-    if (computerId) await actions.saveRemoteMachine!(computerId, machine, original)
+  const commitMachine = actions.saveRemoteMachine ? async (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, deviceId: string, baseline?: SetupMachineConfiguration[]) => {
+    if (deviceId) await actions.saveRemoteMachine!(deviceId, machine, original)
     else await updateLocal(machine, original, baseline)
   } : undefined
   const deleteMachine = actions.deleteRemoteMachine ? async (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => {
-    const computer = workspaces.get(machine.id)?.computer
-    if (computer) {
-      if (!computer.connected) throw new Error(`${computer.name} is offline. Reconnect to it before deleting ${machine.name}.`)
-      await actions.deleteRemoteMachine!(computer.id, machine)
+    const device = workspaces.get(machine.id)?.device
+    if (device) {
+      if (!device.connected) throw new Error(`${device.name} is offline. Reconnect to it before deleting ${machine.name}.`)
+      await actions.deleteRemoteMachine!(device.id, machine)
     } else {
       const base = baseline ? localOnly(baseline) : localMachines
       await onMachinesChange(base.filter(item => item.id !== machine.id), baseline ? base : undefined)
@@ -386,10 +386,10 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     if (source.vmOperationsUnavailable) { notifyOperationUnavailable(); return }
     return onMachinesChange(localOnly(next), baseline ? localOnly(baseline) : undefined)
   }
-  const validateMachineOperation = (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => {
-    const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
-    if (computerId && !computer) return "The selected computer was removed. Choose another computer before saving."
-    if (computer) return computer.busy ? `${computer.name} is updating. Wait before changing ${machine.name}.` : computer.connected ? undefined : `${computer.name} is offline. Reconnect to it before changing ${machine.name}.`
+  const validateMachineOperation = (machine: SetupMachineConfiguration, isNew: boolean, deviceId?: string) => {
+    const device = workspaces.get(machine.id)?.device ?? source.devices?.find(device => device.id === deviceId)
+    if (deviceId && !device) return "The selected device was removed. Choose another device before saving."
+    if (device) return device.busy ? `${device.name} is updating. Wait before changing ${machine.name}.` : device.connected ? undefined : `${device.name} is offline. Reconnect to it before changing ${machine.name}.`
     if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
     const notice = source.resourceNotice
     if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
@@ -421,9 +421,9 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     }
   }
 
-  /** Work runs on the sandbox or its computer is unreachable, so its settings can't change now. */
+  /** Work runs on the sandbox or its device is unreachable, so its settings can't change now. */
   function changesBlocked(workspace: ApplicationWorkspace) {
-    return workspaceAvailability(workspace, source).busy || Boolean(workspace.computer && !workspace.computer.connected)
+    return workspaceAvailability(workspace, source).busy || Boolean(workspace.device && !workspace.device.connected)
   }
 
   /** What a sandbox's Delete dialog states and offers, the same from its row and its page. */
@@ -432,14 +432,14 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     const readStorage = actions.readWorkspaceStorage
     return {
       checkpoints: workspace.checkpoints?.length,
-      readSize: machine.kind === "vm" && !workspace.computer && readStorage
+      readSize: machine.kind === "vm" && !workspace.device && readStorage
         ? async () => {
             const storage = await readStorage(machine.id)
             return storage.workspaceHostBytes === null || storage.runtimeHostBytes === null
               ? null : storage.workspaceHostBytes + storage.runtimeHostBytes
           }
         : undefined,
-      exportFirst: machine.kind === "vm" && !workspace.computer && exportSandbox
+      exportFirst: machine.kind === "vm" && !workspace.device && exportSandbox
         ? async () => {
             try {
               if (!await exportSandbox(machine.name)) return false
@@ -450,7 +450,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
             // Export can take minutes. A verified file does not authorize deleting a sandbox
             // that started, disappeared, or became busy while that file was being written.
             const current = latestDeleteState.current
-            const fresh = current.source.workspaces.find(item => item.machine.id === machine.id && !item.computer)
+            const fresh = current.source.workspaces.find(item => item.machine.id === machine.id && !item.device)
             if (!fresh || current.readOnly || current.source.vmOperationsUnavailable || current.source.sandboxConfigurationOperation || workspaceAvailability(fresh, current.source).busy || fresh.state === "running" || fresh.freshness === "stale") {
               showActionFailure(`Could not delete ${machine.name}`, "The sandbox changed while exporting. Review its current state before deleting it. Your export is saved.", undefined, { native: false })
               return false
@@ -467,7 +467,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     if (machine.kind !== "vm" || !machine.desktop || !actions.openDesktop) return undefined
     const target = workspaceTarget(workspace)
     const availability = workspaceAvailability(workspace, source)
-    return { disabled: configurationLocked || availability.busy || Boolean(workspace.computer && workspace.freshness === "stale"), onClick: () => { void actions.openDesktop!(target) } }
+    return { disabled: configurationLocked || availability.busy || Boolean(workspace.device && workspace.freshness === "stale"), onClick: () => { void actions.openDesktop!(target) } }
   }
 
   /** A sandbox's ⋯ menu actions and popovers, built once for its list row and its page. The
@@ -477,7 +477,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     const availability = workspaceAvailability(workspace, source)
     const stale = workspace.freshness === "stale"
     const vm = machine.kind === "vm"
-    const local = !workspace.computer
+    const local = !workspace.device
     const restartCheck = guard.check(workspace, "restart")
     const restartPrompt = restartCheck.kind === "confirm" && availability.canRestart && !readOnly ? restartCheck.prompt : undefined
     const items: MenuAction[] = [
@@ -508,27 +508,27 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
 
   // A deleted sandbox takes its notifications with it: their actions (Open, Retry…) would
   // otherwise point at something that no longer exists.
-  const knownSandboxes = useRef(new Map<string, { id: string; name: string; computerId: string; target: string }>())
+  const knownSandboxes = useRef(new Map<string, { id: string; name: string; deviceId: string; target: string }>())
   useEffect(() => {
-    const current = new Map(source.workspaces.map(workspace => [`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, { id: workspace.machine.id, name: workspace.machine.name, computerId: workspace.computer?.id ?? "", target: workspaceTarget(workspace) }]))
+    const current = new Map(source.workspaces.map(workspace => [`${workspace.device?.id ?? ""}:${workspace.machine.id}`, { id: workspace.machine.id, name: workspace.machine.name, deviceId: workspace.device?.id ?? "", target: workspaceTarget(workspace) }]))
     for (const [key, known] of knownSandboxes.current) {
       if (current.has(key)) continue
       dismissSandboxToastsById(known.id)
-      if (known.computerId) dismissSandboxToasts(known.target)
+      if (known.deviceId) dismissSandboxToasts(known.target)
       dismissOperationToast(`lifecycle:${key}`)
-      // A name shared with a sandbox that still exists (e.g. on another computer) keeps its notifications.
+      // A name shared with a sandbox that still exists (e.g. on another device) keeps its notifications.
       if ([...current.values()].some(other => other.name === known.name)) continue
       dismissSandboxToasts(known.name)
     }
     knownSandboxes.current = current
   }, [source.workspaces])
 
-  /** Open the fork `name`, created on the same computer as its source sandbox. */
-  function forkOpenAction(name: string, computerId = "") {
+  /** Open the fork `name`, created on the same device as its source sandbox. */
+  function forkOpenAction(name: string, deviceId = "") {
     return {
       label: "Open",
       onClick: () => {
-        const match = workspacesRef.current.find(({ machine, computer }) => (computer?.id ?? "") === computerId && machine.name === name)
+        const match = workspacesRef.current.find(({ machine, device }) => (device?.id ?? "") === deviceId && machine.name === name)
         if (match) openSandbox(match.machine.id)
       },
     }
@@ -544,7 +544,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
       noticeSandbox: { id: workspace.machine.id, name: workspace.machine.name },
       title: `Creating fork ${name}`,
       run: () => actions.forkCheckpoint!(target, null, name),
-      success: { title: "Fork created", description: `${name} is stopped. Start it when you’re ready.`, action: forkOpenAction(name, workspace.computer?.id) },
+      success: { title: "Fork created", description: `${name} is stopped. Start it when you’re ready.`, action: forkOpenAction(name, workspace.device?.id) },
       failureTitle: `Could not create fork ${name}`,
     })
   }
@@ -589,8 +589,8 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     // off to the list editor for the new sandbox. Editing is offered only when not read-only.
     const editing: SandboxDetailEditing | undefined = readOnly ? undefined : {
       machines,
-      computers: source.remoteComputers,
-      getComputerId: getMachineComputerId,
+      devices: source.devices,
+      getDeviceId: getMachineDeviceId,
       onCommitMachine: commitMachine,
       onDeleteMachine: deleteMachine,
       onMachinesChange: changeMachines,
@@ -624,7 +624,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
       lifecycleGuard: guard,
       onCheckpointExport: exportSandbox ? (checkpoint: WorkspaceCheckpoint) => exportSandbox(machine.name, { id: checkpoint.id, name: checkpoint.name }) : undefined,
       checkpointExportDisabled: transferBusy || backup?.state.availability === "unavailable",
-      onCheckpointForkedAction: (name: string) => forkOpenAction(name, workspace.computer?.id),
+      onCheckpointForkedAction: (name: string) => forkOpenAction(name, workspace.device?.id),
       onCheckpointRestoredAction: () => ({ label: "Start", onClick: lifecycleLater(workspace, "start", false) }),
     }
   }
@@ -637,7 +637,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
           <SandboxDetailPage key={workspaceTarget(detailWorkspace)} workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />
         ) : (
           <>
-            {connecting && actions.connectComputer && <div className="mb-3"><ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} /></div>}
+            {connecting && actions.connectDevice && <div className="mb-3"><ConnectDeviceForm connect={actions.connectDevice} authorize={actions.authorizeDevice} setupKey={actions.setupDeviceKey} onClose={() => setConnecting(false)} /></div>}
             {configurationOperation?.status === "failed" && <div className="mb-3 rounded-md border border-destructive/30 p-3">
               <div role="alert" className="text-sm text-destructive"><ErrorDetails message={configurationOperation.error.message} diagnostic={configurationFailureDiagnostic(configurationOperation)} fallbackSummary="Sandbox changes failed." /></div>
               <Button variant="outline" size="sm" className="mt-2" disabled={readOnly} onClick={() => actions.dismissMachineConfigurationError()}>Dismiss configuration error</Button>
@@ -649,9 +649,9 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
               machineActionRequest={machineAction}
               onMachineActionHandled={(token) => setMachineAction((current) => current?.token === token ? undefined : current)}
               machines={machines}
-              computers={source.remoteComputers}
-              getComputerId={getMachineComputerId}
-              onConnectComputer={actions.connectComputer ? () => setConnecting(true) : undefined}
+              devices={source.devices}
+              getDeviceId={getMachineDeviceId}
+              onConnectDevice={actions.connectDevice ? () => setConnecting(true) : undefined}
               onImportSandbox={importSandbox}
               importPopover={importSandbox ? importPopover : undefined}
               onCommitMachine={commitMachine}
@@ -660,8 +660,8 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
               isMachineRunning={isMachineRunning}
               getMachineBusyReason={machineBusyReason}
               editorDraftKey="sandbox-list"
-              // New sandboxes fit this computer; remote computers do not report capacity yet.
-              getHostCapacity={(computerId) => computerId ? undefined : hostCapacityFrom(source.hostCapacity)}
+              // New sandboxes fit this device; remote devices do not report capacity yet.
+              getDeviceCapacity={(deviceId) => deviceId ? undefined : deviceCapacityFrom(source.deviceCapacity)}
               onMachinesChange={changeMachines}
               orderRank={orderRank}
               onReorder={reorderSandboxes}
@@ -670,7 +670,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
               summary={configurationOperation ? <>{source.workspaces.length} configured · {configurationOperation.status === "failed" ? "Sandbox changes failed" : "Applying sandbox changes"}</> : undefined}
               sortPriority={(machine) => {
                 const workspace = workspaces.get(machine.id)
-                const configuration = workspace && !workspace.computer && configurationOperation
+                const configuration = workspace && !workspace.device && configurationOperation
                   ? configurationRowView(workspace, committedWorkspaces.get(machine.id), configurationOperation)
                   : undefined
                 return attentionPriority[configuration?.status === "failed" ? "error" : workspaceIconState(workspace)]
@@ -678,14 +678,14 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
               getRowPresentation={(machine) => {
                 const workspace = workspaces.get(machine.id)
                 const state = workspace?.state ?? "stopped"
-                const pendingSecrets = machine.kind === "vm" && !workspace?.computer
+                const pendingSecrets = machine.kind === "vm" && !workspace?.device
                   ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map((secret) => secret.name)
                   : []
                 const badge = pendingSecrets.length > 0
                   ? <SecretChangesLabel workspace={machine.name} state={state} secrets={pendingSecrets} />
                   : undefined
                 const visualState = workspaceIconState(workspace)
-                const configuration = workspace && !workspace.computer && configurationOperation
+                const configuration = workspace && !workspace.device && configurationOperation
                   ? configurationRowView(workspace, committedWorkspaces.get(machine.id), configurationOperation)
                   : undefined
                 if (configuration) {
@@ -707,7 +707,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
                   }
                 }
                 const access = workspace && source.sshAccess?.workspaces.find(row => row.workspace === workspaceTarget(workspace))
-                const sshStale = Boolean((source.sshAccessError && !workspace?.computer) || workspace?.computer?.connected === false || workspace?.freshness === "stale")
+                const sshStale = Boolean((source.sshAccessError && !workspace?.device) || workspace?.device?.connected === false || workspace?.freshness === "stale")
                 const lifecycle = workspace?.lifecycleAction
                 const checkpointOperation = workspace?.checkpointOperation?.status === "running" ? workspace.checkpointOperation : undefined
                 const workspaceOperationBusy = Boolean(lifecycle) || Boolean(checkpointOperation)
@@ -715,12 +715,12 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
                 const availability = workspace ? workspaceAvailability(workspace, source) : undefined
                 const openReason = readOnly || availability?.canOpen ? undefined : availability?.reasons.open
                 return {
-                  kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
+                  kindBadge: workspace?.device ? <DeviceBadge device={workspace.device} /> : undefined,
                   badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} onOpen={() => openSandbox(machine.id, "access")} /></>,
                   popovers: menu.popovers,
                   menuActions: menu.items,
                   deleteDetails: workspace ? deleteDetails(workspace) : undefined,
-                  busy: workspaceOperationBusy || Boolean(workspace?.computer?.busy),
+                  busy: workspaceOperationBusy || Boolean(workspace?.device?.busy),
                   suppressInteractions: workspace ? changesBlocked(workspace) : false,
                   icon: workspaceOperationBusy ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
                   iconState: workspace?.lifecycleFailure && !workspace.lifecycleFailureCancelled ? "error" as const : visualState,

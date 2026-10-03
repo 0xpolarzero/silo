@@ -1,4 +1,4 @@
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 import { useId } from "react"
 import { Network, Plus } from "lucide-react"
 import { EmptyState } from "@/components/empty-state"
@@ -37,7 +37,7 @@ export function NetworkPage({ workspaces, browser, network, error, actions, acti
           return <div key={key} role="row" className={`${grid} hover:bg-muted/55 focus-within:bg-muted/55`}>
             <span role="cell" className="font-mono font-medium">{port.port}</span><span role="cell" className="hidden min-w-0 font-mono text-muted-foreground sm:block">{address ? <Tooltip><TooltipTrigger asChild><span className="block truncate">{address}</span></TooltipTrigger><TooltipContent>{address}</TooltipContent></Tooltip> : "—"}</span>
             <span role="cell" className={state === "Reachable" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}>{state}</span>
-            <span role="cell"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></span>
+            <span role="cell"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} device={workspace.device} /></span>
             <span role="cell" className="flex justify-end gap-1"><NetworkPortRowActions controller={controller} workspace={workspace} port={port} state={state} browser={browser} host={host} /></span>
             {port.message && workspace.state === "running" && <span role="cell" className={`col-span-full text-xs ${port.state === "unknown" ? "text-destructive" : "text-muted-foreground"}`}>{port.message}</span>}
           </div>

@@ -117,8 +117,8 @@ it("opens the Checkpoints tab from the Overview menu and drives fork, restore, a
 
 it("dismisses a sandbox's notifications when it is deleted and announces the deletion", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.computer)!
+  source.devices = []
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
   workspace.state = "stopped"
   const { showOperationSuccess } = await import("@/lib/operation-toast")
   const actions = { forkCheckpoint: vi.fn() } as unknown as ApplicationActions
@@ -142,7 +142,7 @@ it("dismisses a sandbox's notifications when it is deleted and announces the del
 it("moves Cancel for a running checkpoint capture into its progress notification", async () => {
   const { runCheckpointOperation, syncCheckpointProgress } = await import("../model/checkpoint-operation-toast")
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.computer)!
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
   const cancel = vi.fn()
   render(<Toaster />)
   let finish!: () => void

@@ -12,22 +12,22 @@ export const runtimeLimits = {
 } as const
 
 /**
- * The computer a sandbox runs on, as the runtime checks it before creating or changing a
+ * The device a sandbox runs on, as the runtime checks it before creating or changing a
  * sandbox: its CPU and memory ceilings may not exceed the logical CPUs and physical memory
- * (`validate_host_ceiling`). Undefined when the computer has not reported it (D-46).
+ * (`validate_host_ceiling`). Undefined when the device has not reported it (D-46).
  */
-export interface HostCapacity {
+export interface DeviceCapacity {
   logicalCPUs: number
   memoryGiB: number
 }
 
 /**
- * The editor's capacity for this computer from the application state's `hostCapacity`
+ * The editor's capacity for this device from the application state's `deviceCapacity`
  * (`logicalCpus`, `maxMemoryGib`: the exact ceilings the runtime accepts). The native state
  * passes unknown fields through unvalidated, so anything but positive whole numbers is
  * treated as unknown.
  */
-export function hostCapacityFrom(reported: unknown): HostCapacity | undefined {
+export function deviceCapacityFrom(reported: unknown): DeviceCapacity | undefined {
   if (!reported || typeof reported !== "object") return undefined
   const { logicalCpus, maxMemoryGib } = reported as Record<string, unknown>
   const valid = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 1
@@ -49,15 +49,15 @@ function wholeNumberIn(value: number, maximum: number) {
 
 const number = (value: number) => value.toLocaleString("en-US")
 
-/** The largest CPU and memory values a custom field accepts on this computer. */
-export function resourceMaximums(capacity?: HostCapacity) {
+/** The largest CPU and memory values a custom field accepts on this device. */
+export function resourceMaximums(capacity?: DeviceCapacity) {
   return {
     cpus: Math.min(runtimeLimits.cpus, capacity?.logicalCPUs ?? runtimeLimits.cpus),
     memoryGiB: Math.min(runtimeLimits.memoryGiB, capacity?.memoryGiB ?? runtimeLimits.memoryGiB),
   }
 }
 
-/** Presets the computer can run, plus its own maximum when the presets stop short of it. */
+/** Presets the device can run, plus its own maximum when the presets stop short of it. */
 export function presetsWithin(presets: readonly number[], maximum: number | undefined): readonly number[] {
   if (maximum === undefined || !Number.isSafeInteger(maximum) || maximum < 1) return presets
   const within = presets.filter(value => value <= maximum)
@@ -69,11 +69,11 @@ function largestPresetAtMost(value: number, presets: readonly number[]) {
 }
 
 /**
- * New-sandbox defaults fitted to the computer: ceilings no higher than the computer, and
+ * New-sandbox defaults fitted to the device: ceilings no higher than the device, and
  * limits no more than half of it (snapped down to a preset) so the host keeps headroom.
- * Defaults a computer can already run are unchanged.
+ * Defaults a device can already run are unchanged.
  */
-export function fitMachineToCapacity(machine: SetupVirtualMachineConfiguration, capacity: HostCapacity | undefined): SetupVirtualMachineConfiguration {
+export function fitMachineToCapacity(machine: SetupVirtualMachineConfiguration, capacity: DeviceCapacity | undefined): SetupVirtualMachineConfiguration {
   if (!capacity) return machine
   const maximums = resourceMaximums(capacity)
   const maxCPUs = Math.min(machine.maxCPUs, maximums.cpus)
@@ -92,9 +92,9 @@ export function fitMachineToCapacity(machine: SetupVirtualMachineConfiguration, 
 /**
  * Readable range checks for a VM's resource fields. They replace the contract schema's
  * messages ("Too small: expected number to be >=1") for these fields and, when the
- * computer's capacity is known, reject ceilings the runtime would refuse.
+ * device's capacity is known, reject ceilings the runtime would refuse.
  */
-export function validateMachineResources(machine: SetupVirtualMachineConfiguration, capacity?: HostCapacity, computerName = "This computer"): MachineValidationErrors {
+export function validateMachineResources(machine: SetupVirtualMachineConfiguration, capacity?: DeviceCapacity, deviceName = "This device"): MachineValidationErrors {
   const errors: MachineValidationErrors = {}
   const range = (field: ResourceField, maximum: number, unit: string) => {
     if (!wholeNumberIn(machine[field], maximum)) errors[field] = `Enter a whole number of ${unit} from 1 to ${number(maximum)}.`
@@ -107,8 +107,8 @@ export function validateMachineResources(machine: SetupVirtualMachineConfigurati
   range("runtimeStorageGiB", runtimeLimits.storageGiB, "GiB")
   if (capacity) {
     const { cpus, memoryGiB } = resourceMaximums(capacity)
-    if (!errors.maxCPUs && machine.maxCPUs > cpus) errors.maxCPUs = `${computerName} has ${number(cpus)} CPUs. Choose ${number(cpus)} or fewer.`
-    if (!errors.maxMemoryGiB && machine.maxMemoryGiB > memoryGiB) errors.maxMemoryGiB = `${computerName} has ${number(memoryGiB)} GiB of memory. Choose ${number(memoryGiB)} GiB or fewer.`
+    if (!errors.maxCPUs && machine.maxCPUs > cpus) errors.maxCPUs = `${deviceName} has ${number(cpus)} CPUs. Choose ${number(cpus)} or fewer.`
+    if (!errors.maxMemoryGiB && machine.maxMemoryGiB > memoryGiB) errors.maxMemoryGiB = `${deviceName} has ${number(memoryGiB)} GiB of memory. Choose ${number(memoryGiB)} GiB or fewer.`
   }
   if (!errors.cpus && !errors.maxCPUs && machine.cpus > machine.maxCPUs) errors.cpus = "CPU limit cannot exceed its ceiling."
   if (!errors.memoryGiB && !errors.maxMemoryGiB && machine.memoryGiB > machine.maxMemoryGiB) errors.memoryGiB = "Memory limit cannot exceed its ceiling."

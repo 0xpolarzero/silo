@@ -25,7 +25,7 @@ export function useRepositoryPushToasts(
     onDismiss: (workspace: string, repositoryPath: string) => void
     /** Resolves the sandbox a push target belongs to, for the system notification. */
     resolveSandbox?: (workspace: string) => NoticeSandbox | undefined
-    /** This computer's operation queue; a running push that accepts cancellation gets a Cancel button. */
+    /** This device's operation queue; a running push that accepts cancellation gets a Cancel button. */
     queue?: OperationQueue
     onCancel?: (operationId: number) => void
   },

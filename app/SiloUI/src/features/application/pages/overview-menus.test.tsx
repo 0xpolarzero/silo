@@ -12,7 +12,7 @@ const actions = { forkCheckpoint: vi.fn(), readWorkspaceStorage: vi.fn(() => new
 
 function localSource(change: (workspace: ApplicationWorkspace, source: ApplicationSource) => void = () => {}) {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
+  source.devices = []
   source.runtimeRepair = null
   source.sandboxConfigurationOperation = null
   source.activities = []
@@ -44,11 +44,11 @@ it("builds the same ⋯ menu for a sandbox's row and its page", async () => {
   expect(row.map(({ name }) => name)).toEqual(expect.arrayContaining(["Checkpoints for dev", "Storage for dev", "Fork dev", "Export dev", "Edit dev", "Duplicate settings for dev", "Add Linux desktop", "Delete dev"]))
 })
 
-it("disables the same mutating items in both menus while a remote computer refreshes", async () => {
+it("disables the same mutating items in both menus while a remote device refreshes", async () => {
   const user = userEvent.setup()
   render(page(localSource((workspace, source) => {
-    workspace.computer = { id: "office", vmId: "vm", name: "Office", address: "office.test", connected: true, busy: true }
-    source.remoteComputers = [{ id: "office", name: "Office", address: "office.test", connected: true, busy: true }]
+    workspace.device = { id: "office", vmId: "vm", name: "Office", address: "office.test", connected: true, busy: true }
+    source.devices = [{ id: "office", name: "Office", address: "office.test", connected: true, busy: true }]
   })))
   const row = await menuItems(user)
   await user.click(within(screen.getByText("dev").closest("li")!).getByRole("button", { name: "Open dev" }))

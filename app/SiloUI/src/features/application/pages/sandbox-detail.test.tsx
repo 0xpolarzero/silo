@@ -3,17 +3,17 @@ import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace } from "../model/application-source"
-import { workspaceTarget } from "../model/remote-computers"
+import { workspaceTarget } from "../model/connections"
 import { OverviewPage } from "./overview-page"
 
 function localVmSource() {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
+  source.devices = []
   return source
 }
 
 function localVm(source: ApplicationSource): ApplicationWorkspace {
-  return source.workspaces.find(item => item.machine.kind === "vm" && !item.computer)!
+  return source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
 }
 
 async function openDetail(source: ApplicationSource, actions: Partial<ApplicationActions> = {}, workspace = localVm(source)) {
@@ -31,7 +31,7 @@ it.each([false, true])("shows pending secret revocation on the sandbox row and d
   workspace.pendingSecretRevocations = ["GITHUB_TOKEN"]
   const message = "May still have access to GITHUB_TOKEN until it restarts."
   workspace.attention = { level: "warning", message }
-  if (remote) workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  if (remote) workspace.device = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   const restartWorkspace = vi.fn()
   const actions = { restartWorkspace } as unknown as ApplicationActions
   const user = userEvent.setup()
@@ -61,7 +61,7 @@ it.each([false, true])("clears the overview row revocation warning and Restart a
   workspace.pendingSecretRevocations = ["REMOVED_TOKEN"]
   const message = "May still have access to REMOVED_TOKEN until it restarts."
   workspace.attention = { level: "warning", message }
-  if (remote) workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  if (remote) workspace.device = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   const restartWorkspace = vi.fn()
   const actions = { restartWorkspace } as unknown as ApplicationActions
   const user = userEvent.setup()
@@ -121,7 +121,7 @@ it("opens the Checkpoints tab directly from the row menu", async () => {
 it("hides Storage and SSH access tabs for a remote sandbox without those capabilities", async () => {
   const source = localVmSource()
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
-  workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  workspace.device = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ readWorkspaceStorage: vi.fn(), forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
 
@@ -306,11 +306,11 @@ it("edits and removes a sandbox's secret from the Overview tab", async () => {
 it("never lists a same-named local sandbox's secrets on a remote sandbox page", async () => {
   const source = localVmSource()
   const workspace = localVm(source)
-  workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  workspace.device = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   source.secrets = [{ id: "svc", name: "SERVICE_TOKEN", workspaces: [workspace.machine.name], allowedDomains: [], state: "active" }]
   await openDetail(source, { saveSecret: vi.fn(), removeSecret: vi.fn() }, workspace)
 
-  expect(screen.getByText("Secrets are available only for sandboxes on this computer.")).toBeVisible()
+  expect(screen.getByText("Secrets are available only for sandboxes on this device.")).toBeVisible()
   expect(screen.queryByText("SERVICE_TOKEN")).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Add secret" })).not.toBeInTheDocument()
   expect(screen.queryByRole("button", { name: "Edit SERVICE_TOKEN" })).not.toBeInTheDocument()
@@ -461,7 +461,7 @@ it("confirms a delete from the list row ⋯ menu with the same popover as the de
 
 it("resets per-sandbox edit state when the page switches to another sandbox", async () => {
   const source = localVmSource()
-  const [first, second] = source.workspaces.filter(item => item.machine.kind === "vm" && !item.computer)
+  const [first, second] = source.workspaces.filter(item => item.machine.kind === "vm" && !item.device)
   const user = userEvent.setup()
   const props = { source, actions: {} as ApplicationActions, onMachinesChange: vi.fn(), onOpenSandbox: vi.fn(), onCloseSandbox: vi.fn() }
   const { rerender } = render(<OverviewPage {...props} selectedSandboxId={first.machine.id} />)
@@ -475,10 +475,10 @@ it("resets per-sandbox edit state when the page switches to another sandbox", as
   expect(screen.queryByRole("heading", { name: `Edit ${first.machine.name}` })).not.toBeInTheDocument()
 })
 
-it("keeps a remote sandbox's Ports section reachable when the local computer's discovery fails", async () => {
+it("keeps a remote sandbox's Ports section reachable when the local device's discovery fails", async () => {
   const source = localVmSource()
   const workspace = localVm(source)
-  workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  workspace.device = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   source.networkError = "Could not check network services."
   source.network = { workspaces: [
     { workspace: workspace.machine.name, error: "Local discovery failed", ports: [] },
@@ -498,7 +498,7 @@ it.each([false, true])("does not claim there are no ports after failed discovery
   const workspace = localVm(source)
   workspace.state = "running"
   workspace.freshness = "fresh"
-  if (remote) workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  if (remote) workspace.device = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   source.network = { workspaces: [{ workspace: workspaceTarget(workspace), error: "Could not check services.", ports: [] }] }
   const refreshNetwork = vi.fn(async () => {})
   const actions = { refreshNetwork } as unknown as ApplicationActions
@@ -515,13 +515,13 @@ it.each([false, true])("does not claim there are no ports after failed discovery
 })
 
 
-it.each([false, true])("waits for this sandbox's port discovery when another computer has already loaded (cached=%s)", async cached => {
+it.each([false, true])("waits for this sandbox's port discovery when another device has already loaded (cached=%s)", async cached => {
   const source = localVmSource()
   const workspace = localVm(source)
   workspace.state = "running"
   workspace.freshness = "fresh"
   workspace.ports = cached ? [{ port: 3000, hostPort: 43000, scheme: "http", listening: true, configured: true }] : []
-  workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  workspace.device = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   source.network = { workspaces: [{ workspace: workspace.machine.name, error: null, ports: [] }] }
   const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
   const { rerender } = await openDetail(source, actions, workspace)

@@ -97,10 +97,10 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
     if (statusPanel) return <StatusPanelUnavailable message={message} retry={current.loading ? undefined : retryChecks} />
     return <Unavailable message={message} checks={failures} checking={checking} retry={current.loading ? undefined : retryChecks} />
   }
-  const remoteOnly = Boolean(current.source.remoteComputers?.length)
-    && !current.source.workspaces.some(workspace => !workspace.computer && workspace.machine.kind === "vm")
+  const remoteOnly = Boolean(current.source.devices?.length)
+    && !current.source.workspaces.some(workspace => !workspace.device && workspace.machine.kind === "vm")
   const localRuntimeFailures = remoteOnly ? [] : failures
-  // Connected computers stay usable while this computer's sandboxes update; say why
+  // Connected devices stay usable while this device's sandboxes update; say why
   // the local ones are missing.
   const notice = current.localUpdating ? localUpdatingNotice : undefined
   return statusPanel

@@ -21,7 +21,7 @@ async function openEditor(machines: readonly SetupVirtualMachineConfiguration[],
 
 it("keeps the editor open with the user's edits when a save is rejected as stale", async () => {
   const onCommitMachine = vi.fn().mockRejectedValue(staleError)
-  const { user } = await openEditor([machine], { onCommitMachine, getComputerId: () => "" })
+  const { user } = await openEditor([machine], { onCommitMachine, getDeviceId: () => "" })
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   await user.click(screen.getByRole("button", { name: "Save" }))
 
@@ -39,7 +39,7 @@ it("keeps the editor open with the user's edits when a save is rejected as stale
 
 it("shows fields changed on both sides and saves the user's edits on top of the latest settings", async () => {
   const onCommitMachine = vi.fn().mockRejectedValueOnce(staleError).mockResolvedValue(undefined)
-  const props = { onCommitMachine, getComputerId: () => "" }
+  const props = { onCommitMachine, getDeviceId: () => "" }
   const { user, view } = await openEditor([machine], props)
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   const latest = { ...machine, cpus: 6, maxMemoryGiB: 64 }
@@ -60,7 +60,7 @@ it("shows fields changed on both sides and saves the user's edits on top of the 
 
 it("discards edits and closes the editor from the conflict prompt", async () => {
   const onCommitMachine = vi.fn().mockRejectedValue(staleError)
-  const { user } = await openEditor([machine], { onCommitMachine, getComputerId: () => "" })
+  const { user } = await openEditor([machine], { onCommitMachine, getDeviceId: () => "" })
   await user.click(screen.getByRole("button", { name: "Save" }))
   await screen.findByRole("button", { name: "Discard my edits" })
   await user.click(screen.getByRole("button", { name: "Discard my edits" }))
@@ -77,7 +77,7 @@ it("notices when the VM is changed elsewhere while the editor is open", async ()
 
 it("keeps the edit's original baseline when another row receives a reorder key", async () => {
   const second = { ...machine, id: "00000000-0000-4000-8000-000000000002", name: "second" }
-  const props = { onCommitMachine: vi.fn().mockResolvedValue(undefined), onReorder: vi.fn(), getComputerId: () => "" }
+  const props = { onCommitMachine: vi.fn().mockResolvedValue(undefined), onReorder: vi.fn(), getDeviceId: () => "" }
   const { user, view } = await openEditor([machine, second], props)
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   const latest = { ...machine, maxMemoryGiB: 64 }
@@ -96,7 +96,7 @@ it("keeps the edit's original baseline when another row receives a reorder key",
 
 it("keeps the edit's original baseline when another sandbox is deleted", async () => {
   const second = { ...machine, id: "00000000-0000-4000-8000-000000000002", name: "second" }
-  const props = { onCommitMachine: vi.fn().mockResolvedValue(undefined), onDeleteMachine: vi.fn().mockResolvedValue(undefined), getComputerId: () => "" }
+  const props = { onCommitMachine: vi.fn().mockResolvedValue(undefined), onDeleteMachine: vi.fn().mockResolvedValue(undefined), getDeviceId: () => "" }
   const { user, view } = await openEditor([machine, second], props)
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   const latest = { ...machine, maxMemoryGiB: 64 }
@@ -116,7 +116,7 @@ it("keeps the edit's original baseline when another sandbox is deleted", async (
 it("reports a stale rejection of Add Linux desktop, which has no editor to show it", async () => {
   const onCommitMachine = vi.fn().mockRejectedValue(staleError)
   render(<TooltipProvider><Toaster /><MachineList machines={[machine]} onMachinesChange={vi.fn()} onCommitMachine={onCommitMachine}
-    getComputerId={() => "office"} isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
+    getDeviceId={() => "office"} isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
   const user = userEvent.setup()
   await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: "Add Linux desktop" }))

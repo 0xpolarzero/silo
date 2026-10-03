@@ -1,6 +1,6 @@
 import type { NoticeSandbox } from "@/desktop/notices"
 import { errorMessage, showOperationFailure, showOperationProgress, showOperationSuccess, type OperationStep } from "@/lib/operation-toast"
-import { workspaceTarget } from "./remote-computers"
+import { workspaceTarget } from "./connections"
 import type { OperationQueue } from "./operation-queue"
 import type { ApplicationWorkspace } from "./application-source"
 import type { WorkspaceCheckpointOperation } from "./checkpoint-source"
@@ -87,6 +87,6 @@ export function syncCheckpointProgress(workspaces: ApplicationWorkspace[], conte
   for (const entry of active.values()) {
     const workspace = workspaces.find(candidate => workspaceTarget(candidate) === entry.spec.target)
     const operation = workspace?.checkpointOperation
-    if (operation?.status === "running" && operation.kind === entry.spec.kind) show(entry, operation.stage, context, workspace && !workspace.computer ? workspace.machine.id : undefined)
+    if (operation?.status === "running" && operation.kind === entry.spec.kind) show(entry, operation.stage, context, workspace && !workspace.device ? workspace.machine.id : undefined)
   }
 }

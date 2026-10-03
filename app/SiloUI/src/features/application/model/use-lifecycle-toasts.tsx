@@ -34,15 +34,15 @@ export function useLifecycleToasts(source: ApplicationSource, actions: Applicati
     for (const workspace of all) {
       const action = workspace.lifecycleAction
       if (!action || action === "dismiss-error") continue
-      const key = `${workspace.computer?.id ?? ""}:${workspace.machine.id}`
+      const key = `${workspace.device?.id ?? ""}:${workspace.machine.id}`
       live.add(key)
       const id = `lifecycle:${key}`
       const name = workspace.machine.name
       const title = action === "restart" ? `Restarting ${name}` : action === "stop" ? `Stopping ${name}` : `Starting ${name}`
-      const waiting = !workspace.computer ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, workspace.machine.id) : undefined
+      const waiting = !workspace.device ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, workspace.machine.id) : undefined
       const starting = action === "start" || action === "restart"
-      // Remote computers report no steps, so their start keeps the plain text.
-      const reported = starting && !workspace.computer ? startStepProgress(workspace.lifecycleStep) : undefined
+      // Remote devices report no steps, so their start keeps the plain text.
+      const reported = starting && !workspace.device ? startStepProgress(workspace.lifecycleStep) : undefined
       const step = waiting && source.operationQueue ? waitingStatusText(source.operationQueue, waiting) : reported ? reported.step : action === "restart" ? "Restarting…" : action === "stop" ? "Stopping…" : "Starting…"
       const progress = waiting ? undefined : reported?.progress
       const existing = tracked.get(key)
@@ -58,7 +58,7 @@ export function useLifecycleToasts(source: ApplicationSource, actions: Applicati
     for (const [key, entry] of tracked) {
       if (live.has(key)) continue
       if (entry.timer) window.clearTimeout(entry.timer)
-      if (entry.shown && !all.some(workspace => `${workspace.computer?.id ?? ""}:${workspace.machine.id}` === key && workspace.lifecycleFailure)) dismissOperationToast(`lifecycle:${key}`)
+      if (entry.shown && !all.some(workspace => `${workspace.device?.id ?? ""}:${workspace.machine.id}` === key && workspace.lifecycleFailure)) dismissOperationToast(`lifecycle:${key}`)
       tracked.delete(key)
     }
   })
@@ -81,13 +81,13 @@ export function useLifecycleToasts(source: ApplicationSource, actions: Applicati
   const lifecycleToasts = useEffectEvent((all: ApplicationWorkspace[]) => {
     const current = new Map<string, string>()
     for (const workspace of all) {
-      if (workspace.lifecycleFailure) current.set(`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, `${workspace.lifecycleFailureAction ?? ""}|${workspace.lifecycleFailure}`)
+      if (workspace.lifecycleFailure) current.set(`${workspace.device?.id ?? ""}:${workspace.machine.id}`, `${workspace.lifecycleFailureAction ?? ""}|${workspace.lifecycleFailure}`)
     }
     const previous = seenLifecycleFailures.current
     seenLifecycleFailures.current = current
     if (!previous) return
     for (const workspace of all) {
-      const key = `${workspace.computer?.id ?? ""}:${workspace.machine.id}`
+      const key = `${workspace.device?.id ?? ""}:${workspace.machine.id}`
       const signature = current.get(key)
       if (!signature || previous.get(key) === signature) continue
       const action = workspace.lifecycleFailureAction ?? "start"

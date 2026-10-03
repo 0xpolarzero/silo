@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
+import { remoteWorkspaceTarget } from "@/features/application/model/connections"
 import type { NetworkState } from "@/features/application/model/application-source"
 import { assertNativeBridgeMocksHandled, nativeBridgeMock } from "@/test/native-bridge-mock"
 import { createProductionSource, type ProductionBridge } from "./production-source"
@@ -27,9 +27,9 @@ function setup() {
     read_backup_state: () => ({ snapshotId: "fixture", availability: "available", archives: [], operation: null }),
     read_operation_queue: () => ({ running: [], waiting: [] }),
     read_setup_activity: () => [],
-    remote_host_list: () => [{ id: "office", name: "Office", address: "user@office" }],
-    remote_host_snapshot: () => local,
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+    device_list: () => [{ id: "office", name: "Office", address: "user@office" }],
+    device_snapshot: () => local,
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
     read_network_state: () => localState,
     remote_network_state: () => ({ workspaces: [row(remote, 4300)] }),
     save_network_port: args => pending[args?.hostPort === 4100 ? 0 : 1].promise,
@@ -42,7 +42,7 @@ function setup() {
   return { store, name, other, remote, pending, save, port, invoke, authoritative: (state: NetworkState) => { localState = state } }
 }
 
-it.each([false, true])("preserves saves to different computers in either completion order (remote first: %s)", async remoteFirst => {
+it.each([false, true])("preserves saves to different devices in either completion order (remote first: %s)", async remoteFirst => {
   const fixture = setup()
   const { store, name, remote, pending, save, port } = fixture
   try {
@@ -55,7 +55,7 @@ it.each([false, true])("preserves saves to different computers in either complet
   } finally { store.dispose() }
 })
 
-it("preserves independent sandbox saves on the same computer despite stale sibling rows", async () => {
+it("preserves independent sandbox saves on the same device despite stale sibling rows", async () => {
   const { store, name, other, pending, save, port } = setup()
   try {
     await store.initialize(); await store.applicationActions.refreshNetwork!()

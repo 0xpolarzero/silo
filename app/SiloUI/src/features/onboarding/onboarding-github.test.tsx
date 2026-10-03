@@ -375,7 +375,7 @@ it("keeps workspace identity edits and apply choices independent and resets one 
 it("starts blank and leaves Reset safely unavailable without a host identity", async () => {
   const user = userEvent.setup()
   render(<OnboardingPreview
-    source={{ ...onboardingScenarios.running, currentHostGitIdentity: null }}
+    source={{ ...onboardingScenarios.running, currentDeviceGitIdentity: null }}
     initialGitHubConnectionState="disconnected"
     actions={{ saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }}
   />)

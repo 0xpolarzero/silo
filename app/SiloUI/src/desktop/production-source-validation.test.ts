@@ -18,7 +18,7 @@ describe.each([
     ["approval without a result", { ...failed, status: "awaiting-approval", result: null, error: null }],
     ["applying with an error", { ...failed, status: "applying" }],
     ["approval with an error", { ...failed, status: "awaiting-approval", result: { resumed: false, phase: "workspaces", requiresApproval: true, vmsStarted: false, message: "Approve setup." } }],
-  ])("discards %s without losing its computer's state", (_description, operation) => {
+  ])("discards %s without losing its device's state", (_description, operation) => {
     const parsed = parse({ ...source, sandboxConfigurationOperation: operation })
     expect(parsed.sandboxConfigurationOperation).toBeNull()
     expect(parsed.workspaces).toEqual(parse(source).workspaces)

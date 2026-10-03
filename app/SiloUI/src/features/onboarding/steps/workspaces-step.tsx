@@ -25,8 +25,8 @@ const workspaceStatusLabel: Record<WorkspaceView["status"], string> = {
   failed: "Failed",
 }
 
-export function WorkspacesStep({ onConnectComputer, machines, progress, onMachinesChange, onRetry, initialEditorDraft, onEditorDraftChange }: {
-  onConnectComputer?: () => void
+export function WorkspacesStep({ onConnectDevice, machines, progress, onMachinesChange, onRetry, initialEditorDraft, onEditorDraftChange }: {
+  onConnectDevice?: () => void
   machines: readonly SetupMachineConfiguration[]
   progress: WorkspaceProgressView
   onMachinesChange: (machines: SetupMachineConfiguration[]) => void
@@ -75,7 +75,7 @@ export function WorkspacesStep({ onConnectComputer, machines, progress, onMachin
 
       <div className="min-h-48 flex-1">
         <MachineList
-          onConnectComputer={onConnectComputer}
+          onConnectDevice={onConnectDevice}
           isMachineCreated={(machine) => progress.workspaces.some((workspace) => workspace.name === machine.name && workspace.status === "ready")}
           machines={machines}
           onMachinesChange={onMachinesChange}

@@ -5,9 +5,9 @@ import { defaultStartupWorkspaceIds, startupWorkspaceCandidates } from "./startu
 
 const office = { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: "remote-dev" }
 
-it("never picks a sandbox on another computer as the default startup sandbox", () => {
+it("never picks a sandbox on another device as the default startup sandbox", () => {
   const [dev, playgrounds, personal] = structuredClone(applicationSourceForScenario("running").workspaces)
-  const remoteDev = { ...dev, machine: { ...dev.machine, id: "remote-dev" }, computer: office }
+  const remoteDev = { ...dev, machine: { ...dev.machine, id: "remote-dev" }, device: office }
   expect(defaultStartupWorkspaceIds([remoteDev, playgrounds, dev, personal])).toEqual([dev.machine.id])
   expect(defaultStartupWorkspaceIds([remoteDev, playgrounds, personal])).toEqual([playgrounds.machine.id])
   expect(defaultStartupWorkspaceIds([remoteDev])).toEqual([])

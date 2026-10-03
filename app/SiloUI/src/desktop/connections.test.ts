@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
+import { remoteWorkspaceTarget } from "@/features/application/model/connections"
 import { createProductionSource, type ProductionBridge } from "./production-source"
 
 import { assertNativeBridgeMocksHandled, nativeBridgeMock } from "@/test/native-bridge-mock"
@@ -19,7 +19,7 @@ function initializationHandlers() {
   }
 }
 
-describe("remote computer ownership", () => {
+describe("remote device ownership", () => {
   it("keeps same-name VMs distinct and directs a remote lifecycle action to its owner", async () => {
     const local = applicationSourceForScenario("running")
     const remote = structuredClone(local)
@@ -27,29 +27,29 @@ describe("remote computer ownership", () => {
     local.workspaces[0].logs = [{ line: "Local VM log", occurredAt: "now" }]
     remote.workspaces[0].logs = [{ line: "Remote VM log", occurredAt: "now" }]
     remote.workspaces.push({ ...remote.workspaces[0], machine: { id: "00000000-0000-4000-8000-000000000099", kind: "ssh", name: "legacy-ssh", host: "legacy.example", user: "developer", port: 22 } })
-    const computer = { id: "office", name: "Office Mac", address: "developer@office" }
+    const device = { id: "office", name: "Office Mac", address: "developer@office" }
     const invoke = nativeBridgeMock({
       ...initializationHandlers(),
       read_application_state: () => local,
-      remote_host_list: () => [computer],
-      remote_host_snapshot: () => remote,
+      device_list: () => [device],
+      device_snapshot: () => remote,
       remote_workspace_action: () => ({ ...remote, workspaces: remote.workspaces.map(workspace => ({ ...workspace, logs: [] })) }),
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }),
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "developer@laptop" }),
       read_setup_activity: () => [],
       read_network_state: () => ({ workspaces: [] }),
     })
     const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
     try {
       await store.initialize()
-      const target = remoteWorkspaceTarget(computer.id, remote.workspaces[0].machine.id)
+      const target = remoteWorkspaceTarget(device.id, remote.workspaces[0].machine.id)
       expect(store.getSnapshot().source!.workspaces.some(workspace => workspace.machine.name === "legacy-ssh")).toBe(false)
       const names = store.getSnapshot().source!.workspaces.filter(workspace => workspace.machine.name === remote.workspaces[0].machine.name)
       expect(names).toHaveLength(2)
       expect(names[0].machine.id).not.toBe(names[1].machine.id)
       const observedRemoteLogs: string[] = []
-      const unsubscribe = store.subscribe(() => observedRemoteLogs.push(...(store.getSnapshot().source?.workspaces.find(workspace => workspace.computer)?.logs.map(log => log.line) ?? [])))
+      const unsubscribe = store.subscribe(() => observedRemoteLogs.push(...(store.getSnapshot().source?.workspaces.find(workspace => workspace.device)?.logs.map(log => log.line) ?? [])))
       store.applicationActions.stopWorkspace(target)
-      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_workspace_action", { hostId: "office", vmId: remote.workspaces[0].machine.id, action: "stop", name: remote.workspaces[0].machine.name }))
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_workspace_action", { deviceId: "office", vmId: remote.workspaces[0].machine.id, action: "stop", name: remote.workspaces[0].machine.name }))
       expect(invoke).not.toHaveBeenCalledWith("workspace_action", expect.anything())
       await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces).toHaveLength(local.workspaces.length + 1))
       expect(observedRemoteLogs).not.toContain("Local VM log")
@@ -63,36 +63,36 @@ describe("remote computer ownership", () => {
     const invoke = nativeBridgeMock({
       remote_upsert_machine: () => local,
       remote_delete_machine: () => local,
-      remote_host_list: () => [],
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }),
+      device_list: () => [],
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "developer@laptop" }),
     })
     const store = createProductionSource({ invoke, listen: async () => () => {} } as unknown as ProductionBridge)
     const displayed = { ...machine, id: remoteWorkspaceTarget("office", machine.id) }
     try {
       await store.applicationActions.saveRemoteMachine!("office", displayed, displayed)
-      expect(invoke).toHaveBeenCalledWith("remote_upsert_machine", { hostId: "office", machine, expected: machine })
+      expect(invoke).toHaveBeenCalledWith("remote_upsert_machine", { deviceId: "office", machine, expected: machine })
       await store.applicationActions.deleteRemoteMachine!("office", displayed)
-      expect(invoke).toHaveBeenCalledWith("remote_delete_machine", { hostId: "office", vmId: machine.id, expected: machine })
+      expect(invoke).toHaveBeenCalledWith("remote_delete_machine", { deviceId: "office", vmId: machine.id, expected: machine })
     } finally { store.dispose() }
   })
 })
 
-it("keeps local state fresh after remote lifecycle failure and launches editors on the controlling computer", async () => {
+it("keeps local state fresh after remote lifecycle failure and launches editors on the controlling device", async () => {
   vi.useFakeTimers()
   const local = applicationSourceForScenario("running")
   const remote = structuredClone(local)
   remote.workspaces = [remote.workspaces[0]]
-  const computer = { id: "office", name: "Office Mac", address: "user@office" }
-  const target = remoteWorkspaceTarget(computer.id, remote.workspaces[0].machine.id)
+  const device = { id: "office", name: "Office Mac", address: "user@office" }
+  const target = remoteWorkspaceTarget(device.id, remote.workspaces[0].machine.id)
   let disconnected = false
   const invoke = nativeBridgeMock({
       ...initializationHandlers(),
       read_application_state: () => local,
-      remote_host_list: () => [computer],
-      remote_host_snapshot: async () => { if (disconnected) throw new Error("Connection lost"); return remote },
+      device_list: () => [device],
+      device_snapshot: async () => { if (disconnected) throw new Error("Connection lost"); return remote },
       remote_workspace_action: async () => { disconnected = true; throw new Error("Connection lost") },
       workspace_action: () => local,
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
       read_network_state: () => ({ workspaces: [] }),
       read_setup_activity: () => [],
     })
@@ -103,8 +103,8 @@ it("keeps local state fresh after remote lifecycle failure and launches editors 
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("workspace_action", { action: "open-editor", name: target, path: "/workspace/project" }))
     await vi.advanceTimersByTimeAsync(0)
     store.applicationActions.stopWorkspace(target)
-    await vi.waitFor(() => expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)?.freshness).toBe("stale"))
-    expect(store.getSnapshot().source!.workspaces.filter(workspace => !workspace.computer).every(workspace => workspace.freshness === "fresh")).toBe(true)
+    await vi.waitFor(() => expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.device)?.freshness).toBe("stale"))
+    expect(store.getSnapshot().source!.workspaces.filter(workspace => !workspace.device).every(workspace => workspace.freshness === "fresh")).toBe(true)
     expect(store.getSnapshot().source!.vmOperationsUnavailable).toBeUndefined()
   } finally { store.dispose() }
 })
@@ -118,9 +118,9 @@ it("uses qualified remote port mappings and isolates reachability after a failed
   const invoke = nativeBridgeMock({
       ...initializationHandlers(),
       read_application_state: () => local,
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: () => remote,
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: () => remote,
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
       read_network_state: async () => {
       if (networkFailure) throw new Error("Network check failed")
       return { workspaces: [{ workspace: local.workspaces[0].machine.name, error: null, ports: [{ port: 3000, hostPort: 3000, scheme: "http", configured: true, state: "reachable" }] }] }
@@ -134,32 +134,32 @@ it("uses qualified remote port mappings and isolates reachability after a failed
   try {
     await store.initialize()
     await store.applicationActions.refreshNetwork!()
-    expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)?.ports).toEqual([{ port: 3000, hostPort: 43000, scheme: "http", configured: true, listening: true }])
-    expect(invoke).toHaveBeenCalledWith("remote_network_state", { hostId: "office" })
-    expect(store.getSnapshot().source!.workspaces.find(workspace => !workspace.computer)?.ports[0].hostPort).toBe(3000)
+    expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.device)?.ports).toEqual([{ port: 3000, hostPort: 43000, scheme: "http", configured: true, listening: true }])
+    expect(invoke).toHaveBeenCalledWith("remote_network_state", { deviceId: "office" })
+    expect(store.getSnapshot().source!.workspaces.find(workspace => !workspace.device)?.ports[0].hostPort).toBe(3000)
     await store.applicationActions.saveNetworkPort!({ workspace: target, port: 3000, hostPort: 43000, scheme: "http" })
-    expect(invoke).toHaveBeenCalledWith("remote_save_network_port", { hostId: "office", vmId: remote.workspaces[0].machine.id, port: 3000, hostPort: 43000, scheme: "http" })
+    expect(invoke).toHaveBeenCalledWith("remote_save_network_port", { deviceId: "office", vmId: remote.workspaces[0].machine.id, port: 3000, hostPort: 43000, scheme: "http" })
     expect(store.getSnapshot().source!.network!.workspaces.map(row => row.workspace)).toEqual([local.workspaces[0].machine.name, target])
     await store.applicationActions.removeNetworkPort!(target, 3000)
-    expect(invoke).toHaveBeenCalledWith("remote_remove_network_port", { hostId: "office", vmId: remote.workspaces[0].machine.id, port: 3000 })
+    expect(invoke).toHaveBeenCalledWith("remote_remove_network_port", { deviceId: "office", vmId: remote.workspaces[0].machine.id, port: 3000 })
     networkFailure = true
     await store.applicationActions.refreshNetwork!()
-    expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)?.ports[0].listening).toBe(true)
+    expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.device)?.ports[0].listening).toBe(true)
   } finally { store.dispose() }
 })
 
-it("keeps a reachable computer connected while its VM configuration is busy", async () => {
+it("keeps a reachable device connected while its VM configuration is busy", async () => {
   const local = applicationSourceForScenario("running")
   let busy = false
   const invoke = nativeBridgeMock({
       ...initializationHandlers(),
       read_application_state: () => local,
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: async () => {
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: async () => {
       if (busy) throw { code: "update_in_progress", message: "Please wait for configuration." }
       return local
     },
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
       read_network_state: () => ({ workspaces: [] }),
       remote_network_state: () => ({ workspaces: [] }),
       read_setup_activity: () => [],
@@ -169,9 +169,9 @@ it("keeps a reachable computer connected while its VM configuration is busy", as
     await store.initialize()
     busy = true
     await store.refresh()
-    await vi.waitFor(() => expect(store.getSnapshot().source!.remoteComputers![0].busy).toBe(true))
-    const workspace = store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)!
-    expect(workspace.computer!.connected).toBe(true)
+    await vi.waitFor(() => expect(store.getSnapshot().source!.devices![0].busy).toBe(true))
+    const workspace = store.getSnapshot().source!.workspaces.find(workspace => workspace.device)!
+    expect(workspace.device!.connected).toBe(true)
     expect(workspace.freshness).toBe("stale")
     expect(workspace.stateDetail).toBe("Updating…")
   } finally { store.dispose() }
@@ -183,10 +183,10 @@ it("preserves connected remote VMs when later local state reads fail", async () 
   const invoke = nativeBridgeMock({
       ...initializationHandlers(),
       read_application_state: async () => { if (failLocal) throw new Error("Local runtime unavailable"); return local },
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: () => local,
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: () => local,
       remote_workspace_action: () => local,
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
       read_network_state: () => ({ workspaces: [] }),
       remote_network_state: () => ({ workspaces: [] }),
       read_setup_activity: () => [],
@@ -198,11 +198,11 @@ it("preserves connected remote VMs when later local state reads fail", async () 
     await store.refresh()
     const source = store.getSnapshot().source!
     expect(source.vmOperationsUnavailable).toContain("Local runtime unavailable")
-    expect(source.workspaces.find(workspace => !workspace.computer)?.freshness).toBe("stale")
-    const remote = source.workspaces.find(workspace => workspace.computer)!
+    expect(source.workspaces.find(workspace => !workspace.device)?.freshness).toBe("stale")
+    const remote = source.workspaces.find(workspace => workspace.device)!
     expect(remote.freshness).toBe("fresh")
     store.applicationActions.stopWorkspace(remote.machine.id)
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_workspace_action", { hostId: "office", vmId: local.workspaces[0].machine.id, action: "stop", name: expect.anything() }))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_workspace_action", { deviceId: "office", vmId: local.workspaces[0].machine.id, action: "stop", name: expect.anything() }))
   } finally { store.dispose() }
 })
 
@@ -213,9 +213,9 @@ it("uses native local metadata to display verified remote VMs when local runtime
       ...initializationHandlers(),
       read_application_state: async () => { throw new Error("Local runtime unavailable") },
       read_application_shell: () => shell,
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: () => remote,
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: () => remote,
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
       read_network_state: () => ({ workspaces: [] }),
       remote_network_state: () => ({ workspaces: [] }),
       read_setup_activity: () => [],
@@ -225,7 +225,7 @@ it("uses native local metadata to display verified remote VMs when local runtime
     await store.initialize()
     await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces).toHaveLength(remote.workspaces.length))
     expect(invoke).toHaveBeenCalledWith("read_application_shell", { error: "Silo could not read application state: Local runtime unavailable" })
-    expect(store.getSnapshot().source!.workspaces.every(workspace => workspace.computer?.id === "office" && workspace.freshness === "fresh")).toBe(true)
+    expect(store.getSnapshot().source!.workspaces.every(workspace => workspace.device?.id === "office" && workspace.freshness === "fresh")).toBe(true)
     expect(store.getSnapshot().source!.runtimeRepair?.reason).toBe("Local runtime unavailable")
   } finally { store.dispose() }
 })
@@ -244,10 +244,10 @@ it("merges remote repository results and activity idempotently without same-name
   const invoke = nativeBridgeMock({
       ...initializationHandlers(),
       read_application_state: () => local,
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: () => remote,
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: () => remote,
       start_repository_push: () => remote.repositoryPushOperations![0],
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
       read_network_state: () => ({ workspaces: [] }),
       remote_network_state: () => ({ workspaces: [] }),
       read_setup_activity: () => [],
@@ -282,9 +282,9 @@ it.each(["succeeded", "failed"] as const)("keeps a remote push loading across re
   const invoke = nativeBridgeMock({
       ...initializationHandlers(),
       read_application_state: () => local,
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: () => holdRemoteRead ? new Promise(resolve => { finishStaleRead = resolve }) : remote,
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: () => holdRemoteRead ? new Promise(resolve => { finishStaleRead = resolve }) : remote,
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
       read_network_state: () => ({ workspaces: [] }),
       remote_network_state: () => ({ workspaces: [] }),
       read_setup_activity: () => [],
@@ -296,9 +296,9 @@ it.each(["succeeded", "failed"] as const)("keeps a remote push loading across re
     store.applicationActions.pushRepository(workspace, repositoryPath, pushTarget)
     const pushing = { workspace, repositoryPath, commitCount: remote.workspaces[0].repositories[0].ahead, status: "pushing" }
     expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual(pushing)
-    const remoteReads = invoke.mock.calls.filter(([command]) => command === "remote_host_snapshot").length
+    const remoteReads = invoke.mock.calls.filter(([command]) => command === "device_snapshot").length
     await store.refresh()
-    await vi.waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "remote_host_snapshot").length).toBeGreaterThan(remoteReads))
+    await vi.waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "device_snapshot").length).toBeGreaterThan(remoteReads))
     await store.applicationActions.refreshNetwork!()
     expect(store.getSnapshot().source!.repositoryPushOperations).toContainEqual(pushing)
     store.applicationActions.pushRepository(workspace, repositoryPath, pushTarget)
@@ -330,9 +330,9 @@ it.each([true, false])("reconciles a lost start reply without another push (host
   const invoke = nativeBridgeMock({
       ...initializationHandlers(),
       read_application_state: () => local,
-      remote_host_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
-      remote_host_snapshot: () => remote,
-      remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+      device_list: () => [{ id: "office", name: "Office Mac", address: "user@office" }],
+      device_snapshot: () => remote,
+      connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
       read_network_state: () => ({ workspaces: [] }),
       remote_network_state: () => ({ workspaces: [] }),
       read_setup_activity: () => [],
@@ -365,7 +365,7 @@ it.each([true, false])("reconciles a lost start reply without another push (host
 })
 
 
-it("backs off failed computer snapshots independently and refreshes immediately on focus", async () => {
+it("backs off failed device snapshots independently and refreshes immediately on focus", async () => {
   vi.useFakeTimers()
   const local = applicationSourceForScenario("running")
   let failing = false
@@ -373,17 +373,17 @@ it("backs off failed computer snapshots independently and refreshes immediately 
     ...initializationHandlers(),
     read_application_state: () => local,
     read_setup_activity: () => [],
-    remote_host_list: () => ["broken", "healthy"].map(id => ({ id, name: id, address: `user@${id}` })),
-    remote_host_snapshot: args => {
-      if (failing && args?.hostId === "broken") throw new Error("Connection lost")
+    device_list: () => ["broken", "healthy"].map(id => ({ id, name: id, address: `user@${id}` })),
+    device_snapshot: args => {
+      if (failing && args?.deviceId === "broken") throw new Error("Connection lost")
       return local
     },
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
     read_network_state: () => ({ workspaces: [] }),
     remote_network_state: () => ({ workspaces: [] }),
   })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
-  const reads = (id: string) => invoke.mock.calls.filter(([command, args]) => command === "remote_host_snapshot" && args?.hostId === id).length
+  const reads = (id: string) => invoke.mock.calls.filter(([command, args]) => command === "device_snapshot" && args?.deviceId === id).length
   try {
     await store.initialize()
     const initial = reads("broken")
@@ -403,7 +403,7 @@ it("backs off failed computer snapshots independently and refreshes immediately 
     window.dispatchEvent(new Event("focus"))
     await vi.advanceTimersByTimeAsync(0)
     expect(reads("broken")).toBe(++failedReads)
-    expect(store.getSnapshot().source!.remoteComputers!.find(computer => computer.id === "broken")?.connected).toBe(true)
+    expect(store.getSnapshot().source!.devices!.find(device => device.id === "broken")?.connected).toBe(true)
     await vi.advanceTimersByTimeAsync(10_000)
     expect(reads("broken")).toBe(++failedReads)
     store.dispose()
@@ -413,7 +413,7 @@ it("backs off failed computer snapshots independently and refreshes immediately 
 })
 
 
-it("backs off failed computer-list polling while local state stays fresh", async () => {
+it("backs off failed device-list polling while local state stays fresh", async () => {
   vi.useFakeTimers()
   const local = applicationSourceForScenario("running")
   let failing = false
@@ -421,8 +421,8 @@ it("backs off failed computer-list polling while local state stays fresh", async
     ...initializationHandlers(),
     read_application_state: () => local,
     read_setup_activity: () => [],
-    remote_host_list: () => { if (failing) throw new Error("Unreadable list"); return [] },
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+    device_list: () => { if (failing) throw new Error("Unreadable list"); return [] },
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
     read_network_state: () => ({ workspaces: [] }),
   })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
@@ -431,22 +431,22 @@ it("backs off failed computer-list polling while local state stays fresh", async
     await store.initialize()
     failing = true
     await vi.advanceTimersByTimeAsync(10_000)
-    let calls = reads("remote_host_list")
-    expect(store.getSnapshot().source!.remoteComputersError).toContain("Unreadable list")
+    let calls = reads("device_list")
+    expect(store.getSnapshot().source!.devicesError).toContain("Unreadable list")
     for (const delay of [20_000, 40_000, 60_000, 60_000]) {
       const localReads = reads("read_application_state")
       await vi.advanceTimersByTimeAsync(delay - 1)
-      expect(reads("remote_host_list")).toBe(calls)
+      expect(reads("device_list")).toBe(calls)
       await vi.advanceTimersByTimeAsync(1)
-      expect(reads("remote_host_list")).toBe(++calls)
+      expect(reads("device_list")).toBe(++calls)
       expect(reads("read_application_state")).toBe(localReads + delay / 10_000)
     }
     failing = false
     window.dispatchEvent(new Event("focus"))
     await vi.advanceTimersByTimeAsync(0)
-    expect(reads("remote_host_list")).toBe(++calls)
-    expect(store.getSnapshot().source!.remoteComputersError).toBeUndefined()
+    expect(reads("device_list")).toBe(++calls)
+    expect(store.getSnapshot().source!.devicesError).toBeUndefined()
     await vi.advanceTimersByTimeAsync(10_000)
-    expect(reads("remote_host_list")).toBe(++calls)
+    expect(reads("device_list")).toBe(++calls)
   } finally { store.dispose() }
 })

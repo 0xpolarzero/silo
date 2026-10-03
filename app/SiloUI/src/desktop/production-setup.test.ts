@@ -244,7 +244,7 @@ describe("production setup queue", () => {
     try {
       await store.submitSetupStep("github", selected)
       expect(invoke).toHaveBeenCalledWith("save_github_configuration", {
-        configuration: { baseRevision: application.github.policyRevision, hostIdentity: application.github.hostIdentity ?? null, workspaces: [policy] },
+        configuration: { baseRevision: application.github.policyRevision, deviceIdentity: application.github.deviceIdentity ?? null, workspaces: [policy] },
       })
       expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubVerify")?.status).toBe("succeeded")
     } finally { store.dispose() }
@@ -321,7 +321,7 @@ describe("production setup queue", () => {
     const markComplete = vi.fn(async () => {})
     await store.finishSetup(selected, markComplete)
     // Setup saves only its sandboxes against the revision it saw and never turns access on or off (H-39).
-    expect(invoke).toHaveBeenCalledWith("save_github_configuration", { configuration: { baseRevision: application.github.policyRevision, hostIdentity: application.github.hostIdentity ?? null, workspaces: selected.github.workspaces } })
+    expect(invoke).toHaveBeenCalledWith("save_github_configuration", { configuration: { baseRevision: application.github.policyRevision, deviceIdentity: application.github.deviceIdentity ?? null, workspaces: selected.github.workspaces } })
     expect(markComplete).toHaveBeenCalledOnce()
     store.dispose()
   })

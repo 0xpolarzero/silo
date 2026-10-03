@@ -3,14 +3,14 @@ import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
-import { workspaceTarget } from "../model/remote-computers"
+import { workspaceTarget } from "../model/connections"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { OverviewPage } from "../pages/overview-page"
 
 function openSandboxPage(active: boolean, refreshNetwork: ApplicationActions["refreshNetwork"]) {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.computer)!
+  source.devices = []
+  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
   workspace.state = "running"
   workspace.freshness = "fresh"
   source.network = { workspaces: [{ workspace: workspaceTarget(workspace), error: null, ports: [] }] }
@@ -37,12 +37,12 @@ it("does not poll a sandbox's ports while the Sandboxes panel is hidden", async 
 })
 
 
-it("names each remote computer in the port form's sandbox selector", async () => {
+it("names each remote device in the port form's sandbox selector", async () => {
   const { NetworkPortForm } = await import("./network-ports")
   const { useNetworkPorts } = await import("./network-ports-state")
   const source = structuredClone(applicationSourceForScenario("running"))
-  const local = source.workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.computer)!
-  const remote = { ...local, machine: { ...local.machine, id: "silo-remote:office:vm" }, computer: { id: "office", name: "Office Mac", address: "user@office", connected: true, vmId: "vm" } }
+  const local = source.workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.device)!
+  const remote = { ...local, machine: { ...local.machine, id: "silo-remote:office:vm" }, device: { id: "office", name: "Office Mac", address: "user@office", connected: true, vmId: "vm" } }
   function Form() {
     const controller = useNetworkPorts({ workspaces: [local, remote], actions: {} as ApplicationActions, active: false })
     return <><button onClick={() => controller.add()}>Add port</button><NetworkPortForm controller={controller} fieldID="test" /></>

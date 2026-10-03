@@ -15,7 +15,7 @@ it.each(["local", "remote"])("deleting the %s sandbox clears only its backend no
   const remote = {
     ...structuredClone(local),
     machine: { ...local.machine, id: `silo-remote:office:${local.machine.id}` },
-    computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
+    device: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
   }
   source.workspaces = [local, remote]
   const actions = createApplicationActionsMock()

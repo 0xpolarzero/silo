@@ -12,7 +12,7 @@ import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
 import { sandboxBusyReason } from "@/features/sandboxes/model/workspace-presentation"
-import { hostCapacityFrom } from "@/features/sandboxes/model/machine-limits"
+import { deviceCapacityFrom } from "@/features/sandboxes/model/machine-limits"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { DeleteSandboxBody, type DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
 import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
@@ -22,8 +22,8 @@ import { DisabledReason } from "@/features/application/components/disabled-reaso
 import { LifecycleControl } from "@/features/application/components/lifecycle-control"
 import type { LifecycleGuard } from "@/features/application/model/lifecycle-guard"
 import type { NetworkPort, ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
-import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { sandboxNamesOnDevice, type WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
+import { workspaceTarget } from "@/features/application/model/connections"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import { SshAccessBadges, SshAccessRow } from "@/features/application/pages/ssh-access-panel"
 import { WorkspaceStoragePanel } from "@/features/application/pages/workspace-storage-panel"
@@ -39,12 +39,12 @@ import { cn } from "@/lib/utils"
  * list's `useMachineEditing` behaviour (validation, stale-baseline conflict review, saving). */
 export interface SandboxDetailEditing {
   machines: readonly SetupMachineConfiguration[]
-  computers?: readonly { id: string; name: string; connected: boolean }[]
-  getComputerId?: (machine: SetupMachineConfiguration) => string | undefined
-  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
+  devices?: readonly { id: string; name: string; connected: boolean }[]
+  getDeviceId?: (machine: SetupMachineConfiguration) => string | undefined
+  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, deviceId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
   onDeleteMachine?: (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => Promise<void>
   onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
-  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
+  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, deviceId?: string) => string | undefined
   isMachineCreated?: (machine: SetupMachineConfiguration) => boolean
   isMachineRunning?: (machine: SetupMachineConfiguration) => boolean
 }
@@ -58,7 +58,7 @@ export interface SandboxDetailControls {
   readOnly: boolean
   configurationLocked: boolean
   workspaceOperationBusy: boolean
-  /** Edit, Duplicate, Add Linux desktop and Delete wait while work runs or the computer is offline. */
+  /** Edit, Duplicate, Add Linux desktop and Delete wait while work runs or the device is offline. */
   changesBlocked?: boolean
   canOpen: boolean
   canStart: boolean
@@ -105,7 +105,7 @@ function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess
   onOpenSsh?: () => void
 }) {
   const { machine } = workspace
-  const location = workspace.computer ? workspace.computer.name : machine.kind === "vm" ? "VM" : "SSH host"
+  const location = workspace.device ? workspace.device.name : machine.kind === "vm" ? "VM" : "SSH host"
   return <span>
     <WorkspaceStatus workspace={workspace} source={source} readOnly={readOnly} onCancel={onCancel} />
     <Sep />{location}
@@ -154,14 +154,14 @@ function AddAction({ label, disabled, onClick }: { label: string; disabled?: boo
  * Only local sandboxes support secrets, so remote and SSH sandboxes stay read-only. */
 function SecretsSection({ workspace, source, actions, onNavigate }: { workspace: ApplicationWorkspace; source: ApplicationSource; actions: ApplicationActions; onNavigate?: (route: ApplicationInitialRoute) => void }) {
   const { machine } = workspace
-  const canManage = machine.kind === "vm" && !workspace.computer
+  const canManage = machine.kind === "vm" && !workspace.device
   const manager = useSecretsManager({ source, onSaveSecret: actions.saveSecret, onRemoveSecret: actions.removeSecret, onRetrySecret: actions.retrySecret })
   // Secret assignments name local sandboxes, so a remote or SSH sandbox never lists them.
   const sandboxSecrets = canManage ? source.secrets.filter(secret => secret.workspaces.includes(machine.name)) : []
   const adding = Boolean(manager.editor && !manager.editor.secret)
 
   if (!canManage) return <Section label="Secrets">
-    <p className="text-xs text-muted-foreground">Secrets are available only for sandboxes on this computer.</p>
+    <p className="text-xs text-muted-foreground">Secrets are available only for sandboxes on this device.</p>
   </Section>
 
   const action = <div className="flex items-center gap-2">
@@ -344,7 +344,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const editingContext = controls.editing
   const editing = useMachineEditing({
     machines: editingContext?.machines ?? [machine],
-    getComputerId: editingContext?.getComputerId,
+    getDeviceId: editingContext?.getDeviceId,
     onCommitMachine: editingContext?.onCommitMachine,
     onDeleteMachine: editingContext?.onDeleteMachine,
     onMachinesChange: editingContext?.onMachinesChange ?? (() => {}),
@@ -357,11 +357,11 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   })
   const canEdit = Boolean(editingContext) && !controls.configurationLocked && !busyReason
   const isEditing = Boolean(editing.editor)
-  const editComputerMachines = editingContext?.getComputerId
-    ? (editingContext.machines).filter(item => (editingContext.getComputerId!(item) ?? "") === editing.computerId)
+  const editDeviceMachines = editingContext?.getDeviceId
+    ? (editingContext.machines).filter(item => (editingContext.getDeviceId!(item) ?? "") === editing.deviceId)
     : (editingContext?.machines ?? [machine])
 
-  const displayName = workspace.computer ? `${machine.name} on ${workspace.computer.name}` : machine.name
+  const displayName = workspace.device ? `${machine.name} on ${workspace.device.name}` : machine.name
   const editMenuActions: MenuAction[] = editingContext ? sandboxEditMenu({
     machine,
     displayName,
@@ -375,20 +375,20 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     onAddDesktop: (vm) => {
       editing.beginOperation()
       editing.captureBaseline()
-      void editing.save({ ...vm, desktop: { startWithSandbox: true } }, machine.id, editingContext.getComputerId?.(machine) ?? "")
+      void editing.save({ ...vm, desktop: { startWithSandbox: true } }, machine.id, editingContext.getDeviceId?.(machine) ?? "")
     },
   }) : []
   const menuActions = [...controls.menuActions, ...editMenuActions]
 
   const access = source.sshAccess?.workspaces.find(row => row.workspace === target)
   const sshAvailable = machine.kind === "vm" && Boolean(source.sshAccess || actions.refreshSshAccess)
-  const sshStale = Boolean((source.sshAccessError && !workspace.computer) || workspace.computer?.connected === false || workspace.freshness === "stale")
-  const pendingSecrets = machine.kind === "vm" && !workspace.computer
+  const sshStale = Boolean((source.sshAccessError && !workspace.device) || workspace.device?.connected === false || workspace.freshness === "stale")
+  const pendingSecrets = machine.kind === "vm" && !workspace.device
     ? source.secrets.filter(secret => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(secret => secret.name)
     : []
 
   const showCheckpoints = machine.kind === "vm"
-  const showStorage = machine.kind === "vm" && !workspace.computer && Boolean(actions.readWorkspaceStorage)
+  const showStorage = machine.kind === "vm" && !workspace.device && Boolean(actions.readWorkspaceStorage)
   const showAccess = sshAvailable
   const tabs: { value: SandboxDetailTab; label: string; visible: boolean }[] = [
     { value: "overview", label: "Overview", visible: true },
@@ -455,10 +455,10 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
                 key={`${editing.editor.draft.id}:${editing.editorResetToken}`}
                 saving={editing.committing}
                 blockedReason={editing.saveBlockedReason}
-                capacity={editing.computerId ? undefined : hostCapacityFrom(source.hostCapacity)}
-                computerName={workspace.computer?.name}
-                computerId={editing.computerId}
-                editorHeader={editingContext?.computers && editing.editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.computerId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setComputerId(event.target.value)}><option value="">This computer</option>{editingContext.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (offline)" : ""}</option>)}</select></label> : undefined}
+                capacity={editing.deviceId ? undefined : deviceCapacityFrom(source.deviceCapacity)}
+                deviceName={workspace.device?.name}
+                deviceId={editing.deviceId}
+                editorHeader={editingContext?.devices && editing.editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.deviceId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setDeviceId(event.target.value)}><option value="">This device</option>{editingContext.devices.map(device => <option key={device.id} value={device.id} disabled={!device.connected}>{device.name}{!device.connected ? " (offline)" : ""}</option>)}</select></label> : undefined}
                 focusRequest={editing.editorFocusRequest}
                 created={Boolean(editing.editor.originalID && editingContext?.isMachineCreated?.(machine))}
                 running={Boolean(editing.editor.originalID && machine.kind === "vm" && editingContext?.isMachineRunning?.(machine))}
@@ -466,7 +466,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
                 baselineMachine={editing.editorBaseline ?? undefined}
                 conflict={editing.editorConflict}
                 review={editing.editorReview}
-                machines={editComputerMachines}
+                machines={editDeviceMachines}
                 onCancel={() => editing.setEditor(null)}
                 onSave={editing.save}
                 onDraftChange={(draft) => editing.setEditor({ ...editing.editor!, draft })}
@@ -487,10 +487,10 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           <div className="pt-4">
             <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview" && controls.pageActive !== false} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} computerUse={machine.kind === "vm" && machine.desktop ? <ComputerUseSection key={target} workspace={target} active={activeTab === "overview" && controls.pageActive !== false} /> : undefined} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
-              <CheckpointPanel workspace={workspace} target={target} actions={actions} takenNames={sandboxNamesOnComputer(source.workspaces, workspace.computer?.id)} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
+              <CheckpointPanel workspace={workspace} target={target} actions={actions} takenNames={sandboxNamesOnDevice(source.workspaces, workspace.device?.id)} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.device?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
             </TabsContent>}
             {showStorage && actions.readWorkspaceStorage && <TabsContent value="storage">
-              <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} sandboxName={machine.name} computerName={workspace.computer?.name} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />
+              <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} sandboxName={machine.name} deviceName={workspace.device?.name} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />
             </TabsContent>}
             {showAccess && <TabsContent value="access">
               <SshAccessRow embedded readOnly={controls.readOnly || controls.workspaceOperationBusy} workspace={workspace} access={access} save={actions.saveSshAccess} connection={actions.sshConnection} stale={sshStale} />

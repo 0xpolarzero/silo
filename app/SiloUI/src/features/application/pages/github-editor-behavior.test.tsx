@@ -79,7 +79,7 @@ it.each([false, true])("uses the detected host author for each sandbox missing a
   const source = applicationSourceForScenario("running")
   const existing = source.github.workspaces![0]
   source.github.workspaces = partial ? [existing] : []
-  source.github.hostIdentity = { name: "Local Author", email: "local@example.test" }
+  source.github.deviceIdentity = { name: "Local Author", email: "local@example.test" }
   const { actions, user } = renderGitHub("running", source)
 
   const github = within(appPanel("GitHub"))
@@ -97,7 +97,7 @@ it.each([false, true])("uses the detected host author for each sandbox missing a
 it("allows repository selection without inventing a missing Git identity", async () => {
   const source = applicationSourceForScenario("running")
   source.github.workspaces = []
-  source.github.hostIdentity = null
+  source.github.deviceIdentity = null
   const { actions, user } = renderGitHub("running", source)
 
   const github = within(appPanel("GitHub"))
@@ -157,7 +157,7 @@ it("saves only the edited sandbox against the shown revision and never turns acc
   // save right after Disable access cannot re-enable it.
   expect(saved).toEqual({
     baseRevision: 10,
-    hostIdentity: source.github.hostIdentity ?? null,
+    deviceIdentity: source.github.deviceIdentity ?? null,
     workspaces: [expect.objectContaining({ workspace: "playgrounds", identity: expect.objectContaining({ name: "Morgan Example" }) })],
   })
   expect(saved).not.toHaveProperty("accessEnabled")
@@ -367,7 +367,7 @@ it("keeps a successful GitHub apply notification until it is closed", async () =
 
 
 it("allows manual identity without host identity and explains unavailable repository catalog data", async () => {
-  const source = applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "missing-host-identity")
+  const source = applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "missing-device-identity")
   const { unmount } = renderGitHub("running", source)
 
   const github = within(appPanel("GitHub"))

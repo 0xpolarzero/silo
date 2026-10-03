@@ -125,8 +125,8 @@ const runningSource = {
     phase: "workspaces",
     startedAt: 810129582,
     updatedAt: 810129720,
-    completedPhases: ["welcome", "preflight", "toolchain", "hostIntegration"],
-    phaseDurations: { preflight: 1.4, toolchain: 0.8, hostIntegration: 0.6 },
+    completedPhases: ["welcome", "preflight", "toolchain", "deviceIntegration"],
+    phaseDurations: { preflight: 1.4, toolchain: 0.8, deviceIntegration: 0.6 },
   },
   preflightChecks: passingPreflightChecks,
   progressEvents: runningEvents,
@@ -142,7 +142,7 @@ const runningSource = {
       mode: "read-only",
     }],
   }],
-  currentHostGitIdentity: {
+  currentDeviceGitIdentity: {
     name: "Taylor Example",
     email: "taylor@example.com",
   },
@@ -161,7 +161,7 @@ const completeSource = {
     phase: "complete",
     startedAt: 810129300,
     updatedAt: 810129720,
-    completedPhases: ["welcome", "preflight", "toolchain", "hostIntegration", "workspaces", "github", "identity", "complete"],
+    completedPhases: ["welcome", "preflight", "toolchain", "deviceIntegration", "workspaces", "github", "identity", "complete"],
     workspaceConfigurations: bootstrapConfiguration.workspaces.map((workspace, index) => ({
       id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
       name: workspace.name,
@@ -172,7 +172,7 @@ const completeSource = {
       workspaceStorageGiB: workspace.workspaceStorageGiB,
       runtimeStorageGiB: workspace.runtimeStorageGiB,
     })),
-    phaseDurations: { preflight: 1.4, toolchain: 0.8, hostIntegration: 0.6, workspaces: 416 },
+    phaseDurations: { preflight: 1.4, toolchain: 0.8, deviceIntegration: 0.6, workspaces: 416 },
   },
   progressEvents: completeEvents,
   bootstrapResult: {

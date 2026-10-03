@@ -26,7 +26,7 @@ it("asks before the palette starts a sandbox under memory pressure, inside the p
   await user.click(screen.getByRole("option", { name: "Start dev…" }))
 
   const dialog = within(screen.getByRole("dialog", { name: "Commands" }))
-  expect(dialog.getByText("Starting dev may slow this computer")).toBeVisible()
+  expect(dialog.getByText("Starting dev may slow this device")).toBeVisible()
   expect(dialog.getByText(/can use up to 32 GiB/)).toBeVisible()
   expect(startWorkspace).not.toHaveBeenCalled()
   await user.click(dialog.getByRole("button", { name: "Start anyway" }))
@@ -62,7 +62,7 @@ it("asks next to the sandbox page's Start button, not at the bottom of the page"
   await user.click(within(screen.getByRole("region", { name: "Sandboxes" })).getByRole("button", { name: "Open dev" }))
   await user.click(screen.getByRole("button", { name: "Start dev" }))
   const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
-  expect(popover.getByText("Starting dev may slow this computer")).toBeVisible()
+  expect(popover.getByText("Starting dev may slow this device")).toBeVisible()
   expect(popover.getByRole("button", { name: "Start anyway" })).toHaveFocus()
   await user.click(popover.getByRole("button", { name: "Start anyway" }))
   expect(startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")

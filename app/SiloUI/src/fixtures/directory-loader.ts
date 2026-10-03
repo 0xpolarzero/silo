@@ -1,6 +1,6 @@
 import type { ApplicationWorkspace } from "@/features/application/model/application-source"
 import type { DirectoryLoader } from "@/features/application/model/directory-store"
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 
 /** Static directory data belongs only to previews and tests. */
 export function fixtureDirectoryLoader(workspaces: ApplicationWorkspace[]): DirectoryLoader {

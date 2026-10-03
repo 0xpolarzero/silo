@@ -1,8 +1,8 @@
 import { ErrorDetails } from "@/components/error-details"
 import { configurationFailureDiagnostic } from "@/features/application/model/configuration-failure"
 import { lifecycleGuard, type LifecyclePrompt } from "@/features/application/model/lifecycle-guard"
-import { workspaceTarget } from "@/features/application/model/remote-computers"
-import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
+import { workspaceTarget } from "@/features/application/model/connections"
+import { DeviceBadge } from "@/features/sandboxes/components/device-badge"
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
 import { CircleAlert, Code, GitBranch, Loader2, Monitor, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 
@@ -204,17 +204,17 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
   const target = workspaceTarget(workspace)
               const availability = workspaceAvailability(workspace, source)
               const pending = confirmation?.workspace === target ? confirmation : null
-              const pendingSecrets = machine.kind === "vm" && !workspace.computer ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
+              const pendingSecrets = machine.kind === "vm" && !workspace.device ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
               const activity = source.activities.find((item) => item.category === "sandbox" && item.workspace === target && item.status === "running")
               const review = workspace.state === "failed" || workspace.attention?.level === "error"
               // A failed Start leaves the sandbox "Stopped": show the failure instead of a neutral row.
               const lifecycle = lifecycleOutcome(workspace)
-              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Offline · last known status" : "Last known status" : lifecycle?.text)
+              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.device ? "Offline · last known status" : "Last known status" : lifecycle?.text)
               return <SandboxListItem key={machine.id} aria-label={machine.name} aria-busy={availability.busy || undefined}>
                 <SandboxListRow
                   name={machine.name}
                   kind={machine.kind}
-                  kindBadge={workspace.computer ? <ComputerBadge computer={workspace.computer} /> : undefined}
+                  kindBadge={workspace.device ? <DeviceBadge device={workspace.device} /> : undefined}
                   iconState={lifecycle?.error ? "error" : workspaceIconState(workspace)}
                   tone={workspace.freshness === "stale" ? "warning" : lifecycle?.error ? "error" : workspaceRowTone(workspace)}
                   icon={availability.busy ? <span className="relative shrink-0">
@@ -229,7 +229,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                   </span>}
                   detailClassName="overflow-visible whitespace-normal"
                   actions={<>
-                    {!availability.busy && (!repair || workspace.computer) && (review
+                    {!availability.busy && (!repair || workspace.device) && (review
                       ? <SandboxAction label={`See logs for ${machine.name}`} onClick={() => actions.openSilo({ workspace: target, workspaceSection: "logs" })}><Terminal /></SandboxAction>
                       : workspace.freshness === "stale" ? <SandboxAction label={`Retry ${machine.name} status`} onClick={actions.refresh}><RotateCw /></SandboxAction>
                         : availability.canOpen ? <>
@@ -253,7 +253,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                   </div>
                 </ListRowDetails>}
                 {pending && <ListRowDetails label={`${pending.action === "stop" ? "Stop" : "Restart"} ${machine.name}?`} className="gap-2 pl-0">
-                  <p className="text-[11px] text-muted-foreground">{pending.action === "stop" ? "Stop" : "Restart"} {machine.name}{workspace.computer ? ` on ${workspace.computer.name}` : ""}? Running processes will be interrupted.</p>
+                  <p className="text-[11px] text-muted-foreground">{pending.action === "stop" ? "Stop" : "Restart"} {machine.name}{workspace.device ? ` on ${workspace.device.name}` : ""}? Running processes will be interrupted.</p>
                   <div className="flex justify-end gap-1.5">
                     <Button variant="ghost" size="xs" onClick={() => setConfirmation(null)}>Cancel</Button>
                     <Button variant="destructive" size="xs" disabled={pending.action === "stop" ? !availability.canStop : !availability.canRestart} onClick={() => {

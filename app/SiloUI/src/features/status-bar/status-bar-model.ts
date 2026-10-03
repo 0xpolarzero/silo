@@ -1,21 +1,21 @@
 import type { ApplicationSource, ApplicationWorkspace } from "@/features/application/model/application-source"
 import { cancelledActionLabel } from "@/features/application/model/operation-queue"
-import { parseRemoteWorkspaceTarget, workspaceTarget } from "@/features/application/model/remote-computers"
+import { parseRemoteWorkspaceTarget, workspaceTarget } from "@/features/application/model/connections"
 
 /**
  * A user-facing name for an operation's sandbox target. Remote targets are internal
- * (`silo-remote:<host>:<vm>`), so they resolve to "{sandbox} on {computer}"; a remote
- * sandbox that is no longer listed still names its computer.
+ * (`silo-remote:<host>:<vm>`), so they resolve to "{sandbox} on {device}"; a remote
+ * sandbox that is no longer listed still names its device.
  */
-export function sandboxTargetLabel(target: string, source: Pick<ApplicationSource, "workspaces" | "remoteComputers">): string {
+export function sandboxTargetLabel(target: string, source: Pick<ApplicationSource, "workspaces" | "devices">): string {
   const workspace = source.workspaces.find((candidate) => workspaceTarget(candidate) === target)
-  if (workspace) return workspace.computer ? `${workspace.machine.name} on ${workspace.computer.name}` : workspace.machine.name
+  if (workspace) return workspace.device ? `${workspace.machine.name} on ${workspace.device.name}` : workspace.machine.name
   let remote: ReturnType<typeof parseRemoteWorkspaceTarget>
   try { remote = parseRemoteWorkspaceTarget(target) } catch { return "a remote sandbox" }
   if (!remote) return target
-  const hostId = remote.hostId
-  const computer = source.remoteComputers?.find(({ id }) => id === hostId)
-  return computer ? `a sandbox on ${computer.name}` : "a remote sandbox"
+  const deviceId = remote.deviceId
+  const device = source.devices?.find(({ id }) => id === deviceId)
+  return device ? `a sandbox on ${device.name}` : "a remote sandbox"
 }
 
 /**

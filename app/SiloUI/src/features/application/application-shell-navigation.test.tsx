@@ -413,7 +413,7 @@ it("opens on the nested sandbox Overview with compact navigation", () => {
   expect(overview.queryByRole("heading", { name: "All sandboxes" })).not.toBeInTheDocument()
   expect(overview.queryByText(/Updated just now/)).not.toBeInTheDocument()
   expect(overview.getByRole("heading", { name: "Sandboxes" })).toBeVisible()
-  expect(overview.getByText("3 sandboxes · 3 on this computer · 0 on other computers · 0 SSH hosts")).toBeVisible()
+  expect(overview.getByText("3 sandboxes · 3 on this device · 0 on other devices · 0 SSH hosts")).toBeVisible()
   expect(overview.getByRole("button", { name: "Add" })).toBeVisible()
   const sandboxList = overview.getByRole("list", { name: "Configured sandboxes" })
   expect(sandboxList).toBeVisible()
@@ -524,8 +524,8 @@ it("lets each caret expand or collapse without navigating", async () => {
 })
 
 
-it("fits a new sandbox to the capacity this computer reports (I-24)", async () => {
-  const source = { ...applicationSourceForScenario("running"), hostCapacity: { logicalCpus: 8, physicalMemoryBytes: 16 * 1024 ** 3, maxMemoryGib: 16 } }
+it("fits a new sandbox to the capacity this device reports (I-24)", async () => {
+  const source = { ...applicationSourceForScenario("running"), deviceCapacity: { logicalCpus: 8, physicalMemoryBytes: 16 * 1024 ** 3, maxMemoryGib: 16 } }
   const { user } = renderApplication("running", source)
   const panel = within(appPanel("Sandboxes"))
   await user.click(panel.getByRole("button", { name: "Add" }))
@@ -553,12 +553,12 @@ it.each(["local", "office", "lab"])("notification routes keep the next action on
   const source = structuredClone(applicationSourceForScenario("running"))
   const local = source.workspaces[0]
   const vmId = local.machine.id
-  source.remoteComputers = ["office", "lab"].map(id => ({ id, name: id, address: `user@${id}`, connected: true }))
-  for (const computer of source.remoteComputers) {
+  source.devices = ["office", "lab"].map(id => ({ id, name: id, address: `user@${id}`, connected: true }))
+  for (const device of source.devices) {
     source.workspaces.push({
       ...structuredClone(local),
-      computer: { ...computer, vmId },
-      machine: { ...local.machine, id: `silo-remote:${computer.id}:${vmId}` },
+      device: { ...device, vmId },
+      machine: { ...local.machine, id: `silo-remote:${device.id}:${vmId}` },
     })
   }
   const target = owner === "local" ? vmId : `silo-remote:${owner}:${vmId}`
@@ -581,22 +581,22 @@ it("legacy local-name routes select only the local sandbox's logs", async () => 
   source.workspaces = [{
     ...structuredClone(local),
     machine: { ...local.machine, id: `silo-remote:office:${local.machine.id}` },
-    computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
+    device: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
   }, local]
-  const queryLogs = vi.fn(async (query: LogQuery) => fixtureLogPage(query.computerId ? source.workspaces[0] : local, query))
+  const queryLogs = vi.fn(async (query: LogQuery) => fixtureLogPage(query.deviceId ? source.workspaces[0] : local, query))
   render(<ApplicationPreview source={source} actions={{ queryLogs }} initialRoute={{ workspace: local.machine.name, workspaceSection: "logs" }} />)
   await screen.findByText(/Showing .* matching records/)
   expect(queryLogs).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sandboxId: local.machine.id }))
-  expect(queryLogs.mock.calls[0][0].computerId).toBeUndefined()
+  expect(queryLogs.mock.calls[0][0].deviceId).toBeUndefined()
 })
 
-it("legacy local-name overview routes keep actions on the local computer", async () => {
+it("legacy local-name overview routes keep actions on the local device", async () => {
   const source = structuredClone(applicationSourceForScenario("running"))
   const local = source.workspaces[0]
   source.workspaces = [{
     ...structuredClone(local),
     machine: { ...local.machine, id: `silo-remote:office:${local.machine.id}` },
-    computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
+    device: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
   }, local]
   const openTerminal = vi.fn()
   const user = userEvent.setup()

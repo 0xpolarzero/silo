@@ -29,11 +29,11 @@ describe("SecretsPage", () => {
 
   it.each([true, false])("keeps secret assignment badges local when a same-named remote exists (local present: %s)", (localPresent) => {
     const source = structuredClone(applicationSourceForScenario("running"))
-    const local = source.workspaces.find(({ machine, computer }) => machine.name === "dev" && !computer)!
+    const local = source.workspaces.find(({ machine, device }) => machine.name === "dev" && !device)!
     local.state = "running"
     const remote = {
       ...local, state: "failed" as const,
-      computer: { id: "office", vmId: "remote-vm", name: "Office", address: "office", connected: true },
+      device: { id: "office", vmId: "remote-vm", name: "Office", address: "office", connected: true },
     }
     source.workspaces = [remote, ...source.workspaces.filter(workspace => localPresent || workspace !== local)]
     source.secrets = [{ ...source.secrets[0], workspaces: ["dev"] }]
@@ -84,12 +84,12 @@ describe("SecretsPage", () => {
   it("offers only local virtual machines when assigning a secret", async () => {
     const user = userEvent.setup()
     const source = structuredClone(applicationSourceForScenario("running"))
-    const remote = { ...source.workspaces[0], machine: { ...source.workspaces[0].machine, name: "remote-only" }, computer: { id: "office", vmId: "remote-vm", name: "Office", address: "office", connected: true } }
+    const remote = { ...source.workspaces[0], machine: { ...source.workspaces[0].machine, name: "remote-only" }, device: { id: "office", vmId: "remote-vm", name: "Office", address: "office", connected: true } }
     source.workspaces.push(remote)
     render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={vi.fn()} />)
     await user.click(screen.getByRole("button", { name: "Add secret" }))
     await user.click(screen.getByRole("combobox", { name: "Add sandbox" }))
-    expect(screen.getAllByRole("option").map(option => option.textContent)).toEqual(source.workspaces.filter(workspace => !workspace.computer && workspace.machine.kind === "vm").map(workspace => workspace.machine.name))
+    expect(screen.getAllByRole("option").map(option => option.textContent)).toEqual(source.workspaces.filter(workspace => !workspace.device && workspace.machine.kind === "vm").map(workspace => workspace.machine.name))
     expect(screen.queryByRole("option", { name: "remote-only" })).not.toBeInTheDocument()
   })
 

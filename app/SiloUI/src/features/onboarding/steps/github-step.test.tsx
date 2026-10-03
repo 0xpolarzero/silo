@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 import { GitHubStep } from "./github-step"
 import type { GitHubAccessEditorProps } from "@/features/github/components/github-access-editor"
 
-const props: GitHubAccessEditorProps = { workspaces: [], connectionState: "connected", repositoryOptions: [], workspaceSelections: {}, workspaceIdentities: {}, currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(), onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn() }
+const props: GitHubAccessEditorProps = { workspaces: [], connectionState: "connected", repositoryOptions: [], workspaceSelections: {}, workspaceIdentities: {}, currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(), onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn() }
 
 describe("GitHub setup feedback", () => {
   it.each([

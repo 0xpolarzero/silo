@@ -58,7 +58,7 @@ describe("saving changes that stop a running sandbox", () => {
 it("revalidates newly reported host capacity before confirming Stop and save", async () => {
   const onMachinesChange = vi.fn()
   const view = (capacity?: { logicalCPUs: number; memoryGiB: number }) => <TooltipProvider><MachineList
-    machines={[machine]} onMachinesChange={onMachinesChange} getHostCapacity={() => capacity}
+    machines={[machine]} onMachinesChange={onMachinesChange} getDeviceCapacity={() => capacity}
     isMachineCreated={() => true} isMachineRunning={() => true}
     initialEditorDraft={{ draft: machine, originalID: machine.id, insertAt: 0 }} /></TooltipProvider>
   const result = render(view())
@@ -68,7 +68,7 @@ it("revalidates newly reported host capacity before confirming Stop and save", a
   await user.click(screen.getByRole("button", { name: "Stop and save" }))
   expect(onMachinesChange).not.toHaveBeenCalled()
   expect(screen.getByRole("spinbutton", { name: "Memory ceiling custom (GiB)" }))
-    .toHaveAccessibleDescription("This computer has 16 GiB of memory. Choose 16 GiB or fewer.")
+    .toHaveAccessibleDescription("This device has 16 GiB of memory. Choose 16 GiB or fewer.")
   expect(screen.queryByRole("group", { name: `Stop ${machine.name} and save?` })).not.toBeInTheDocument()
 })
 

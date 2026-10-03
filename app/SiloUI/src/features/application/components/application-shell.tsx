@@ -34,7 +34,7 @@ const workspaceItems = [
 
 const settingsItems = [
   { id: "general", label: "General", icon: SlidersHorizontal },
-  { id: "computers", label: "Computers", icon: Monitor },
+  { id: "devices", label: "Devices", icon: Monitor },
   { id: "notifications", label: "Notifications", icon: Bell },
 ] as const
 

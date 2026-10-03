@@ -32,9 +32,9 @@ export interface PendingCheckpointRestore {
   state: "full" | "disk"
 }
 
-/** Sandbox names already used on one computer (`undefined` for this computer), so a fork name conflict shows inline. */
-export function sandboxNamesOnComputer(workspaces: readonly ApplicationWorkspace[], computerId: string | undefined): string[] {
-  return workspaces.filter(workspace => (workspace.computer?.id ?? "") === (computerId ?? "")).map(workspace => workspace.machine.name)
+/** Sandbox names already used on one device (`undefined` for this device), so a fork name conflict shows inline. */
+export function sandboxNamesOnDevice(workspaces: readonly ApplicationWorkspace[], deviceId: string | undefined): string[] {
+  return workspaces.filter(workspace => (workspace.device?.id ?? "") === (deviceId ?? "")).map(workspace => workspace.machine.name)
 }
 
 /** Storage and Delete availability per checkpoint (`read_checkpoint_usage`). */

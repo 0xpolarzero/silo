@@ -16,7 +16,7 @@ import { deleteSandboxDescription, deleteSandboxTitle } from "@/features/sandbox
 import { DeleteSandboxBody, type DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
 import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
 import { restoreFocus } from "@/lib/focus"
-import type { HostCapacity } from "@/features/sandboxes/model/machine-limits"
+import type { DeviceCapacity } from "@/features/sandboxes/model/machine-limits"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
@@ -45,18 +45,18 @@ export interface MachineRowPresentation {
 
 interface MachineListProps {
   machines: readonly SetupMachineConfiguration[]
-  computers?: readonly { id: string; name: string; connected: boolean }[]
-  getComputerId?: (machine: SetupMachineConfiguration) => string | undefined
-  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
+  devices?: readonly { id: string; name: string; connected: boolean }[]
+  getDeviceId?: (machine: SetupMachineConfiguration) => string | undefined
+  onCommitMachine?: (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, deviceId: string, baseline?: SetupMachineConfiguration[]) => Promise<void>
   onDeleteMachine?: (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => Promise<void>
-  onConnectComputer?: () => void
+  onConnectDevice?: () => void
   onImportSandbox?: () => void
   /** Wraps the Add button so an import review popover can anchor to it. */
   importPopover?: (addButton: ReactNode) => ReactNode
   onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
   getRowPresentation?: (machine: SetupMachineConfiguration) => MachineRowPresentation
   sortPriority?: (machine: SetupMachineConfiguration) => number
-  /** This computer's saved position of a row, lower first; rows without one follow in `machines` order. */
+  /** This device's saved position of a row, lower first; rows without one follow in `machines` order. */
   orderRank?: (machine: SetupMachineConfiguration) => number | undefined
   /** Saves a reordered list (every row, local and remote, by id) instead of changing the
    * sandbox configuration. Without it, only local rows reorder, through `onMachinesChange`. */
@@ -75,18 +75,18 @@ interface MachineListProps {
   onEditorDraftChange?: (editor: MachineEditorDraft | null) => void
   isMachineCreated?: (machine: SetupMachineConfiguration) => boolean
   isMachineRunning?: (machine: SetupMachineConfiguration) => boolean
-  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
-  /** The CPUs and memory of a computer ("" is this one), when known: fits new-sandbox defaults and presets, and rejects ceilings above it. */
-  getHostCapacity?: (computerId: string) => HostCapacity | undefined
+  validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, deviceId?: string) => string | undefined
+  /** The CPUs and memory of a device ("" is this one), when known: fits new-sandbox defaults and presets, and rejects ceilings above it. */
+  getDeviceCapacity?: (deviceId: string) => DeviceCapacity | undefined
   /** Why a sandbox cannot be edited or deleted now (it is starting or stopping), if so. */
   getMachineBusyReason?: (machine: SetupMachineConfiguration) => string | undefined
   /** Keeps an open editor across navigation within a `MachineEditorDraftsProvider`. */
   editorDraftKey?: string
 }
 
-export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, orderRank, onReorder, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getHostCapacity, getMachineBusyReason, editorDraftKey }: MachineListProps) {
+export function MachineList({ devices, getDeviceId, onCommitMachine, onDeleteMachine, onConnectDevice, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, orderRank, onReorder, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getDeviceCapacity, getMachineBusyReason, editorDraftKey }: MachineListProps) {
   const {
-    computerId, setComputerId,
+    deviceId, setDeviceId,
     committing,
     interactionDisabled,
     saveBlockedReason,
@@ -96,7 +96,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     baselineRef,
     captureBaseline, beginOperation, dispatchChange,
     startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteWithNotice,
-  } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getHostCapacity, getMachineBusyReason, draftKey: editorDraftKey })
+  } = useMachineEditing({ machines, getDeviceId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getDeviceCapacity, getMachineBusyReason, draftKey: editorDraftKey })
 
   const [addOpen, setAddOpen] = useState(false)
   const addSelected = useRef<"editor" | "external" | null>(null)
@@ -116,7 +116,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     restoreFocus((sourceId ? editorTriggers.current.get(sourceId) : undefined) ?? addButton.current)
   }, [editor])
 
-  // Rows in this computer's saved order; rows it has not placed yet keep their place after them.
+  // Rows in this device's saved order; rows it has not placed yet keep their place after them.
   const orderedMachines = useMemo(() => {
     if (!orderRank) return machines
     return [...machines]
@@ -173,9 +173,9 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     runMachineAction(machineActionRequest)
   }, [machineActionRequest])
 
-  const isRemote = (machine: SetupMachineConfiguration) => Boolean(getComputerId?.(machine))
-  // With `onReorder`, this computer saves its own order of every row. Otherwise only local rows
-  // reorder (their order is part of this computer's configuration) and positions count them only.
+  const isRemote = (machine: SetupMachineConfiguration) => Boolean(getDeviceId?.(machine))
+  // With `onReorder`, this device saves its own order of every row. Otherwise only local rows
+  // reorder (their order is part of this device's configuration) and positions count them only.
   const reorderable = (machine: SetupMachineConfiguration) => Boolean(onReorder) || !isRemote(machine)
   const orderable = displayMachines.filter((machine) => reorderable(machine) && machines.some(({ id }) => id === machine.id))
   // A keyboard move waits for the source to publish the previous one, so rapid presses
@@ -254,7 +254,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   }
 
   const sandboxCount = machines.filter(machine => machine.kind === "vm").length
-  const remoteCount = machines.filter(machine => machine.kind === "vm" && getComputerId?.(machine)).length
+  const remoteCount = machines.filter(machine => machine.kind === "vm" && getDeviceId?.(machine)).length
   const sshHostCount = machines.length - sandboxCount
 
   return (
@@ -262,7 +262,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
       <div role="group" aria-labelledby={headingId} className="flex h-full min-h-0 flex-col">
         <ListHeader
           heading={<h3 id={headingId} className={listHeadingClassName}>Sandboxes</h3>}
-          subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this computer · {remoteCount} on other computers · {sshHostCount} {sshHostCount === 1 ? "SSH host" : "SSH hosts"}</>}
+          subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this device · {remoteCount} on other devices · {sshHostCount} {sshHostCount === 1 ? "SSH host" : "SSH hosts"}</>}
           actions={(importPopover ?? ((node: ReactNode) => node))(<DropdownMenu.Root open={addOpen} onOpenChange={setAddOpen}>
             <DropdownMenu.Trigger asChild>
               <Button ref={addButton} type="button" variant="outline" size="xs" disabled={interactionDisabled}>
@@ -278,7 +278,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               addSelected.current = null
             }} className="silo-portal z-50 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
               <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "editor"; startAdd("vm") }}>New sandbox</DropdownMenu.Item>
-              <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = onConnectComputer ? "external" : "editor"; if (onConnectComputer) onConnectComputer(); else startAdd("ssh") }}>{onConnectComputer ? "Connect computer…" : "Connect an SSH host…"}</DropdownMenu.Item>
+              <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = onConnectDevice ? "external" : "editor"; if (onConnectDevice) onConnectDevice(); else startAdd("ssh") }}>{onConnectDevice ? "Connect device…" : "Connect an SSH host…"}</DropdownMenu.Item>
               {onImportSandbox && <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "external"; onImportSandbox() }}>Import sandbox…</DropdownMenu.Item>}
             </DropdownMenu.Content></DropdownMenu.Portal>
           </DropdownMenu.Root>)}
@@ -294,8 +294,8 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               const presentation = getRowPresentation?.(machine)
               const rowInteractionsDisabled = interactionDisabled || Boolean(presentation?.suppressInteractions)
               const reorderDisabled = rowInteractionsDisabled || Boolean(editor)
-              const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
-              const deletionName = computerName ? `${machine.name} on ${computerName}` : machine.name
+              const deviceName = devices?.find(device => device.id === getDeviceId?.(machine))?.name
+              const deletionName = deviceName ? `${machine.name} on ${deviceName}` : machine.name
               return (
                 <SandboxListItem
                   key={machine.id}
@@ -307,13 +307,13 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                   onDrop={(event) => drop(event, machine, Boolean(presentation?.suppressInteractions))}
                 >
                   {isEditing && editor ? (
-                    <MachineEditor key={`${editor.draft.id}:${editorResetToken}`} saving={committing} blockedReason={saveBlockedReason} editorHeader={computers && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={computerId} disabled={Boolean(editor.originalID) || committing} onChange={event => setComputerId(event.target.value)}><option value="">This computer</option>{computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (offline)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} capacity={getHostCapacity?.(computerId)} computerName={computers?.find(computer => computer.id === computerId)?.name} computerId={computerId} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} baselineMachine={editorBaseline ?? undefined} conflict={editorConflict} review={editorReview} machines={getComputerId ? machines.filter(machine => (getComputerId(machine) ?? "") === computerId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} onReview={reviewConflict} onDiscard={() => setEditor(null)} />
+                    <MachineEditor key={`${editor.draft.id}:${editorResetToken}`} saving={committing} blockedReason={saveBlockedReason} editorHeader={devices && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={deviceId} disabled={Boolean(editor.originalID) || committing} onChange={event => setDeviceId(event.target.value)}><option value="">This device</option>{devices.map(device => <option key={device.id} value={device.id} disabled={!device.connected}>{device.name}{!device.connected ? " (offline)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} capacity={getDeviceCapacity?.(deviceId)} deviceName={devices?.find(device => device.id === deviceId)?.name} deviceId={deviceId} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} baselineMachine={editorBaseline ?? undefined} conflict={editorConflict} review={editorReview} machines={getDeviceId ? machines.filter(machine => (getDeviceId(machine) ?? "") === deviceId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} onReview={reviewConflict} onDiscard={() => setEditor(null)} />
                   ) : (
                     <SandboxListRow
                       name={machine.name}
                       kind={machine.kind}
                       onOpen={onOpenMachine && presentation?.openable !== false ? () => onOpenMachine(machine) : undefined}
-                      remote={Boolean(getComputerId?.(machine)) || machine.kind === "ssh"}
+                      remote={Boolean(getDeviceId?.(machine)) || machine.kind === "ssh"}
                       kindBadge={presentation?.kindBadge}
                       badge={presentation?.badge}
                       iconState={presentation?.iconState}
@@ -368,7 +368,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                           onAddDesktop: (vm) => {
                             beginOperation()
                             captureBaseline()
-                            void save({ ...vm, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
+                            void save({ ...vm, desktop: { startWithSandbox: true } }, machine.id, getDeviceId?.(machine) ?? "")
                           },
                         }),
                       ]} />}</> : undefined}

@@ -18,7 +18,7 @@ import { MachineConfigurationToast } from "./machine-configuration-toast"
 afterEach(() => { toast.dismiss() })
 
 const baseSource = structuredClone(applicationSourceForScenario("complete"))
-const existing = baseSource.workspaces.filter(workspace => !workspace.computer)
+const existing = baseSource.workspaces.filter(workspace => !workspace.device)
 const template = existing.find(workspace => workspace.machine.kind === "vm")!
 
 function created(): ApplicationWorkspace {

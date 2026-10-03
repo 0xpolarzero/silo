@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react"
 import { describe, expect, it } from "vitest"
 
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { workspaceTarget } from "@/features/application/model/connections"
 import { applicationSourceForScenario } from "./application-scenarios"
 import { useApplicationFixture } from "./application-state"
 
@@ -16,16 +16,16 @@ describe("native checkpoint fixture outcomes", () => {
   it.each([false, true])("forks the selected owner's configuration into a pending VM (remote: %s)", async (remote) => {
     const source = checkpointSource()
     const selected = source.workspaces[1]
-    if (remote) selected.computer = { id: "office", vmId: "second-vm", name: "Office", address: "office.test", connected: true }
+    if (remote) selected.device = { id: "office", vmId: "second-vm", name: "Office", address: "office.test", connected: true }
     const { result } = renderHook(() => useApplicationFixture(source))
     await act(async () => result.current.forkCheckpoint(workspaceTarget(selected), selected.checkpoints![0].id, "forked"))
     const child = result.current.source.workspaces.at(-1)!
     expect(child.machine).toEqual({ ...selected.machine, id: expect.any(String), name: "forked" })
     expect(child.machine.id).not.toBe(selected.machine.id)
     expect(child).toMatchObject({ state: "stopped", stateDetail: "Ready to start from checkpoint", checkpoints: [], logs: [], files: [], repositories: [], ports: [], githubRepositories: selected.githubRepositories, secretNames: selected.secretNames, pendingCheckpointRestore: { checkpointId: selected.checkpoints![0].id, sourceWorkspace: selected.machine.name, state: "disk" } })
-    expect(child.computer?.id).toBe(selected.computer?.id)
+    expect(child.device?.id).toBe(selected.device?.id)
     if (remote) {
-      expect(child.computer?.vmId).not.toBe(selected.computer?.vmId)
+      expect(child.device?.vmId).not.toBe(selected.device?.vmId)
       expect(child.machine.id).toBe(workspaceTarget(child))
     }
   })
@@ -34,7 +34,7 @@ describe("native checkpoint fixture outcomes", () => {
     const source = checkpointSource()
     const selected = source.workspaces[1]
     selected.state = state
-    selected.computer = { id: "office", vmId: "second-vm", name: "Office", address: "office.test", connected: true }
+    selected.device = { id: "office", vmId: "second-vm", name: "Office", address: "office.test", connected: true }
     const { result } = renderHook(() => useApplicationFixture(source))
     await act(async () => result.current.restoreCheckpoint(workspaceTarget(selected), selected.checkpoints![0].id))
     const restored = result.current.source.workspaces[1]
@@ -83,7 +83,7 @@ describe("native checkpoint fixture outcomes", () => {
     expect(result.current.source.workspaces.at(-1)?.pendingCheckpointRestore).toEqual(selected.pendingCheckpointRestore)
   })
 
-  it("rejects a duplicate name on the selected computer without publishing a fork", async () => {
+  it("rejects a duplicate name on the selected device without publishing a fork", async () => {
     const source = checkpointSource()
     const { result } = renderHook(() => useApplicationFixture(source))
     await expect(result.current.forkCheckpoint(source.workspaces[1].machine.name, source.workspaces[1].checkpoints![0].id, source.workspaces[0].machine.name)).rejects.toBe("The fork name is already in use or the workspace limit was reached.")
@@ -93,7 +93,7 @@ describe("native checkpoint fixture outcomes", () => {
   it("captures a named checkpoint on the selected remote VM, newest first", async () => {
     const source = checkpointSource()
     const selected = source.workspaces[1]
-    selected.computer = { id: "office", vmId: "second-vm", name: "Office", address: "office.test", connected: true }
+    selected.device = { id: "office", vmId: "second-vm", name: "Office", address: "office.test", connected: true }
     const { result } = renderHook(() => useApplicationFixture(source))
     await act(async () => result.current.createCheckpoint(workspaceTarget(selected), "  Saved again  "))
     expect(result.current.source.workspaces[1].checkpoints).toEqual([expect.objectContaining({ id: expect.stringMatching(/^c[0-9a-f]{31}$/), name: "Saved again", scope: "disk", reason: "manual" }), selected.checkpoints![0]])

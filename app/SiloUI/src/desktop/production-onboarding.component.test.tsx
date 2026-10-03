@@ -184,31 +184,31 @@ describe("production onboarding submission errors", () => {
 
 })
 
-describe("remote computer onboarding", () => {
+describe("remote device onboarding", () => {
   it("connects and completes onboarding without submitting local VM configuration", async () => {
-    const connectComputer = vi.fn().mockResolvedValue(undefined)
+    const connectDevice = vi.fn().mockResolvedValue(undefined)
     const configureMachines = vi.fn()
     const onOpenApp = vi.fn()
     const store = createMemorySettingsStore()
-    const source = { configureMachines, applicationActions: { connectComputer } } as unknown as ProductionSource
+    const source = { configureMachines, applicationActions: { connectDevice } } as unknown as ProductionSource
     render(<SettingsProvider store={store}><ProductionOnboarding application={null} dependencies={{ checks: [{ id: "runtime-microsandbox", title: "Runtime", status: "unavailable", detail: "Not installed", remediation: null }], retry: vi.fn() }} source={source} onOpenApp={onOpenApp} /></SettingsProvider>)
-    act(() => captured.props!.onConnectComputer!())
-    fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "owner@office" } })
+    act(() => captured.props!.onConnectDevice!())
+    fireEvent.change(screen.getByRole("textbox", { name: "Device address" }), { target: { value: "owner@office" } })
     fireEvent.click(screen.getByRole("button", { name: "Connect" }))
     await waitFor(() => expect(onOpenApp).toHaveBeenCalledOnce())
-    expect(connectComputer).toHaveBeenCalledWith("owner@office")
+    expect(connectDevice).toHaveBeenCalledWith("owner@office")
     expect(configureMachines).not.toHaveBeenCalled()
     expect(store.getSnapshot().settings.onboardingComplete).toBe(true)
   })
 
   it("keeps setup incomplete when the remote connection fails", async () => {
-    const connectComputer = vi.fn().mockRejectedValue(new Error("Offline · last known status"))
+    const connectDevice = vi.fn().mockRejectedValue(new Error("Offline · last known status"))
     const onOpenApp = vi.fn()
     const store = createMemorySettingsStore()
-    const source = { applicationActions: { connectComputer } } as unknown as ProductionSource
+    const source = { applicationActions: { connectDevice } } as unknown as ProductionSource
     render(<SettingsProvider store={store}><ProductionOnboarding application={null} dependencies={dependencies} source={source} onOpenApp={onOpenApp} /></SettingsProvider>)
-    act(() => captured.props!.onConnectComputer!())
-    fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "owner@office" } })
+    act(() => captured.props!.onConnectDevice!())
+    fireEvent.change(screen.getByRole("textbox", { name: "Device address" }), { target: { value: "owner@office" } })
     fireEvent.click(screen.getByRole("button", { name: "Connect" }))
     expect(await screen.findByRole("alert")).toHaveTextContent("Offline · last known status")
     expect(store.getSnapshot().settings.onboardingComplete).toBe(false)

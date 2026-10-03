@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions, ApplicationActivity, ApplicationSource } from "../model/application-source"
 import { createDirectoryStore, type DirectoryPage } from "../model/directory-store"
-import { workspaceTarget } from "../model/remote-computers"
+import { workspaceTarget } from "../model/connections"
 import { WorkspacesPage } from "./workspaces-page"
 
 function activity(id: string, workspace: string): ApplicationActivity {
@@ -132,10 +132,10 @@ it("keeps showing activity when every sandbox has been deleted", () => {
   expect(screen.queryByText("No sandboxes yet")).not.toBeInTheDocument()
 })
 
-it("names a remote sandbox's Push button by its computer", () => {
+it("names a remote sandbox's Push button by its device", () => {
   const source = filesSource()
   const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
-  dev.computer = { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: "remote-dev" }
+  dev.device = { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: "remote-dev" }
   renderFiles(source)
   expect(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev on Office Mac" })).toBeEnabled()
 })

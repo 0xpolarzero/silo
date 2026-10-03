@@ -8,7 +8,7 @@ import { OverviewPage } from "./overview-page"
 
 function sourceWith(change: (workspace: ApplicationWorkspace) => void): ApplicationSource {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
+  source.devices = []
   change(source.workspaces.find(({ machine }) => machine.name === "dev")!)
   return source
 }
@@ -16,14 +16,14 @@ function sourceWith(change: (workspace: ApplicationWorkspace) => void): Applicat
 it.each([
   ["a lifecycle action runs", (workspace: ApplicationWorkspace) => { workspace.lifecycleAction = "start" }],
   ["a checkpoint operation runs", (workspace: ApplicationWorkspace) => { workspace.checkpointOperation = { status: "running", kind: "capture", stage: "Saving disk copies" } as ApplicationWorkspace["checkpointOperation"] }],
-  ["its computer is refreshing", (workspace: ApplicationWorkspace) => { workspace.computer = { id: "office", vmId: "vm-1", name: "Office", address: "office.test", connected: true, busy: true } }],
-  ["its computer is offline", (workspace: ApplicationWorkspace) => { workspace.computer = { id: "office", vmId: "vm-1", name: "Office", address: "office.test", connected: false }; workspace.freshness = "stale" }],
+  ["its device is refreshing", (workspace: ApplicationWorkspace) => { workspace.device = { id: "office", vmId: "vm-1", name: "Office", address: "office.test", connected: true, busy: true } }],
+  ["its device is offline", (workspace: ApplicationWorkspace) => { workspace.device = { id: "office", vmId: "vm-1", name: "Office", address: "office.test", connected: false }; workspace.freshness = "stale" }],
 ])("keeps the sandbox page reachable while %s, with mutating controls disabled", async (_, change) => {
   const user = userEvent.setup()
   const source = sourceWith(change)
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
   const row = within(screen.getByText("dev").closest("li")!)
-  // Remote rows reorder too (this computer keeps its own order), but not while work runs.
+  // Remote rows reorder too (this device keeps its own order), but not while work runs.
   expect(row.getByRole("button", { name: "Reorder dev" })).toHaveAttribute("aria-disabled", "true")
   await user.click(row.getByRole("button", { name: "More actions for dev" }))
   expect(screen.getByRole("menuitem", { name: "Edit dev" })).toHaveAttribute("data-disabled")

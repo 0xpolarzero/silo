@@ -28,8 +28,8 @@ describe("native log page fixture behavior", () => {
 
   it("preserves native sandbox identity and owner names for remote logs", () => {
     const { workspace } = fixture(1)
-    const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:office:vm-1" }, computer: { id: "office", vmId: "vm-1", name: "Office", address: "office.test", connected: true } }
-    expect(fixtureLogPage(remote, logIdentity(remote)).entries[0]).toMatchObject({ sandboxId: "vm-1", sandboxName: workspace.machine.name, computerId: "office", computerName: "Office", session: null })
+    const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:office:vm-1" }, device: { id: "office", vmId: "vm-1", name: "Office", address: "office.test", connected: true } }
+    expect(fixtureLogPage(remote, logIdentity(remote)).entries[0]).toMatchObject({ sandboxId: "vm-1", sandboxName: workspace.machine.name, deviceId: "office", deviceName: "Office", session: null })
   })
 
   it("treats the native all source as unfiltered", () => {

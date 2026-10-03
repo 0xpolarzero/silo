@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs"
 import { expect, it } from "vitest"
 
-it("directs connected-sandbox checkpoint deletion to the owning computer", () => {
+it("directs connected-sandbox checkpoint deletion to the owning device", () => {
   const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
   const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Delete checkpoint data"))
-  expect(instructions?.textContent).toMatch(/on the (?:sandbox's )?owning computer/i)
+  expect(instructions?.textContent).toMatch(/on the (?:sandbox's )?owning device/i)
 })
 
 it("qualifies Safari sandbox hostname support for older supported macOS versions", () => {
@@ -25,7 +25,7 @@ it("qualifies copying diagnostics because some Details sections have no copy con
 it("distinguishes reclaimed host allocation from unchanged workspace capacity", () => {
   const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
   const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Free up space"))
-  expect(instructions?.textContent).toMatch(/reclamation.*allocated space.*on this computer/i)
+  expect(instructions?.textContent).toMatch(/reclamation.*allocated space.*on this device/i)
   expect(instructions?.textContent).toMatch(/workspace capacity.*stay.*same/i)
 })
 

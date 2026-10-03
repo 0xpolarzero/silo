@@ -17,7 +17,7 @@ export interface StoredMachineEditor {
   editorBaseline: SetupMachineConfiguration | null
   /** Every sandbox's saved configuration when the edit began (the change's `expected`). */
   baseline: SetupMachineConfiguration[] | null
-  computerId: string
+  deviceId: string
   editorConflict?: boolean
   editorReview?: MachineReview | null
   /** A save that must stay locked and settle even if its editor surface unmounts. */

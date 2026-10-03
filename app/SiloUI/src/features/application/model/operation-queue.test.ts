@@ -23,7 +23,7 @@ function entry(overrides: Partial<OperationEntry> & Pick<OperationEntry, "id">):
 }
 
 describe("blockingOperations", () => {
-  it("blocks a VM operation on computer-wide work and same-VM work only", () => {
+  it("blocks a VM operation on device-wide work and same-VM work only", () => {
     const queue: OperationQueue = {
       running: [
         entry({ id: 1, label: "Backing up sandboxes", vmId: null }),
@@ -37,7 +37,7 @@ describe("blockingOperations", () => {
   })
 
   it("blocks a waiter on earlier conflicting waiters, as the FIFO gate does", () => {
-    // "Start b" queued behind a waiting computer-wide update is held by that waiter,
+    // "Start b" queued behind a waiting device-wide update is held by that waiter,
     // even though the update itself is waiting on something unrelated to b.
     const queue: OperationQueue = {
       running: [entry({ id: 1, label: "Checkpointing a", vmId: "a" })],
@@ -53,7 +53,7 @@ describe("blockingOperations", () => {
     expect(blockingOperations(queue, queue.waiting[0]).map((item) => item.label)).toEqual(["Checkpointing a"])
   })
 
-  it("blocks a computer-wide operation on every running operation", () => {
+  it("blocks a device-wide operation on every running operation", () => {
     const queue: OperationQueue = {
       running: [entry({ id: 1, vmId: "dev" }), entry({ id: 2, vmId: "playgrounds" })],
       waiting: [entry({ id: 3, label: "Backup", vmId: null })],

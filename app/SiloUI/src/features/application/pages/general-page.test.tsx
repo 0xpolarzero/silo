@@ -43,7 +43,7 @@ it("defaults the startup selection to a local sandbox even when a remote one is 
   const user = userEvent.setup()
   const source = structuredClone(applicationSourceForScenario("running"))
   const [dev, playgrounds] = source.workspaces
-  source.workspaces = [{ ...dev, machine: { ...dev.machine, id: "remote-dev" }, computer: { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: dev.machine.id } }, playgrounds]
+  source.workspaces = [{ ...dev, machine: { ...dev.machine, id: "remote-dev" }, device: { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: dev.machine.id } }, playgrounds]
   source.preferences = { ...source.preferences, startWorkspacesAtLaunch: false, startupWorkspaceIds: undefined }
   const settings = createMemorySettingsStore({})
   render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)

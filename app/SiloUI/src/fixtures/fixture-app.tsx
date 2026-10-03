@@ -33,7 +33,7 @@ import { createComputerUseBridge } from "@/desktop/computer-use-bridge"
 import { ComputerUseProvider } from "@/desktop/computer-use-provider"
 import { createFixturePreparationBackend, preparationFixtureFromSearch } from "./preparation"
 import { createPreparationStore, PreparationProvider } from "@/desktop/preparation"
-import { chatGptFixtureFromSearch, computerUseFixtureFromSearch, createFixtureComputerUseBackend, withComputerUseFixture, withRemoteComputersFixture } from "./computer-use"
+import { chatGptFixtureFromSearch, computerUseFixtureFromSearch, createFixtureComputerUseBackend, withComputerUseFixture, withDevicesFixture } from "./computer-use"
 import { createFixtureUnseenResult, unseenResultFixtureModeFromSearch } from "./transfer-result-notice"
 
 export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false, settingsStore }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean; settingsStore?: SettingsStore }) {
@@ -79,7 +79,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const preparationStore = useMemo(() => preparationMode ? createPreparationStore(createFixturePreparationBackend(preparationMode)) : null, [preparationMode])
   const queuedSource = operationQueue ? { ...baseSource, operationQueue } : baseSource
   const sourceWithComputerUse = computerUseMode ? withComputerUseFixture(queuedSource, computerUseMode) : queuedSource
-  const fixtureSource = computerUseBridge ? withRemoteComputersFixture(sourceWithComputerUse) : sourceWithComputerUse
+  const fixtureSource = computerUseBridge ? withDevicesFixture(sourceWithComputerUse) : sourceWithComputerUse
 
   useEffect(() => {
     const stepCount = activityFixtureStepCount(activityMode)

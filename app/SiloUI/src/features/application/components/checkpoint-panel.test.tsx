@@ -39,7 +39,7 @@ it("blocks a conflicting fork name and submits the selected checkpoint and trimm
   const user = userEvent.setup()
   const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
   const target = "silo-remote:office:vm-dev"
-  const remote = { ...workspace, computer: { id: "office", vmId: "vm-dev", name: "Office", address: "office", connected: true } }
+  const remote = { ...workspace, device: { id: "office", vmId: "vm-dev", name: "Office", address: "office", connected: true } }
   render(withToaster(<CheckpointPanel workspace={remote} target={target} actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} takenNames={["existing"]} />))
   await user.click(screen.getByRole("button", { name: "Checkpoint actions for Disk snapshot" }))
   await user.click(screen.getByRole("menuitem", { name: "Fork Disk snapshot" }))
@@ -92,7 +92,7 @@ it("labels checkpoint scope and recovery with a short tag", () => {
 })
 
 it("hides Export for a remote sandbox checkpoint", async () => {
-  const remote = { ...workspace, computer: { id: "mac", name: "Ada’s Mac mini", connected: true } } as ApplicationWorkspace
+  const remote = { ...workspace, device: { id: "mac", name: "Ada’s Mac mini", connected: true } } as ApplicationWorkspace
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={remote} target="dev" actions={{ forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} disabled={false} onExport={vi.fn()} />)
   await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
@@ -342,8 +342,8 @@ it("offers only Retry once the Restore already replaced the sandbox", () => {
   expect(notice.getByRole("button", { name: "Retry Restore" })).toBeVisible()
 })
 
-it("offers Delete only for checkpoints on this computer", async () => {
-  const remote = { ...workspace, computer: { id: "mac", name: "Ada’s Mac mini", connected: true } } as ApplicationWorkspace
+it("offers Delete only for checkpoints on this device", async () => {
+  const remote = { ...workspace, device: { id: "mac", name: "Ada’s Mac mini", connected: true } } as ApplicationWorkspace
   const readCheckpointUsage = vi.fn()
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={remote} target="dev" actions={{ forkCheckpoint: vi.fn(), deleteCheckpoint: vi.fn(), readCheckpointUsage } as unknown as ApplicationActions} disabled={false} />)

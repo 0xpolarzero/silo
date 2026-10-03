@@ -3,7 +3,7 @@ import { StatusBadge } from "@/components/status-badge"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 import type { WorkspaceState } from "@/features/application/model/application-source"
-import type { WorkspaceComputer } from "@/features/application/model/remote-computers"
+import type { WorkspaceDevice } from "@/features/application/model/connections"
 
 const workspaceStateStyles: Record<WorkspaceState, string> = {
   running: "bg-emerald-500",
@@ -26,18 +26,18 @@ export function WorkspaceStateDot({ state, className }: { state: WorkspaceState;
   return <span className={cn("size-2", shapeClassName, workspaceStateStyles[state], className)} data-workspace-state-dot={state} data-workspace-state-shape={shape} aria-hidden="true" />
 }
 
-export function WorkspaceBadge({ name, state, computer }: { name: string; state: WorkspaceState; computer?: WorkspaceComputer }) {
+export function WorkspaceBadge({ name, state, device }: { name: string; state: WorkspaceState; device?: WorkspaceDevice }) {
   const stateLabel = state.charAt(0).toUpperCase() + state.slice(1)
   return (
     <TooltipProvider delayDuration={150}><Tooltip><TooltipTrigger asChild><StatusBadge
       indicator={<WorkspaceStateDot state={state} />}
       role="group"
-      aria-label={`${name}, ${stateLabel}${computer ? `, on ${computer.name}` : ""}`}
+      aria-label={`${name}, ${stateLabel}${device ? `, on ${device.name}` : ""}`}
       tabIndex={0}
       className="outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      {computer ? `${name} · ${computer.name}` : name}
-    </StatusBadge></TooltipTrigger><TooltipContent>{stateLabel} on {computer?.name ?? "this computer"}</TooltipContent></Tooltip></TooltipProvider>
+      {device ? `${name} · ${device.name}` : name}
+    </StatusBadge></TooltipTrigger><TooltipContent>{stateLabel} on {device?.name ?? "this device"}</TooltipContent></Tooltip></TooltipProvider>
   )
 }
 

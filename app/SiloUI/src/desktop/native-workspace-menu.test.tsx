@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { Menu } from "@tauri-apps/api/menu"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
+import { remoteWorkspaceTarget } from "@/features/application/model/connections"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { fixtureDirectoryLoader } from "@/fixtures/directory-loader"
 import type { StatusBarActions } from "@/features/status-bar/status-bar-types"
@@ -73,12 +73,12 @@ describe("native workspace menu", () => {
     expect(actions.startWorkspace).not.toHaveBeenCalled()
   })
 
-  it("targets a remote sandbox by computer, not by its bare name", async () => {
+  it("targets a remote sandbox by device, not by its bare name", async () => {
     const base = applicationSourceForScenario("complete")
     const local = base.workspaces[0]!
     const workspace = {
       ...local, state: "stopped" as const,
-      computer: { ...(local.computer ?? {}), id: "office", name: "office-mac", vmId: "vm-1" },
+      device: { ...(local.device ?? {}), id: "office", name: "office-mac", vmId: "vm-1" },
       ports: [{ port: 3000, listening: true, configured: true, scheme: "http", hostPort: 43000 }],
     } as unknown as typeof local
     const source = { ...base, workspaces: [workspace] }
