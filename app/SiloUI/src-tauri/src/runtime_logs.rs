@@ -100,6 +100,8 @@ struct Redaction {
     sessions: HashSet<(String, Option<String>)>,
     /// Estimated memory held by `sessions`.
     bytes: usize,
+    /// Estimated memory held by the matching records collected beside `sessions`.
+    records: usize,
     limit: usize,
 }
 impl Default for Redaction {
@@ -107,6 +109,7 @@ impl Default for Redaction {
         Self {
             sessions: HashSet::new(),
             bytes: 0,
+            records: 0,
             limit: INDEX_BUDGET,
         }
     }
@@ -127,7 +130,7 @@ impl Redaction {
             if !decoded.in_pem {
                 let cost = Self::session_cost(&key);
                 // Dropping an open session would expose the rest of its block.
-                if self.bytes + cost > self.limit {
+                if self.bytes + self.records + cost > self.limit {
                     return Err(TOO_MANY_MATCHES.into());
                 }
                 self.bytes += cost;
@@ -315,7 +318,7 @@ fn scan(
     segment: &Segment,
     start: u64,
     redaction: &mut Redaction,
-    mut visit: impl FnMut(u64, String, Decoded, bool) -> Result<(), String>,
+    mut visit: impl FnMut(u64, String, Decoded, bool, &mut Redaction) -> Result<(), String>,
 ) -> Result<u64, String> {
     let mut file = File::open(path).map_err(|_| "Retained logs could not be opened.")?;
     if file
@@ -362,7 +365,7 @@ fn scan(
         let id = record_id(segment.inode, offset, &bytes);
         let mut decoded = decode(segment, &bytes, oversized);
         redaction.apply(&segment.stream, &mut decoded)?;
-        visit(offset, id, decoded, terminated)?;
+        visit(offset, id, decoded, terminated, redaction)?;
         offset += length;
         if terminated {
             consumed = offset;
@@ -775,12 +778,12 @@ fn read(
                     segment,
                     0,
                     &mut redaction,
-                    |offset, id, decoded, terminated| {
+                    |offset, id, decoded, terminated, redaction| {
                         summary.add(&decoded);
                         if terminated {
                             complete.add(&decoded);
                         }
-                        index.add(segment.inode, offset, id, decoded, &filter)
+                        index.add(segment.inode, offset, id, decoded, &filter, redaction)
                     },
                 )?;
                 files.push(Indexed {
@@ -868,7 +871,6 @@ impl Summary {
 #[derive(Default)]
 struct Index {
     records: Vec<Location>,
-    bytes: usize,
 }
 impl Index {
     fn add(
@@ -878,12 +880,13 @@ impl Index {
         id: String,
         decoded: Decoded,
         filter: &Filter,
+        redaction: &mut Redaction,
     ) -> Result<(), String> {
         if !filter.matches(&decoded.occurred_at, &decoded.source, &decoded.body) {
             return Ok(());
         }
-        self.bytes += location_cost(&decoded.occurred_at, &id);
-        if self.bytes > INDEX_BUDGET {
+        redaction.records += location_cost(&decoded.occurred_at, &id);
+        if redaction.bytes + redaction.records > redaction.limit {
             return Err(TOO_MANY_MATCHES.into());
         }
         self.records.push(Location {
@@ -983,6 +986,11 @@ fn follow_index(
         return Err(TOO_MANY_MATCHES.into());
     }
     let mut redaction = previous.redaction.clone();
+    redaction.records = previous
+        .records
+        .iter()
+        .map(|record| location_cost(&record.time, &record.id))
+        .sum();
     let mut summary = Summary::default();
     let mut index = Index::default();
     let mut files = Vec::with_capacity(available.len());
@@ -1011,12 +1019,12 @@ fn follow_index(
             segment,
             start,
             &mut redaction,
-            |offset, id, decoded, terminated| {
+            |offset, id, decoded, terminated, redaction| {
                 summary.add(&decoded);
                 if terminated {
                     complete.add(&decoded);
                 }
-                index.add(segment.inode, offset, id, decoded, filter)
+                index.add(segment.inode, offset, id, decoded, filter, redaction)
             },
         )?;
         files.push(Indexed {
@@ -1082,7 +1090,7 @@ fn context(
     let mut anchor = None;
     let mut redaction = Redaction::default();
     for (path, segment) in available {
-        scan(path, segment, 0, &mut redaction, |_, id, decoded, _| {
+        scan(path, segment, 0, &mut redaction, |_, id, decoded, _, _| {
             if anchor.is_none() && id == around {
                 anchor = Some((decoded.occurred_at, id));
             }
@@ -1096,7 +1104,7 @@ fn context(
     let mut older = Vec::new();
     let mut newer = Vec::new();
     for (path, segment) in available {
-        scan(path, segment, 0, &mut redaction, |_, id, decoded, _| {
+        scan(path, segment, 0, &mut redaction, |_, id, decoded, _, _| {
             summary.add(&decoded);
             total += 1;
             let entry = Entry {
@@ -1864,20 +1872,146 @@ mod tests {
             limit: cost / 2,
             ..Default::default()
         };
-        let err = scan(&path, &segment, 0, &mut limited, |_, _, _, _| Ok(())).unwrap_err();
+        let err = scan(&path, &segment, 0, &mut limited, |_, _, _, _, _| Ok(())).unwrap_err();
         assert_eq!(err, TOO_MANY_MATCHES);
         assert!(limited.bytes <= limited.limit);
 
         // Within the limit, later lines of an open block stay hidden.
         let mut roomy = Redaction::default();
         let mut bodies = Vec::new();
-        scan(&path, &segment, 0, &mut roomy, |_, _, decoded, _| {
+        scan(&path, &segment, 0, &mut roomy, |_, _, decoded, _, _| {
             bodies.push(decoded.body);
             Ok(())
         })
         .unwrap();
         assert!(bodies.iter().all(|body| !body.contains("secret-body-line")));
         assert_eq!(roomy.bytes, cost);
+    }
+
+    fn open_session_with_records(extra: usize) -> String {
+        let mut text = line(0, "-----BEGIN PRIVATE KEY-----");
+        for index in 1..=extra {
+            text.push_str(&line(index, "secret-body-line"));
+        }
+        text
+    }
+    fn match_everything() -> Filter {
+        Filter {
+            since: None,
+            until: None,
+            needle: String::new(),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn scan_limits_records_and_redaction_state_together() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("exec.log"),
+            open_session_with_records(3),
+        )
+        .unwrap();
+        let (path, segment) = files(directory.path()).unwrap().remove(0);
+        let filter = match_everything();
+
+        let mut roomy = Redaction::default();
+        let mut index = Index::default();
+        scan(
+            &path,
+            &segment,
+            0,
+            &mut roomy,
+            |offset, id, decoded, _, redaction| {
+                index.add(segment.inode, offset, id, decoded, &filter, redaction)
+            },
+        )
+        .unwrap();
+        assert_eq!(index.records.len(), 4);
+        assert!(roomy.bytes > 0 && roomy.records > 0);
+
+        // Each part fits the limit alone; their sum does not.
+        let mut shared = Redaction {
+            limit: roomy.bytes + roomy.records - 1,
+            ..Default::default()
+        };
+        assert!(roomy.bytes < shared.limit && roomy.records < shared.limit);
+        let mut index = Index::default();
+        let err = scan(
+            &path,
+            &segment,
+            0,
+            &mut shared,
+            |offset, id, decoded, _, redaction| {
+                index.add(segment.inode, offset, id, decoded, &filter, redaction)
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, TOO_MANY_MATCHES);
+        assert_eq!(index.records.len(), 3);
+    }
+
+    #[test]
+    fn a_new_pem_session_is_refused_when_records_leave_no_room() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("exec.log"),
+            line(0, "-----BEGIN PRIVATE KEY-----"),
+        )
+        .unwrap();
+        let (path, segment) = files(directory.path()).unwrap().remove(0);
+        let mut redaction = Redaction {
+            limit: Redaction::session_cost(&("exec".to_string(), Some("42".to_string()))),
+            records: 1,
+            ..Default::default()
+        };
+        let err = scan(&path, &segment, 0, &mut redaction, |_, _, _, _, _| Ok(())).unwrap_err();
+        assert_eq!(err, TOO_MANY_MATCHES);
+        assert!(redaction.sessions.is_empty());
+    }
+
+    #[test]
+    fn follow_limits_carried_records_and_redaction_state_together() {
+        let directory = tempfile::tempdir().unwrap();
+        let exec = directory.path().join("exec.log");
+        fs::write(&exec, open_session_with_records(2)).unwrap();
+        let (path, segment) = files(directory.path()).unwrap().remove(0);
+        let filter = match_everything();
+        let mut redaction = Redaction::default();
+        let mut index = Index::default();
+        let consumed = scan(
+            &path,
+            &segment,
+            0,
+            &mut redaction,
+            |offset, id, decoded, _, redaction| {
+                index.add(segment.inode, offset, id, decoded, &filter, redaction)
+            },
+        )
+        .unwrap();
+        let mut previous = Cached {
+            binding: String::new(),
+            files: vec![Indexed {
+                segment,
+                consumed,
+                complete: Summary::default(),
+            }],
+            records: index.sorted(),
+            redaction,
+            summary: Summary::default(),
+        };
+        previous.redaction.limit = cached_cost(&previous);
+
+        let available = files(directory.path()).unwrap();
+        let unchanged = follow_index(&previous, &available, &match_everything()).unwrap();
+        assert!(unchanged.is_some());
+
+        let mut appended = open_session_with_records(2);
+        appended.push_str(&line(3, "more"));
+        fs::write(&exec, appended).unwrap();
+        let available = files(directory.path()).unwrap();
+        let result = follow_index(&previous, &available, &match_everything());
+        assert_eq!(result.err().as_deref(), Some(TOO_MANY_MATCHES));
     }
 
     #[test]
