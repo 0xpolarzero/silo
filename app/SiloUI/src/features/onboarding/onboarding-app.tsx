@@ -224,7 +224,7 @@ export function OnboardingApp({
     // Keep choices already made for computers that remain in the list.
     const names = new Set(configurations.map(({ name }) => name))
     const kept = <T,>(values: Record<string, T>) => Object.fromEntries(Object.entries(values).filter(([name]) => names.has(name)))
-    const next = { ...current, configurations,
+    const next = { ...current, computers: configurations,
       computerSelections: { ...initialComputerSelections(source), ...kept(current.computerSelections) },
       computerIdentities: { ...initialComputerIdentities(source), ...kept(current.computerIdentities) },
     }
@@ -355,7 +355,7 @@ export function OnboardingApp({
     const host = defaultComputerIdentity(source)
     const savedPolicies = new Map((repositoryPolicies ?? []).map((policy) => [policy.computer, policy]))
     updateDraft({
-      computers,
+      computers: configurations,
       computerSelections: Object.fromEntries(configurations.map(({ name }) => [name, computerValue(current.computerSelections, name) ?? savedPolicies.get(name)?.repositories.map((repository) => ({ ...repository })) ?? []])),
       computerIdentities: Object.fromEntries(configurations.map(({ name }) => [name, computerValue(current.computerIdentities, name) ?? { ...(savedPolicies.get(name)?.identity ?? host) }])),
       computerRepositoryAccess: Object.fromEntries(configurations.map(({ name }) => {
