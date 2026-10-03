@@ -9,8 +9,7 @@ import { computerTarget } from "@/features/application/model/connections"
 import type { ApplicationComputer, NetworkPort, NetworkPortRequest } from "@/features/application/model/application-source"
 import { networkAddress, networkLoopbackAddress, type NetworkPortsController } from "./network-ports-state"
 
-/** "this Mac" on macOS, otherwise "this device". */
-const thisDevice = typeof navigator !== "undefined" && /Mac/.test(navigator.platform) ? "this Mac" : "this device"
+const thisDevice = "this device"
 
 
 /** The add/edit port form, rendered as a table row on the Network page or inline in a section.
