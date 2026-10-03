@@ -1699,6 +1699,22 @@ fn watch_controller(mut input: impl Read + Send + 'static, owner: UnixStream) {
         let _ = owner.shutdown(std::net::Shutdown::Write);
     });
 }
+/// The `guest.ssh` params for `--remote-guest HOST VM [PORT]`: a trailing guest port marks
+/// a published-port forward.
+pub(crate) fn guest_stream_params(args: &[String]) -> Result<Value, String> {
+    match args {
+        [_, vm] => Ok(json!({"vmId": vm})),
+        [_, vm, port] => {
+            let port = port
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port != 0)
+                .ok_or("Invalid forwarded port.")?;
+            Ok(json!({"vmId": vm, "purpose": "port", "port": port}))
+        }
+        _ => Err("Expected a computer and VM identity.".into()),
+    }
+}
 pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> Result<(), String> {
     let host = read_config()?
         .hosts
@@ -1837,22 +1853,20 @@ fn listen(app: AppHandle) -> Result<(), String> {
                     .and_then(|request| {
                         if request["method"] == "guest.ssh" {
                             authorize(&request)?;
-                            let _stream_permit = admit_stream(&mut permit, &STREAMS)?;
-                            let mut child = crate::remote_access::spawn_stream(
-                                &app,
-                                "guest.ssh",
+                            serve_guest_stream(
+                                &mut stream,
+                                &mut permit,
+                                &STREAMS,
                                 &request["params"],
+                                |params| {
+                                    crate::remote_access::spawn_stream(&app, "guest.ssh", params)
+                                },
+                                || {
+                                    REMOTE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
+                                        && crate::runtime::shutdown::ensure_accepting_operations()
+                                            .is_ok()
+                                },
                             )?;
-                            if let Err(error) = write_frame(&mut stream, &json!({"result":{}})) {
-                                let _ = child.kill();
-                                let _ = child.wait();
-                                return Err(error.into());
-                            }
-                            relay_child(&stream, &mut child, || {
-                                REMOTE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
-                                    && crate::runtime::shutdown::ensure_accepting_operations()
-                                        .is_ok()
-                            })?;
                             return Ok(None);
                         }
                         let peer = stream.try_clone().map_err(|e| e.to_string())?;
@@ -2327,6 +2341,115 @@ mod tests {
         assert!(read_frame((LIMIT as u32 + 1).to_be_bytes().as_slice()).is_err());
     }
 }
+/// What a `guest.ssh` stream carries, as declared by the controller that opened it.
+#[derive(Debug, PartialEq)]
+enum GuestStream {
+    /// A desktop or editor connection.
+    Interactive,
+    /// A forward of one published guest port.
+    Port(u16),
+}
+/// Reads the optional `purpose` and `port` of `guest.ssh` params: no purpose is an
+/// interactive stream, and `"port"` requires a guest port in 1..=65535.
+fn guest_stream_kind(params: &Value) -> Result<GuestStream, String> {
+    let invalid = || "Invalid guest connection.".to_string();
+    match params.get("purpose") {
+        None | Some(Value::Null) if params.get("port").is_none() => Ok(GuestStream::Interactive),
+        Some(Value::String(purpose)) if purpose == "port" => params["port"]
+            .as_u64()
+            .and_then(|port| u16::try_from(port).ok())
+            .filter(|port| *port != 0)
+            .map(GuestStream::Port)
+            .ok_or_else(invalid),
+        _ => Err(invalid()),
+    }
+}
+
+/// An open published-port stream. Dropping it removes the registry entry.
+struct PortRegistration {
+    id: u64,
+    revoked: Arc<std::sync::atomic::AtomicBool>,
+}
+struct PortStream {
+    id: u64,
+    vm: String,
+    port: u16,
+    revoked: Arc<std::sync::atomic::AtomicBool>,
+}
+/// Open published-port streams. The owner revokes by the port the controller declared
+/// when it opened the stream: the label is metadata from Silo's own controller, not a
+/// boundary inside the SSH session.
+static PORT_STREAMS: Mutex<Vec<PortStream>> = Mutex::new(Vec::new());
+static NEXT_PORT_STREAM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+fn port_streams() -> std::sync::MutexGuard<'static, Vec<PortStream>> {
+    PORT_STREAMS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+impl PortRegistration {
+    fn open(vm: &str, port: u16) -> Self {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let id = NEXT_PORT_STREAM.fetch_add(1, Ordering::Relaxed);
+        let revoked = Arc::new(AtomicBool::new(false));
+        port_streams().push(PortStream {
+            id,
+            vm: vm.to_owned(),
+            port,
+            revoked: revoked.clone(),
+        });
+        Self { id, revoked }
+    }
+    fn revoked(&self) -> bool {
+        self.revoked.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+impl Drop for PortRegistration {
+    fn drop(&mut self) {
+        port_streams().retain(|stream| stream.id != self.id);
+    }
+}
+/// Ends every open stream forwarding `port` of the VM with this id, so an unpublished
+/// port stops working for other computers immediately.
+pub(crate) fn revoke_port_streams(vm: &str, port: u16) {
+    for stream in port_streams()
+        .iter()
+        .filter(|stream| stream.vm == vm && stream.port == port)
+    {
+        stream
+            .revoked
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Opens and relays one `guest.ssh` stream, registering a published-port forward until it ends.
+fn serve_guest_stream(
+    stream: &mut UnixStream,
+    permit: &mut Option<Permit>,
+    streams: &'static Budget,
+    params: &Value,
+    spawn: impl FnOnce(&Value) -> Result<std::process::Child, String>,
+    allowed: impl Fn() -> bool,
+) -> Result<(), BridgeError> {
+    let kind = guest_stream_kind(params)?;
+    let _stream_permit = admit_stream(permit, streams)?;
+    let registration = match kind {
+        GuestStream::Port(port) => Some(PortRegistration::open(
+            params["vmId"].as_str().ok_or("Missing vmId.")?,
+            port,
+        )),
+        GuestStream::Interactive => None,
+    };
+    let mut child = spawn(params)?;
+    if let Err(error) = write_frame(&mut *stream, &json!({"result":{}})) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error.into());
+    }
+    relay_child(stream, &mut child, || {
+        allowed() && registration.as_ref().map_or(true, |r| !r.revoked())
+    })?;
+    Ok(())
+}
 /// Drain child output after input EOF; terminate and reap on revocation or a stalled close.
 fn relay_child(
     stream: &UnixStream,
@@ -2537,6 +2660,172 @@ mod stream_tests {
         assert!(live.try_wait().unwrap().is_some());
         let mut byte = [0];
         assert_eq!(client.read(&mut byte).unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod port_stream_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    fn cat() -> std::process::Child {
+        Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+    fn params(vm: &str, purpose: Option<&str>, port: Option<u64>) -> Value {
+        let mut params = json!({"vmId": vm});
+        if let Some(purpose) = purpose {
+            params["purpose"] = json!(purpose);
+        }
+        if let Some(port) = port {
+            params["port"] = json!(port);
+        }
+        params
+    }
+    /// A running relay and the client end of its stream.
+    struct Open {
+        client: UnixStream,
+        worker: thread::JoinHandle<Result<(), BridgeError>>,
+    }
+    fn open(budget: &'static Budget, params: Value) -> Open {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let worker = thread::spawn(move || {
+            let mut permit = None;
+            serve_guest_stream(
+                &mut server,
+                &mut permit,
+                budget,
+                &params,
+                |_| Ok(cat()),
+                || true,
+            )
+        });
+        let reply = read_frame(&mut client).unwrap();
+        assert_eq!(reply["result"], json!({}));
+        Open { client, worker }
+    }
+    impl Open {
+        fn echoes(&mut self) -> bool {
+            self.client.write_all(b"x").is_ok() && {
+                let mut byte = [0];
+                matches!(self.client.read(&mut byte), Ok(1))
+            }
+        }
+        fn closed(mut self) -> bool {
+            let mut byte = [0];
+            let ended = matches!(self.client.read(&mut byte), Ok(0));
+            self.worker.join().unwrap().unwrap();
+            ended
+        }
+    }
+    fn registered(vm: &str, port: u16) -> usize {
+        port_streams()
+            .iter()
+            .filter(|s| s.vm == vm && s.port == port)
+            .count()
+    }
+
+    #[test]
+    fn unpublishing_a_port_ends_only_its_streams_and_releases_permits() {
+        let _test_state = crate::test_support::global_state();
+        static BUDGET: Budget = Budget::new(8);
+        let vm = "vm-revoke";
+        let published = open(&BUDGET, params(vm, Some("port"), Some(3000)));
+        let mut other_port = open(&BUDGET, params(vm, Some("port"), Some(4000)));
+        let mut other_vm = open(&BUDGET, params("vm-other", Some("port"), Some(3000)));
+        let mut desktop = open(&BUDGET, params(vm, None, None));
+        assert_eq!(BUDGET.count.load(Ordering::Acquire), 4);
+        assert_eq!(registered(vm, 3000), 1);
+
+        revoke_port_streams(vm, 3000);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while registered(vm, 3000) != 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+        }
+        assert!(published.closed());
+        assert_eq!(registered(vm, 3000), 0);
+        assert_eq!(BUDGET.count.load(Ordering::Acquire), 3);
+        assert!(other_port.echoes());
+        assert!(other_vm.echoes());
+        assert!(desktop.echoes());
+        assert_eq!(registered(vm, 4000), 1);
+
+        for stream in [other_port, other_vm, desktop] {
+            let Open { client, worker } = stream;
+            client.shutdown(std::net::Shutdown::Both).unwrap();
+            worker.join().unwrap().unwrap();
+        }
+        assert_eq!(BUDGET.count.load(Ordering::Acquire), 0);
+        assert_eq!(registered(vm, 4000), 0);
+    }
+
+    #[test]
+    fn guest_stream_params_are_validated() {
+        let vm = "vm";
+        assert_eq!(
+            guest_stream_kind(&params(vm, None, None)),
+            Ok(GuestStream::Interactive)
+        );
+        assert_eq!(
+            guest_stream_kind(&params(vm, Some("port"), Some(65535))),
+            Ok(GuestStream::Port(65535))
+        );
+        for bad in [
+            params(vm, Some("port"), None),
+            params(vm, Some("port"), Some(0)),
+            params(vm, Some("port"), Some(65536)),
+            params(vm, Some("port"), Some(u64::MAX)),
+            params(vm, Some("desktop"), None),
+            params(vm, Some("desktop"), Some(80)),
+            params(vm, None, Some(80)),
+            json!({"vmId": vm, "purpose": 1, "port": 80}),
+            json!({"vmId": vm, "purpose": "port", "port": "80"}),
+        ] {
+            assert!(guest_stream_kind(&bad).is_err(), "{bad}");
+        }
+        let (client, mut server) = UnixStream::pair().unwrap();
+        static BUDGET: Budget = Budget::new(1);
+        let mut permit = None;
+        let spawned = AtomicBool::new(false);
+        assert!(serve_guest_stream(
+            &mut server,
+            &mut permit,
+            &BUDGET,
+            &params(vm, Some("bogus"), None),
+            |_| {
+                spawned.store(true, Ordering::Release);
+                Ok(cat())
+            },
+            || true,
+        )
+        .is_err());
+        assert!(!spawned.load(Ordering::Acquire));
+        assert_eq!(BUDGET.count.load(Ordering::Acquire), 0);
+        client.shutdown(std::net::Shutdown::Both).unwrap();
+    }
+
+    #[test]
+    fn remote_guest_arguments_mark_port_forwards() {
+        let args = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            guest_stream_params(&args(&["host", "vm"])).unwrap(),
+            json!({"vmId":"vm"})
+        );
+        assert_eq!(
+            guest_stream_params(&args(&["host", "vm", "3000"])).unwrap(),
+            json!({"vmId":"vm","purpose":"port","port":3000})
+        );
+        for bad in [&["host"][..], &["host", "vm", "0"], &["host", "vm", "x"]] {
+            assert!(guest_stream_params(&args(bad)).is_err());
+        }
     }
 }
 

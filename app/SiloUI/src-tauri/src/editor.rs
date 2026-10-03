@@ -718,14 +718,17 @@ pub(crate) fn prepare_remote_private(
     vm: &str,
     path: &str,
 ) -> Result<(String, PathBuf), String> {
-    prepare_remote_transport(app, host, vm, path, false).map(|(alias, config, _)| (alias, config))
+    prepare_remote_transport(app, host, vm, path, None, false)
+        .map(|(alias, config, _)| (alias, config))
 }
 pub(crate) fn prepare_remote_network_private(
     app: &AppHandle,
     host: &str,
     vm: &str,
+    port: u16,
 ) -> Result<(String, PathBuf, std::net::IpAddr), String> {
-    let (alias, config, address) = prepare_remote_transport(app, host, vm, "/workspace", true)?;
+    let (alias, config, address) =
+        prepare_remote_transport(app, host, vm, "/workspace", Some(port), true)?;
     Ok((
         alias,
         config,
@@ -737,6 +740,7 @@ fn prepare_remote_transport(
     host: &str,
     vm: &str,
     path: &str,
+    port: Option<u16>,
     forwarding: bool,
 ) -> Result<(String, PathBuf, Option<std::net::IpAddr>), String> {
     validate_path(path)?;
@@ -763,8 +767,13 @@ fn prepare_remote_transport(
     );
     let known_hosts = root.join(format!("{host}-{vm}.known_hosts"));
     write_private(&known_hosts, format!("{alias} {host_public}\n").as_bytes())?;
-    let proxy = remote_proxy(host, vm)?;
-    let config = root.join(format!("{host}-{vm}.conf"));
+    // A published-port forward has its own configuration: its ProxyCommand names the
+    // guest port the owner revokes by, and tunnels for other ports run concurrently.
+    let proxy = remote_proxy_for(host, vm, port)?;
+    let config = match port {
+        Some(port) => root.join(format!("{host}-{vm}-port-{port}.conf")),
+        None => root.join(format!("{host}-{vm}.conf")),
+    };
     let contents = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, contents.as_bytes())?;
     Ok((alias, config, address))
@@ -814,15 +823,18 @@ fn local_proxy(paths: &RuntimePaths, name: &str) -> Result<String, String> {
 
 /// The ProxyCommand for a sandbox on another computer, through this Silo.
 fn remote_proxy(host: &str, vm: &str) -> Result<String, String> {
+    remote_proxy_for(host, vm, None)
+}
+
+/// The same, for a published-port forward when `port` is the guest port.
+fn remote_proxy_for(host: &str, vm: &str, port: Option<u16>) -> Result<String, String> {
     uuid::Uuid::parse_str(host).map_err(|_| FAILED)?;
     uuid::Uuid::parse_str(vm).map_err(|_| FAILED)?;
     let silo = applications::launch::stable_executable()?;
-    Ok(proxy_command(&[
-        silo.to_str().ok_or(FAILED)?,
-        "--remote-guest",
-        host,
-        vm,
-    ]))
+    let port = port.map(|port| port.to_string());
+    let mut parts = vec![silo.to_str().ok_or(FAILED)?, "--remote-guest", host, vm];
+    parts.extend(port.as_deref());
+    Ok(proxy_command(&parts))
 }
 
 /// `silo --msb-ssh-serve <runtime home> <sandbox>`: the local editor transport
@@ -1523,6 +1535,9 @@ mod tests {
         let remote = remote_proxy(host, vm).unwrap();
         assert!(remote.ends_with(&format!("'--remote-guest' '{host}' '{vm}'")));
         assert!(remote_proxy("not-a-uuid", vm).is_err());
+        assert!(remote_proxy_for(host, vm, Some(3000))
+            .unwrap()
+            .ends_with(&format!("'--remote-guest' '{host}' '{vm}' '3000'")));
         assert!(run_transport(&["relative".into(), "dev".into()]).is_err());
         assert!(run_transport(&["/home".into(), "bad;name".into()]).is_err());
     }

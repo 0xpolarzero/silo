@@ -81,10 +81,9 @@ fn main() {
     let args: Vec<_> = std::env::args().collect();
     let bridge = match args.get(1).map(String::as_str) {
         Some("--remote-bridge") => Some(remote::run_bridge()),
-        Some("--remote-guest") => Some(if args.len() == 4 {
-            remote::run_remote_stream(&args[2], "guest.ssh", serde_json::json!({"vmId": args[3]}))
-        } else {
-            Err("Expected a computer and VM identity.".into())
+        Some("--remote-guest") => Some(match remote::guest_stream_params(&args[2..]) {
+            Ok(params) => remote::run_remote_stream(&args[2], "guest.ssh", params),
+            Err(error) => Err(error),
         }),
         Some(editor::TRANSPORT_MODE) => Some(editor::run_transport(&args[2..])),
         _ => None,
