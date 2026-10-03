@@ -890,8 +890,8 @@ pub(crate) fn prepare_private_directory(path: &Path) -> std::io::Result<()> {
             ),
         ));
     }
-    if metadata.mode() & 0o022 != 0 {
-        directory.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o777 & !0o022))?;
+    if metadata.mode() & 0o077 != 0 {
+        directory.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o700))?;
     }
     Ok(())
 }
@@ -901,8 +901,12 @@ pub(crate) fn prepare_runtime_home(
     storage_home: Option<&Path>,
 ) -> Result<(), RuntimeError> {
     let prepare = || -> std::io::Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
         let Some(storage_home) = storage_home else {
-            return fs::create_dir_all(home);
+            builder.create(home)?;
+            return prepare_private_directory(home);
         };
         let maximum = if cfg!(target_os = "macos") { 103 } else { 107 };
         let longest_socket = home.join("run/sandboxes/000000000000000000000000/control.sock");
@@ -948,7 +952,8 @@ pub(crate) fn prepare_runtime_home(
                 Err(error) => return Err(error),
             }
         }
-        fs::create_dir_all(storage_home)
+        builder.create(storage_home)?;
+        prepare_private_directory(storage_home)
     };
     prepare().map_err(|error| {
         RuntimeError::Unavailable(format!(
@@ -2020,8 +2025,9 @@ fn verify_workspace_identities_in(
             machine,
             &format!("Checking Git identity for {}", machine.name()),
         )?;
+        ensure_current_machine(paths, machine)?;
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         if !identity.apply {
             continue;
         }
@@ -2118,7 +2124,7 @@ fn configure_workspace_identities_in(
             )));
         };
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         changed.push((identity, machine));
     }
     for (identity, machine) in changed {
@@ -2126,20 +2132,19 @@ fn configure_workspace_identities_in(
             machine,
             &format!("Saving Git identity for {}", machine.name()),
         )?;
+        ensure_current_machine(paths, machine)?;
+        ensure_machine_identity(
+            machine,
+            &inspect_workspace(runner, paths, &identity.workspace)?,
+        )?;
         // Remove old boot overrides: normal Git/jj configuration must own defaults.
         let mut args = vec!["modify".into(), identity.workspace.clone()];
-        for key in [
-            "GIT_AUTHOR_NAME",
-            "GIT_AUTHOR_EMAIL",
-            "GIT_COMMITTER_NAME",
-            "GIT_COMMITTER_EMAIL",
-            "JJ_USER",
-            "JJ_EMAIL",
-        ] {
+        for key in checkpoints::IDENTITY_ENVIRONMENT {
             args.extend(["--env-rm".into(), key.into()]);
         }
         args.extend(["--format".into(), "json".into()]);
         runner.run(paths, &args, MUTATION_TIMEOUT)?;
+        checkpoints::forget_identity_environment(paths, machine.id())?;
         let script = r#"set -eu
  git config --global -- user.name "$1"
  git config --global -- user.email "$2"
@@ -2383,7 +2388,7 @@ fn apply_github_policy_with(
     let _guard = match OPERATIONS
         .kind(operation_gate::OperationKind::GithubApply)
         .acquire_while(
-            operation_gate::Scope::Vm { id: vm_id },
+            operation_gate::Scope::Vm { id: vm_id.clone() },
             Some(workspace.to_owned()),
             &format!("Applying GitHub access to {workspace}"),
             &|| !superseded() && Instant::now() < deadline,
@@ -2410,6 +2415,12 @@ fn apply_github_policy_with(
     if superseded() {
         return Err(GITHUB_UPDATE_REPLACED.into());
     }
+    let machine = read_metadata(&paths.metadata)
+        .map_err(|error| error.to_string())?
+        .machines
+        .into_iter()
+        .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+        .ok_or("The sandbox identity changed. No GitHub access was applied.")?;
     let capability = run_msb(
         paths,
         &[if token_protocol {
@@ -2427,7 +2438,7 @@ fn apply_github_policy_with(
     }
     let inspected =
         inspect_workspace(&ProcessRunner, paths, workspace).map_err(|error| error.to_string())?;
-    ensure_managed(&inspected).map_err(|error| error.to_string())?;
+    ensure_machine_identity(&machine, &inspected).map_err(|error| error.to_string())?;
     if inspected
         .config
         .pointer("/labels/silo.github-protocol")
@@ -2554,7 +2565,7 @@ pub async fn read_application_state(
     app: AppHandle,
     refresh_repositories: Option<bool>,
 ) -> Result<ApplicationSource, BridgeError> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         crate::secrets::schedule_revocations(&app);
@@ -2735,8 +2746,10 @@ fn enrich_application_state(
                     && workspace.freshness == Freshness::Fresh
                 {
                     let name = workspace.machine.name();
-                    let key = format!("{}:{name}", paths.home.display());
-                    match single_flight(key, || crate::host_push::discover(paths, name, refresh)) {
+                    let key = format!("{}:{}", paths.home.display(), workspace.machine.id());
+                    match single_flight(key, || {
+                        crate::host_push::discover(paths, name, workspace.machine.id(), refresh)
+                    }) {
                         Ok(repositories) => workspace.repositories = repositories,
                         Err(message) => {
                             if workspace.attention.is_none() {
@@ -3122,7 +3135,7 @@ pub async fn workspace_action(
     name: String,
     path: Option<String>,
 ) -> Result<ApplicationSource, BridgeError> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     if matches!(action.as_str(), "open-editor" | "open-terminal") {
         shutdown::ensure_accepting_operations()?;
         return tauri::async_runtime::spawn_blocking(move || {
@@ -3162,16 +3175,20 @@ pub async fn workspace_action(
             _ => Duration::from_secs(600),
         };
         let allow_cancel = matches!(action.as_str(), "start" | "restart");
+        let last_request = std::cell::Cell::new(None);
         let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
-            OPERATIONS
+            let guard = OPERATIONS
                 .kind(operation_gate::OperationKind::Lifecycle)
+                .retry_after(last_request.get())
                 .acquire(
                     operation_gate::Scope::Vm { id: vm_id.clone() },
                     Some(name.clone()),
                     label,
                     Some(key.clone()),
                 )
-                .map_err(RuntimeError::from)
+                .map_err(RuntimeError::from)?;
+            last_request.set(Some(guard.request_id()));
+            Ok(guard)
         };
         let prepare = |guard: &operation_gate::OperationGuard<'static>| {
             if allow_cancel {
@@ -4027,7 +4044,7 @@ pub async fn retry_machine_configuration(
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
     let failure_title = retry_workspace.as_deref().map_or_else(
@@ -4082,7 +4099,7 @@ pub async fn change_machine_configuration(
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
     let failure_title = change.failure_title();
@@ -4664,17 +4681,19 @@ pub(crate) fn is_pending_restore(paths: &RuntimePaths, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Inspect a Silo VM without treating "not created yet" as a failure. A sandbox that
-/// is pending restore is decided from Silo's own record before the runtime is asked;
-/// a runtime that reports the sandbox as missing is likewise `Absent`.
+/// Inspect a Silo VM without treating "not created yet" as a failure. An unattempted
+/// restore is absent; after an attempt, inspect the VM it may have created. A runtime
+/// that reports the sandbox as missing is likewise `Absent`.
 pub(crate) fn observe_vm(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<VmRuntime, RuntimeError> {
     validate_name(name)?;
-    if is_pending_restore(paths, name) {
-        return Ok(VmRuntime::Absent);
+    if let Ok(id) = resolve_vm_id(paths, name) {
+        if checkpoints::pending_view(paths, &id, true)? {
+            return Ok(VmRuntime::Absent);
+        }
     }
     match inspect_workspace(runner, paths, name) {
         Ok(inspected) => Ok(VmRuntime::Present(inspected)),
@@ -4695,6 +4714,43 @@ pub(crate) fn ensure_managed(inspected: &InspectedSandbox) -> Result<(), Runtime
             "Sandbox '{}' is not owned by Silo. No sandbox operation was performed.",
             inspected.name
         )));
+    }
+    Ok(())
+}
+
+fn ensure_current_machine(
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+) -> Result<(), RuntimeError> {
+    if !read_metadata(&paths.metadata)?
+        .machines
+        .iter()
+        .any(|current| {
+            current.is_vm() && current.id() == machine.id() && current.name() == machine.name()
+        })
+    {
+        return Err(RuntimeError::Invalid(
+            "The sandbox identity changed. Its replacement was preserved.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_machine_identity(
+    machine: &MachineConfiguration,
+    inspected: &InspectedSandbox,
+) -> Result<(), RuntimeError> {
+    ensure_managed(inspected)?;
+    if inspected.name != machine.name()
+        || inspected
+            .config
+            .pointer("/labels/silo.machine-id")
+            .and_then(Value::as_str)
+            != Some(machine.id())
+    {
+        return Err(RuntimeError::Invalid(
+            "The sandbox identity changed. No settings were changed on the replacement.".into(),
+        ));
     }
     Ok(())
 }
@@ -4963,7 +5019,7 @@ fn start_at_launch_with(
     }
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
             "created" | "stopped" => workspace_action_with(runner, paths, host, "start", name),
@@ -5115,7 +5171,10 @@ fn apply_whole_configuration_with_progress(
             if *old != machine {
                 validate_machine_update(old, machine)?;
                 if machine.is_vm() {
-                    ensure_managed(&inspect_workspace(runner, paths, machine.name())?)?;
+                    ensure_machine_identity(
+                        machine,
+                        &inspect_workspace(runner, paths, machine.name())?,
+                    )?;
                 }
             }
         }
@@ -5141,6 +5200,8 @@ fn apply_whole_configuration_with_progress(
             progress("workspace-removal", machine.name(), 0);
             remove_machine_runtime(runner, paths, machine)?;
             changed = true;
+            crate::network::workspace_removed(paths, machine.name())
+                .map_err(RuntimeError::Unavailable)?;
             applied
                 .machines
                 .retain(|existing| existing.id() != machine.id());
@@ -5644,6 +5705,7 @@ fn update_machine(
     // Renames, storage resizes, VM/SSH switches and desktop removal are rejected here.
     validate_machine_update(previous, machine)?;
     if crate::desktop::only_desktop_changed(previous, machine) {
+        ensure_machine_identity(previous, &inspect_workspace(runner, paths, machine.name())?)?;
         return crate::desktop::configure_with(
             runner,
             paths,
@@ -5668,7 +5730,7 @@ fn update_machine(
             },
         ) => {
             let inspected = inspect_workspace(runner, paths, name)?;
-            ensure_managed(&inspected)?;
+            ensure_machine_identity(previous, &inspected)?;
             if inspected.status == "Running" {
                 runner.run(
                     paths,
@@ -5676,7 +5738,7 @@ fn update_machine(
                     STOP_TIMEOUT,
                 )?;
                 let stopped = inspect_workspace(runner, paths, name)?;
-                ensure_managed(&stopped)?;
+                ensure_machine_identity(previous, &stopped)?;
                 if stopped.status != "Stopped" {
                     return Err(RuntimeError::Invalid(format!(
                         "{name} did not stop. Its settings were not changed. Retry after checking its state."
@@ -5923,20 +5985,31 @@ pub(crate) fn validate_name(name: &str) -> Result<(), RuntimeError> {
 }
 
 pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, RuntimeError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(MachineConfigurationRequest {
-                schema_version: 1,
-                machines: Vec::new(),
-            })
-        }
+    Ok(
+        read_saved_metadata(path)?.unwrap_or(MachineConfigurationRequest {
+            schema_version: 1,
+            machines: Vec::new(),
+        }),
+    )
+}
+fn read_saved_metadata(path: &Path) -> Result<Option<MachineConfigurationRequest>, RuntimeError> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(RuntimeError::Unavailable(format!(
                 "Silo could not read its sandbox configuration: {error}"
             )))
         }
     };
+    let mut bytes = Vec::new();
+    file.take(MAX_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            RuntimeError::Unavailable(format!(
+                "Silo could not read its sandbox configuration: {error}"
+            ))
+        })?;
     if bytes.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(RuntimeError::Malformed(
             "Silo's sandbox configuration is too large.".into(),
@@ -5946,7 +6019,7 @@ pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, 
         RuntimeError::Malformed("Silo's saved sandbox configuration is invalid.".into())
     })?;
     validate_request(&request)?;
-    Ok(request)
+    Ok(Some(request))
 }
 
 /// Resolve a local VM's stable id from its current display name in fresh metadata.
@@ -6007,6 +6080,58 @@ pub(crate) fn write_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_large_input_memory_is_bounded() {
+        const PROBE: &str = "SILO_TEST_METADATA_MEMORY_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::metadata_large_input_memory_is_bounded",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            return;
+        }
+
+        fn peak_bytes() -> u64 {
+            // SAFETY: getrusage initializes the supplied rusage structure.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
+            #[cfg(target_os = "macos")]
+            return usage.ru_maxrss as u64;
+            #[cfg(not(target_os = "macos"))]
+            return usage.ru_maxrss as u64 * 1024;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sandboxes.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        let before = peak_bytes();
+        assert!(
+            matches!(read_metadata(&path), Err(RuntimeError::Malformed(message))
+            if message == "Silo's sandbox configuration is too large.")
+        );
+        let extra = peak_bytes().saturating_sub(before);
+        eprintln!("large metadata peak RSS increase: {extra} bytes");
+        assert!(
+            extra < 32 * 1024 * 1024,
+            "oversized metadata allocated {extra} bytes"
+        );
+        assert_eq!(fs::metadata(&path).unwrap().len(), 128 * 1024 * 1024);
+    }
 
     #[test]
     fn auto_retry_retries_transient_failures_and_releases_the_gate_between_attempts() {
@@ -6834,14 +6959,15 @@ esac
         }
         let runner = StubRunner::successful_json(vec![
             inspect(&paths(&dir), "Running"),
+            inspect(&paths(&dir), "Running"),
             json!(1),
             json!({}),
         ]);
         update_machine(&runner, &paths(&dir), &previous, &desired).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls.len(), 3);
-        assert_eq!(calls[2][0], "exec");
-        assert!(calls[2]
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[3][0], "exec");
+        assert!(calls[3]
             .last()
             .unwrap()
             .contains("silo-desktop autostart true"));
@@ -7010,7 +7136,7 @@ esac
         fs::write(&paths.executable, r#"#!/bin/sh
 case "$1" in
   --silo-github-protocol|--silo-github-token-protocol) echo 1 ;;
-  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
+  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.machine-id":"SILO_TEST_MACHINE_ID","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
   modify)
     printf '%s\n' "$*" >> "$MSB_HOME/modify-args"
     cat > "$MSB_HOME/modify-values"
@@ -7019,7 +7145,7 @@ case "$1" in
     while [ -f "$MSB_HOME/modify-block" ]; do sleep 0.05; done
     if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $(cat "$MSB_HOME/modify-values")" >&2; exit 3; fi ;;
 esac
-"#).unwrap();
+"#.replace("SILO_TEST_MACHINE_ID", vm().id())).unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
     }
@@ -7056,6 +7182,156 @@ esac
             .parse()
             .unwrap();
         unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn secret_apply_accepts_the_matching_saved_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[]}"#).unwrap();
+        crate::secrets::use_test_store(Some(store));
+        crate::secrets::use_test_vault(Some(Default::default()));
+
+        let result = apply_secrets_at_paths(paths.clone(), "dev");
+
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        assert!(result.unwrap().is_empty());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn secret_apply_rejects_a_replaced_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let script = fs::read_to_string(&paths.executable)
+            .unwrap()
+            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+        fs::write(&paths.executable, script).unwrap();
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[]}"#).unwrap();
+        crate::secrets::use_test_store(Some(store));
+        crate::secrets::use_test_vault(Some(Default::default()));
+
+        let result = apply_secrets_at_paths(paths.clone(), "dev");
+
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        let error = result.unwrap_err();
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn secret_apply_rejects_a_replacement_saved_while_waiting() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[]}"#).unwrap();
+        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let worker_paths = paths.clone();
+        let update = thread::spawn(move || {
+            crate::secrets::use_test_store(Some(store));
+            crate::secrets::use_test_vault(Some(Default::default()));
+            let result = apply_secrets_at_paths(worker_paths, "dev");
+            crate::secrets::use_test_store(None);
+            crate::secrets::use_test_vault(None);
+            result
+        });
+        wait_for_queue(&OPERATIONS, |queue| {
+            queue
+                .waiting
+                .iter()
+                .any(|entry| entry.vm_name.as_deref() == Some("dev"))
+        });
+        let mut replacement = vm();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "22222222-2222-4222-8222-222222222222".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
+        drop(held);
+
+        let error = update.join().unwrap().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_rejects_a_replaced_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let script = fs::read_to_string(&paths.executable)
+            .unwrap()
+            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+        fs::write(&paths.executable, script).unwrap();
+
+        let error = apply_github_policy_with(
+            &paths,
+            "dev",
+            1,
+            &github_profile("synthetic-scoped-token"),
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_rejects_a_replacement_saved_while_waiting() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let worker_paths = paths.clone();
+        let update = thread::spawn(move || {
+            apply_github_policy_with(
+                &worker_paths,
+                "dev",
+                1,
+                &github_profile("synthetic-scoped-token"),
+                Duration::from_secs(10),
+            )
+        });
+        wait_for_queue(&OPERATIONS, |queue| {
+            queue.waiting.iter().any(|entry| {
+                entry.kind == operation_gate::OperationKind::GithubApply
+                    && entry.vm_name.as_deref() == Some("dev")
+            })
+        });
+        let mut replacement = vm();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "22222222-2222-4222-8222-222222222222".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
+        drop(held);
+
+        let error = update.join().unwrap().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
     }
 
     #[test]
@@ -7918,7 +8194,7 @@ esac
         crate::test_support::paths(directory.path())
     }
 
-    fn vm() -> MachineConfiguration {
+    pub(super) fn vm() -> MachineConfiguration {
         MachineConfiguration::Vm {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
@@ -7932,7 +8208,7 @@ esac
         }
     }
 
-    fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
+    pub(super) fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
         MachineConfigurationRequest {
             schema_version: 1,
             machines,
@@ -9757,6 +10033,48 @@ exit 9
     }
 
     #[test]
+    fn pending_secret_revocation_does_not_retire_a_running_failed_restore() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let pending: checkpoints::Record = serde_json::from_value(json!({
+            "version":1,
+            "checkpoints":[],
+            "restoreAttempted":true,
+            "pendingCheckpointRestore":{
+                "checkpointId":"c000000000000000000000000000000",
+                "sourceWorkspace":"source",
+                "state":"disk"
+            }
+        }))
+        .unwrap();
+        checkpoints::save(&paths, vm().id(), &pending).unwrap();
+        let record = pending_secret_fixture(&directory);
+        let mut removed = Vec::new();
+        let result = revoke_secret_with(
+            &StubRunner::successful_json(vec![
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+            ]),
+            &paths,
+            &record,
+            &mut |name| {
+                removed.push(name.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        assert!(
+            !result,
+            "a running restore still exposes the revoked secret"
+        );
+        assert_eq!(removed, ["API_KEY"]);
+    }
+
+    #[test]
     fn pending_secret_retry_skips_busy_guests_and_rechecks_replacement_after_the_vm_settles() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10140,6 +10458,107 @@ exit 9
     }
 
     #[test]
+    fn edit_rejects_a_replacement_before_any_configuration_side_effect() {
+        let _test_state = crate::test_support::global_state();
+        for status in ["Running", "Stopped"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let previous = request(vec![vm()]);
+            write_metadata(&paths.metadata, &previous).unwrap();
+            let mut changed = vm();
+            if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+                *cpus = 2;
+            }
+            let mut replacement = inspect(&paths, status);
+            replacement["config"]["labels"]["silo.machine-id"] =
+                json!("22222222-2222-4222-8222-222222222222");
+            let mut modified = inspect(&paths, "Stopped");
+            modified["config"]["resources"]["cpus"] = json!(2);
+            let mut outputs = vec![replacement.clone(), replacement];
+            if status == "Running" {
+                outputs.push(json!(null));
+                outputs.push(inspect(&paths, "Stopped"));
+            }
+            outputs.extend([json!(null), modified]);
+            let runner = StubRunner::successful_json(outputs);
+
+            let error = apply_whole_configuration(
+                &runner,
+                &paths,
+                &generous_host(),
+                request(vec![changed]),
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("identity"), "{error}");
+            assert_eq!(read_metadata(&paths.metadata).unwrap(), previous);
+            assert!(configuration_recovery::load(&paths).unwrap().is_none());
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn edit_rejects_replacements_for_resource_and_desktop_changes() {
+        let _test_state = crate::test_support::global_state();
+        for desktop_only in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let previous = vm();
+            let mut changed = previous.clone();
+            if let MachineConfiguration::Vm { cpus, desktop, .. } = &mut changed {
+                if desktop_only {
+                    *desktop = Some(crate::desktop::DesktopConfiguration {
+                        start_with_sandbox: true,
+                        built_in: false,
+                    });
+                } else {
+                    *cpus = 2;
+                }
+            }
+            let mut replacement = inspect(&paths, "Stopped");
+            replacement["config"]["labels"]["silo.machine-id"] =
+                json!("22222222-2222-4222-8222-222222222222");
+            let runner = StubRunner::successful_json(vec![replacement, json!(1), json!(null)]);
+
+            let error = update_machine(&runner, &paths, &previous, &changed).unwrap_err();
+
+            assert!(error.to_string().contains("identity"), "{error}");
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn edit_rechecks_identity_after_stopping() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = vm();
+        let mut changed = previous.clone();
+        if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+            *cpus = 2;
+        }
+        let mut replacement = inspect(&paths, "Stopped");
+        replacement["config"]["labels"]["silo.machine-id"] =
+            json!("22222222-2222-4222-8222-222222222222");
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Running"),
+            json!(null),
+            replacement,
+            json!(null),
+        ]);
+
+        let error = update_machine(&runner, &paths, &previous, &changed).unwrap_err();
+
+        assert!(error.to_string().contains("identity"), "{error}");
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args[0] == "modify"));
+    }
+
+    #[test]
     fn edit_stops_running_vm_before_modifying_and_does_not_restart() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10317,6 +10736,36 @@ exit 9
             assert_eq!(calls[2], vec!["start", "dev", "--quiet"]);
             assert_eq!(calls[3], vec!["inspect", "dev", "--format", "json"]);
             assert!(!calls.iter().any(|call| call[0] == "create"));
+        }
+    }
+
+    #[test]
+    fn launch_rejects_a_running_replacement_instead_of_reporting_the_selected_vm_ready() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        for wrong_name in [false, true] {
+            let mut observed = inspect(&paths, "Running");
+            if wrong_name {
+                observed["name"] = json!("replacement");
+            } else {
+                observed["config"]["labels"]["silo.machine-id"] =
+                    json!(uuid::Uuid::new_v4().to_string());
+            }
+            let runner = StubRunner::successful_json(vec![observed]);
+            let error =
+                start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap_err();
+            assert!(error.to_string().contains("identity changed"), "{error}");
+            assert!(
+                runner
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|call| call[0] == "inspect"),
+                "no replacement may be started"
+            );
         }
     }
 
@@ -10505,6 +10954,41 @@ exit 9
     }
 
     #[test]
+    fn pre_desktop_metadata_keeps_its_persisted_field_names_on_round_trip() {
+        let saved = json!({
+            "schemaVersion": 1,
+            "machines": [
+                {
+                    "kind": "vm",
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "name": "dev",
+                    "cpus": 2,
+                    "maxCPUs": 4,
+                    "memoryGiB": 2,
+                    "maxMemoryGiB": 4,
+                    "workspaceStorageGiB": 10,
+                    "runtimeStorageGiB": 5
+                },
+                {
+                    "kind": "ssh",
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "name": "remote",
+                    "host": "example.test",
+                    "user": "developer",
+                    "port": 2222
+                }
+            ]
+        });
+        let request: MachineConfigurationRequest = serde_json::from_value(saved.clone()).unwrap();
+        validate_request(&request).unwrap();
+        assert!(matches!(
+            request.machines[0],
+            MachineConfiguration::Vm { desktop: None, .. }
+        ));
+        assert_eq!(serde_json::to_value(&request).unwrap(), saved);
+    }
+
+    #[test]
     fn metadata_round_trip_is_atomic_and_preserves_split_storage_settings() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10614,6 +11098,106 @@ exit 9
     }
 
     #[test]
+    fn git_identity_rejects_a_replacement_before_writing_or_verifying() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mut replacement = inspect(&paths, "Running");
+        replacement["config"]["labels"]["silo.machine-id"] =
+            json!("22222222-2222-4222-8222-222222222222");
+        let writer = StubRunner::new(vec![
+            identity_output(&replacement.to_string()),
+            identity_output("{}"),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+        let verifier = StubRunner::new(vec![
+            identity_output(&replacement.to_string()),
+            identity_output("silo-identity-verified"),
+        ]);
+
+        assert!(configure_workspace_identities_with(&writer, &paths, &[test_identity()]).is_err());
+        assert!(verify_workspace_identities_with(&verifier, &paths, &[test_identity()]).is_err());
+        for runner in [writer, verifier] {
+            assert!(runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args[0] == "inspect"));
+        }
+    }
+
+    #[test]
+    fn git_identity_rechecks_runtime_identity_after_preflight() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mut replacement = inspect(&paths, "Running");
+        replacement["config"]["labels"]["silo.machine-id"] =
+            json!("22222222-2222-4222-8222-222222222222");
+        let runner = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output(&replacement.to_string()),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+
+        assert!(configure_workspace_identities_with(&runner, &paths, &[test_identity()]).is_err());
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|args| args[0] == "inspect"));
+    }
+
+    #[test]
+    fn git_identity_rechecks_the_machine_after_admission() {
+        let _test_state = crate::test_support::global_state();
+        for verify_only in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            let lane = |_: &MachineConfiguration, _: &str| {
+                let mut replacement = vm();
+                if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+                    *id = "22222222-2222-4222-8222-222222222222".into();
+                }
+                write_metadata(&paths.metadata, &request(vec![replacement]))?;
+                Ok(None)
+            };
+            let runner = StubRunner::new(if verify_only {
+                vec![
+                    identity_output(&inspect(&paths, "Running").to_string()),
+                    identity_output("silo-identity-verified"),
+                ]
+            } else {
+                vec![
+                    identity_output(&inspect(&paths, "Running").to_string()),
+                    identity_output("{}"),
+                    identity_output(""),
+                    identity_output("silo-identity-verified"),
+                ]
+            });
+
+            let rejected = if verify_only {
+                verify_workspace_identities_in(&runner, &paths, &[test_identity()], &lane).is_err()
+            } else {
+                configure_workspace_identities_in(&runner, &paths, &[test_identity()], &lane)
+                    .is_err()
+            };
+
+            assert!(rejected);
+            assert!(runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args[0] == "inspect"));
+        }
+    }
+
+    #[test]
     fn identity_resume_verifies_guest_files_not_boot_environment() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10639,6 +11223,7 @@ exit 9
         let state = inspect(&paths, "Running");
         let runner = StubRunner::new(vec![
             identity_output(&state.to_string()),
+            identity_output(&state.to_string()),
             identity_output("{}"),
             identity_output(""),
             identity_output("silo-identity-verified"),
@@ -10660,20 +11245,51 @@ exit 9
         identity.name = "O'Neil $(touch /tmp/unsafe)".into();
         let runner = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("{}"),
             identity_output(""),
             identity_output("silo-identity-verified"),
         ]);
         configure_workspace_identities_with(&runner, &paths, &[identity]).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert!(calls[1].iter().any(|arg| arg == "--env-rm"));
-        assert_eq!(calls[2][0], "exec");
-        assert!(calls[2]
+        assert!(calls[2].iter().any(|arg| arg == "--env-rm"));
+        assert_eq!(calls[3][0], "exec");
+        assert!(calls[3]
             .iter()
             .any(|arg| arg == "O'Neil $(touch /tmp/unsafe)"));
         assert!(!calls
             .iter()
             .any(|args| ["restart", "stop", "start"].contains(&args[0].as_str())));
+    }
+
+    #[test]
+    fn saving_an_identity_clears_its_boot_overrides_from_the_checkpoint_record() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mut record = checkpoints::load(&paths, vm().id()).unwrap();
+        record.set_environment_for_test(&[
+            ("PROJECT_MODE", "kept"),
+            ("GIT_AUTHOR_NAME", "Old Author"),
+            ("JJ_USER", "Old Author"),
+        ]);
+        checkpoints::save(&paths, vm().id(), &record).unwrap();
+        let state = inspect(&paths, "Running").to_string();
+        let runner = StubRunner::new(vec![
+            identity_output(&state),
+            identity_output(&state),
+            identity_output("{}"),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+        configure_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap();
+        assert_eq!(
+            checkpoints::load(&paths, vm().id())
+                .unwrap()
+                .environment_keys_for_test(),
+            ["PROJECT_MODE"]
+        );
     }
 
     #[test]
@@ -10738,6 +11354,7 @@ exit 9
         };
         let mut work_inspect = inspect(&paths, "Running");
         work_inspect["name"] = json!("work");
+        work_inspect["config"]["labels"]["silo.machine-id"] = json!(other.id());
         let runner = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("silo-identity-verified"),
@@ -10760,6 +11377,7 @@ exit 9
         assert!(OPERATIONS.is_vm_idle(vm().id()) && OPERATIONS.is_vm_idle(other.id()));
         lanes.lock().unwrap().clear();
         let writer = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
             identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("{}"),
             identity_output(""),
@@ -10880,8 +11498,58 @@ exit 9
         fs::set_permissions(parent, fs::Permissions::from_mode(0o775)).unwrap();
         fs::write(parent.join("existing"), b"preserved").unwrap();
         prepare_runtime_home(&alias, Some(&storage)).unwrap();
-        assert_eq!(fs::metadata(parent).unwrap().mode() & 0o777, 0o755);
+        assert_eq!(fs::metadata(parent).unwrap().mode() & 0o777, 0o700);
         assert_eq!(fs::read(parent.join("existing")).unwrap(), b"preserved");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_home_is_private_with_permissive_umask() {
+        const CHILD: &str = "SILO_PRIVATE_RUNTIME_HOME_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::runtime_home_is_private_with_permissive_umask",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // This process runs only this test, so its umask cannot affect parallel tests.
+        unsafe { libc::umask(0) };
+        let directory = tempfile::Builder::new()
+            .prefix("silo")
+            .tempdir_in(crate::test_support::live::temp_root())
+            .unwrap();
+        let storage = directory.path().join("generation/microsandbox");
+        let alias = runtime_home_alias(directory.path(), &storage);
+        prepare_runtime_home(&alias, Some(&storage)).unwrap();
+        assert_eq!(fs::metadata(&storage).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(storage.parent().unwrap()).unwrap().mode() & 0o777,
+            0o700
+        );
+        fs::write(storage.join("private-config"), b"fixture").unwrap();
+        fs::set_permissions(&storage, fs::Permissions::from_mode(0o755)).unwrap();
+        prepare_runtime_home(&alias, Some(&storage)).unwrap();
+        assert_eq!(fs::metadata(&storage).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::read(storage.join("private-config")).unwrap(),
+            b"fixture"
+        );
+        let standalone = directory.path().join("standalone");
+        prepare_runtime_home(&standalone, None).unwrap();
+        assert_eq!(fs::metadata(standalone).unwrap().mode() & 0o777, 0o700);
     }
 
     #[cfg(unix)]
@@ -11127,6 +11795,47 @@ exit 9
         let source = read_application_state_with(&unavailable_runtime, &paths).unwrap();
         assert!(source.workspaces.is_empty());
         assert!(unavailable_runtime.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn network_mappings_are_removed_before_a_deleted_name_can_be_reused() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let network = paths.metadata.with_file_name("network.json");
+        fs::write(
+            &network,
+            json!({"mappings":[
+                {"workspace":"dev","port":3000,"hostPort":43000,"scheme":"http","enabled":true},
+                {"workspace":"other","port":8080,"hostPort":null,"scheme":null,"enabled":true}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&network).unwrap()).unwrap();
+        assert_eq!(saved["mappings"].as_array().unwrap().len(), 1);
+        assert_eq!(saved["mappings"][0]["workspace"], "other");
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+    }
+
+    #[test]
+    fn network_cleanup_failure_keeps_the_deleted_name_reserved_for_recovery() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = request(vec![vm()]);
+        write_metadata(&paths.metadata, &previous).unwrap();
+        fs::write(paths.metadata.with_file_name("network.json"), "invalid").unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+            .unwrap_err();
+        assert!(error.to_string().contains("Saved ports are invalid"));
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), previous);
     }
 
     /// The runtime's sandbox `dev` as the bundled `msb` treats it: `inspect` reports its
@@ -11705,8 +12414,10 @@ mod github_integration_tests;
 /// Apply secret policy under the same per-VM lock as GitHub updates and boot.
 pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str) -> Result<Vec<String>, String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
-    // Applies secret policy inside one VM's guest only.
-    let paths = runtime_paths(app)?;
+    apply_secrets_at_paths(runtime_paths(app)?, workspace)
+}
+
+fn apply_secrets_at_paths(paths: RuntimePaths, workspace: &str) -> Result<Vec<String>, String> {
     let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
     let base_label = format!("Saving secrets for {workspace}");
     let acquire =
@@ -11738,6 +12449,21 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str) -> Result<Vec<Stri
                     ),
                 }
             })?;
+        let machine = read_metadata(&paths.metadata)
+            .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))?
+            .machines
+            .into_iter()
+            .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+            .ok_or_else(|| {
+                secrets_runtime::Attempt::Final(
+                    "The sandbox identity changed. No secrets were applied.".into(),
+                )
+            })?;
+        let inspected = inspect_workspace(&ProcessRunner, &paths, workspace).map_err(|_| {
+            secrets_runtime::Attempt::Final("Could not inspect sandbox secrets.".into())
+        })?;
+        ensure_machine_identity(&machine, &inspected)
+            .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))?;
         // An edit/remove may have committed while this operation waited for the
         // VM gate. Never send the caller's stale values back into the guest.
         let revision = crate::secrets::workspace_revision(workspace)?;

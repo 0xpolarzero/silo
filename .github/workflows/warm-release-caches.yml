@@ -47,6 +47,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     env:
+      GOTOOLCHAIN: local
       SILO_GITHUB_APP_SLUG: silo-cache-warmer
       SILO_GITHUB_CLIENT_ID: synthetic-cache-client
       SILO_GITHUB_CLIENT_SECRET: SILO-CACHE-PRODUCER-CONFIG-SENTINEL
@@ -55,6 +56,8 @@ jobs:
       CARGO_PROFILE_TEST_DEBUG: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'

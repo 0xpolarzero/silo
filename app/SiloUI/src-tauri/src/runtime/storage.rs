@@ -39,10 +39,12 @@ struct ReclaimEntry {
     trigger: String,
     reclaimed_bytes: Option<u64>,
     error: Option<String>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Record {
     #[serde(default)]
     history: Vec<ReclaimEntry>,
@@ -50,6 +52,8 @@ struct Record {
     last_attempt_at: Option<u64>,
     last_reclaimed_bytes: Option<u64>,
     last_error: Option<String>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,6 +104,7 @@ fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeError> {
                 trigger: "legacy".into(),
                 reclaimed_bytes: record.last_reclaimed_bytes,
                 error: None,
+                extra: serde_json::Map::new(),
             });
         }
     }
@@ -434,7 +439,10 @@ fn trim_triggered(
             .metadata()
             .map_err(|_| failure("The owned workspace disk length could not be verified."))?
             .len();
-        disks.push((disk, original_length));
+        let qcow2 = disk_path
+            .extension()
+            .is_some_and(|extension| extension == "qcow2");
+        disks.push((disk, original_length, qcow2));
     }
     if disks.is_empty() {
         return Err(failure(
@@ -453,6 +461,7 @@ fn trim_triggered(
             trigger: trigger.into(),
             reclaimed_bytes: None,
             error: record.last_error.clone(),
+            extra: serde_json::Map::new(),
         },
     );
     record.history.truncate(HISTORY_LIMIT);
@@ -463,7 +472,7 @@ fn trim_triggered(
     // Check every layer even after the first failure, so each shortened one is repaired.
     let length_result = disks
         .iter()
-        .map(|(disk, original_length)| preserve_length(disk, *original_length))
+        .map(|(disk, original_length, qcow2)| preserve_length(disk, *original_length, *qcow2))
         .fold(Ok(()), |first: Result<(), RuntimeError>, next| {
             first.and(next)
         });
@@ -491,7 +500,7 @@ fn trim_triggered(
     result.map_err(|_| failure(record.last_error.as_deref().unwrap()))
 }
 
-fn preserve_length(disk: &File, original_length: u64) -> Result<(), RuntimeError> {
+fn preserve_length(disk: &File, original_length: u64, qcow2: bool) -> Result<(), RuntimeError> {
     let length = disk
         .metadata()
         .map_err(|_| failure("The workspace disk length could not be verified."))?
@@ -501,7 +510,9 @@ fn preserve_length(disk: &File, original_length: u64) -> Result<(), RuntimeError
             .map_err(|_| failure("The runtime shortened the workspace disk and its length could not be restored. Keep the VM stopped and repair its disk."))?;
         return Err(failure("The runtime shortened the workspace disk; its original length was restored. Update the runtime before reclaiming again."));
     }
-    if length != original_length {
+    // A qcow2 file grows as the running guest allocates host clusters; its file
+    // length is independent of the virtual disk capacity.
+    if length != original_length && !qcow2 {
         return Err(failure(
             "The workspace disk size changed during reclamation.",
         ));
@@ -614,7 +625,11 @@ fn automatic(
     );
 }
 
-fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, RuntimeError> {
+fn periodic(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    unresolved: &HashMap<String, RuntimeError>,
+) -> Result<bool, RuntimeError> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let mut machines: Vec<_> = read_metadata(&paths.metadata)?
         .machines
@@ -628,6 +643,9 @@ fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, Ru
     machines.rotate_left(offset);
     let deadline = Instant::now() + TRIM_BUDGET;
     for machine in machines {
+        if unresolved.contains_key(machine.id()) {
+            continue;
+        }
         if shutdown::ensure_accepting_operations().is_err() {
             return Ok(false);
         }
@@ -679,10 +697,23 @@ fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, Ru
     }
     Ok(false)
 }
+fn maintenance_tick(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+) -> Result<bool, RuntimeError> {
+    let recovery = checkpoints::recover_interrupted(runner, paths)?;
+    if let Some(failure) = recovery.cleanup_error {
+        eprintln!("Deleted checkpoint data was kept: {failure}");
+    }
+    for (id, failure) in &recovery.unresolved {
+        eprintln!("Interrupted checkpoint data for sandbox {id} was kept: {failure}");
+    }
+    periodic(runner, paths, &recovery.unresolved)
+}
+
 pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();
     thread::spawn(move || {
-        let mut recovered = false;
         loop {
             // Periodic background work skips whenever any operation is active or waiting.
             if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
@@ -690,15 +721,8 @@ pub(crate) fn start_monitor(app: &AppHandle) {
                     // No paths exist while the storage migration is unfinished, so
                     // neither step below can reach the previous generation.
                     if let Ok(paths) = runtime_paths(&app) {
-                        if !recovered {
-                            match checkpoints::recover_interrupted(&ProcessRunner, &paths) {
-                                Ok(()) => recovered = true,
-                                Err(failure) => {
-                                    eprintln!("Interrupted checkpoint data was kept: {failure}")
-                                }
-                            }
-                        } else {
-                            let _ = periodic(&ProcessRunner, &paths);
+                        if let Err(failure) = maintenance_tick(&ProcessRunner, &paths) {
+                            eprintln!("Storage maintenance could not finish: {failure}");
                         }
                     }
                 }
@@ -738,47 +762,7 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
         };
         shutdown::ensure_accepting_operations()?;
         let paths = runtime_paths(&app)?;
-        let result = (|| {
-            let machine = machine(&paths, &id)?;
-            if checkpoints::is_pending(&paths, machine.id())? {
-                // No runtime sandbox or disk exists until the user starts it.
-                if reclaim {
-                    return Err(failure(&format!("Start {} first.", machine.name())));
-                }
-                let record = load(&paths, machine.id())?;
-                let (checkpoint_host_bytes, checkpoint_count) = checkpoints::storage_totals(
-                    &ProcessRunner,
-                    &paths,
-                    machine.id(),
-                    machine.name(),
-                );
-                return Ok(StorageState {
-                    checkpoint_host_bytes,
-                    checkpoint_count,
-                    history: record.history,
-                    workspace_host_bytes: Some(0),
-                    runtime_host_bytes: Some(0),
-                    workspace_used_bytes: None,
-                    workspace_capacity_bytes: None,
-                    last_reclaimed_bytes: record.last_reclaimed_bytes,
-                    last_trim_at: record.last_trim_at,
-                    last_error: None,
-                });
-            }
-            let observed = inspect_workspace(&ProcessRunner, &paths, machine.name())?;
-            verify(&machine, &observed)?;
-            if reclaim {
-                trim(
-                    &ProcessRunner,
-                    &paths,
-                    &machine,
-                    &observed,
-                    TRIM_BUDGET,
-                    now(),
-                )?;
-            }
-            state(&ProcessRunner, &paths, &machine, &observed)
-        })();
+        let result = storage_with(&ProcessRunner, &paths, &id, reclaim);
         result.map_err(|e| safe_activity_error(&e))
     })
     .await
@@ -786,6 +770,52 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
         "Silo could not finish the workspace storage action. Refresh the Storage tab and retry."
             .to_string()
     })?
+}
+
+fn storage_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    id: &str,
+    reclaim: bool,
+) -> Result<StorageState, RuntimeError> {
+    let machine = machine(paths, id)?;
+    let absent = if checkpoints::pending_view(paths, machine.id(), false)? {
+        let exists = list_managed(runner, paths)?
+            .iter()
+            .any(|entry| entry.name == machine.name());
+        checkpoints::pending_view(paths, machine.id(), exists)?
+    } else {
+        false
+    };
+    if absent {
+        if reclaim {
+            return Err(failure(&format!("Start {} first.", machine.name())));
+        }
+        let record = load(paths, machine.id())?;
+        let (checkpoint_host_bytes, checkpoint_count) =
+            checkpoints::storage_totals(runner, paths, machine.id(), machine.name());
+        return Ok(StorageState {
+            checkpoint_host_bytes,
+            checkpoint_count,
+            history: record.history,
+            workspace_host_bytes: Some(0),
+            runtime_host_bytes: Some(0),
+            workspace_used_bytes: None,
+            workspace_capacity_bytes: None,
+            last_reclaimed_bytes: record.last_reclaimed_bytes,
+            last_trim_at: record.last_trim_at,
+            last_error: record.last_error,
+        });
+    }
+    let observed = inspect_workspace(runner, paths, machine.name())?;
+    verify(&machine, &observed)?;
+    if reclaim {
+        if checkpoints::needs_explicit_start(paths, machine.id())? {
+            return Err(failure("The sandbox has an unfinished restore. Retry Start before reclaiming workspace space."));
+        }
+        trim(runner, paths, &machine, &observed, TRIM_BUDGET, now())?;
+    }
+    state(runner, paths, &machine, &observed)
 }
 
 #[cfg(test)]

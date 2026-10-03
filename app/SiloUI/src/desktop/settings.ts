@@ -25,20 +25,30 @@ export function createDesktopSettingsStore(initialSettings: SettingsPatch, main:
     async read() {
       let snapshot = nativeSnapshotSchema.parse(await invoke("read_settings"))
       if (firstRead && main) {
-        firstRead = false
         // Import an actual saved choice only. Retain its old key if migration fails.
         let theme: string | null = null
         try { theme = localStorage.getItem("silo-theme") } catch { /* Browser storage can be unavailable. */ }
         if (!snapshot.saveError && !("theme" in snapshot.settings) && (theme === "system" || theme === "dark" || theme === "light")) {
           snapshot = nativeSnapshotSchema.parse(await invoke("import_legacy_theme", { theme }))
         }
+        firstRead = false
       }
       return snapshot
     },
     subscribe: (receive) => listen("settings:changed", ({ payload }) => {
       const parsed = nativeSnapshotSchema.safeParse(payload)
-      if (parsed.success) receive(parsed.data)
-      else console.error("Silo settings: invalid native event", parsed.error.message)
+      if (!parsed.success) {
+        console.error("Silo settings: invalid native event", parsed.error.message)
+        return
+      }
+      if (!main) {
+        receive(parsed.data)
+        return
+      }
+      // Events are public; the command returns the main window's recovery draft.
+      void invoke("read_settings")
+        .then(snapshot => receive(nativeSnapshotSchema.parse(snapshot)))
+        .catch(error => console.error("Silo settings: native refresh failed", error))
     }),
     updateSettings: async (patch) => nativeSnapshotSchema.parse(await invoke("update_settings", { patch })),
     updateOnboardingDraft: async (draft) => nativeSnapshotSchema.parse(await invoke("update_onboarding_draft", { draft })),
@@ -70,28 +80,31 @@ export async function connectSettingsLifecycle(store: SettingsStore, main: boole
   let stop: (() => void) | undefined
   let connecting: Promise<void> | null = null
   let disposed = false
+  async function flushForQuit() {
+    try { await invoke("begin_settings_flush") }
+    catch (error) {
+      console.error("Silo settings shutdown acknowledgment:", error)
+      return
+    }
+    try {
+      await withinLimit(beforeFlush, beforeFlushLimitMs)
+      await store.flush()
+      // A write-protected settings file must not block Quit: the file is
+      // intentionally left unchanged and this session's changes are dropped.
+      const { saveError, writeProtected } = store.getSnapshot()
+      if (saveError && !writeProtected) throw new Error(saveError)
+      await invoke("complete_settings_flush")
+    } catch (error) {
+      console.error("Silo settings shutdown:", error)
+      await invoke("cancel_settings_flush").catch((failure: unknown) => console.error("Silo could not cancel shutdown:", failure))
+    }
+  }
   function connect() {
     if (stop || disposed) return Promise.resolve()
     connecting ??= (async () => {
       try {
         const unsubscribe = main
-          ? await listen("settings:flush-request", () => {
-              void invoke("begin_settings_flush")
-                .catch((error: unknown) => console.error("Silo settings shutdown acknowledgment:", error))
-                .then(() => withinLimit(beforeFlush, beforeFlushLimitMs))
-                .then(() => store.flush())
-                .then(() => {
-                  // A write-protected settings file must not block Quit: the file is
-                  // intentionally left unchanged and this session's changes are dropped.
-                  const { saveError, writeProtected } = store.getSnapshot()
-                  if (saveError && !writeProtected) throw new Error(saveError)
-                  return invoke("complete_settings_flush")
-                })
-                .catch(async (error: unknown) => {
-                  console.error("Silo settings shutdown:", error)
-                  await invoke("cancel_settings_flush").catch((failure: unknown) => console.error("Silo could not cancel shutdown:", failure))
-                })
-            })
+          ? await listen("settings:flush-request", () => { void flushForQuit() })
           : await listen("desktop:status-opened", () => { void store.refresh() })
         if (disposed) unsubscribe()
         else stop = unsubscribe

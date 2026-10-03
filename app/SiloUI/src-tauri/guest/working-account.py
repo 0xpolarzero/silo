@@ -3,18 +3,21 @@
 
 A new VM gets a fresh account. A VM from an older Silo kept agent files under /root,
 and sometimes had a separate silo-desktop account: those homes are copied into
-/home/silo and the originals stay in place. The account record is written last and
-every step can be repeated, so an interrupted run finishes at the next boot.
+/home/silo and the originals stay in place. The account record is written last;
+completed copies can be retried, and conflicting entries stop setup for resolution.
 """
+import filecmp
 import grp
 import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 POLICY = {'schemaVersion': 1, 'user': 'silo', 'home': '/home/silo'}
 RECORD = Path('/var/lib/silo/working-account.json')
@@ -51,57 +54,170 @@ def carried(path, defaults=Path('/usr/share/base-files')):
                 and default.is_file() and path.read_bytes() == default.read_bytes())
 
 
+def path_mode(path):
+    try:
+        return path.lstat().st_mode
+    except FileNotFoundError:
+        return None
+
+
+def conflict(path):
+    raise RuntimeError(f'Home migration conflict at {path}. Preserve or move the conflicting entry and retry; legacy homes are unchanged.')
+
+
+def check_destination(destination):
+    # Check ancestors from the filesystem root before inspecting any child.
+    for path in reversed((destination.absolute(), *destination.absolute().parents)):
+        mode = path_mode(path)
+        if mode is not None and not stat.S_ISDIR(mode):
+            conflict(path)
+
+
+def relocate(value):
+    for legacy in ('/home/silo-desktop', '/root'):
+        if value == legacy or value.startswith(legacy + '/'):
+            return '/home/silo' + value[len(legacy):]
+    return value
+
+
+def relocate_contents(data):
+    return re.sub(rb"(?<![\w./-])(?:/home/silo-desktop|/root)(?=/|[\s'\";:]|$)", b'/home/silo', data)
+
+
+def launcher_contents(path, relative):
+    if not (relative.parent == Path('.') and path.name in SHELL_SETUP or 'bin' in relative.parts):
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if b'\x00' in data:
+        return None
+    if not data.startswith(b'#!'):
+        try:
+            data.decode('utf-8')
+        except UnicodeError:
+            return None
+    updated = relocate_contents(data)
+    return updated if updated != data else None
+
+
+def copy_file(path, target, contents=None, replace=False):
+    with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.silo-copy-', delete=False) as staged:
+        temporary = Path(staged.name)
+    try:
+        shutil.copy2(path, temporary)
+        if contents is not None:
+            if isinstance(contents, bytes):
+                temporary.write_bytes(contents)
+            else:
+                temporary.write_text(contents)
+        if replace:
+            os.replace(temporary, target)
+        else:
+            # Publish complete bytes without replacing an entry created during copying.
+            os.link(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def copy_home(source, destination):
-    """Preserve credentials and binary files; relocate home links and launch scripts."""
-    def skipped(directory, names):
-        directory = Path(directory)
-        return [name for name in names
-                if stat.S_ISSOCK((directory / name).lstat().st_mode)
-                or stat.S_ISFIFO((directory / name).lstat().st_mode)
-                or directory == source and not carried(directory / name)]
-    # A failed copy may already have installed links. Replace only matching source links.
-    for path in source.rglob('*'):
-        target = destination / path.relative_to(source)
-        if path.is_symlink() and target.is_symlink():
-            target.unlink()
-    shutil.copytree(source, destination, symlinks=True, dirs_exist_ok=True, ignore=skipped)
-    for path in destination.rglob('*'):
-        if path.is_symlink():
-            target = os.readlink(path)
-            updated = target.replace('/home/silo-desktop/', '/home/silo/').replace('/root/', '/home/silo/')
-            if updated != target:
-                path.unlink()
-                path.symlink_to(updated)
-        elif path.is_file() and (path.parent == destination and path.name in SHELL_SETUP or 'bin' in path.relative_to(destination).parts):
-            # Installed launchers and shell setup contain absolute home paths.
-            # Preserve binaries and all agent state/credential contents byte for byte.
-            try:
-                data = path.read_text()
-            except (UnicodeError, OSError):
-                continue
-            updated = data.replace('/home/silo-desktop/', '/home/silo/').replace('/root/', '/home/silo/')
-            if updated != data:
-                path.write_text(updated)
+    """Preflight the whole merge; preserve conflicting entries and both legacy homes."""
+    check_destination(destination)
+    copies = []
+
+    def preflight(path, target):
+        mode = path.lstat().st_mode
+        relative = path.relative_to(source)
+        if stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode) or path.parent == source and not carried(path):
+            return
+        existing = path_mode(target)
+        if stat.S_ISDIR(mode):
+            if existing is not None and not stat.S_ISDIR(existing):
+                conflict(target)
+            if existing is None:
+                copies.append((path, target, mode))
+            for child in sorted(path.iterdir()):
+                preflight(child, target / child.name)
+        elif stat.S_ISLNK(mode):
+            if existing is not None:
+                if stat.S_ISLNK(existing) and os.readlink(target) == relocate(os.readlink(path)):
+                    return
+                conflict(target)
+            copies.append((path, target, mode))
+        elif stat.S_ISREG(mode):
+            if existing is not None:
+                if not stat.S_ISREG(existing):
+                    conflict(target)
+                # Shell setup is resolved separately from root's authoritative copy.
+                if path.parent == source and path.name in SHELL_SETUP:
+                    return
+                updated = launcher_contents(path, relative)
+                same = target.read_bytes() == updated if updated is not None else filecmp.cmp(path, target, shallow=False)
+                if same:
+                    return
+                conflict(target)
+            copies.append((path, target, mode))
+        else:
+            conflict(path)
+
+    preflight(source, destination)
+    for path, target, mode in copies:
+        if stat.S_ISDIR(mode):
+            target.mkdir()
+        elif stat.S_ISLNK(mode):
+            target.symlink_to(relocate(os.readlink(path)))
+            shutil.copystat(path, target, follow_symlinks=False)
+        else:
+            copy_file(path, target, launcher_contents(path, path.relative_to(source)))
+    for path, target, mode in reversed(copies):
+        if stat.S_ISDIR(mode):
+            shutil.copystat(path, target)
 
 
 def copy_shell_setup(source, destination):
     # The root account owns agent shell setup; desktop defaults must not replace it.
+    check_destination(destination)
+    originals = []
     for name in SHELL_SETUP:
         original, target = source / name, destination / name
         if original.is_file() and not original.is_symlink() and carried(original):
-            if target.is_symlink():
-                target.unlink()
-            shutil.copy2(original, target)
-            target.write_text(original.read_text().replace('/root/', '/home/silo/'))
-            # Root's profile does not put the user's own tools on PATH.
-            if name == '.profile' and PATH_SETUP not in target.read_text():
-                with target.open('a') as output:
-                    output.write(PATH_SETUP)
+            existing = path_mode(target)
+            if existing is not None and not stat.S_ISREG(existing):
+                conflict(target)
+            originals.append((original, target))
+    for original, target in originals:
+        contents = relocate_contents(original.read_bytes())
+        # Root's profile does not put the user's own tools on PATH.
+        if original.name == '.profile' and PATH_SETUP.encode('utf-8') not in contents:
+            contents += PATH_SETUP.encode('utf-8')
+        copy_file(original, target, contents, replace=True)
 
 
 def validate_account(entry):
     if entry.pw_uid != 1001 or entry.pw_gid != 1001 or entry.pw_dir != '/home/silo':
         raise RuntimeError('The silo account does not match the layout Silo needs.')
+
+
+def write_text_atomic(path, contents, mode):
+    fd, temporary = tempfile.mkstemp(prefix=f'.{path.name}-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            output.write(contents)
+            output.flush()
+            os.fchmod(output.fileno(), mode)
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def set_up(desktop_service):
@@ -157,22 +273,16 @@ def set_up(desktop_service):
     # Do not traverse other mounts or follow symlinks into system or host files.
     run('find', '/workspace', '-xdev', '-exec', 'chown', '-h', 'silo:silo', '{}', '+')
     sudoers = Path('/etc/sudoers.d/silo')
-    sudoers.write_text('silo ALL=(ALL:ALL) NOPASSWD: ALL\n')
-    sudoers.chmod(0o440)
+    write_text_atomic(sudoers, 'silo ALL=(ALL:ALL) NOPASSWD: ALL\n', 0o440)
     run('visudo', '-cf', str(sudoers))
     state = Path('/var/lib/silo-desktop')
     if (state / 'installed.json').exists():
         service = Path('/usr/local/bin/silo-desktop')
-        service.write_text(desktop_service)
-        service.chmod(0o755)
-        (state / 'configuration-managed.json').write_text('{"home":"/home/silo"}\n')
-        (state / 'configuration-managed.json').chmod(0o600)
+        write_text_atomic(service, desktop_service, 0o755)
+        write_text_atomic(state / 'configuration-managed.json', '{"home":"/home/silo"}\n', 0o600)
     run('runuser', '-u', 'silo', '--', 'env', 'HOME=/home/silo', 'USER=silo', 'LOGNAME=silo', 'sh', '-ec', 'test -w "$HOME"; test -w /workspace; sudo -n true; test -x /usr/lib/openssh/sftp-server')
     RECORD.parent.mkdir(parents=True, exist_ok=True)
-    temporary = RECORD.with_suffix('.tmp')
-    temporary.write_text(json.dumps(POLICY, separators=(',', ':')) + '\n')
-    temporary.chmod(0o644)
-    temporary.replace(RECORD)
+    write_text_atomic(RECORD, json.dumps(POLICY, separators=(',', ':')) + '\n', 0o644)
 
 
 if __name__ == '__main__':

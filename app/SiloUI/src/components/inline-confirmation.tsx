@@ -36,16 +36,25 @@ export function InlineConfirmation({ active, onDismiss, children }: {
       dismiss.current()
     }
 
+    function inForeignDialog(target: EventTarget | null) {
+      const dialog = target instanceof Element ? target.closest('[role="dialog"], [role="alertdialog"]') : null
+      return dialog !== null && !dialog.contains(boundary.current) && !boundary.current?.contains(dialog)
+    }
+
     function dismissOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && isTopmost()) dismiss.current()
+      if (inForeignDialog(event.target)) return
+      if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing && isTopmost()) {
+        event.preventDefault()
+        dismiss.current()
+      }
     }
 
     document.addEventListener("pointerdown", dismissOutside, true)
-    document.addEventListener("keydown", dismissOnEscape)
+    document.addEventListener("keydown", dismissOnEscape, true)
     return () => {
       removeConfirmation(confirmationID)
       document.removeEventListener("pointerdown", dismissOutside, true)
-      document.removeEventListener("keydown", dismissOnEscape)
+      document.removeEventListener("keydown", dismissOnEscape, true)
     }
   }, [active])
 

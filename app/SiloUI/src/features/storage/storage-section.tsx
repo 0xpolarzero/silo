@@ -43,6 +43,7 @@ export function StorageSection() {
         detail={backup ? <>
           <span className="block">{formatBackupSize(state.size)} · {deletionSummary(backup)}</span>
           <span className="block">{preUpgradeBackupContents}</span>
+          {loadError && <span role="alert" className="block text-destructive">Silo could not refresh it. {loadError}</span>}
         </> : <span role="alert" className="block text-destructive">Silo could not check for it. {loadError}</span>}
         actions={<span className="flex shrink-0 gap-1.5">
           {backup ? <>
@@ -50,7 +51,8 @@ export function StorageSection() {
             <ConfirmPopover align="end" tone="destructive" {...deleteConfirmation(state.size)} onConfirm={deleteNow}>
               <Button type="button" variant="outline" size="xs" disabled={state.removing}>Delete now</Button>
             </ConfirmPopover>
-          </> : <Button type="button" variant="outline" size="xs" onClick={state.retry}>Retry</Button>}
+          </> : null}
+          {loadError && <Button type="button" variant="outline" size="xs" onClick={state.retry}>Retry</Button>}
         </span>}
       />
     </ListCard>

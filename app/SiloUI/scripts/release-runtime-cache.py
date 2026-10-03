@@ -72,7 +72,7 @@ def pack(root, archive):
     if not selected:
         raise ValueError('No public runtime cache files were prepared')
     archive.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(archive, 'w:gz') as bundle:
+    with tarfile.open(archive, 'w:gz', dereference=True) as bundle:
         for path in sorted(selected):
             bundle.add(path, arcname=path.relative_to(root).as_posix(), recursive=False)
     return digest(archive)

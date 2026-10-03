@@ -184,16 +184,20 @@ fn run_remote_action(
         _ => Duration::from_secs(600),
     };
     let allow_cancel = matches!(action.as_str(), "start" | "restart");
+    let last_request = std::cell::Cell::new(None);
     let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
-        OPERATIONS
+        let guard = OPERATIONS
             .kind(operation_gate::OperationKind::Lifecycle)
+            .retry_after(last_request.get())
             .acquire(
                 operation_gate::Scope::Vm { id: vm_id.clone() },
                 Some(name.clone()),
                 label,
                 Some(key.clone()),
             )
-            .map_err(RuntimeError::from)
+            .map_err(RuntimeError::from)?;
+        last_request.set(Some(guard.request_id()));
+        Ok(guard)
     };
     let prepare = |guard: &operation_gate::OperationGuard<'static>| {
         if allow_cancel {
@@ -540,7 +544,10 @@ mod tests {
 }
 
 pub(crate) fn local_vm_name(app: &AppHandle, id: &str) -> Result<String, String> {
-    let paths = runtime_paths(app)?;
+    local_vm_name_in(&runtime_paths(app)?, id)
+}
+
+pub(crate) fn local_vm_name_in(paths: &RuntimePaths, id: &str) -> Result<String, String> {
     read_metadata(&paths.metadata)
         .map_err(|e| e.to_string())?
         .machines

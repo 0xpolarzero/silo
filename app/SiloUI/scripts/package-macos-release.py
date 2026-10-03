@@ -6,6 +6,7 @@ import subprocess
 import tarfile
 import tempfile
 from macos_release_signing import sign_runtime, verify_bundle
+from channel_names import channel_names
 
 
 def main():
@@ -14,26 +15,27 @@ def main():
     parser.add_argument('output', type=Path)
     args = parser.parse_args()
     app, output = args.bundle.resolve(), args.output.resolve()
-    if app.name != 'Silo.app' or not (app / 'Contents/MacOS/msb').is_file():
-        raise RuntimeError('Expected a built Silo.app with its VM runtime.')
+    product_name = channel_names()["production"]["productName"]
+    bundle_name = f"{product_name}.app"
+    if app.name != bundle_name or not (app / 'Contents/MacOS/msb').is_file():
+        raise RuntimeError(f'Expected a built {bundle_name} with its VM runtime.')
     key = os.environ.get('TAURI_SIGNING_PRIVATE_KEY', '')
     if not key:
         raise RuntimeError('An updater signing key is required.')
     output.mkdir(parents=True, exist_ok=True)
-    archive = output / 'Silo-macos-arm64.app.tar.gz'
-    dmg = output / 'Silo-macos-arm64.dmg'
+    archive = output / f'{product_name}-macos-arm64.app.tar.gz'
+    dmg = output / f'{product_name}-macos-arm64.dmg'
     if any(path.exists() for path in (archive, Path(str(archive) + '.sig'), dmg)):
         raise RuntimeError('Release assets already exist; use a fresh output directory.')
     sign_runtime(app)
     verify_bundle(app)
     # Python tarfile does not insert Apple's resource-fork sidecar entries.
     with tarfile.open(archive, 'w:gz') as tar:
-        tar.add(app, arcname='Silo.app')
+        tar.add(app, arcname=bundle_name)
     with tarfile.open(archive, 'r:gz') as tar:
-        if any(member.name.split('/')[0] != 'Silo.app' for member in tar):
-            raise RuntimeError('The update archive must contain only Silo.app.')
-    signer = ['npx', 'tauri', 'signer', 'sign', '-p',
-              os.environ.get('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', '')]
+        if any(member.name.split('/')[0] != bundle_name for member in tar):
+            raise RuntimeError(f'The update archive must contain only {bundle_name}.')
+    signer = ['npx', 'tauri', 'signer', 'sign']
     try:
         is_file = Path(key).is_file()
     except OSError:
@@ -45,14 +47,18 @@ def main():
         # Tauri treats this environment variable as --private-key (contents),
         # which conflicts with --private-key-path even when both name one file.
         signer_env.pop('TAURI_SIGNING_PRIVATE_KEY', None)
-    # For key contents, Tauri reads the private key from its environment.
-    subprocess.run(signer + [str(archive)], env=signer_env, check=True, stdout=subprocess.DEVNULL)
+    # Tauri reads key contents and the password from its environment.
+    signer_env.setdefault('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', '')
+    try:
+        subprocess.run(signer + [str(archive)], env=signer_env, check=True, stdout=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f'Updater signing failed with exit code {error.returncode}.') from None
     with tempfile.TemporaryDirectory(prefix='silo-dmg-') as temporary:
         stage = Path(temporary) / 'image'
         stage.mkdir()
-        subprocess.run(['ditto', str(app), str(stage / 'Silo.app')], check=True)
+        subprocess.run(['ditto', str(app), str(stage / bundle_name)], check=True)
         (stage / 'Applications').symlink_to('/Applications')
-        subprocess.run(['hdiutil', 'create', '-volname', 'Silo', '-srcfolder', str(stage),
+        subprocess.run(['hdiutil', 'create', '-volname', product_name, '-srcfolder', str(stage),
                         '-format', 'UDZO', str(dmg)], check=True)
     print(f'Created verified release assets in {output}')
 

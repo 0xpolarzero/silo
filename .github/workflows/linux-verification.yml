@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: verification-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   linux:
     strategy:
@@ -31,6 +35,8 @@ jobs:
       CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -56,11 +62,13 @@ jobs:
           cache: false
       - run: npm run runtime:prepare
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
-      - name: Build production Linux application
+      - name: Build development Linux application
         run: npm run desktop:build -- --debug --no-bundle --ci
       - name: Install external WebDriver
         run: cargo install tauri-driver --version 2.0.6 --locked
       - name: Verify native WebKit onboarding and validation
+        env:
+          SILO_LINUX_APPLICATION_ID: org.silo.dev
         run: xvfb-run -a dbus-run-session -- python3 scripts/test-linux-desktop.py
       - name: Verify real AMD64 hardware runtime operations
         if: matrix.runner == 'ubuntu-24.04'

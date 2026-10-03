@@ -41,7 +41,7 @@ pub enum ApplicationKind {
 pub(crate) fn open_browser(app: &AppHandle, url: &str) -> Result<(), String> {
     let url = browser_url(url)?;
     let settings = crate::settings::current_settings(app)?;
-    let selection = browser_selection(&settings)?;
+    let selection = browser_selection(&settings, cfg!(target_os = "linux"))?;
     platform::open_browser(selection, &url)
 }
 
@@ -62,6 +62,7 @@ fn browser_url(value: &str) -> Result<String, String> {
 
 fn browser_selection(
     settings: &serde_json::Map<String, serde_json::Value>,
+    desktop_entry_required: bool,
 ) -> Result<Option<&Path>, String> {
     if settings
         .get("browserUseSystemDefault")
@@ -77,7 +78,18 @@ fn browser_selection(
         .and_then(|value| value.as_str())
         .filter(|path| Path::new(path).is_absolute())
         .ok_or("Choose an available browser in Settings.")?;
-    Ok(Some(Path::new(path)))
+    Ok(Some(browser_path(Path::new(path), desktop_entry_required)?))
+}
+
+fn browser_path(path: &Path, desktop_entry_required: bool) -> Result<&Path, String> {
+    if desktop_entry_required
+        && path
+            .extension()
+            .is_none_or(|extension| extension != "desktop")
+    {
+        return Err("Choose a browser desktop entry (.desktop) in Settings.".into());
+    }
+    Ok(path)
 }
 
 pub(crate) fn selected_terminal(app: &AppHandle) -> Result<Application, String> {
@@ -132,6 +144,7 @@ pub(crate) fn editor_command(application: &Application) -> Result<launch::Editor
 fn include_selections(
     catalog: &mut ApplicationCatalog,
     selections: BTreeMap<String, String>,
+    desktop_entry_required: bool,
     read: impl Fn(&Path) -> Option<Application>,
 ) {
     for (kind, applications) in [
@@ -140,7 +153,11 @@ fn include_selections(
         ("browser", &mut catalog.browser),
     ] {
         if let Some(path) = selections.get(kind) {
-            if path.encode_utf16().count() <= 4096 && Path::new(path).is_absolute() {
+            if path.encode_utf16().count() <= 4096
+                && Path::new(path).is_absolute()
+                && (kind != "browser"
+                    || browser_path(Path::new(path), desktop_entry_required).is_ok())
+            {
                 if let Some(application) = read(Path::new(path)) {
                     applications.push(application);
                 }
@@ -179,7 +196,12 @@ pub async fn list_applications(
         #[cfg(target_os = "macos")]
         let _ = &app;
         let mut catalog = platform::discover()?;
-        include_selections(&mut catalog, selections, platform::application_at);
+        include_selections(
+            &mut catalog,
+            selections,
+            cfg!(target_os = "linux"),
+            platform::application_at,
+        );
         #[cfg(target_os = "linux")]
         let catalog = {
             let (send, receive) = std::sync::mpsc::sync_channel(1);
@@ -217,11 +239,22 @@ pub async fn choose_application(
             .set_directory("/Applications")
             .add_filter("Applications", &["app"]);
         #[cfg(target_os = "linux")]
-        let dialog = dialog.set_directory("/usr/share/applications");
+        let dialog = {
+            let dialog = dialog.set_directory("/usr/share/applications");
+            if matches!(kind, ApplicationKind::Browser) {
+                dialog.add_filter("Desktop entries", &["desktop"])
+            } else {
+                dialog
+            }
+        };
         let Some(file) = dialog.blocking_pick_file() else {
             return Ok(None);
         };
         let path = file.into_path().map_err(|error| error.to_string())?;
+        browser_path(
+            &path,
+            cfg!(target_os = "linux") && matches!(kind, ApplicationKind::Browser),
+        )?;
         let application = platform::application_at(&path)
             .ok_or("The selected item is not an available application")?;
         if application.name.encode_utf16().count() > 256
@@ -272,21 +305,81 @@ mod tests {
         let settings =
             serde_json::json!({"browserUseSystemDefault": true, "browserPath": "/old/browser.app"});
         assert_eq!(
-            browser_selection(settings.as_object().unwrap()).unwrap(),
+            browser_selection(settings.as_object().unwrap(), false).unwrap(),
             None
         );
         let settings = serde_json::json!({"browserUseSystemDefault": false, "browserPath": "/Applications/Selected.app"});
         assert_eq!(
-            browser_selection(settings.as_object().unwrap()).unwrap(),
+            browser_selection(settings.as_object().unwrap(), false).unwrap(),
             Some(Path::new("/Applications/Selected.app"))
         );
         let settings = serde_json::json!({"browserUseSystemDefault": false});
-        assert!(browser_selection(settings.as_object().unwrap()).is_err());
+        assert!(browser_selection(settings.as_object().unwrap(), false).is_err());
         let settings = serde_json::json!({"browserPath": "/Applications/Selected.app"});
         assert_eq!(
-            browser_selection(settings.as_object().unwrap()).unwrap(),
+            browser_selection(settings.as_object().unwrap(), false).unwrap(),
             Some(Path::new("/Applications/Selected.app"))
         );
+    }
+
+    #[test]
+    fn linux_browser_choices_require_a_desktop_entry() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("browser");
+        std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let selection =
+            serde_json::json!({"browserUseSystemDefault": false, "browserPath": executable});
+        assert!(browser_selection(selection.as_object().unwrap(), true).is_err());
+        assert!(browser_path(&executable, true)
+            .unwrap_err()
+            .contains(".desktop"));
+        assert_eq!(
+            browser_path(&executable, false).unwrap(),
+            executable.as_path()
+        );
+        let desktop = directory.path().join("browser.desktop");
+        std::fs::write(
+            &desktop,
+            "[Desktop Entry]\nType=Application\nName=Browser\nExec=/bin/true %u\n",
+        )
+        .unwrap();
+        let selection =
+            serde_json::json!({"browserUseSystemDefault": false, "browserPath": desktop});
+        assert_eq!(
+            browser_selection(selection.as_object().unwrap(), true).unwrap(),
+            Some(desktop.as_path())
+        );
+        let selection =
+            serde_json::json!({"browserUseSystemDefault": true, "browserPath": executable});
+        assert_eq!(
+            browser_selection(selection.as_object().unwrap(), true).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn executable_browser_preferences_are_not_offered_as_available_choices() {
+        let executable = Application {
+            name: "Fixture browser".into(),
+            path: "/fixture/browser".into(),
+            icon: None,
+        };
+        let mut catalog = ApplicationCatalog::default();
+        include_selections(
+            &mut catalog,
+            BTreeMap::from([
+                ("browser".into(), executable.path.clone()),
+                ("editor".into(), executable.path.clone()),
+                ("terminal".into(), executable.path.clone()),
+            ]),
+            true,
+            |path| (path == Path::new(&executable.path)).then(|| executable.clone()),
+        );
+        assert!(catalog.browser.is_empty());
+        assert_eq!(catalog.editor, [executable.clone()]);
+        assert_eq!(catalog.terminal, [executable]);
     }
 
     #[test]
@@ -303,6 +396,7 @@ mod tests {
                 ("editor".into(), chosen.path.clone()),
                 ("terminal".into(), "/Applications/Removed.app".into()),
             ]),
+            false,
             |path| (path == Path::new(&chosen.path)).then(|| chosen.clone()),
         );
         assert_eq!(catalog.editor, [chosen]);
@@ -323,6 +417,7 @@ mod tests {
         include_selections(
             &mut catalog,
             BTreeMap::from([("editor".into(), application.path.clone())]),
+            false,
             |_| Some(application.clone()),
         );
         assert_eq!(catalog.editor, [application]);

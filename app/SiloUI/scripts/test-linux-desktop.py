@@ -23,6 +23,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.options import BaseOptions
 from selenium.webdriver.support.ui import WebDriverWait
+from channel_names import channel_names
 
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = Path(os.environ.get("SILO_LINUX_EVIDENCE", ROOT / "test-results/linux"))
@@ -99,7 +100,11 @@ def run():
     passed = False
     with tempfile.TemporaryDirectory(prefix="silo-linux-ui-") as temporary:
         environment = dict(os.environ)
-        identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.preview")
+        environment["HOME"] = str(Path(temporary) / "home")
+        Path(environment["HOME"]).mkdir(mode=0o700)
+        names = channel_names()
+        identifier = environment.get("SILO_LINUX_APPLICATION_ID", names["development"]["identifier"])
+        environment["SILO_LINUX_APPLICATION_ID"] = identifier
         for kind in ["CONFIG", "DATA", "CACHE"]:
             directory = Path(temporary) / kind.lower()
             directory.mkdir()
@@ -229,9 +234,7 @@ def run():
                 login = browser.find_element(By.CSS_SELECTOR, "button[aria-label='Launch Silo at login']")
                 wait.until(lambda _: login.is_enabled())
                 login.click()
-                # The Linux login integration uses a stable desktop entry name
-                # even when the packaged Tauri application identifier changes.
-                entry = Path(environment["XDG_CONFIG_HOME"]) / "autostart/org.silo.preview.desktop"
+                entry = Path(environment["XDG_CONFIG_HOME"]) / "autostart" / f"{identifier}.desktop"
                 wait.until(lambda _: entry.exists() and "Exec=" in entry.read_text() and "Hidden=true" not in entry.read_text())
                 wait.until(lambda _: login.is_enabled() and login.get_attribute("aria-checked") == "true")
                 login.click()
@@ -303,7 +306,9 @@ def run_lifecycle():
         raise RuntimeError("Outside a container, lifecycle mode requires an exact task-owned Lima hostname")
     if not Path(environment.get("HOME", "")).is_absolute():
         raise RuntimeError("The disposable container must provide its normal absolute HOME")
-    identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.preview.linux-checkpoints")
+    names = channel_names()
+    identifier = environment.get("SILO_LINUX_APPLICATION_ID", names["development"]["identifier"])
+    state_dir_name = names["production" if identifier == names["production"]["identifier"] else "development"]["stateDir"]
     app_data = data_home / identifier
     app_config = config_home / identifier
     settings = app_config / "settings.json"
@@ -472,7 +477,7 @@ def run_lifecycle():
 
             def guest_for(target, command, expected=None):
                 storage_home = app_data / "runtime-checkpoints-converted/microsandbox"
-                runtime_alias = Path(environment["HOME"]) / ".silo" / hashlib.sha256(os.fsencode(storage_home)).hexdigest()[:12]
+                runtime_alias = Path(environment["HOME"]) / state_dir_name / hashlib.sha256(os.fsencode(storage_home)).hexdigest()[:12]
                 if not runtime_alias.is_dir():
                     raise AssertionError(f"Converted runtime home alias is missing: {runtime_alias}")
                 completed = subprocess.run([

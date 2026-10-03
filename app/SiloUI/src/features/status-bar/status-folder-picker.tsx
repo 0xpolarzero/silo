@@ -26,6 +26,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   const [store] = useState(() => createDirectoryStore(listDirectory))
   useLayoutEffect(() => { store.setLoader(listDirectory) }, [store, listDirectory])
   const target = workspaceTarget(workspace)
+  useEffect(() => () => store.invalidateWorkspace(target), [store, target])
   const path = ["/workspace", ...segments].join("/")
   const key = directoryKey(target, path)
   const subscribe = useCallback((listener: () => void) => store.subscribe(key, listener), [store, key])
@@ -34,23 +35,36 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   useEffect(() => {
     if (!available) { store.invalidateWorkspace(target); return }
     let focused = true
-    const refresh = () => {
-      if (focused && document.visibilityState !== "hidden") void store.load(target, path, { refresh: true })
+    let disposed = false
+    let failureDelay = 0
+    let nextRead = 0
+    const refresh = (force = false) => {
+      if (disposed || !focused || document.visibilityState === "hidden") return
+      const current = store.getSnapshot(key)
+      if (!current.error) { failureDelay = 0; nextRead = 0 }
+      if (current.loading || (!force && nextRead > Date.now())) return
+      void store.load(target, path, { refresh: true }).then(() => {
+        if (disposed) return
+        failureDelay = store.getSnapshot(key).error ? Math.min((failureDelay || 10_000) * 2, 60_000) : 0
+        nextRead = Date.now() + failureDelay
+      })
     }
-    const focus = () => { focused = true; refresh() }
+    const focus = () => { focused = true; refresh(true) }
+    const onVisible = () => refresh(true)
     const blur = () => { focused = false }
     refresh()
     const timer = window.setInterval(refresh, 10_000)
     window.addEventListener("focus", focus)
     window.addEventListener("blur", blur)
-    document.addEventListener("visibilitychange", refresh)
+    document.addEventListener("visibilitychange", onVisible)
     return () => {
+      disposed = true
       window.clearInterval(timer)
       window.removeEventListener("focus", focus)
       window.removeEventListener("blur", blur)
-      document.removeEventListener("visibilitychange", refresh)
+      document.removeEventListener("visibilitychange", onVisible)
     }
-  }, [store, available, target, path])
+  }, [store, available, target, path, key])
   const folders = snapshot.entries?.filter((entry) => entry.kind === "folder") ?? []
   const filtered = folders.filter((entry) => entry.name.toLowerCase().includes(query.trim().toLowerCase()))
   const unavailable = workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this sandbox to browse its files." : "Files will be available when this sandbox is running."
@@ -66,7 +80,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
       <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5">
         <Button ref={back} variant="ghost" size="icon-xs" aria-label="Back to sandboxes" onClick={onBack}><ArrowLeft /></Button>
         <div className="min-w-0">
-          <h2 className="truncate text-[13px] font-medium">{workspace.machine.name} folders</h2>
+          <h2 className="truncate text-[13px] font-medium" title={`${workspace.machine.name} folders`}>{workspace.machine.name} folders</h2>
           <p className="text-[11px] text-muted-foreground">Choose a folder to open in {editor}</p>
         </div>
       </header>
@@ -83,7 +97,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
               <li key={entry.name}>
                 <button type="button" className="flex min-h-9 w-full items-center gap-2 px-2.5 text-left text-xs hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={() => navigate([...segments, entry.name])}>
                   <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate">{visibleText(entry.name)}</span>
+                  <span className="min-w-0 flex-1 truncate" title={visibleText(entry.name)}>{visibleText(entry.name)}</span>
                   <ChevronRight className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
                 </button>
               </li>

@@ -63,6 +63,18 @@ describe("Rust-emitted native wire contracts", () => {
     })
   }
 
+  it("reads nullable GitHub authentication without discarding the application snapshot", () => {
+    const github = fixture("github-authentication")[0] as { workspaces: Array<Record<string, unknown>> }
+    const raw = fixture("application-state")[0] as Record<string, unknown>
+    const state = parseApplicationSource({ ...raw, github })
+    expect(state.github).toEqual({ ...github, account: undefined, workspaces: github.workspaces.map(policy => ({
+      ...policy, authenticationMethod: policy.authenticationMethod ?? undefined,
+    })) })
+    expect(state.github.workspaces?.map(policy => policy.authenticationMethod)).toEqual([undefined, "oauth", "token"])
+    expect(state.github.workspaces?.map(policy => policy.workspace)).toEqual(["dev-0", "dev-1", "dev-2"])
+    expect(state.workspaces).toHaveLength(2)
+  })
+
   it("preserves each native SSH listener state and nullable fields", () => {
     const raw = fixture("ssh-access-state") as Array<{ workspaces: Array<Record<string, unknown>> }>
     const states = raw.map(parseSshAccessState)

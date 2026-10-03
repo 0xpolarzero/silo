@@ -7,6 +7,15 @@ import type { WorkspaceState } from "@/features/application/model/application-so
 
 const office = { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: "remote-dev" }
 
+it.each<WorkspaceState>(["running", "starting", "stopped", "failed"])("exposes a named, focusable sandbox status group for %s", async (state) => {
+  const user = userEvent.setup()
+  render(<WorkspaceBadge name="dev" state={state} computer={office} />)
+  const label = `dev, ${state.charAt(0).toUpperCase() + state.slice(1)}, on Office Mac`
+  const badge = screen.getByRole("group", { name: label })
+  await user.tab()
+  expect(badge).toHaveFocus()
+})
+
 it("names a remote sandbox's computer inline so same-named sandboxes differ at a glance", () => {
   render(<><WorkspaceBadge name="dev" state="running" /><WorkspaceBadge name="dev" state="running" computer={office} /></>)
   const local = screen.getByLabelText("dev, Running")

@@ -213,6 +213,118 @@ fn a_damaged_settings_file_means_ask() {
 }
 
 #[test]
+fn oversized_computer_use_policy_remains_unreadable_and_untouched() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let path = policy_path(&paths, VM_ID).unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut bytes = br#"{"approval":"auto"}"#.to_vec();
+    bytes.resize(1024 * 1024, b' ');
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(
+        read_policy_checked(&paths, VM_ID).unwrap().approval,
+        Approval::Auto
+    );
+    bytes.push(b' ');
+    fs::write(&path, &bytes).unwrap();
+    let stored = settings(&paths, VM_ID);
+    assert!(stored.unreadable);
+    assert_eq!(stored.approval, Approval::Ask);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
+fn a_fifo_computer_use_record_is_refused_without_waiting_for_a_writer() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let record = directory.path().join("policy.json");
+    let name = std::ffi::CString::new(record.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (send, receive) = std::sync::mpsc::channel();
+    let to_read = record.clone();
+    let reader = std::thread::spawn(move || {
+        send.send(read_settings_bytes(&to_read)).unwrap();
+    });
+    let result = receive.recv_timeout(Duration::from_secs(1));
+    if result.is_err() {
+        // Release a blocked read before failing so the fixture leaves no reader behind.
+        drop(
+            fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&record)
+                .unwrap(),
+        );
+    }
+    reader.join().unwrap();
+    assert!(result
+        .expect("settings reads must not wait for a FIFO writer")
+        .is_err());
+}
+
+#[test]
+fn oversized_computer_use_observation_is_ignored_without_changing_the_policy() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let policy = policy_path(&paths, VM_ID).unwrap();
+    let observed = observed_path(&paths, VM_ID).unwrap();
+    fs::create_dir_all(policy.parent().unwrap()).unwrap();
+    fs::write(&policy, br#"{"approval":"auto"}"#).unwrap();
+    let mut bytes = br#"{"state":"ready"}"#.to_vec();
+    bytes.resize(1024 * 1024, b' ');
+    fs::write(&observed, &bytes).unwrap();
+    assert_eq!(settings(&paths, VM_ID).known.unwrap().state, "ready");
+    bytes.push(b' ');
+    fs::write(&observed, &bytes).unwrap();
+    let stored = settings(&paths, VM_ID);
+    assert!(stored.known.is_none());
+    assert!(!stored.unreadable);
+    assert_eq!(stored.approval, Approval::Auto);
+    assert_eq!(fs::read(&observed).unwrap(), bytes);
+}
+
+#[test]
+fn unfamiliar_saved_attempt_outcome_preserves_the_approval_choice() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    fs::create_dir_all(directory_of(&paths)).unwrap();
+    let saved = br#"{"approval":"auto","applied":"auto","last":{"mode":"auto","outcome":"future-outcome","at":1790000000}}"#;
+    fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
+
+    let stored = settings(&paths, VM_ID);
+    assert!(!stored.unreadable);
+    assert_eq!(stored.approval, Approval::Auto);
+    assert_eq!(stored.applied, Some(Approval::Auto));
+    assert_eq!(stored.last.as_ref().unwrap().outcome, Outcome::Failed);
+    let policy = read_policy_checked(&paths, VM_ID).unwrap();
+    assert!(policy.needs_apply());
+    write_atomic(&paths, policy_path(&paths, VM_ID), &policy).unwrap();
+    assert_eq!(settings(&paths, VM_ID), stored);
+    assert!(Outcome::parse("future-outcome").is_none());
+}
+
+#[test]
+fn unfamiliar_saved_approval_modes_remain_unreadable() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    fs::create_dir_all(directory_of(&paths)).unwrap();
+    for saved in [
+        br#"{"approval":"future-mode"}"#.as_slice(),
+        br#"{"approval":"auto","applied":"future-mode"}"#,
+        br#"{"approval":"auto","unfinished":"future-mode"}"#,
+        br#"{"approval":"auto","last":{"mode":"future-mode","outcome":"applied","at":1}}"#,
+        br#"{"approval":"auto","last":{"mode":"auto","outcome":null,"at":1}}"#,
+    ] {
+        fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
+        assert!(settings(&paths, VM_ID).unreadable);
+        assert_eq!(
+            fs::read(policy_path(&paths, VM_ID).unwrap()).unwrap(),
+            saved
+        );
+    }
+}
+
+#[test]
 fn a_policy_of_an_older_version_keeps_its_choice_and_applies_again() {
     // Older files carry a revision and a generation; both are ignored, the choice stays,
     // and with no attempt on record the next boot applies it.
@@ -255,7 +367,7 @@ fn forks_inherit_only_the_approval_and_deleted_vms_are_forgotten() {
             ..Known::default()
         },
     );
-    inherit_settings(&paths, VM_ID, child);
+    inherit_settings(&paths, VM_ID, child).unwrap();
     let inherited = settings(&paths, child);
     assert_eq!(inherited.approval, Approval::Auto);
     // The fork's disk carries the source's configuration: nothing is known to be applied,
@@ -263,7 +375,7 @@ fn forks_inherit_only_the_approval_and_deleted_vms_are_forgotten() {
     assert_eq!((inherited.applied, inherited.last), (None, None));
     assert_eq!(inherited.known, None);
     assert!(read_policy(&paths, child).needs_apply());
-    forget(&paths, VM_ID);
+    forget(&paths, VM_ID).unwrap();
     assert_eq!(settings(&paths, VM_ID), Settings::default());
     assert!(policy_path(&paths, child).unwrap().exists());
 }
@@ -336,10 +448,22 @@ fn the_guest_script_installs_the_helper_and_pair_before_running_the_command() {
 
 // ----------------------------------------------------- guest commands
 
-/// A VM id of its own for tests that watch pending applies: that registry is shared by
-/// every test in the process, so two tests must never use one id at once.
-fn vm(n: u8) -> String {
-    format!("00000000-0000-4000-8000-0000000001{n:02}")
+/// Every fixture gets a fresh VM id because pending applies are shared by the process.
+fn vm() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+#[test]
+fn independent_vm_fixtures_do_not_share_pending_approval_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let other = vm();
+    let id = vm();
+    set_approval(&paths, &id, Approval::Ask).unwrap();
+    record_attempt(&paths, &id, attempt(Approval::Ask, Outcome::Applied, None));
+    let _pending = Pending::begin(&other);
+    let state = desktop_state(&paths, &machine_of(&id, true), false, None).unwrap();
+    assert_eq!(state["approvalApply"], "applied");
 }
 
 fn machine_of(id: &str, built_in: bool) -> MachineConfiguration {
@@ -532,7 +656,7 @@ fn answer_of(paths: &RuntimePaths, id: &str, running: bool) -> Value {
 fn after_boot_runs_the_helper_to_completion_with_the_vms_chosen_mode() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(1);
+    let id = vm();
     write_machines_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
@@ -622,7 +746,7 @@ fn a_boot_that_cannot_start_computer_use_still_succeeds() {
 fn a_stalled_guest_never_delays_the_boot_that_scheduled_the_apply() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(2);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     let (entered, entered_receiver) = std::sync::mpsc::channel();
@@ -648,7 +772,7 @@ fn a_stalled_guest_never_delays_the_boot_that_scheduled_the_apply() {
 fn queued_applies_never_write_an_older_choice_over_a_newer_one() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(3);
+    let id = vm();
     write_machines_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
@@ -697,7 +821,7 @@ fn queued_applies_never_write_an_older_choice_over_a_newer_one() {
 fn changing_the_approval_of_a_running_vm_applies_it_in_the_background() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(4);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     let gate = test_gate();
@@ -738,7 +862,7 @@ fn changing_the_approval_of_a_running_vm_applies_it_in_the_background() {
 fn changing_the_approval_of_a_stopped_vm_only_saves_it_for_the_next_boot() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(5);
+    let id = vm();
     let guest = Guest::new(&id);
     assert!(apply_approval_in(
         test_gate(),
@@ -815,7 +939,7 @@ fn hanging(id: &str) -> (Arc<Hanging>, std::sync::mpsc::Receiver<()>) {
 fn a_stop_of_the_vm_cancels_a_running_apply_promptly_and_the_result_is_kept() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(6);
+    let id = vm();
     write_machines_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let (guest, entered) = hanging(&id);
@@ -827,7 +951,7 @@ fn a_stop_of_the_vm_cancels_a_running_apply_promptly_and_the_result_is_kept() {
     // Another VM's stop does not touch it.
     drop(
         gate.kind(runtime::operation_gate::OperationKind::Lifecycle)
-            .vm(&vm(7), "other", "Stopping other")
+            .vm(&vm(), "other", "Stopping other")
             .unwrap(),
     );
     std::thread::sleep(Duration::from_millis(200));
@@ -873,7 +997,7 @@ fn a_stop_of_the_vm_cancels_a_running_apply_promptly_and_the_result_is_kept() {
 fn quit_cancels_a_running_apply_whatever_vm_it_names() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(8);
+    let id = vm();
     write_machines_of(&paths, &id);
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
@@ -905,7 +1029,7 @@ fn quit_cancels_a_running_apply_whatever_vm_it_names() {
 fn a_computer_wide_operation_that_is_not_a_shutdown_does_not_cancel_an_apply() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(9);
+    let id = vm();
     write_machines_of(&paths, &id);
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
@@ -930,7 +1054,7 @@ fn a_computer_wide_operation_that_is_not_a_shutdown_does_not_cancel_an_apply() {
 fn an_apply_that_times_out_is_recorded_as_failed_and_retried_at_the_next_boot() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(10);
+    let id = vm();
     write_machines_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
@@ -998,7 +1122,7 @@ fn failed_partial_and_unreachable_results_are_kept_and_reported() {
             "writable",
         ),
     ] {
-        let id = vm(12);
+        let id = vm();
         let directory = tempfile::tempdir().unwrap();
         let paths = self::paths(&directory);
         write_machines_of(&paths, &id);
@@ -1043,7 +1167,7 @@ fn failed_partial_and_unreachable_results_are_kept_and_reported() {
 fn a_partial_result_is_never_taken_for_applied_even_after_the_choice_changes_back() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(13);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     let gate = test_gate();
@@ -1068,7 +1192,7 @@ fn a_partial_result_is_never_taken_for_applied_even_after_the_choice_changes_bac
 fn an_app_that_is_not_there_yet_is_not_a_result_and_the_apply_stays_pending() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(14);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([Reply::Report("failed", Some("app-missing"))]);
@@ -1107,7 +1231,7 @@ fn a_report_the_host_cannot_read_is_a_failed_attempt_not_a_crash() {
 fn setup_reruns_with_force_applies_the_chosen_mode_and_returns_the_guest_status() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(15);
+    let id = vm();
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let recorder = Recorder::new("noise\n{\"state\":\"ready\",\"apply\":{\"approval\":\"auto\",\"outcome\":\"applied\",\"reason\":null}}\n");
     let idle = || Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1145,7 +1269,7 @@ fn setup_reruns_with_force_applies_the_chosen_mode_and_returns_the_guest_status(
 fn app_start_applies_where_the_last_attempt_is_missing_failed_or_for_another_mode() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(16);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     let runner: SharedRunner = guest.clone();
@@ -1194,7 +1318,7 @@ fn app_start_applies_where_the_last_attempt_is_missing_failed_or_for_another_mod
 fn the_boot_applies_what_an_imported_or_forked_disk_does_not_have() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(17);
+    let id = vm();
     write_machines_of(&paths, &id);
     // A VM of this id had auto applied here; importing it again starts from ask.
     set_approval(&paths, &id, Approval::Auto).unwrap();
@@ -1221,9 +1345,9 @@ fn the_boot_applies_what_an_imported_or_forked_disk_does_not_have() {
     );
     assert_eq!(settings(&paths, &id).applied, Some(Approval::Ask));
     // A fork inherits its source's choice and applies it at its own first boot.
-    let child = vm(18);
+    let child = vm();
     set_approval(&paths, &id, Approval::Auto).unwrap();
-    inherit_settings(&paths, &id, &child);
+    inherit_settings(&paths, &id, &child).unwrap();
     write_machines_of(&paths, &child);
     let guest = Guest::new(&child);
     boot_of(test_gate(), &guest, &paths)
@@ -1623,7 +1747,7 @@ fn a_ready_report_is_remembered_for_the_stopped_vm() {
 fn status_reads_never_rewrite_the_policy() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(19);
+    let id = vm();
     set_approval(&paths, &id, Approval::Auto).unwrap();
     record_attempt(
         &paths,
@@ -1705,7 +1829,7 @@ fn recording_an_attempt_never_loses_the_users_choice() {
 fn an_unreadable_policy_is_unknown_not_ask_until_an_apply_replaces_it_with_the_default() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(20);
+    let id = vm();
     write_machines_of(&paths, &id);
     // No policy yet: the default ask is the real choice.
     assert!(!settings(&paths, &id).unreadable);
@@ -1744,7 +1868,7 @@ fn an_unreadable_policy_is_unknown_not_ask_until_an_apply_replaces_it_with_the_d
 fn a_vm_replaced_after_inspection_is_not_applied_once_the_apply_gets_its_turn() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(21);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     let gate = test_gate();
@@ -1770,7 +1894,7 @@ fn a_vm_replaced_after_inspection_is_not_applied_once_the_apply_gets_its_turn() 
 fn the_helper_runs_inside_the_vms_turn() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(22);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     let (entered, entered_receiver) = std::sync::mpsc::channel();
@@ -2033,7 +2157,7 @@ fn the_shared_folder_is_prepared_again_when_the_start_up_attempt_failed() {
 fn choosing_ask_while_auto_applies_converges_even_after_a_successful_ask() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(20);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     let gate = test_gate();
@@ -2078,13 +2202,13 @@ fn choosing_ask_while_auto_applies_converges_even_after_a_successful_ask() {
 fn a_delete_of_the_vm_cancels_a_running_apply_and_another_vms_delete_does_not() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(21);
+    let id = vm();
     write_machines_of(&paths, &id);
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
     let handle = apply_with(gate, guest, &paths, "dev", Trigger::Boot).unwrap();
     entered.recv_timeout(Duration::from_secs(10)).unwrap();
-    let other = vm(22);
+    let other = vm();
     let queued = std::thread::spawn(move || {
         drop(gate.removing(&[other], "Deleting other").unwrap());
     });
@@ -2129,10 +2253,10 @@ fn manual_setup(
 
 #[test]
 fn manual_setup_is_cancelled_by_a_stop_of_the_vm_and_by_quit() {
-    for (n, shutdown) in [(23, false), (24, true)] {
+    for shutdown in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let id = vm(n);
+        let id = vm();
         write_machines_of(&paths, &id);
         let (guest, entered) = hanging(&id);
         let gate = test_gate();
@@ -2169,7 +2293,7 @@ fn manual_setup_is_cancelled_by_a_stop_of_the_vm_and_by_quit() {
 fn an_attempt_that_never_ended_is_applied_again_even_when_the_last_result_matches() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(25);
+    let id = vm();
     write_machines_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
@@ -2223,7 +2347,7 @@ fn an_attempt_that_never_ended_is_applied_again_even_when_the_last_result_matche
 fn a_run_that_was_not_an_attempt_leaves_the_unfinished_marker_as_it_was() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(26);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([Reply::Report("failed", Some("app-missing"))]);
@@ -2239,7 +2363,7 @@ fn a_run_that_was_not_an_attempt_leaves_the_unfinished_marker_as_it_was() {
 fn the_runtimes_exec_timeout_is_a_timed_out_attempt_not_an_unreachable_sandbox() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(27);
+    let id = vm();
     write_machines_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
@@ -2274,7 +2398,7 @@ fn the_runtimes_exec_timeout_is_a_timed_out_attempt_not_an_unreachable_sandbox()
 
 #[test]
 fn only_a_stop_or_restart_key_preempts_the_helper() {
-    let id = vm(40);
+    let id = vm();
     for (key, preempts) in [
         (format!("vm:{id}:stop"), true),
         (format!("vm:{id}:restart"), true),
@@ -2282,7 +2406,7 @@ fn only_a_stop_or_restart_key_preempts_the_helper() {
         (format!("vm:{id}:dismiss-error"), false),
         (format!("vm:{id}:modify"), false),
         // Another VM's key and a malformed one never name this VM's stop.
-        (format!("vm:{}:stop", vm(41)), false),
+        (format!("vm:{}:stop", vm()), false),
         (format!("vm:{id}stop"), false),
     ] {
         assert_eq!(lifecycle_key_preempts(Some(&key), &id), preempts, "{key}");
@@ -2332,7 +2456,7 @@ fn wait_until_queued(
 fn a_queued_start_or_dismiss_error_does_not_cancel_a_running_apply() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(42);
+    let id = vm();
     write_machines_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let (guest, entered) = hanging(&id);
@@ -2364,7 +2488,7 @@ fn a_queued_start_or_dismiss_error_does_not_cancel_a_running_apply() {
 fn a_queued_start_or_dismiss_error_does_not_cancel_manual_setup() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(43);
+    let id = vm();
     write_machines_of(&paths, &id);
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
@@ -2392,7 +2516,7 @@ fn a_queued_start_or_dismiss_error_does_not_cancel_manual_setup() {
 fn an_attempt_whose_marker_cannot_be_saved_does_not_run_the_helper() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(44);
+    let id = vm();
     set_approval(&paths, &id, Approval::Auto).unwrap();
     // The settings directory can no longer be written: a file takes its place.
     let settings_directory = directory_of(&paths);
@@ -2421,6 +2545,51 @@ fn an_attempt_whose_marker_cannot_be_saved_does_not_run_the_helper() {
     assert!(begin_attempt(&paths, &id, Approval::Auto).is_ok());
     assert_eq!(read_policy(&paths, &id).unfinished, Some(Approval::Auto));
     assert!(approval_reason_text("state-not-saved").contains("could not save"));
+}
+
+#[test]
+fn manual_setup_converges_on_a_choice_saved_while_its_helper_runs() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm();
+    write_machines_of(&paths, &id);
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    let guest = Guest::new(&id);
+    let gate = test_gate();
+    let (entered, receiver) = std::sync::mpsc::channel();
+    let release = Arc::new(std::sync::Barrier::new(2));
+    *guest.stall.lock().unwrap() = Some((entered, release.clone()));
+    let worker = {
+        let (guest, paths, id) = (guest.clone(), paths.clone(), id.clone());
+        std::thread::spawn(move || {
+            let turn = gate.vm(&id, "dev", "Updating dev desktop").unwrap();
+            turn.allow_cancel();
+            setup_with(
+                gate,
+                guest.as_ref(),
+                &paths,
+                &machine_of(&id, true),
+                true,
+                turn.cancel_token(),
+            )
+        })
+    };
+    receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+    // Saving the choice is independent of the follow-up worker's admission. That
+    // worker can expire while this manual turn runs, so the turn must converge itself.
+    set_approval(&paths, &id, Approval::Ask).unwrap();
+    release.wait();
+    let status = worker.join().unwrap().unwrap();
+    assert_eq!(guest.modes(), ["auto", "ask"]);
+    assert_eq!(guest.configured().as_deref(), Some("ask"));
+    assert_eq!(status["apply"]["approval"], "ask");
+    let stored = read_policy(&paths, &id);
+    assert_eq!(
+        (stored.approval, stored.applied),
+        (Approval::Ask, Some(Approval::Ask))
+    );
+    assert!(!stored.needs_apply());
+    assert!(!is_pending(&id));
 }
 
 // ------------------------------------------------- network retry
@@ -2460,7 +2629,7 @@ fn wait_for(what: &str, condition: impl Fn() -> bool) {
 fn a_network_failure_is_retried_until_the_download_works() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(50);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE, UNAVAILABLE]);
@@ -2481,7 +2650,7 @@ fn a_network_failure_is_retried_until_the_download_works() {
 fn retries_are_bounded_and_the_failure_then_stays() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(51);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, UNAVAILABLE]);
@@ -2503,7 +2672,7 @@ fn retries_are_bounded_and_the_failure_then_stays() {
 fn other_failures_are_not_retried() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(52);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([
@@ -2518,7 +2687,7 @@ fn other_failures_are_not_retried() {
 fn a_waiting_retry_is_visible_and_can_be_cancelled() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(53);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE]);
@@ -2560,7 +2729,7 @@ fn a_waiting_retry_is_visible_and_can_be_cancelled() {
 fn a_manual_setup_or_a_deletion_takes_over_from_a_waiting_retry() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(54);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE]);
@@ -2592,7 +2761,7 @@ fn a_manual_setup_or_a_deletion_takes_over_from_a_waiting_retry() {
     guest.plan([UNAVAILABLE]);
     let handle = boot_with(&guest, &paths, LONG);
     wait_for("the retry to be scheduled", || retry_scheduled(&id));
-    forget(&paths, &id);
+    forget(&paths, &id).unwrap();
     handle.join().unwrap();
     assert_eq!(guest.runs.lock().unwrap().len(), 1);
 }
@@ -2601,7 +2770,7 @@ fn a_manual_setup_or_a_deletion_takes_over_from_a_waiting_retry() {
 fn a_retry_ends_when_the_vm_is_no_longer_the_same_running_instance() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm(55);
+    let id = vm();
     write_machines_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE]);

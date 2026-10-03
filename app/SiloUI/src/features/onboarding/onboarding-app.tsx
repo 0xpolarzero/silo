@@ -23,6 +23,7 @@ import { ReviewStep } from "@/features/onboarding/steps/review-step"
 import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
 import type { OnboardingDraft } from "@/features/onboarding/model/onboarding-draft"
 import { useSettings } from "@/features/preferences/settings-store"
+import { SettingsSaveNotice } from "@/features/preferences/components/settings-save-notice"
 import { applicationPreferenceChanges } from "@/features/preferences/model/application-preferences"
 
 export interface OnboardingAppProps {
@@ -34,6 +35,7 @@ export interface OnboardingAppProps {
   presentationOnlyCompleted?: boolean
   repositoryOptions?: readonly string[]
   repositoryPolicies?: readonly ApplicationGitHubWorkspacePolicy[]
+  tokenConnected?: boolean
   onOpenApp?: () => void
   onRetryDependencies?: () => void
   onConnectComputer?: () => void
@@ -51,12 +53,16 @@ function OnboardingPanel({ step, activeStep, notice, children }: { step: Onboard
     style={{ visibility: active ? "visible" : "hidden" }}
     className="absolute inset-0 mt-0 flex h-full min-h-0 flex-col overflow-y-auto outline-none"
   >
-    <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-5 sm:px-6 sm:py-6">{active && notice}{children}</div>
+    <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-5 sm:px-6 sm:py-6">{active && <SettingsSaveNotice />}{active && notice}{children}</div>
   </TabsContent>
 }
 
 function repositoryKey(repository: string): string {
   return repository.toLowerCase()
+}
+
+function workspaceValue<T>(values: Record<string, T> | undefined, name: string): T | undefined {
+  return values && Object.hasOwn(values, name) ? values[name] : undefined
 }
 
 function uniqueRepositoryOptions(repositories: readonly string[]): string[] {
@@ -91,11 +97,15 @@ function initialWorkspaceSelections(source: OnboardingSource): Record<string, Wo
   }))
 }
 
-function initialWorkspaceIdentities(source: OnboardingSource): Record<string, WorkspaceGitIdentity> {
+function defaultWorkspaceIdentity(source: OnboardingSource): WorkspaceGitIdentity {
   const { name = "", email = "" } = source.currentHostGitIdentity ?? {}
+  return { name, email, apply: Boolean(name.trim() && email.trim()) }
+}
+
+function initialWorkspaceIdentities(source: OnboardingSource): Record<string, WorkspaceGitIdentity> {
   return Object.fromEntries(source.machineConfigurations.map((workspace) => [
     workspace.name,
-    { name, email, apply: true },
+    defaultWorkspaceIdentity(source),
   ]))
 }
 
@@ -111,7 +121,7 @@ function workspaceIdentitySummary(
   const notApplied: string[] = []
 
   for (const workspace of workspaceNames) {
-    const identity = identities[workspace]
+    const identity = workspaceValue(identities, workspace)
     if (!identity?.apply) {
       notApplied.push(workspace)
       continue
@@ -124,7 +134,7 @@ function workspaceIdentitySummary(
 
   const summaries = [...appliedGroups.values()].map(({ identity, workspaces }) => {
     const target = workspaces.length === workspaceNames.length
-      ? `all ${workspaceNames.length} sandboxes`
+      ? `all ${workspaceNames.length} ${workspaceNames.length === 1 ? "sandbox" : "sandboxes"}`
       : workspaces.join(", ")
     return `${gitIdentityLabel(identity)} → ${target}`
   })
@@ -147,6 +157,7 @@ export function OnboardingApp({
   presentationOnlyCompleted = false,
   repositoryOptions,
   repositoryPolicies,
+  tokenConnected = false,
   onOpenApp,
   onRetryDependencies,
   onConnectComputer,
@@ -157,7 +168,7 @@ export function OnboardingApp({
       currentStep: "dependencies" as const,
       machines: source.machineConfigurations.map((machine) => ({ ...machine })),
       unfinishedMachineEditor: null,
-      workspaceRepositoryAccess: Object.fromEntries((repositoryPolicies ?? []).map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }])),
+      workspaceRepositoryAccess: Object.fromEntries((repositoryPolicies ?? []).map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, ...(policy.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}) }])),
       workspaceSelections: repositoryPolicies ? Object.fromEntries(repositoryPolicies.map((policy) => [policy.workspace, [...policy.repositories]])) : initialWorkspaceSelections(source),
       workspaceIdentities: repositoryPolicies ? { ...initialWorkspaceIdentities(source), ...Object.fromEntries(repositoryPolicies.map((policy) => [policy.workspace, { ...policy.identity }])) } : initialWorkspaceIdentities(source),
     }
@@ -167,7 +178,11 @@ export function OnboardingApp({
   // computer's sandboxes once they load (a fallback seed is only a placeholder).
   const machinesInitialized = useRef(onboardingDraft !== null || (draft.machines.length > 0 && source.machinesAuthoritative !== false))
   const currentDraft = useRef(draft)
-  const editedIdentities = useRef(new Set<string>())
+  const editedIdentities = useRef(new Set(Object.keys(onboardingDraft?.workspaceIdentities ?? {})))
+  const editedSelections = useRef(new Set(Object.keys(onboardingDraft?.workspaceSelections ?? {})))
+  const editedRepositoryAccess = useRef(new Set(Object.keys(onboardingDraft?.workspaceRepositoryAccess ?? {})))
+  const editedAuthenticationMethods = useRef(new Set(Object.entries(onboardingDraft?.workspaceRepositoryAccess ?? {}).filter(([, access]) => access.authenticationMethod !== undefined).map(([name]) => name)))
+  const policiesInitialized = useRef(new Set(onboardingDraft ? [] : (repositoryPolicies ?? []).map(({ workspace }) => workspace)))
   const recoveryCleared = useRef(false)
   // Existing sandboxes the user deleted with the list's own Delete confirmation.
   const confirmedRemovals = useRef(new Set<string>())
@@ -181,7 +196,7 @@ export function OnboardingApp({
     } : source
     return projectOnboarding(projectedSource, githubConnectionState)
   }, [githubConnectionState, source, machines])
-  const applicationPreferences = {
+  const applicationPreferences = useMemo(() => ({
     terminal: settings.terminal, editor: settings.editor, browser: settings.browser,
     terminalUseSystemDefault: settings.terminalUseSystemDefault,
     editorUseSystemDefault: settings.editorUseSystemDefault,
@@ -189,7 +204,11 @@ export function OnboardingApp({
     ...(settings.terminalPath && { terminalPath: settings.terminalPath }),
     ...(settings.editorPath && { editorPath: settings.editorPath }),
     ...(settings.browserPath && { browserPath: settings.browserPath }),
-  }
+  }), [settings])
+  const completionInputs = useRef({ applications: applicationPreferences, githubConnectionState })
+  useEffect(() => {
+    completionInputs.current = { applications: applicationPreferences, githubConnectionState }
+  }, [applicationPreferences, githubConnectionState])
   const availableRepositories = useMemo(
     () => uniqueRepositoryOptions(repositoryOptions ?? defaultRepositoryOptions(source)),
     [repositoryOptions, source],
@@ -213,7 +232,46 @@ export function OnboardingApp({
     setDraft(next)
     // A placeholder seed is not saved as the user's draft.
     if (authoritative) void updateOnboardingDraft(next)
-  }, [source, updateOnboardingDraft])
+  }, [source, draft.unfinishedMachineEditor, updateOnboardingDraft])
+
+  useEffect(() => {
+    if (completed || !repositoryPolicies) return
+    const current = currentDraft.current
+    const names = new Set(current.machines.map(({ name }) => name))
+    const next = { ...current,
+      workspaceRepositoryAccess: { ...current.workspaceRepositoryAccess },
+      workspaceSelections: { ...current.workspaceSelections },
+      workspaceIdentities: { ...current.workspaceIdentities },
+    }
+    let changed = false
+    for (const policy of repositoryPolicies) {
+      const name = policy.workspace
+      if (!names.has(name) || policiesInitialized.current.has(name)) continue
+      policiesInitialized.current.add(name)
+      if (!editedRepositoryAccess.current.has(name)) {
+        next.workspaceRepositoryAccess[name] = { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }
+        changed = true
+      }
+      if (!editedAuthenticationMethods.current.has(name) && policy.authenticationMethod) {
+        next.workspaceRepositoryAccess[name] = {
+          ...next.workspaceRepositoryAccess[name], authenticationMethod: policy.authenticationMethod,
+        }
+        changed = true
+      }
+      if (!editedSelections.current.has(name)) {
+        next.workspaceSelections[name] = policy.repositories.map((repository) => ({ ...repository }))
+        changed = true
+      }
+      if (!editedIdentities.current.has(name)) {
+        next.workspaceIdentities[name] = { ...policy.identity }
+        changed = true
+      }
+    }
+    if (!changed) return
+    currentDraft.current = next
+    setDraft(next)
+    void updateOnboardingDraft(next)
+  }, [completed, repositoryPolicies, machines, updateOnboardingDraft])
 
   useEffect(() => {
     const host = source.currentHostGitIdentity
@@ -222,9 +280,9 @@ export function OnboardingApp({
     const identities = { ...current.workspaceIdentities }
     let changed = false
     for (const { name } of current.machines) {
-      const identity = identities[name]
-      if (editedIdentities.current.has(name) || identity?.apply === false || identity?.name.trim() || identity?.email.trim()) continue
-      identities[name] = { ...host, apply: true }
+      const identity = workspaceValue(identities, name)
+      if (editedIdentities.current.has(name) || (identity?.apply === false && policiesInitialized.current.has(name)) || identity?.name.trim() || identity?.email.trim()) continue
+      identities[name] = { ...host, apply: Boolean(host.name.trim() && host.email.trim()) }
       changed = true
     }
     if (!changed) return
@@ -294,12 +352,20 @@ export function OnboardingApp({
     for (const machine of pending.machines) {
       machines.splice(Math.min(existing.findIndex(({ id }) => id === machine.id), machines.length), 0, { ...machine })
     }
-    const host = { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }
+    const host = defaultWorkspaceIdentity(source)
+    const savedPolicies = new Map((repositoryPolicies ?? []).map((policy) => [policy.workspace, policy]))
     updateDraft({
       machines,
-      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, current.workspaceSelections[name] ?? []])),
-      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, current.workspaceIdentities[name] ?? host])),
-      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => [name, current.workspaceRepositoryAccess?.[name] ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }])),
+      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceSelections, name) ?? savedPolicies.get(name)?.repositories.map((repository) => ({ ...repository })) ?? []])),
+      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceIdentities, name) ?? { ...(savedPolicies.get(name)?.identity ?? host) }])),
+      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => {
+        const policy = savedPolicies.get(name)
+        return [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? {
+          repositoryMode: policy?.repositoryMode ?? "selected" as const,
+          allRepositoriesAllowChanges: policy?.allRepositoriesAllowChanges ?? false,
+          ...(policy?.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}),
+        }]
+      })),
     })
     pending.run()
   }
@@ -322,19 +388,20 @@ export function OnboardingApp({
     const previousNameByID = new Map(current.machines.map(({ id, name }) => [id, name]))
     const selections = Object.fromEntries(request.machines.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
-      return [name, current.workspaceSelections[name] ?? (previousName ? current.workspaceSelections[previousName] : undefined) ?? []]
+      return [name, workspaceValue(current.workspaceSelections, name) ?? (previousName ? workspaceValue(current.workspaceSelections, previousName) : undefined) ?? []]
     }))
     const identities = Object.fromEntries(request.machines.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
-      return [name, current.workspaceIdentities[name] ?? (previousName ? current.workspaceIdentities[previousName] : undefined)
-        ?? { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }]
+      return [name, workspaceValue(current.workspaceIdentities, name) ?? (previousName ? workspaceValue(current.workspaceIdentities, previousName) : undefined)
+        ?? defaultWorkspaceIdentity(source)]
     }))
-    const workspaceRepositoryAccess = Object.fromEntries(request.machines.map(({ id, name }) => [name, current.workspaceRepositoryAccess?.[name] ?? current.workspaceRepositoryAccess?.[previousNameByID.get(id) ?? ""] ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
+    const workspaceRepositoryAccess = Object.fromEntries(request.machines.map(({ id, name }) => [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? workspaceValue(current.workspaceRepositoryAccess, previousNameByID.get(id) ?? "") ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
     updateDraft({ machines: request.machines, workspaceRepositoryAccess, workspaceSelections: selections, workspaceIdentities: identities, unfinishedMachineEditor: null })
     submitChecked(() => actions.saveMachineConfiguration(configurationRequest(currentDraft.current.machines), ...submissionOptions()))
   }
 
   function updateWorkspaceSelections(workspace: string, selections: WorkspaceRepositorySelection[]) {
+    editedSelections.current.add(workspace)
     updateDraft({ workspaceSelections: { ...currentDraft.current.workspaceSelections, [workspace]: uniqueWorkspaceSelections(selections) } })
   }
 
@@ -345,21 +412,28 @@ export function OnboardingApp({
 
   function resetWorkspaceIdentity(workspace: string) {
     if (!source.currentHostGitIdentity) return
-    updateWorkspaceIdentity(workspace, { ...currentDraft.current.workspaceIdentities[workspace], ...source.currentHostGitIdentity })
+    updateWorkspaceIdentity(workspace, { ...(workspaceValue(currentDraft.current.workspaceIdentities, workspace) ?? { apply: false }), ...source.currentHostGitIdentity })
   }
 
   function completionRequest(): OnboardingCompletionRequest {
+    // A deletion confirmation can retain this callback across settings and
+    // connection changes. Read the latest inputs when the user confirms.
+    const { applications, githubConnectionState } = completionInputs.current
     return {
       machineConfiguration: { schemaVersion: 1, machines: [...currentDraft.current.machines] },
-      applications: applicationPreferences,
+      applications,
       github: {
         connectionState: githubConnectionState,
-        workspaces: currentDraft.current.machines.map(({ name }) => ({
-          workspace: name,
-          ...(githubConnectionState === "connected" ? currentDraft.current.workspaceRepositoryAccess?.[name] : undefined),
-          repositories: githubConnectionState === "connected" ? [...(currentDraft.current.workspaceSelections[name] ?? [])] : [],
-          identity: { ...(currentDraft.current.workspaceIdentities[name] ?? { name: "", email: "", apply: false }) },
-        })),
+        workspaces: currentDraft.current.machines.map(({ name }) => {
+          const access = workspaceValue(currentDraft.current.workspaceRepositoryAccess, name)
+          const useGitHub = githubConnectionState === "connected" || access?.authenticationMethod === "token"
+          return {
+            workspace: name,
+            ...(useGitHub ? access : undefined),
+            repositories: useGitHub ? [...(workspaceValue(currentDraft.current.workspaceSelections, name) ?? [])] : [],
+            identity: { ...(workspaceValue(currentDraft.current.workspaceIdentities, name) ?? { name: "", email: "", apply: false }) },
+          }
+        }),
       },
     }
   }
@@ -387,19 +461,26 @@ export function OnboardingApp({
   }
 
   const machineNames = machines.map(({ name }) => name)
-  const allWorkspaceCount = machineNames.filter((name) => draft.workspaceRepositoryAccess?.[name]?.repositoryMode === "all").length
-  const allWriteWorkspaceCount = machineNames.filter((name) => draft.workspaceRepositoryAccess?.[name]?.repositoryMode === "all" && draft.workspaceRepositoryAccess[name].allRepositoriesAllowChanges).length
-  const configuredWorkspaceCount = machineNames.filter((name) => (workspaceSelections[name] ?? []).length > 0).length
-  const repositoryCount = machineNames.reduce((total, name) => total + (workspaceSelections[name] ?? []).length, 0)
-  const pushEnabledRepositoryCount = machineNames.reduce(
-    (total, name) => total + (workspaceSelections[name] ?? []).filter(({ allowPushes }) => allowPushes).length,
+  const oauthWorkspaceNames = machineNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.authenticationMethod !== "token")
+  const tokenWorkspaceCount = machineNames.length - oauthWorkspaceNames.length
+  const allWorkspaceCount = oauthWorkspaceNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.repositoryMode === "all").length
+  const allWriteWorkspaceCount = oauthWorkspaceNames.filter((name) => {
+    const access = workspaceValue(draft.workspaceRepositoryAccess, name)
+    return access?.repositoryMode === "all" && access.allRepositoriesAllowChanges
+  }).length
+  const configuredWorkspaceCount = oauthWorkspaceNames.filter((name) => (workspaceValue(workspaceSelections, name) ?? []).length > 0).length
+  const repositoryCount = oauthWorkspaceNames.reduce((total, name) => total + (workspaceValue(workspaceSelections, name) ?? []).length, 0)
+  const pushEnabledRepositoryCount = oauthWorkspaceNames.reduce(
+    (total, name) => total + (workspaceValue(workspaceSelections, name) ?? []).filter(({ allowPushes }) => allowPushes).length,
     0,
   )
   const repositoryLabel = repositoryCount === 1 ? "repository" : "repositories"
   const pushRepositoryLabel = pushEnabledRepositoryCount === 1 ? "repository" : "repositories"
-  const githubSummary = githubConnectionState === "connected"
-    ? allWorkspaceCount > 0 ? `All authorized repositories in ${allWorkspaceCount} ${allWorkspaceCount === 1 ? "sandbox" : "sandboxes"} · ${allWriteWorkspaceCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${machines.length} sandboxes · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
-    : "GitHub not connected"
+  const oauthSummary = githubConnectionState === "connected" && (oauthWorkspaceNames.length > 0 || tokenWorkspaceCount === 0)
+    ? allWorkspaceCount > 0 ? `All authorized repositories in ${allWorkspaceCount} ${allWorkspaceCount === 1 ? "sandbox" : "sandboxes"} · ${allWriteWorkspaceCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${oauthWorkspaceNames.length} ${oauthWorkspaceNames.length === 1 ? "sandbox" : "sandboxes"} · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
+    : null
+  const tokenSummary = tokenWorkspaceCount > 0 ? `Personal token in ${tokenWorkspaceCount} ${tokenWorkspaceCount === 1 ? "sandbox" : "sandboxes"}` : null
+  const githubSummary = [oauthSummary, tokenSummary].filter(Boolean).join(" · ") || "GitHub not connected"
   const identitySummary = workspaceIdentitySummary(
     workspaceIdentities,
     machineNames,
@@ -442,12 +523,17 @@ export function OnboardingApp({
           activityEvents={source.activityEvents ?? source.progressEvents}
           workspaces={machineWorkspaceViews}
           connectionState={githubConnectionState}
+          tokenConnected={tokenConnected}
           notice={operationError ? <p role="alert" className="text-xs text-destructive">{operationError}</p> : undefined}
           repositoryOptions={availableRepositories}
-          workspaceSelections={workspaceSelections}
-          workspaceRepositoryAccess={draft.workspaceRepositoryAccess}
-          onWorkspaceRepositoryAccessChange={(workspace, access) => updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })}
-          workspaceIdentities={workspaceIdentities}
+          workspaceSelections={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceSelections, name) ?? []]))}
+          workspaceRepositoryAccess={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(draft.workspaceRepositoryAccess, name) ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }]))}
+          onWorkspaceRepositoryAccessChange={(workspace, access) => {
+            if (access.authenticationMethod !== currentDraft.current.workspaceRepositoryAccess?.[workspace]?.authenticationMethod) editedAuthenticationMethods.current.add(workspace)
+            editedRepositoryAccess.current.add(workspace)
+            updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })
+          }}
+          workspaceIdentities={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceIdentities, name) ?? { name: "", email: "", apply: false }]))}
           currentHostGitIdentity={source.currentHostGitIdentity}
           onConnect={actions.connectGitHub}
           onCancelConnection={actions.cancelGitHubConnection}
@@ -464,7 +550,7 @@ export function OnboardingApp({
           queueItems={viewModel.queueItems}
           workspaces={viewModel.workspaceProgress.workspaces}
           machines={machines}
-          githubConnected={githubConnectionState === "connected"}
+          githubConnected={githubConnectionState === "connected" || tokenWorkspaceCount > 0}
           githubSummary={githubSummary}
           identitySummary={identitySummary}
           errorMessage={viewModel.error?.message}

@@ -1,6 +1,7 @@
 import { createContext, useContext } from "react"
 
 import type { SetupMachineConfiguration } from "@/contracts/silo"
+import type { MachineReview } from "./machine-review"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 /**
@@ -17,6 +18,10 @@ export interface StoredMachineEditor {
   /** Every sandbox's saved configuration when the edit began (the change's `expected`). */
   baseline: SetupMachineConfiguration[] | null
   computerId: string
+  editorConflict?: boolean
+  editorReview?: MachineReview | null
+  /** A save that must stay locked and settle even if its editor surface unmounts. */
+  pendingSave?: Promise<void>
 }
 
 export const MachineEditorDraftsContext = createContext<Map<string, StoredMachineEditor> | null>(null)

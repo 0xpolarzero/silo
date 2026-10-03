@@ -1,10 +1,11 @@
-import { render, screen, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { Toaster } from "@/components/ui/sonner"
 import type { RepositoryPushOperation } from "@/features/application/model/application-source"
-import { RepositoryPushButton, RepositoryPushFeedback, useRepositoryPushToasts } from "./repository-push-feedback"
+import { RepositoryPushButton, RepositoryPushFeedback } from "./repository-push-feedback"
+import { useRepositoryPushToasts } from "./use-repository-push-toasts"
 
 const target = { repository: "acme/silo", branch: "main", commit: "0123456789abcdef0123456789abcdef01234567" }
 const base = { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, target }
@@ -24,6 +25,38 @@ function setup(operations: RepositoryPushOperation[]) {
 }
 
 describe("repository push notifications", () => {
+  it("updates the message and commit count while a push remains in progress", async () => {
+    const { update } = setup([{ ...base, status: "pushing" }])
+    expect(await screen.findByText("Pushing 2 commits")).toBeInTheDocument()
+    update([{ ...base, status: "pushing", commitCount: 3, message: "Waiting for push status" }])
+    expect(await screen.findByText("silo · Waiting for push status")).toBeInTheDocument()
+    expect(screen.getByText("Pushing 3 commits")).toBeInTheDocument()
+    expect(screen.queryByText("Pushing 2 commits")).not.toBeInTheDocument()
+  })
+
+  it("replaces failed push details and retries the latest confirmed target", async () => {
+    const { update, onPush } = setup([{ ...base, status: "pushing" }])
+    update([{ ...base, status: "failed", message: "SSH disconnected" }])
+    expect(await screen.findByText("SSH disconnected")).toBeInTheDocument()
+    const latest = { ...target, branch: "release", commit: "a".repeat(40) }
+    update([{ ...base, status: "failed", message: "Remote branch changed", commitCount: 3, target: latest }])
+    expect(await screen.findByText("Remote branch changed")).toBeInTheDocument()
+    expect(screen.queryByText("SSH disconnected")).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
+    expect(onPush).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", 3, latest)
+  })
+
+  it("updates Retry when only the confirmed target changes", async () => {
+    const { update, onPush } = setup([{ ...base, status: "pushing" }])
+    const failed = { ...base, status: "failed" as const, message: "Push rejected" }
+    update([failed])
+    expect(await screen.findByText("Push rejected")).toBeInTheDocument()
+    const latest = { ...target, commit: "b".repeat(40) }
+    update([{ ...failed, target: latest }])
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
+    expect(onPush).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", 2, latest)
+  })
+
   it("shows loading, then a success that stays and clears the finished operation", async () => {
     const { update, onDismiss } = setup([])
     update([{ ...base, status: "pushing" }])
@@ -41,6 +74,29 @@ describe("repository push notifications", () => {
     expect(within(document.body).getByText("The remote branch changed.")).toBeInTheDocument()
     await userEvent.setup().click(within(document.body).getByRole("button", { name: "Retry" }))
     expect(onPush).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", 2, target)
+  })
+
+  it("announces an unknown push outcome without retrying or acknowledging it", async () => {
+    const { update, onDismiss, onPush } = setup([{ ...base, status: "pushing" }])
+    expect(await screen.findByText("Pushing 2 commits")).toBeInTheDocument()
+    const message = "Silo could not confirm this push. Check the branch on GitHub before pushing again."
+    update([{ ...base, status: "unknown", message }])
+    expect(await screen.findByText("Push outcome unknown · silo")).toBeInTheDocument()
+    expect(screen.getByText(message)).toBeInTheDocument()
+    expect(screen.queryByText("Pushing 2 commits")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole("button", { name: "Close toast" }))
+    await waitFor(() => expect(screen.queryByText(message)).not.toBeInTheDocument())
+    expect(onDismiss).not.toHaveBeenCalled()
+    expect(onPush).not.toHaveBeenCalled()
+  })
+
+  it("clears the unknown-outcome warning after the repository check acknowledges it", async () => {
+    const { update } = setup([{ ...base, status: "pushing" }])
+    update([{ ...base, status: "unknown", message: "Check this branch on GitHub before pushing again." }])
+    expect(await screen.findByText("Push outcome unknown · silo")).toBeInTheDocument()
+    update([])
+    await waitFor(() => expect(screen.queryByText("Push outcome unknown · silo")).not.toBeInTheDocument())
   })
 
   it("offers no notification Retry for a push without a confirmed target", async () => {
@@ -111,4 +167,42 @@ describe("push confirmation", () => {
     await user.click(screen.getByRole("button", { name: "Push" }))
     expect(onPush).toHaveBeenCalledExactlyOnceWith({ repository: "acme/silo", branch: "feature", commit: row.head })
   })
+})
+
+it.each(["previous-vm", "current-vm"])("push Cancel belongs to the current sandbox ID when the queue entry belongs to %s", async vmId => {
+  const onCancel = vi.fn()
+  const entry = { id: 7, label: "Pushing from dev", kind: "push" as const, vmId, vmName: "dev", sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }
+  function Host() {
+    useRepositoryPushToasts([{ ...base, status: "pushing" }], {
+      onPush: vi.fn(), onDismiss: vi.fn(), onCancel,
+      resolveSandbox: () => ({ id: "current-vm", name: "dev" }),
+      queue: { running: [entry], waiting: [] },
+    })
+    return <Toaster />
+  }
+  render(<Host />)
+  expect(await screen.findByText("Pushing 2 commits")).toBeInTheDocument()
+  if (vmId === "previous-vm") {
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
+  } else {
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+    await user.click(screen.getByRole("button", { name: "Stop push" }))
+    expect(onCancel).toHaveBeenCalledExactlyOnceWith(7)
+  }
+})
+
+it("removes push Cancel when its sandbox is replaced without a new queue snapshot", async () => {
+  const onCancel = vi.fn()
+  const operations: RepositoryPushOperation[] = [{ ...base, status: "pushing" }]
+  const queue = { running: [{ id: 7, label: "Pushing from dev", kind: "push" as const, vmId: "original-vm", vmName: "dev", sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  function Host({ owner }: { owner: string }) {
+    useRepositoryPushToasts(operations, { onPush: vi.fn(), onDismiss: vi.fn(), onCancel, queue, resolveSandbox: () => ({ id: owner, name: "dev" }) })
+    return <Toaster />
+  }
+  const { rerender } = render(<Host owner="original-vm" />)
+  expect(await screen.findByRole("button", { name: "Cancel" })).toBeInTheDocument()
+  rerender(<Host owner="replacement-vm" />)
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument())
+  expect(onCancel).not.toHaveBeenCalled()
 })

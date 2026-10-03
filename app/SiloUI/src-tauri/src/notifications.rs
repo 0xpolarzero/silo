@@ -14,12 +14,15 @@
 //! notification is never shown while the main window is focused; the in-app toast
 //! already covers it.
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter};
+
+use crate::system_integrations::NotificationDelivery;
 
 /// In-app toast event for backend-originated notices. Payload: `Notice`.
 pub(crate) const NOTICE_EVENT: &str = "silo://notice";
@@ -42,9 +45,9 @@ pub(crate) const LONG_OPERATION: std::time::Duration = std::time::Duration::from
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NoticeSandbox {
-    /// Stable VM id (local or remote). Groups notices and clears them on deletion.
+    /// Stable VM id, qualified by computer when remote. Routes, groups and clears notices.
     pub id: String,
-    /// Display name, shown in text and used to open the sandbox on click.
+    /// Display name, shown in notification text.
     pub name: String,
 }
 
@@ -76,7 +79,7 @@ impl Notice {
     /// `desktop/use-main-route.ts`.
     pub(crate) fn route(&self) -> Value {
         match &self.sandbox {
-            Some(sandbox) => serde_json::json!({"tab": "workspaces", "workspace": sandbox.name}),
+            Some(sandbox) => serde_json::json!({"tab": "workspaces", "workspace": sandbox.id}),
             None => serde_json::json!({"tab": "workspaces"}),
         }
     }
@@ -127,14 +130,19 @@ pub(crate) fn notify(app: &AppHandle, notice: Notice) {
 /// A system notification only, for notices whose toast another owner already shows.
 /// Delivery runs off the calling thread and never changes the caller's result.
 pub(crate) fn notify_native(app: &AppHandle, notice: Notice) {
+    let pending = DELIVERED
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .prepare(notice);
     let app = app.clone();
-    tauri::async_runtime::spawn_blocking(move || deliver(&app, &notice));
+    tauri::async_runtime::spawn_blocking(move || deliver(&app, pending));
 }
 
-/// Delivered system notifications by sandbox id, so deleting a sandbox can withdraw them.
+/// Submitted and queued notification keys by sandbox id, so deletion withdraws both.
 #[derive(Default)]
 struct DeliveredIndex {
     keys: HashMap<String, BTreeSet<String>>,
+    gates: HashMap<String, Weak<NoticeGate>>,
 }
 
 impl DeliveredIndex {
@@ -154,22 +162,129 @@ impl DeliveredIndex {
     }
 }
 
-static DELIVERED: Mutex<Option<DeliveredIndex>> = Mutex::new(None);
-
-fn with_delivered<T>(f: impl FnOnce(&mut DeliveredIndex) -> T) -> T {
-    let mut guard = DELIVERED.lock().unwrap_or_else(|error| error.into_inner());
-    f(guard.get_or_insert_with(DeliveredIndex::default))
+/// Serialize OS calls for a key without holding the index lock across callbacks.
+#[derive(Default)]
+struct NoticeGate {
+    submitted: Mutex<u64>,
+    revision: AtomicU64,
+    cleared_through: AtomicU64,
 }
+
+struct PendingDelivery {
+    notice: Notice,
+    gate: Arc<NoticeGate>,
+    revision: u64,
+}
+
+impl DeliveredIndex {
+    fn gate(&mut self, key: &str) -> Arc<NoticeGate> {
+        self.gates.retain(|_, gate| gate.strong_count() > 0);
+        if let Some(gate) = self.gates.get(key).and_then(Weak::upgrade) {
+            return gate;
+        }
+        let gate = Arc::new(NoticeGate::default());
+        self.gates.insert(key.into(), Arc::downgrade(&gate));
+        gate
+    }
+
+    fn prepare(&mut self, mut notice: Notice) -> PendingDelivery {
+        notice.body = bounded_body(&notice.body);
+        // Withdrawal must include keys whose OS delivery has not finished yet.
+        self.record(&notice);
+        let gate = self.gate(&notice.key);
+        let revision = gate.revision.fetch_add(1, Ordering::SeqCst) + 1;
+        PendingDelivery {
+            notice,
+            gate,
+            revision,
+        }
+    }
+
+    fn withdraw(&mut self, sandbox_id: &str) -> PendingWithdrawal {
+        let notices = self
+            .take(sandbox_id)
+            .into_iter()
+            .map(|key| {
+                let gate = self.gate(&key);
+                let revision = gate.revision.fetch_add(1, Ordering::SeqCst) + 1;
+                gate.cleared_through.store(revision, Ordering::SeqCst);
+                (key, gate, revision)
+            })
+            .collect();
+        PendingWithdrawal { notices }
+    }
+}
+
+impl PendingDelivery {
+    fn cancelled(&self) -> bool {
+        self.revision <= self.gate.cleared_through.load(Ordering::SeqCst)
+    }
+
+    fn deliver(
+        self,
+        allowed: impl FnOnce(&Notice) -> bool,
+        send: impl FnOnce(&Notice) -> Result<NotificationDelivery, String>,
+        clear: impl FnOnce(&[String]),
+    ) {
+        let mut submitted = self
+            .gate
+            .submitted
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Task polling and mutex acquisition need not follow issuance order.
+        if self.cancelled() || self.revision != self.gate.revision.load(Ordering::SeqCst) {
+            return;
+        }
+        // Focus and preferences may change while an earlier OS request owns the gate.
+        if !allowed(&self.notice)
+            || self.cancelled()
+            || self.revision != self.gate.revision.load(Ordering::SeqCst)
+        {
+            return;
+        }
+        let result = send(&self.notice);
+        if self.cancelled() {
+            // Deletion can invalidate this request while the OS callback is pending.
+            clear(&[self.notice.key]);
+        } else if matches!(result, Ok(NotificationDelivery::Delivered)) {
+            *submitted = self.revision;
+        }
+        if result.is_err() {
+            eprintln!("Silo could not deliver a system notification.");
+        }
+    }
+}
+
+struct PendingWithdrawal {
+    notices: Vec<(String, Arc<NoticeGate>, u64)>,
+}
+
+impl PendingWithdrawal {
+    fn clear(self, mut clear: impl FnMut(&[String])) {
+        for (key, gate, revision) in self.notices {
+            let submitted = gate
+                .submitted
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            // A later notice for this key must survive an older withdrawal task.
+            if *submitted <= revision {
+                clear(&[key]);
+            }
+        }
+    }
+}
+
+static DELIVERED: LazyLock<Mutex<DeliveredIndex>> = LazyLock::new(Default::default);
 
 /// Remove delivered system notifications about one sandbox (for example, after deletion).
 /// Runs off the calling thread; failures are ignored.
 pub(crate) fn clear_sandbox(_app: &AppHandle, sandbox_id: &str) {
-    let keys = with_delivered(|index| index.take(sandbox_id));
-    if keys.is_empty() {
-        return;
-    }
+    let pending = DELIVERED
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .withdraw(sandbox_id);
     tauri::async_runtime::spawn_blocking(move || {
-        crate::system_integrations::clear_notifications(&keys);
+        pending.clear(crate::system_integrations::clear_notifications);
     });
 }
 
@@ -180,21 +295,21 @@ fn main_window_focused(app: &AppHandle) -> bool {
     })
 }
 
-fn deliver(app: &AppHandle, notice: &Notice) {
-    if main_window_focused(app) {
-        return;
-    }
-    let Ok(settings) = crate::settings::current_settings(app) else {
-        return;
-    };
-    if !enabled(&settings, notice.category) {
-        return;
-    }
+fn deliver(app: &AppHandle, pending: PendingDelivery) {
     // A delivery failure must not change the result of the sandbox/backup operation.
-    match crate::system_integrations::deliver_notification(notice) {
-        Ok(()) => with_delivered(|index| index.record(notice)),
-        Err(_) => eprintln!("Silo could not deliver a system notification."),
-    }
+    pending.deliver(
+        |notice| {
+            if main_window_focused(app) {
+                return false;
+            }
+            let Ok(settings) = crate::settings::current_settings(app) else {
+                return false;
+            };
+            enabled(&settings, notice.category)
+        },
+        crate::system_integrations::deliver_notification,
+        crate::system_integrations::clear_notifications,
+    );
 }
 
 /// Frontend mirror of a toast it already shows. System notification only.
@@ -530,13 +645,336 @@ mod tests {
         let mut notice = failure("k", "t", "b", sandbox());
         assert_eq!(
             notice.route(),
-            json!({"tab": "workspaces", "workspace": "dev"})
+            json!({"tab": "workspaces", "workspace": "1"})
+        );
+        notice.sandbox.as_mut().unwrap().name = "renamed".into();
+        assert_eq!(
+            notice.route(),
+            json!({"tab": "workspaces", "workspace": "1"})
         );
         assert_eq!(notice.thread(), "1");
         notice.sandbox = None;
         assert_eq!(notice.route(), json!({"tab": "workspaces"}));
         assert_eq!(notice.thread(), "failures");
     }
+    #[test]
+    fn clearing_remote_notices_preserves_other_computers_with_the_same_vm_id() {
+        let mut index = DeliveredIndex::default();
+        for id in [
+            "same-id",
+            "silo-remote:office:same-id",
+            "silo-remote:lab:same-id",
+        ] {
+            index.record(&failure(
+                &format!("vm:{id}:lifecycle"),
+                "dev is running",
+                "",
+                Some(NoticeSandbox {
+                    id: id.into(),
+                    name: "dev".into(),
+                }),
+            ));
+        }
+        assert_eq!(
+            index.take("silo-remote:office:same-id"),
+            ["vm:silo-remote:office:same-id:lifecycle"]
+        );
+        assert!(index.take("silo-remote:office:same-id").is_empty());
+        assert_eq!(index.take("same-id"), ["vm:same-id:lifecycle"]);
+        assert_eq!(
+            index.take("silo-remote:lab:same-id"),
+            ["vm:silo-remote:lab:same-id:lifecycle"]
+        );
+    }
+
+    #[test]
+    fn frontend_notice_bodies_are_bounded_before_system_delivery() {
+        let mut notice = failure("vm:1:lifecycle", "t", "b", sandbox());
+        // Frontend mirrors deserialize Notice directly rather than using failure().
+        notice.body = format!("first\nsecond\t{}", "x".repeat(500));
+        let pending = DeliveredIndex::default().prepare(notice);
+        pending.deliver(
+            |_| true,
+            |notice| {
+                assert!(notice.body.starts_with("first second "));
+                assert_eq!(notice.body.chars().count(), BODY_LIMIT);
+                assert!(notice.body.ends_with('\u{2026}'));
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| {},
+        );
+    }
+
+    #[test]
+    fn deletion_withdraws_a_notice_whose_delivery_is_in_flight() {
+        use std::sync::{mpsc, Arc};
+        let index = Arc::new(Mutex::new(DeliveredIndex::default()));
+        let active = Arc::new(Mutex::new(BTreeSet::<String>::new()));
+        let pending = index
+            .lock()
+            .unwrap()
+            .prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let (entered, receiving) = mpsc::channel();
+        let (release, waiting) = mpsc::channel();
+        let worker_active = active.clone();
+        let clearing_active = active.clone();
+        let worker = std::thread::spawn(move || {
+            pending.deliver(
+                |_| true,
+                |notice| {
+                    entered.send(()).unwrap();
+                    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+                    worker_active.lock().unwrap().insert(notice.key.clone());
+                    Ok(NotificationDelivery::Delivered)
+                },
+                |keys| {
+                    let mut active = clearing_active.lock().unwrap();
+                    for key in keys {
+                        active.remove(key);
+                    }
+                },
+            );
+        });
+        receiving.recv_timeout(Duration::from_secs(5)).unwrap();
+        let withdrawal = index.lock().unwrap().withdraw("1");
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        withdrawal.clear(|keys| {
+            let mut active = active.lock().unwrap();
+            for key in keys {
+                active.remove(key);
+            }
+        });
+        assert!(
+            active.lock().unwrap().is_empty(),
+            "deleted sandbox still has an OS notification"
+        );
+        assert!(index.lock().unwrap().take("1").is_empty());
+    }
+
+    #[test]
+    fn deletion_cancels_a_notice_before_os_submission() {
+        let index = Mutex::new(DeliveredIndex::default());
+        let pending = index
+            .lock()
+            .unwrap()
+            .prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        index.lock().unwrap().withdraw("1").clear(|_| {});
+        let submitted = std::cell::Cell::new(false);
+        pending.deliver(
+            |_| true,
+            |_| {
+                submitted.set(true);
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| {},
+        );
+        assert!(!submitted.get(), "queued notice submitted after deletion");
+    }
+
+    #[test]
+    fn reversed_delivery_tasks_cannot_replace_a_newer_notice() {
+        let mut index = DeliveredIndex::default();
+        let older = index.prepare(failure("vm:1:lifecycle", "older", "b", sandbox()));
+        let newer = index.prepare(failure("vm:1:lifecycle", "newer", "b", sandbox()));
+        let visible = std::cell::RefCell::new(String::new());
+        newer.deliver(
+            |_| true,
+            |notice| {
+                *visible.borrow_mut() = notice.title.clone();
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| {},
+        );
+        older.deliver(
+            |_| true,
+            |notice| {
+                *visible.borrow_mut() = notice.title.clone();
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| {},
+        );
+        assert_eq!(visible.into_inner(), "newer");
+    }
+
+    #[test]
+    fn notification_delivery_does_not_block_a_different_key() {
+        let mut index = DeliveredIndex::default();
+        let first = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let second = index.prepare(failure(
+            "vm:2:lifecycle",
+            "t",
+            "b",
+            Some(NoticeSandbox {
+                id: "2".into(),
+                name: "second".into(),
+            }),
+        ));
+        let submissions = std::cell::Cell::new(0);
+        first.deliver(
+            |_| true,
+            |_| {
+                second.deliver(
+                    |_| true,
+                    |_| {
+                        submissions.set(submissions.get() + 1);
+                        Ok(NotificationDelivery::Delivered)
+                    },
+                    |_| {},
+                );
+                submissions.set(submissions.get() + 1);
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| {},
+        );
+        assert_eq!(submissions.get(), 2);
+    }
+
+    #[test]
+    fn queued_delivery_rechecks_preferences_after_an_in_flight_notice() {
+        use std::sync::mpsc;
+        let mut index = DeliveredIndex::default();
+        let older = index.prepare(failure("vm:1:lifecycle", "older", "b", sandbox()));
+        let submissions = Arc::new(Mutex::new(Vec::new()));
+        let worker_submissions = submissions.clone();
+        let (entered, wait_entered) = mpsc::channel();
+        let (release, wait_release) = mpsc::channel();
+        let first = std::thread::spawn(move || {
+            older.deliver(
+                |_| true,
+                |notice| {
+                    entered.send(()).unwrap();
+                    wait_release.recv_timeout(Duration::from_secs(5)).unwrap();
+                    worker_submissions
+                        .lock()
+                        .unwrap()
+                        .push(notice.title.clone());
+                    Ok(NotificationDelivery::Delivered)
+                },
+                |_| {},
+            );
+        });
+        wait_entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let newer = index.prepare(failure("vm:1:lifecycle", "newer", "b", sandbox()));
+        let preferences_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let worker_preferences = preferences_enabled.clone();
+        let worker_submissions = submissions.clone();
+        let (started, wait_started) = mpsc::channel();
+        let (policy_read, wait_policy_read) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            newer.deliver(
+                |_| {
+                    let enabled = worker_preferences.load(Ordering::SeqCst);
+                    policy_read.send(()).unwrap();
+                    enabled
+                },
+                |notice| {
+                    worker_submissions
+                        .lock()
+                        .unwrap()
+                        .push(notice.title.clone());
+                    Ok(NotificationDelivery::Delivered)
+                },
+                |_| {},
+            );
+        });
+        wait_started.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The old path reads preferences before waiting; the fixed path waits first.
+        let _ = wait_policy_read.recv_timeout(Duration::from_millis(100));
+        preferences_enabled.store(false, Ordering::SeqCst);
+        release.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(
+            *submissions.lock().unwrap(),
+            ["older"],
+            "queued notice ignored the disabled preference"
+        );
+    }
+
+    #[test]
+    fn deletion_during_policy_evaluation_prevents_os_submission() {
+        let mut index = DeliveredIndex::default();
+        let pending = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let submitted = std::cell::Cell::new(false);
+        pending.deliver(
+            |_| {
+                // Deletion can finish while the background task queries window/settings state.
+                let _ = index.withdraw("1");
+                true
+            },
+            |_| {
+                submitted.set(true);
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| {},
+        );
+        assert!(
+            !submitted.get(),
+            "request submitted after policy evaluation observed deletion"
+        );
+    }
+
+    #[test]
+    fn skipped_replacement_does_not_prevent_withdrawing_an_older_notice() {
+        let mut index = DeliveredIndex::default();
+        let active = std::cell::Cell::new(false);
+        let older = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        older.deliver(
+            |_| true,
+            |_| {
+                active.set(true);
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| active.set(false),
+        );
+        let withdrawal = index.withdraw("1");
+        let newer = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        // macOS permission denial and an absent Linux service both skip submission.
+        newer.deliver(
+            |_| true,
+            |_| Ok(NotificationDelivery::Skipped),
+            |_| active.set(false),
+        );
+        withdrawal.clear(|_| active.set(false));
+        assert!(
+            !active.get(),
+            "an unsent replacement must not preserve the old notification"
+        );
+    }
+
+    #[test]
+    fn delayed_withdrawal_preserves_a_newer_submission_for_the_same_key() {
+        let mut index = DeliveredIndex::default();
+        let active = std::cell::Cell::new(false);
+        let older = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        older.deliver(
+            |_| true,
+            |_| {
+                active.set(true);
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| active.set(false),
+        );
+        let withdrawal = index.withdraw("1");
+        let newer = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        newer.deliver(
+            |_| true,
+            |_| {
+                active.set(true);
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| active.set(false),
+        );
+        withdrawal.clear(|_| active.set(false));
+        assert!(
+            active.get(),
+            "older withdrawal removed a newer notification"
+        );
+        assert_eq!(index.take("1"), ["vm:1:lifecycle"]);
+    }
+
     #[test]
     fn delivered_index_tracks_and_clears_per_sandbox() {
         let mut index = DeliveredIndex::default();

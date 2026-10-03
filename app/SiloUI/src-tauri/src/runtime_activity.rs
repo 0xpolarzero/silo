@@ -23,6 +23,13 @@ pub(super) struct Event {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     cancelled: bool,
     process: u32,
+    #[serde(default)]
+    process_session: String,
+}
+
+fn process_session() -> &'static str {
+    static SESSION: OnceLock<String> = OnceLock::new();
+    SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
 
 fn path(paths: &RuntimePaths) -> PathBuf {
@@ -39,7 +46,16 @@ fn events(paths: &RuntimePaths) -> Result<Vec<Event>, RuntimeError> {
             ))
         }
     };
-    let mut events: Vec<Event> = serde_json::from_reader(file.take(MAX_OUTPUT_BYTES))
+    let mut bytes = Vec::new();
+    file.take(MAX_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| RuntimeError::Unavailable("Sandbox activity could not be read.".into()))?;
+    if bytes.len() as u64 > MAX_OUTPUT_BYTES {
+        return Err(RuntimeError::Malformed(
+            "Sandbox activity is too large.".into(),
+        ));
+    }
+    let mut events: Vec<Event> = serde_json::from_slice(&bytes)
         .map_err(|_| RuntimeError::Malformed("Sandbox activity could not be decoded.".into()))?;
     // Entries from another build (a newer action, an over-long journal) only
     // cost history; they must not stop start/stop from journaling.
@@ -102,6 +118,27 @@ fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
         .map_err(|_| "Sandbox activity could not be synced.".to_string())
 }
 
+// A failed history write cannot change a lifecycle result. Keep a warning for
+// this session even if a later write succeeds, since an outcome may be missing.
+static HISTORY_WARNINGS: OnceLock<Mutex<HashMap<PathBuf, Value>>> = OnceLock::new();
+
+fn warn(paths: &RuntimePaths, message: &str) {
+    let mut warning = history_warning("sandbox");
+    warning["detail"] = format!("{message} Sandbox actions can still run.").into();
+    HISTORY_WARNINGS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(path(paths), warning);
+}
+
+fn record(paths: &RuntimePaths, event: &Event) {
+    // store leaves unreadable history untouched rather than overwriting it.
+    if let Err(message) = store(paths, event) {
+        warn(paths, &message);
+    }
+}
+
 pub(super) fn begin(
     paths: &RuntimePaths,
     action: &str,
@@ -126,8 +163,9 @@ pub(super) fn begin(
         dismissed: false,
         cancelled: false,
         process: std::process::id(),
+        process_session: process_session().into(),
     };
-    store(paths, &event)?;
+    record(paths, &event);
     Ok(event)
 }
 
@@ -135,26 +173,19 @@ pub(super) fn matches(event: &Event, action: &str, workspace: &str) -> bool {
     event.action == action && event.workspace == workspace
 }
 
-pub(super) fn resume(
-    paths: &RuntimePaths,
-    event: &mut Event,
-    machine_id: &str,
-) -> Result<(), String> {
+pub(super) fn resume(paths: &RuntimePaths, event: &mut Event, machine_id: &str) {
     event.machine_id = machine_id.into();
     event.process = std::process::id();
+    event.process_session = process_session().into();
     event.completed = false;
     event.failure = None;
     event.diagnostic = None;
     event.dismissed = false;
     event.cancelled = false;
-    store(paths, event)
+    record(paths, event);
 }
 
-pub(super) fn finish(
-    paths: &RuntimePaths,
-    event: &mut Event,
-    result: &Result<(), RuntimeError>,
-) -> Result<(), String> {
+pub(super) fn finish(paths: &RuntimePaths, event: &mut Event, result: &Result<(), RuntimeError>) {
     event.completed = true;
     event.cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
     let report = result
@@ -166,23 +197,26 @@ pub(super) fn finish(
     // Logs and bounded) is kept separately for a Details disclosure.
     event.failure = report.as_ref().map(|report| report.summary.clone());
     event.diagnostic = report.and_then(|report| report.diagnostic);
-    store(paths, event)
+    record(paths, event);
 }
 
 /// Settle an action that is being retired without running (D-22): an unfinished
 /// entry becomes cancelled; a finished one (for example a failed start kept for
 /// Retry) keeps its recorded outcome.
-pub(super) fn retire(paths: &RuntimePaths, event: &mut Event) -> Result<(), String> {
+pub(super) fn retire(paths: &RuntimePaths, event: &mut Event) {
     // A saved action holds the entry as it was when saved; the journal has its outcome.
     let journaled = events(paths)
-        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|error| {
+            warn(paths, &error.to_string());
+            Vec::new()
+        })
         .into_iter()
         .find(|entry| entry.id == event.id);
     if event.completed || journaled.is_some_and(|entry| entry.completed) {
-        return Ok(());
+        return;
     }
     let operation = format!("{} {}", event.action, event.workspace);
-    finish(paths, event, &Err(RuntimeError::Cancelled { operation }))
+    finish(paths, event, &Err(RuntimeError::Cancelled { operation }));
 }
 
 /// Summary and diagnostic of a recorded failure. Journals written before the
@@ -250,13 +284,17 @@ pub(super) fn acknowledge_failure(
     paths: &RuntimePaths,
     machine_id: &str,
 ) -> Result<(), RuntimeError> {
-    if let Some(mut event) = events(paths)?
+    if let Some(mut event) = events(paths)
+        .unwrap_or_else(|error| {
+            warn(paths, &error.to_string());
+            Vec::new()
+        })
         .into_iter()
         .rev()
         .find(|event| event.machine_id == machine_id)
     {
         event.dismissed = true;
-        store(paths, &event).map_err(RuntimeError::Unavailable)?;
+        record(paths, &event);
     }
     Ok(())
 }
@@ -293,7 +331,7 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
         entry
     }).collect();
     result.extend(events(paths).unwrap_or_else(|_| { warnings.push(history_warning("sandbox")); Vec::new() }).into_iter().map(|event| {
-        let interrupted = !event.completed && event.process != std::process::id();
+        let interrupted = !event.completed && (event.process != std::process::id() || event.process_session != process_session());
         let failed = event.failure.is_some();
         if event.cancelled {
             let title = match event.action.as_str() { "start" => "Start cancelled", "stop" => "Stop cancelled", _ => "Restart cancelled" };
@@ -311,9 +349,20 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
         }
         entry
     }));
+    if let Some(warning) = HISTORY_WARNINGS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&path(paths))
+        .cloned()
+    {
+        warnings.retain(|entry| entry["id"] != warning["id"]);
+        warnings.push(warning);
+    }
+    result.sort_by(|a, b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
+    result.truncate(LIMIT - warnings.len());
     result.extend(warnings);
     result.sort_by(|a, b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
-    result.truncate(LIMIT);
     Ok(result)
 }
 
@@ -381,22 +430,80 @@ fn sensitive_assignment(lower: &str) -> bool {
         })
 }
 
+fn credential_url(line: &str) -> bool {
+    line.match_indices("://").any(|(at, _)| {
+        let start = line[..at]
+            .char_indices()
+            .rfind(|(_, ch)| !ch.is_ascii_alphanumeric() && !matches!(ch, '+' | '-' | '.'))
+            .map_or(0, |(index, ch)| index + ch.len_utf8());
+        let candidate = line[start..].split_whitespace().next().unwrap_or("");
+        reqwest::Url::parse(candidate)
+            .or_else(|_| {
+                reqwest::Url::parse(candidate.trim_end_matches(['"', '\'', '>', ')', ']', '}']))
+            })
+            .is_ok_and(|url| {
+                !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query_pairs().any(|(name, _)| {
+                        let name = name.to_ascii_lowercase();
+                        matches!(
+                            name.as_str(),
+                            "sig" | "signature" | "x-amz-signature" | "x-goog-signature"
+                        ) || sensitive_assignment(&format!("{name}="))
+                    })
+            })
+    })
+}
+
+fn sensitive_option(lower: &str) -> bool {
+    lower.split_whitespace().any(|word| {
+        let word = word.trim_matches(['"', '\'']);
+        if word == "-u" {
+            return true;
+        }
+        let Some(option) = word.strip_prefix("--") else {
+            return false;
+        };
+        if matches!(option, "user" | "proxy-user") {
+            return true;
+        }
+        option.split(['-', '_', '=']).any(|part| {
+            matches!(
+                part,
+                "password"
+                    | "passwd"
+                    | "passphrase"
+                    | "token"
+                    | "secret"
+                    | "key"
+                    | "credential"
+                    | "credentials"
+            )
+        })
+    })
+}
+
 pub(super) fn log_text(body: &str) -> String {
-    let mut in_pem = false;
+    log_text_with_pem(body, &mut false)
+}
+
+pub(super) fn log_text_with_pem(body: &str, in_pem: &mut bool) -> String {
     strip_ansi(body)
         .lines()
         .map(|line| {
             let lower = line.to_ascii_lowercase();
             // Hide whole PEM blocks, not only their BEGIN line.
             if lower.contains("-----begin") {
-                in_pem = true;
+                *in_pem = true;
             }
-            let pem = in_pem;
+            let pem = *in_pem;
             if lower.contains("-----end") {
-                in_pem = false;
+                *in_pem = false;
             }
             if pem
                 || sensitive_assignment(&lower)
+                || sensitive_option(&lower)
+                || credential_url(line)
                 || [
                     "authorization",
                     "bearer ",
@@ -424,6 +531,87 @@ pub(super) fn log_text(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn command_line_secret_options_stay_out_of_failure_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        for line in [
+            "curl --user alice:synthetic-password https://example.test",
+            "curl -u alice:synthetic-password https://example.test",
+            "curl --proxy-user alice:synthetic-password https://example.test",
+            "login --password synthetic-password",
+            "client --api-key synthetic-key",
+            "client --client-secret synthetic-secret",
+            "client --access_token synthetic-token",
+            "client --passphrase synthetic-passphrase",
+        ] {
+            let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+            finish(
+                &paths,
+                &mut event,
+                &Err(RuntimeError::Failed {
+                    operation: "Starting the sandbox".into(),
+                    exit_code: Some(1),
+                    detail: format!("connection failed\n{line}"),
+                }),
+            );
+            for text in [
+                fs::read_to_string(path(&paths)).unwrap(),
+                serde_json::to_string(&read(&paths).unwrap()).unwrap(),
+                serde_json::to_string(&failures(&paths).unwrap()).unwrap(),
+            ] {
+                assert!(
+                    !text.contains("synthetic"),
+                    "Command credentials escaped: {text}"
+                );
+                assert!(text.contains("connection failed"));
+            }
+        }
+        for line in [
+            "client --keyboard-layout us",
+            "client --monkey banana",
+            "client --output result",
+            "curl --user-agent Silo https://example.test",
+        ] {
+            assert_eq!(log_text(line), line);
+        }
+    }
+    #[test]
+    fn log_text_hides_url_credentials_without_hiding_public_urls() {
+        for line in [
+            "fetch https://alice:synthetic-password@example.test/repo",
+            "git clone 'https://synthetic-token@example.test/repo'",
+            "connect(postgresql://alice:synthetic-password@localhost/db)",
+            "remote=https://alice:synthetic%2Dpassword@example.test/repo",
+            "https://:synthetic-password@example.test/repo",
+            "connect('postgresql://alice:synthetic-password@localhost')",
+            "fetch https://alice:synthetic'password@example.test/repo",
+            "fetch https://alice:synthetic)password@example.test/repo",
+            "fetch https://alice:synthetic-password@[::1]",
+            "download https://example.test/blob?sv=2026-02-06&sp=r&sig=synthetic-signature",
+            "fetch https://example.test/?%74oken=synthetic-token",
+            "fetch https://example.test/?api%5Fkey=synthetic-key",
+            "fetch https://example.test/?X-Amz-Signature=synthetic-signature",
+            "fetch https://example.test/?X-Goog-Signature=synthetic-signature",
+            "🚨https://example.test/?sig=synthetic-signature",
+        ] {
+            assert_eq!(
+                log_text(line),
+                "[Sensitive runtime output hidden]",
+                "{line}"
+            );
+        }
+        for line in [
+            "fetch https://example.test/repo",
+            "fetch https://example.test/team@main/repo",
+            "fetch https://example.test/?contact=alice@example.test",
+            "connection failed for alice@example.test",
+            "fetch https://example.test/?signature_status=valid",
+            "🚨https://example.test/public",
+        ] {
+            assert_eq!(log_text(line), line);
+        }
+    }
     #[test]
     fn log_text_hides_common_secret_assignments_and_pem_blocks() {
         for line in [
@@ -468,8 +656,7 @@ mod tests {
             &Err(RuntimeError::Cancelled {
                 operation: "start dev".into(),
             }),
-        )
-        .unwrap();
+        );
         assert!(failures(&paths).unwrap().is_empty());
         let entry = &read(&paths).unwrap()[0];
         assert_eq!(entry["title"], "Start cancelled");
@@ -482,7 +669,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let mut first = begin(&paths, "start", "dev", "vm-1").unwrap();
-        finish(&paths, &mut first, &Ok(())).unwrap();
+        finish(&paths, &mut first, &Ok(()));
         let mut entries: Vec<Value> =
             serde_json::from_slice(&fs::read(path(&paths)).unwrap()).unwrap();
         let mut unknown = entries[0].clone();
@@ -496,7 +683,7 @@ mod tests {
         }
         fs::write(path(&paths), serde_json::to_vec(&entries).unwrap()).unwrap();
         let mut next = begin(&paths, "stop", "dev", "vm-1").unwrap();
-        finish(&paths, &mut next, &Ok(())).unwrap();
+        finish(&paths, &mut next, &Ok(()));
         let stored = events(&paths).unwrap();
         assert!(stored.len() <= LIMIT);
         assert!(stored.iter().all(|event| event.action != "hibernate"));
@@ -511,7 +698,7 @@ mod tests {
             operation: "Starting the sandbox".into(),
             exit_code: Some(1),
             detail: "\u{1b}[31mlibkrunfw could not load: different Team IDs\u{1b}[0m\nTOKEN=private-value".into(),
-        })).unwrap();
+        }));
         // The summary is one actionable line; the runtime's explanation is separate.
         let entry = &read(&paths).unwrap()[0];
         let detail = entry["detail"].as_str().unwrap();
@@ -532,7 +719,7 @@ mod tests {
             .contains("different Team IDs"));
         assert!(!failures(&paths).unwrap().contains_key("replacement-vm"));
         let mut retry = begin(&paths, "start", "dev", "vm-1").unwrap();
-        finish(&paths, &mut retry, &Ok(())).unwrap();
+        finish(&paths, &mut retry, &Ok(()));
         assert!(!failures(&paths).unwrap().contains_key("vm-1"));
         assert!(read(&paths).unwrap().iter().any(|entry| entry["diagnostic"]
             .as_str()
@@ -571,8 +758,7 @@ mod tests {
                 exit_code: Some(1),
                 detail: "TOKEN=private-value".into(),
             }),
-        )
-        .unwrap();
+        );
         let values = read(&paths).unwrap();
         assert_eq!(values[0]["tone"], "danger");
         assert!(!serde_json::to_string(&values)
@@ -580,6 +766,35 @@ mod tests {
             .contains("private-value"));
         assert_eq!(values[0]["status"], "completed");
     }
+    #[test]
+    fn unfinished_activity_from_a_reused_pid_is_interrupted_until_resumed() {
+        for legacy in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = super::super::tests::paths(&dir);
+            let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+            assert_eq!(read(&paths).unwrap()[0]["status"], "running");
+            let mut saved = serde_json::to_value(&event).unwrap();
+            if legacy {
+                saved.as_object_mut().unwrap().remove("processSession");
+            } else {
+                saved["processSession"] = uuid::Uuid::nil().to_string().into();
+            }
+            fs::write(
+                path(&paths),
+                serde_json::to_vec(&vec![saved.clone()]).unwrap(),
+            )
+            .unwrap();
+            let interrupted = read(&paths).unwrap();
+            assert_eq!(interrupted[0]["status"], "completed");
+            assert_eq!(interrupted[0]["tone"], "warning");
+            event = serde_json::from_value(saved).unwrap();
+            resume(&paths, &mut event, "vm-1");
+            assert_eq!(read(&paths).unwrap()[0]["status"], "running");
+            finish(&paths, &mut event, &Ok(()));
+            assert_eq!(read(&paths).unwrap()[0]["tone"], "success");
+        }
+    }
+
     #[test]
     fn unfinished_previous_process_is_not_reported_running_or_successful() {
         let dir = tempfile::tempdir().unwrap();
@@ -593,6 +808,46 @@ mod tests {
     }
 
     #[test]
+    fn oversized_history_is_preserved_when_its_bounded_prefix_is_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let history = path(&paths);
+        let mut original = b"[]".to_vec();
+        original.resize(MAX_OUTPUT_BYTES as usize, b' ');
+        original.extend_from_slice(b"unfinished trailing history");
+        fs::write(&history, &original).unwrap();
+
+        let mut event = begin(&paths, "stop", "dev", "vm-1").unwrap();
+        finish(&paths, &mut event, &Ok(()));
+        assert!(fs::read(&history).unwrap() == original);
+        assert!(read(&paths).unwrap().iter().any(|entry| {
+            entry["id"] == "sandbox-history-unavailable" && entry["tone"] == "warning"
+        }));
+        // A complete valid file exactly at the limit remains writable.
+        fs::write(&history, &original[..MAX_OUTPUT_BYTES as usize]).unwrap();
+        let next = begin(&paths, "start", "dev", "vm-1").unwrap();
+        assert!(events(&paths)
+            .unwrap()
+            .iter()
+            .any(|event| event.id == next.id));
+    }
+
+    #[test]
+    fn acknowledging_a_crash_does_not_fail_when_activity_history_is_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let history = path(&paths);
+        let original = b"{unfinished activity history";
+        fs::write(&history, original).unwrap();
+
+        acknowledge_failure(&paths, "vm-1").unwrap();
+        assert_eq!(fs::read(&history).unwrap(), original);
+        assert!(read(&paths).unwrap().iter().any(|entry| {
+            entry["id"] == "sandbox-history-unavailable" && entry["tone"] == "warning"
+        }));
+    }
+
+    #[test]
     fn acknowledging_a_failure_preserves_activity_but_clears_overview() {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
@@ -601,8 +856,7 @@ mod tests {
             &paths,
             &mut event,
             &Err(RuntimeError::Invalid("Boot failed".into())),
-        )
-        .unwrap();
+        );
         acknowledge_failure(&paths, "replacement-vm").unwrap();
         assert!(failures(&paths).unwrap().contains_key("vm-1"));
         acknowledge_failure(&paths, "vm-1").unwrap();
@@ -633,8 +887,7 @@ mod tests {
                 exit_code: Some(1),
                 detail: "💥".repeat(20_000),
             }),
-        )
-        .unwrap();
+        );
         assert!(fs::metadata(path(&paths)).unwrap().len() <= MAX_OUTPUT_BYTES);
         assert!(events(&paths).unwrap().len() < 134);
         let stored = events(&paths).unwrap().last().unwrap().clone();

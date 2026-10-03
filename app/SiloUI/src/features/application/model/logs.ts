@@ -39,6 +39,7 @@ export function isUnsupportedRemote(reason: unknown): boolean {
 export type LogEntry = z.infer<typeof logEntrySchema>
 export type LogPage = z.infer<typeof logPageSchema>
 export type LogLoader = (request: LogQuery) => Promise<LogPage>
+export const LOG_ROW_HEIGHT = 52
 export function logIdentity(workspace: ApplicationWorkspace): Pick<LogQuery, "sandboxId" | "computerId"> {
   return { sandboxId: workspace.computer?.vmId ?? workspace.machine.id, ...(workspace.computer && { computerId: workspace.computer.id }) }
 }
@@ -49,9 +50,43 @@ export function formatLog(entry: LogEntry): string {
 }
 /** Deterministic browser fixtures supply their entire history, never a production fallback. */
 export function fixtureLogPage(workspace: ApplicationWorkspace, request: LogQuery): LogPage {
-  const all = workspace.logs.map((log, index): LogEntry => ({ ...log, id: String(index), sandboxId: workspace.machine.id, computerId: workspace.computer?.id ?? "local", source: "output" })).sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
-  let matches = all.filter(entry => (!request.query || entry.line.toLowerCase().includes(request.query.toLowerCase())) && (!request.source || entry.source === request.source) && (!request.since || entry.occurredAt >= request.since) && (!request.until || entry.occurredAt <= request.until))
-  if (request.aroundId) { const index = all.findIndex(entry => entry.id === request.aroundId); matches = all.slice(Math.max(0, index - 50), index + 51) }
-  const offset = Number(request.cursor ?? 0), limit = request.limit ?? 200
-  return { entries: matches.slice(offset, offset + limit), nextCursor: offset + limit < matches.length ? String(offset + limit) : null, totalMatches: matches.length, oldestAvailableTimestamp: all.at(-1)?.occurredAt ?? null, newestAvailableTimestamp: all[0]?.occurredAt ?? null, timestampEstimated: false }
+  const fail = (message: string): never => { throw { code: "internal", message } }
+  const encoder = new TextEncoder()
+  if (encoder.encode(request.query ?? "").length > 4096) fail("Search text is too long.")
+  if (request.source !== undefined && !["all", "stdout", "stderr", "output", "system", "runtime", "kernel"].includes(request.source)) fail("Unknown log source.")
+  const timestamp = (value: string | undefined) => {
+    if (value === undefined) return undefined
+    const parsed = Date.parse(value)
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/i.test(value) || !Number.isFinite(parsed)) fail("Invalid log timestamp.")
+    return parsed
+  }
+  const since = timestamp(request.since), until = timestamp(request.until)
+  if (since !== undefined && until !== undefined && since > until) fail("The log time range is reversed.")
+  const identity = logIdentity(workspace)
+  const all = workspace.logs.map((log, index): LogEntry => ({ ...log, id: String(index), sandboxId: identity.sandboxId, sandboxName: workspace.machine.name, computerId: identity.computerId ?? "local", computerName: workspace.computer?.name ?? "This computer", source: "output", session: null }))
+    .sort((a, b) => a.occurredAt === b.occurredAt ? a.id === b.id ? 0 : a.id < b.id ? 1 : -1 : a.occurredAt < b.occurredAt ? 1 : -1)
+  let matches = all.filter(entry => (!request.query || entry.line.toLowerCase().includes(request.query.toLowerCase())) && (!request.source || request.source === "all" || entry.source === request.source) && (since === undefined || Date.parse(entry.occurredAt) >= since) && (until === undefined || Date.parse(entry.occurredAt) <= until))
+  if (request.aroundId) {
+    const index = all.findIndex(entry => entry.id === request.aroundId)
+    if (index < 0) fail("The selected log record expired. Refresh the log search.")
+    matches = all.slice(Math.max(0, index - 50), index + 51)
+  }
+  const offset = Number(request.cursor ?? 0), limit = Math.max(1, Math.min(200, request.limit ?? 200))
+  const entries: LogEntry[] = []
+  let bytes = 0
+  for (const entry of request.aroundId ? matches : matches.slice(offset, offset + limit)) {
+    let size = encoder.encode(JSON.stringify(entry)).length
+    if (!request.aroundId && size > 1024 * 1024) {
+      entry.line = new TextDecoder().decode(encoder.encode(entry.line).slice(0, 64 * 1024), { stream: true }) + " … [record over 1 MiB truncated]"
+      size = encoder.encode(JSON.stringify(entry)).length
+    }
+    if (bytes + size > 1024 * 1024) {
+      if (request.aroundId) fail("This context window is too large. Narrow the time range instead.")
+      break
+    }
+    entries.push(entry)
+    bytes += size
+  }
+  const next = offset + entries.length
+  return { entries, nextCursor: !request.aroundId && next < matches.length ? String(next) : null, totalMatches: request.aroundId ? all.length : matches.length, oldestAvailableTimestamp: all.at(-1)?.occurredAt ?? null, newestAvailableTimestamp: all[0]?.occurredAt ?? null, timestampEstimated: false }
 }

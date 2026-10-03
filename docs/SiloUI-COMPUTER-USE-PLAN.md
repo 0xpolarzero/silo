@@ -362,6 +362,12 @@ replaced by a model in which the host drives the guest and the guest cannot veto
   fork, an import's reset or an apply writes the file, all under one lock; a status read
   never changes it. A file that cannot be read shows as `unknown` and is replaced by the
   default (ask) by the next apply, which fails closed.
+  An unfamiliar saved attempt outcome counts as failed, so setup is retried without
+  discarding the desired approval mode. Unknown approval modes and malformed field
+  types still make the policy unreadable. The saved outcome uses Serde's
+  [field deserializer](https://serde.rs/field-attrs.html); live helper responses
+  retain their strict outcome parser. Fixture tests cover the unfamiliar outcome,
+  save/reload, legacy policy defaults and unknown approval modes.
 - **Applying.** Every apply runs on a host thread (never inside Start, never on the UI
   thread) that takes the VM's operation turn: the per-VM lock that already serializes all
   work on one VM. Inside the turn it re-checks that the VM is the same recorded machine

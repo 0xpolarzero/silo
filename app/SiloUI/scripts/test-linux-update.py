@@ -77,6 +77,8 @@ threading.Thread(target=server.serve_forever,daemon=True).start()
 browser=None
 with tempfile.TemporaryDirectory(prefix='silo-real-update-') as temporary:
     environment=dict(os.environ)
+    environment['HOME']=str(Path(temporary,'home'))
+    Path(environment['HOME']).mkdir(mode=0o700)
     for name in ['CONFIG','DATA','CACHE']:
         path=Path(temporary,name.lower());path.mkdir();environment[f'XDG_{name}_HOME']=str(path)
     environment['APPIMAGE_EXTRACT_AND_RUN']='1'

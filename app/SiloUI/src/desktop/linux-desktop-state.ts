@@ -18,8 +18,8 @@ export const computerUseSchema = z.object({
   // report it). It differs from `approval` while a change is pending, failed or only partly worked.
   appliedApproval: z.enum(["ask", "auto", "unknown"]).catch("unknown"),
   // How applying `approval` stands: Silo drives the sandbox toward the chosen mode itself and keeps
-  // the last result. An older Silo does not report it, which reads as applied.
-  approvalApply: z.enum(["applied", "pending", "failed", "partial"]).catch("applied"),
+  // the last result. Missing or malformed status is unknown, never a confirmed success.
+  approvalApply: z.enum(["applied", "pending", "failed", "partial", "unknown"]).catch("unknown"),
   // Why it failed or only partly worked, in words for the user.
   approvalApplyReason: z.string().nullish().catch(null),
   appVersion: z.string().nullish().catch(null),

@@ -48,11 +48,15 @@ fn store(paths: &RuntimePaths, intent: &Intent) -> Result<(), RuntimeError> {
         .map_err(|_| error("Sandbox action progress could not be synced."))
 }
 fn load(file: &Path) -> Result<Option<Intent>, RuntimeError> {
-    let bytes = match fs::read(file) {
-        Ok(bytes) => bytes,
+    let file = match File::open(file) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(error("Saved sandbox action could not be read.")),
     };
+    let mut bytes = Vec::new();
+    file.take(MAX_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| error("Saved sandbox action could not be read."))?;
     if bytes.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(error("Saved sandbox action is too large."));
     }
@@ -139,6 +143,11 @@ fn advance(
     initial: InspectedSandbox,
 ) -> Result<(), RuntimeError> {
     let mut observed = stable(runner, paths, intent, initial)?;
+    if observed.status == "Paused"
+        && checkpoints::recover_paused_capture(runner, paths, &intent.machine_id, &intent.name)?
+    {
+        observed = stable(runner, paths, intent, inspect(runner, paths, intent)?)?;
+    }
     if stopped(&observed) {
         let _ = crate::secrets::workspace_stopped(&intent.name);
     }
@@ -235,9 +244,9 @@ fn settle(
     intent: &mut Intent,
     initial: InspectedSandbox,
 ) -> Result<(), RuntimeError> {
-    runtime_activity::resume(paths, &mut intent.event, &intent.machine_id).map_err(error)?;
+    runtime_activity::resume(paths, &mut intent.event, &intent.machine_id);
     let result = advance(runner, paths, host, intent, initial);
-    runtime_activity::finish(paths, &mut intent.event, &result).map_err(error)?;
+    runtime_activity::finish(paths, &mut intent.event, &result);
     // A user cancel retires the intent: the next launch must not resume an
     // action the user explicitly abandoned.
     let cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
@@ -302,23 +311,23 @@ pub(super) fn perform(
         if matches!(action, "start" | "restart") {
             validate_inspected_resources(name, &initial.config, host)?;
         }
+        store(paths, &intent)?;
         Ok(initial)
     }) {
         Ok(initial) => initial,
         Err(failure) => {
             let result = Err(failure);
-            runtime_activity::finish(paths, &mut intent.event, &result).map_err(error)?;
+            runtime_activity::finish(paths, &mut intent.event, &result);
             return result;
         }
     };
-    store(paths, &intent)?;
     // Settle the superseded action only once the new intent replaced its file;
     // a new action rejected above leaves the saved one pending and unchanged.
     if let Some(mut previous) = superseded {
         let result = Err(RuntimeError::Invalid(format!(
             "Replaced by the requested {action} action."
         )));
-        runtime_activity::finish(paths, &mut previous.event, &result).map_err(error)?;
+        runtime_activity::finish(paths, &mut previous.event, &result);
     }
     settle(runner, paths, host, &mut intent, initial)
 }
@@ -364,8 +373,7 @@ pub(super) fn forget_removed(
             &Err(RuntimeError::Invalid(
                 "Sandbox was removed before this action finished.".into(),
             )),
-        )
-        .map_err(error)?;
+        );
         fs::remove_file(target)
             .map_err(|_| error("Removed sandbox action progress could not be cleared."))?;
         File::open(directory(paths))
@@ -402,7 +410,7 @@ pub(crate) fn retire_except(
         if file != path(paths, &intent.machine_id) || resuming.contains(&intent.machine_id) {
             continue;
         }
-        runtime_activity::retire(paths, &mut intent.event).map_err(error)?;
+        runtime_activity::retire(paths, &mut intent.event);
         fs::remove_file(&file)
             .map_err(|_| error("A saved sandbox action could not be retired."))?;
         retired = true;
@@ -511,15 +519,18 @@ fn recover_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     const ID: &str = "00000000-0000-4000-8000-000000000001";
     struct Fake {
         state: Mutex<String>,
         calls: Mutex<Vec<String>>,
         fail_start: bool,
+        launch_start_once: AtomicBool,
         cancel_start: bool,
         stop_times_out: bool,
         start_wins: bool,
         replaced: bool,
+        fail_history_on_mutation: bool,
     }
     impl Fake {
         fn new(state: &str) -> Self {
@@ -527,10 +538,12 @@ mod tests {
                 state: Mutex::new(state.into()),
                 calls: Mutex::new(vec![]),
                 fail_start: false,
+                launch_start_once: AtomicBool::new(false),
                 cancel_start: false,
                 stop_times_out: false,
                 start_wins: false,
                 replaced: false,
+                fail_history_on_mutation: false,
             }
         }
         fn mutations(&self) -> Vec<String> {
@@ -546,12 +559,22 @@ mod tests {
     impl RuntimeRunner for Fake {
         fn run(
             &self,
-            _paths: &RuntimePaths,
+            paths: &RuntimePaths,
             args: &[String],
             _timeout: Duration,
         ) -> Result<CommandOutput, RuntimeError> {
             let action = args[0].as_str();
             self.calls.lock().unwrap().push(action.into());
+            if action != "inspect" && self.fail_history_on_mutation {
+                fs::set_permissions(
+                    paths.metadata.parent().unwrap(),
+                    fs::Permissions::from_mode(0o555),
+                )
+                .unwrap();
+            }
+            if action == "start" && self.launch_start_once.swap(false, Ordering::SeqCst) {
+                return Err(RuntimeError::Launch("Synthetic launch failure.".into()));
+            }
             if action == "start" && self.cancel_start {
                 return Err(RuntimeError::Cancelled {
                     operation: "start dev".into(),
@@ -633,6 +656,205 @@ mod tests {
         store(paths, &value).unwrap();
         value
     }
+    #[test]
+    fn lifecycle_retry_does_not_undo_a_newer_stop_on_the_same_vm() {
+        let _test_state = crate::test_support::global_state();
+        for same_vm in [true, false] {
+            let (_dir, paths, _) = setup();
+            let runner = Fake::new("Stopped");
+            runner.launch_start_once.store(true, Ordering::SeqCst);
+            let acquisitions = std::sync::atomic::AtomicUsize::new(0);
+            let last_request = std::cell::Cell::new(None);
+            let result = gated_auto_retry_with(
+                &[Duration::ZERO],
+                "Starting dev",
+                |label| {
+                    if acquisitions.fetch_add(1, Ordering::SeqCst) == 1 {
+                        let stop = OPERATIONS
+                            .kind(operation_gate::OperationKind::Lifecycle)
+                            .vm(if same_vm { ID } else { "other-vm" }, "dev", "Stopping dev")
+                            .unwrap();
+                        if same_vm {
+                            perform(&runner, &paths, &host(), "stop", "dev").unwrap();
+                        }
+                        drop(stop);
+                    }
+                    let guard = OPERATIONS
+                        .kind(operation_gate::OperationKind::Lifecycle)
+                        .retry_after(last_request.get())
+                        .vm(ID, "dev", label)
+                        .map_err(RuntimeError::from)?;
+                    last_request.set(Some(guard.request_id()));
+                    Ok(guard)
+                },
+                |_| {},
+                || perform(&runner, &paths, &host(), "start", "dev"),
+            );
+            if same_vm {
+                assert!(matches!(result, Err(RuntimeError::Cancelled { .. })));
+                assert_eq!(*runner.state.lock().unwrap(), "Stopped");
+                assert_eq!(runner.mutations(), vec!["start"]);
+            } else {
+                result.unwrap();
+                assert_eq!(*runner.state.lock().unwrap(), "Running");
+                assert_eq!(runner.mutations(), vec!["start", "start"]);
+            }
+            assert!(!has_intent(&paths, ID));
+        }
+    }
+
+    #[test]
+    fn malformed_history_does_not_block_lifecycle_actions() {
+        let _test_state = crate::test_support::global_state();
+        for (action, state, commands) in [
+            ("stop", "Running", vec!["stop"]),
+            ("start", "Stopped", vec!["start"]),
+            ("restart", "Running", vec!["stop", "start"]),
+        ] {
+            let (_dir, paths, _) = setup();
+            let history = paths.metadata.with_file_name("sandbox-activity.json");
+            fs::write(&history, "{broken-json").unwrap();
+            let runner = Fake::new(state);
+            perform(&runner, &paths, &host(), action, "dev").unwrap();
+            assert_eq!(runner.mutations(), commands);
+            assert!(!has_intent(&paths, ID));
+            assert_eq!(fs::read(&history).unwrap(), b"{broken-json");
+            assert!(runtime_activity::read(&paths)
+                .unwrap()
+                .iter()
+                .any(|event| event["title"] == "Activity history unavailable"
+                    && event["tone"] == "warning"));
+        }
+    }
+
+    #[test]
+    fn history_failure_after_start_preserves_outcome_and_retires_intent() {
+        let _test_state = crate::test_support::global_state();
+        for cancelled in [false, true] {
+            let (_dir, paths, _) = setup();
+            let mut runner = Fake::new("Stopped");
+            runner.cancel_start = cancelled;
+            runner.fail_history_on_mutation = true;
+            let result = perform(&runner, &paths, &host(), "start", "dev");
+            fs::set_permissions(
+                paths.metadata.parent().unwrap(),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            if cancelled {
+                assert!(matches!(result, Err(RuntimeError::Cancelled { .. })));
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(runner.mutations(), vec!["start"]);
+            assert!(!has_intent(&paths, ID));
+            // The history remains readable even though its completion could not be saved.
+            let history = paths.metadata.with_file_name("sandbox-activity.json");
+            let entries: Vec<Value> = serde_json::from_slice(&fs::read(history).unwrap()).unwrap();
+            assert!(entries.iter().all(|event| event["completed"] == false));
+            assert!(runtime_activity::read(&paths)
+                .unwrap()
+                .iter()
+                .any(|event| event["title"] == "Activity history unavailable"
+                    && event["tone"] == "warning"));
+            let relaunch = Fake::new("Stopped");
+            assert_eq!(
+                recover_with(&relaunch, &paths, &host()).unwrap(),
+                Recovered::default()
+            );
+            assert!(relaunch.mutations().is_empty());
+        }
+    }
+
+    #[test]
+    fn malformed_history_does_not_block_intent_retirement() {
+        let _test_state = crate::test_support::global_state();
+        let (_dir, paths, _) = setup();
+        pending(&paths, "start", Phase::StartPending);
+        fs::write(
+            paths.metadata.with_file_name("sandbox-activity.json"),
+            "{broken-json",
+        )
+        .unwrap();
+        retire_except(&paths, &HashSet::new()).unwrap();
+        assert!(!has_intent(&paths, ID));
+        let runner = Fake::new("Stopped");
+        assert_eq!(
+            recover_with(&runner, &paths, &host()).unwrap(),
+            Recovered::default()
+        );
+        assert!(runner.mutations().is_empty());
+    }
+
+    #[test]
+    fn intent_write_failure_records_a_failure_without_runtime_mutation() {
+        let _test_state = crate::test_support::global_state();
+        let (_dir, paths, _) = setup();
+        fs::write(directory(&paths), "not a directory").unwrap();
+        let runner = Fake::new("Running");
+        assert!(perform(&runner, &paths, &host(), "stop", "dev").is_err());
+        assert!(runner.mutations().is_empty());
+        let history = runtime_activity::read(&paths).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["status"], "completed");
+        assert_eq!(history[0]["tone"], "danger");
+        assert!(history[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Sandbox action progress could not be saved."));
+    }
+
+    #[test]
+    fn intent_reader_accepts_the_limit_and_preserves_oversized_input() {
+        let _test_state = crate::test_support::global_state();
+        let (_dir, paths, _) = setup();
+        pending(&paths, "stop", Phase::StopPending);
+        let target = path(&paths, ID);
+        let mut bytes = fs::read(&target).unwrap();
+        bytes.resize(MAX_OUTPUT_BYTES as usize, b' ');
+        fs::write(&target, &bytes).unwrap();
+        assert!(load(&target).unwrap().is_some());
+        bytes.push(b' ');
+        fs::write(&target, &bytes).unwrap();
+        assert!(load(&target)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Saved sandbox action is too large."));
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+    }
+
+    #[test]
+    fn oversized_intent_is_rejected_without_waiting_for_end_of_file() {
+        use std::os::unix::ffi::OsStrExt;
+        let _test_state = crate::test_support::global_state();
+        let (_dir, paths, _) = setup();
+        fs::create_dir_all(directory(&paths)).unwrap();
+        let target = path(&paths, ID);
+        let name = std::ffi::CString::new(target.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (completed, result) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            completed.send(load(&target).map(|_| ())).unwrap();
+        });
+        let mut writer = fs::OpenOptions::new()
+            .write(true)
+            .open(path(&paths, ID))
+            .unwrap();
+        writer
+            .write_all(&vec![b' '; MAX_OUTPUT_BYTES as usize + 1])
+            .unwrap();
+        let rejected = result.recv_timeout(Duration::from_secs(2));
+        drop(writer);
+        reader.join().unwrap();
+        let failure = rejected
+            .expect("oversized intent should be rejected before its writer closes")
+            .unwrap_err();
+        assert!(failure
+            .to_string()
+            .contains("Saved sandbox action is too large."));
+    }
+
     #[test]
     fn restart_recovers_each_checkpoint_without_repeating_a_finished_stop_or_restart() {
         let _test_state = crate::test_support::global_state();

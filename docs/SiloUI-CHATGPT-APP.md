@@ -333,3 +333,12 @@ The mount, guest flow and commands are in `computer_use.rs`; the guest side in
   (which lists windows and takes a screenshot on Linux) passed within seconds of
   boot, `--approval auto` wrote `default_tools_approval_mode = "approve"` for
   Codex, and a restore with the mount passed again became ready again.
+
+### Unpacking process ownership
+
+The macOS tar pipeline owns both children. If its consumer cannot start, it kills
+and waits for the producer before returning the spawn error. Dropping a Rust
+[`Child`](https://doc.rust-lang.org/std/process/struct.Child.html) neither stops
+nor reaps it. The synthetic `tar_pipeline_reaps_the_producer_when_the_consumer_cannot_start`
+regression forces a missing consumer executable and verifies `waitpid` returns
+`ECHILD` for the producer. It uses a disposable child, without packages or VMs.

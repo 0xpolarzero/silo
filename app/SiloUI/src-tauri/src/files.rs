@@ -34,6 +34,7 @@ pub(crate) struct DirectoryPage {
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 struct Snapshot {
     workspace: String,
+    workspace_id: String,
     path: String,
     created: Instant,
     entries: Vec<Entry>,
@@ -45,6 +46,7 @@ static SNAPSHOTS: OnceLock<Mutex<HashMap<String, Snapshot>>> = OnceLock::new();
 fn cached_page(
     cache: &HashMap<String, Snapshot>,
     workspace: &str,
+    workspace_id: &str,
     path: &str,
     offset: usize,
     snapshot_id: Option<&str>,
@@ -55,6 +57,7 @@ fn cached_page(
         .filter(|s| {
             s.created.elapsed() < Duration::from_secs(120)
                 && s.workspace == workspace
+                && s.workspace_id == workspace_id
                 && s.path == path
         })
         .ok_or(EXPIRED)?;
@@ -159,14 +162,15 @@ pub(crate) async fn list_workspace_directory(
         }
         crate::runtime::validate_name(&workspace).map_err(|error| error.to_string())?;
         let paths = runtime_paths(&app).map_err(|_| FAILED.to_owned())?;
-        if !crate::runtime::read_metadata(&paths.metadata)
-            .map_err(|_| FAILED.to_owned())?
+        let metadata =
+            crate::runtime::read_metadata(&paths.metadata).map_err(|_| FAILED.to_owned())?;
+        let workspace_id = metadata
             .machines
             .iter()
-            .any(|machine| machine.is_vm() && machine.name() == workspace)
-        {
-            return Err("Sandbox no longer exists.".into());
-        }
+            .find(|machine| machine.is_vm() && machine.name() == workspace)
+            .ok_or("Sandbox no longer exists.")?
+            .id()
+            .to_owned();
         let state = match crate::runtime::observe_vm(&ProcessRunner, &paths, &workspace)
             .map_err(|_| FAILED.to_owned())?
         {
@@ -183,7 +187,14 @@ pub(crate) async fn list_workspace_directory(
         let snapshots = SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()));
         if offset != 0 {
             let cache = snapshots.lock().map_err(|_| FAILED.to_owned())?;
-            return cached_page(&cache, &workspace, &path, offset, snapshot_id.as_deref());
+            return cached_page(
+                &cache,
+                &workspace,
+                &workspace_id,
+                &path,
+                offset,
+                snapshot_id.as_deref(),
+            );
         }
         let output = run_msb(
             &paths,
@@ -242,6 +253,7 @@ pub(crate) async fn list_workspace_directory(
             id,
             Snapshot {
                 workspace,
+                workspace_id,
                 path,
                 created: Instant::now(),
                 entries,
@@ -320,6 +332,7 @@ mod tests {
     fn two_windows_listing_one_folder_keep_their_own_snapshots() {
         let snapshot = |name: &str| Snapshot {
             workspace: "dev".into(),
+            workspace_id: "vm-a".into(),
             path: "/workspace".into(),
             created: Instant::now(),
             entries: (0..300)
@@ -334,20 +347,50 @@ mod tests {
             ("1".to_string(), snapshot("main")),
             ("2".to_string(), snapshot("status")),
         ]);
-        let main = cached_page(&cache, "dev", "/workspace", 200, Some("1")).unwrap();
-        let status = cached_page(&cache, "dev", "/workspace", 200, Some("2")).unwrap();
+        let main = cached_page(&cache, "dev", "vm-a", "/workspace", 200, Some("1")).unwrap();
+        let status = cached_page(&cache, "dev", "vm-a", "/workspace", 200, Some("2")).unwrap();
         assert_eq!(main.entries[0].name, "main200");
         assert_eq!(status.entries[0].name, "status200");
         assert_eq!(
-            cached_page(&cache, "other", "/workspace", 200, Some("1")).unwrap_err(),
+            cached_page(&cache, "other", "vm-a", "/workspace", 200, Some("1")).unwrap_err(),
             EXPIRED
         );
         assert_eq!(
-            cached_page(&cache, "dev", "/workspace/x", 200, Some("1")).unwrap_err(),
+            cached_page(&cache, "dev", "vm-a", "/workspace/x", 200, Some("1")).unwrap_err(),
             EXPIRED
         );
         assert_eq!(
-            cached_page(&cache, "dev", "/workspace", 200, None).unwrap_err(),
+            cached_page(&cache, "dev", "vm-a", "/workspace", 200, None).unwrap_err(),
+            EXPIRED
+        );
+    }
+    #[test]
+    fn replacement_vm_with_the_same_name_cannot_page_the_previous_vm_snapshot() {
+        let cache = HashMap::from([(
+            "snapshot".to_owned(),
+            Snapshot {
+                workspace: "dev".into(),
+                workspace_id: "vm-a".into(),
+                path: "/workspace".into(),
+                created: Instant::now(),
+                entries: (0..201)
+                    .map(|i| Entry {
+                        name: format!("previous-vm-{i}"),
+                        path: format!("/workspace/previous-vm-{i}"),
+                        kind: "file".into(),
+                    })
+                    .collect(),
+            },
+        )]);
+        assert_eq!(
+            cached_page(&cache, "dev", "vm-a", "/workspace", 200, Some("snapshot"))
+                .unwrap()
+                .entries[0]
+                .name,
+            "previous-vm-200"
+        );
+        assert_eq!(
+            cached_page(&cache, "dev", "vm-b", "/workspace", 200, Some("snapshot")).unwrap_err(),
             EXPIRED
         );
     }

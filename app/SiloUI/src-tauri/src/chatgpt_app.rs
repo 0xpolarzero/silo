@@ -466,7 +466,9 @@ fn make_tree_deletable(path: &Path) -> std::io::Result<()> {
 
 /// Reads a small regular file below `dir` (never through a symlink).
 fn read_small(dir: &Dir, name: &str) -> Option<Vec<u8>> {
-    let file = dir.open_file(name, libc::O_RDONLY, 0).ok()?;
+    let file = dir
+        .open_file(name, libc::O_RDONLY | libc::O_NONBLOCK, 0)
+        .ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.uid() != effective_uid() || meta.len() > MAX_RECORD_BYTES {
         return None;
@@ -832,7 +834,7 @@ impl TarStream {
                 .find(|name| name.starts_with("data.tar"))
                 .map(str::to_owned)
                 .ok_or_else(|| Error::fatal("The ChatGPT package has no data archive."))?;
-            let mut first = Command::new(tar)
+            let first = Command::new(tar)
                 .arg("-xOf")
                 .arg(deb)
                 .arg(&member)
@@ -840,19 +842,7 @@ impl TarStream {
                 .stderr(Stdio::null())
                 .spawn()
                 .map_err(|_| missing())?;
-            let input = first.stdout.take().expect("piped");
-            let mut second = Command::new(tar)
-                .args(["-cf", "-", "@-"])
-                .stdin(Stdio::from(input))
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|_| missing())?;
-            let stdout = second.stdout.take().expect("piped");
-            Ok(Self {
-                children: vec![first, second],
-                stdout,
-            })
+            Self::pipe(first, Command::new(tar).args(["-cf", "-", "@-"])).map_err(|_| missing())
         } else {
             let tool = ["/usr/bin/dpkg-deb", "dpkg-deb"]
                 .into_iter()
@@ -878,6 +868,24 @@ impl TarStream {
                 stdout,
             })
         }
+    }
+
+    fn pipe(mut first: Child, second: &mut Command) -> std::io::Result<Self> {
+        let input = first.stdout.take().expect("piped");
+        let mut second = second
+            .stdin(Stdio::from(input))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .inspect_err(|_| {
+                let _ = first.kill();
+                let _ = first.wait();
+            })?;
+        let stdout = second.stdout.take().expect("piped");
+        Ok(Self {
+            children: vec![first, second],
+            stdout,
+        })
     }
 
     /// Reads the rest of the stream, then requires every tool to have succeeded.
@@ -1601,6 +1609,7 @@ fn ensure_inner(
         .and_then(|()| published_dir.remove_entry(&published_path, &name))
         .map_err(prepare)?;
     clean_staging(root, &root_dir);
+    clean_staging(&published_path, &published_dir);
 
     let (downloads, _) = root_dir.subdir("downloads", true).map_err(prepare)?;
     let deb_name = format!("chatgpt_{}_{}.deb", lock.version, arch.name());
@@ -1770,10 +1779,12 @@ pub(crate) fn ensure_published_dir(root: &Path) -> Result<PathBuf, Error> {
 /// published folder is only resolved.
 pub(crate) fn ensure_published_dir_nowait(root: &Path) -> Result<PathBuf, Error> {
     let failed = || Error::retry("Silo could not prepare its ChatGPT app folder.");
-    Dir::open_root(root, true).map_err(|_| failed())?;
+    let base = Dir::open_root(root, true).map_err(|_| failed())?;
     if let Some(_lock) = RootLock::try_take(root)? {
         open_storage(root, true).map_err(|_| failed())?;
     }
+    // Lock contention skips preparation, not validation of the folder to mount.
+    base.subdir("published", false).map_err(|_| failed())?;
     fs::canonicalize(published_path(root)).map_err(|_| failed())
 }
 
@@ -1798,7 +1809,7 @@ fn free_space_check(root: &Path, download_bytes: u64) -> Result<(), Error> {
     let required = download_bytes.saturating_mul(5);
     if available < required {
         return Err(Error::retry(format!(
-            "Free at least {} MB to download the ChatGPT app, then retry.",
+            "Free at least {} MiB to download the ChatGPT app, then retry.",
             required.div_ceil(1024 * 1024)
         )));
     }
@@ -1861,6 +1872,7 @@ fn collect_garbage_locked(
     clean_staging(root, &root_dir);
     let pinned = lock.directory_name(arch);
     let published = published_path(root);
+    clean_staging(&published, &published_dir);
     let mut removed = Vec::new();
     // A record of a version that is going away goes with it (or alone).
     for entry in fs::read_dir(root).map_err(|_| list_failed())?.flatten() {
@@ -2154,31 +2166,31 @@ fn run_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
 /// worker was started. Never needs the user: the app is downloaded on every computer
 /// that runs Silo.
 pub(crate) fn ensure_in_background(app: &tauri::AppHandle) -> bool {
-    let Some(claim) = auto::WORKER.claim() else {
-        auto::RETRY.wake();
+    let Some(claim) = auto::WORKER.claim(&auto::RETRY) else {
         return false;
     };
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("chatgpt-app".into())
         .spawn(move || {
-            let _claim = claim;
             auto::lower_priority();
             let ready_app = app.clone();
-            auto::settle(
-                || {
-                    run_prepare(&app).unwrap_or_else(|error| Status::Failed {
-                        reason: error,
-                        retryable: true,
-                    })
-                },
-                |delay| auto::RETRY.wait(delay),
-                move || {
-                    // Running built-in VMs set computer use up now instead of at their next boot.
-                    crate::computer_use::app_ready(&ready_app);
-                    collect_unused(&ready_app);
-                },
-            );
+            claim.run(&auto::RETRY, || {
+                auto::settle(
+                    || {
+                        run_prepare(&app).unwrap_or_else(|error| Status::Failed {
+                            reason: error,
+                            retryable: true,
+                        })
+                    },
+                    |delay| auto::RETRY.wait(delay),
+                    || {
+                        // Running built-in VMs set computer use up now instead of at their next boot.
+                        crate::computer_use::app_ready(&ready_app);
+                        collect_unused(&ready_app);
+                    },
+                )
+            });
         })
         .is_ok();
     spawned

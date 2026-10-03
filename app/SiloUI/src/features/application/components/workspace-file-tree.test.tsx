@@ -11,6 +11,21 @@ const page = (name: string, kind: "file" | "folder" | "symlink" = "file"): Direc
 })
 
 describe("live file tree", () => {
+  it("reveals complete sanitized names when tree labels are truncated", async () => {
+    const names = ["folder-".repeat(30), "file-".repeat(30), "link-\u202E".repeat(20)]
+    const kinds = ["folder", "file", "symlink"] as const
+    const store = createDirectoryStore(vi.fn().mockResolvedValue({
+      entries: names.map((name, index) => ({ name, path: `/workspace/${name}`, kind: kinds[index] })),
+      nextOffset: null, snapshotId: "long-names",
+    }))
+    render(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active />)
+    for (const name of names) {
+      const displayed = name.replaceAll("\u202E", "⟨U+202E⟩")
+      expect(await screen.findByText(displayed)).toHaveAttribute("title", displayed)
+    }
+    expect(screen.getByText(workspace.machine.name)).toHaveAttribute("title", workspace.machine.name)
+  })
+
   it("opens and copies exact folder paths without toggling expansion", async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)
@@ -29,6 +44,26 @@ describe("live file tree", () => {
     const root = screen.getByRole("button", { name: workspace.machine.name })
     await user.click(within(root.parentElement!).getByRole("button", { name: "Open in Cursor" }))
     expect(onOpenEditor).toHaveBeenLastCalledWith(workspace.machine.name, "/workspace")
+  })
+
+  it("reveals a soft hyphen in a folder label while opening its exact original path", async () => {
+    const user = userEvent.setup()
+    const onOpenEditor = vi.fn()
+    const store = createDirectoryStore(vi.fn().mockResolvedValue(page("con\u00ADfig", "folder")))
+    render(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active onOpenEditor={onOpenEditor} />)
+    const folder = await screen.findByRole("button", { name: "Folder con⟨U+00AD⟩fig" })
+    await user.click(within(folder.parentElement!).getByRole("button", { name: "Open in Cursor" }))
+    expect(onOpenEditor).toHaveBeenCalledWith(workspace.machine.name, "/workspace/con\u00ADfig")
+  })
+
+  it("reveals an invisible Unicode tag while copying the original folder path", async () => {
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)
+    const store = createDirectoryStore(vi.fn().mockResolvedValue(page("con\u{E0061}fig", "folder")))
+    render(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active onOpenEditor={vi.fn()} />)
+    const folder = await screen.findByRole("button", { name: "Folder con⟨U+E0061⟩fig" })
+    await user.click(within(folder.parentElement!).getByRole("button", { name: "Copy path" }))
+    expect(writeText).toHaveBeenCalledWith("/workspace/con\u{E0061}fig")
   })
 
   it("shows skeletons, lazily opens folders and immediately reuses cached contents", async () => {
@@ -91,6 +126,45 @@ describe("live file tree", () => {
     await act(async () => resolve(page("recovered.txt")))
     expect(screen.getByText("recovered.txt")).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+
+  it("backs off failing folders while healthy visible folders keep refreshing", async () => {
+    vi.useFakeTimers()
+    let failing = false
+    const loader = vi.fn(async (_workspace: string, path: string): Promise<DirectoryPage> => {
+      if (path === "/workspace" && failing) throw new Error("Folder unavailable")
+      return path === "/workspace" ? page("src", "folder") : { entries: [], nextOffset: null, snapshotId: "src" }
+    })
+    const store = createDirectoryStore(loader)
+    const view = render(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active />)
+    const advance = async (ms: number) => { await act(() => vi.advanceTimersByTimeAsync(ms)) }
+    const reads = (path: string) => loader.mock.calls.filter(([, loaded]) => loaded === path).length
+    try {
+      await advance(0)
+      fireEvent.click(screen.getByRole("button", { name: "Folder src" }))
+      await advance(0)
+      failing = true
+      await advance(10000)
+      expect(reads("/workspace")).toBe(2)
+      for (const delay of [20000, 40000, 60000, 60000]) {
+        const rootReads = reads("/workspace")
+        const childReads = reads("/workspace/src")
+        await advance(delay - 1)
+        expect(reads("/workspace")).toBe(rootReads)
+        await advance(1)
+        expect(reads("/workspace")).toBe(rootReads + 1)
+        expect(reads("/workspace/src")).toBe(childReads + delay / 10000)
+      }
+      failing = false
+      await advance(60000)
+      const rootReads = reads("/workspace")
+      await advance(10000)
+      expect(reads("/workspace")).toBe(rootReads + 1)
+      view.unmount()
+      const calls = loader.mock.calls.length
+      await advance(60000)
+      expect(loader).toHaveBeenCalledTimes(calls)
+    } finally { view.unmount(); vi.useRealTimers() }
   })
 
   it("polls the whole visible tree from its root instead of once per expanded folder", async () => {

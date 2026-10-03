@@ -37,6 +37,7 @@ export function useEditorIncludeLine(): string | null {
     let sequence = 0
     let unsubscribe: (() => void) | undefined
     const refresh = () => {
+      if (!live) return
       const mine = ++sequence
       backend.read().then(
         next => { if (live && mine === sequence) setLine(next) },
@@ -46,9 +47,8 @@ export function useEditorIncludeLine(): string | null {
     backend.subscribe(refresh).then(
       stop => { if (live) unsubscribe = stop; else stop() },
       (cause: unknown) => console.error("Silo editor connections:", message(cause)),
-    )
+    ).then(() => { if (live) refresh() })
     window.addEventListener("focus", refresh)
-    refresh()
     return () => {
       live = false
       unsubscribe?.()

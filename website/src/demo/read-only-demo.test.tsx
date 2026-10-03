@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ReadOnlyDemo } from './read-only-demo';
+import { demoActions, readOnlyOperation } from './data';
 
 describe('the embedded production UI', () => {
   it('navigates the real sidebar and back history without enabling sandbox actions', async () => {
@@ -37,19 +38,40 @@ describe('the embedded production UI', () => {
 });
 
 
-it('expands actual local and remote VM SSH controls while keeping actions disabled', async () => {
+it.each([
+  ['dev', 'This computer', 'ssh -p 2222 silo@127.0.0.1'],
+  ['personal', 'Office Mac', 'ssh -p 2224 silo@192.168.1.42'],
+])('opens SSH details for %s while keeping native actions disabled', async (name, computer, endpoint) => {
+  const actions = Object.entries(demoActions)
+    .filter(([, action]) => action === readOnlyOperation)
+    .map(([action]) => vi.spyOn(demoActions, action as keyof typeof demoActions));
+  const network = vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('The demo must not fetch live data'));
   const user = userEvent.setup();
   render(<ReadOnlyDemo />);
   expect(screen.queryByText('build-server')).not.toBeInTheDocument();
   expect(screen.getByRole('img', { name: 'Remote VM' })).toBeVisible();
-  for (const name of ['dev', 'personal']) {
-    const disclosure = screen.getByRole('button', { name: `SSH controls for ${name}` });
-    await user.click(disclosure);
-    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
-    for (const control of screen.getAllByRole('switch')) expect(control).toBeDisabled();
-    await user.click(disclosure);
-    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+  await user.click(screen.getByRole('button', { name: `More actions for ${name}` }));
+  for (const item of screen.getAllByRole('menuitem').filter(item => !/^(Checkpoints|Storage|SSH) for /.test(item.getAttribute('aria-label') ?? ''))) {
+    expect(item).toHaveAttribute('aria-disabled', 'true');
   }
+  await user.click(screen.getByRole('menuitem', { name: `SSH for ${name}` }));
+  expect(screen.getByRole('tab', { name: 'SSH' })).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByText(endpoint)).toBeVisible();
+  const switches = screen.getAllByRole('switch');
+  expect(switches).toHaveLength(2);
+  expect(screen.getByRole('switch', { name: `Allow SSH from ${computer}` })).toBeChecked();
+  for (const control of switches) {
+    expect(control).toBeDisabled();
+  }
+  expect(screen.getByRole('button', { name: name === 'dev' ? 'Copy SSH address' : 'Copy network SSH address' })).toBeDisabled();
+  for (const control of screen.getAllByRole('button', { name: /^(Copy.*SSH address|More.*SSH actions|Open .* in |Stop |Restart )/ })) {
+    expect(control).toBeDisabled();
+  }
+  await user.click(screen.getByRole('tab', { name: 'Overview' }));
+  await user.click(screen.getByRole('tab', { name: 'SSH' }));
+  expect(screen.getByText(endpoint)).toBeVisible();
+  for (const action of actions) expect(action).not.toHaveBeenCalled();
+  expect(network).not.toHaveBeenCalled();
 });
 
 it('offers the production command menu for safe navigation', async () => {
@@ -72,6 +94,6 @@ it('shows sandbox menus and sample storage without allowing native operations', 
   await user.click(screen.getByRole('menuitem', { name: 'Storage for dev' }));
   expect(await screen.findByText('18.00 GiB')).toBeVisible();
   expect(screen.getByRole('button', { name: 'Reclaim unused space' })).toBeDisabled();
-  await user.click(screen.getByRole('button', { name: 'Reclaim history, 1 attempts' }));
+  await user.click(screen.getByRole('button', { name: 'Reclaim history, 1 attempt' }));
   expect(screen.getByLabelText('Reclaim history entries')).toBeVisible();
 });

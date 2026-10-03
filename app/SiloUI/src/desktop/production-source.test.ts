@@ -605,7 +605,7 @@ describe("production application bridge", () => {
     await store.initialize(); await store.applicationActions.refreshNetwork?.()
     failed = true
     await store.applicationActions.refreshNetwork?.()
-    expect(store.getSnapshot().source?.network).toEqual(state)
+    expect(store.getSnapshot().source?.network?.workspaces.find(row => row.workspace === "dev")).toEqual({ ...state.workspaces[0], error: "Could not check network services." })
     expect(store.getSnapshot().source?.networkError).toBe("Could not check network services.")
     expect(store.getSnapshot().source?.workspaces[0].ports[0].listening).toBe(false)
     store.dispose()
@@ -1680,4 +1680,52 @@ describe("operation queue bridge", () => {
       expect(store.getSnapshot().source?.operationQueue?.running).toHaveLength(1)
     } finally { store.dispose() }
   })
+})
+
+
+it.each(["failure", "success"] as const)("ignores a previous sandbox's late lifecycle %s after recreation", async (outcome) => {
+  let finish!: (value: unknown) => void
+  let reject!: (cause: unknown) => void
+  const command = new Promise((resolve, fail) => { finish = resolve; reject = fail })
+  let current = structuredClone(source)
+  const mock = native({}, { read_application_state: () => structuredClone(current), workspace_action: () => command })
+  const store = createProductionSource(mock.bridge)
+  try {
+    await store.initialize()
+    store.applicationActions.startWorkspace("dev")
+    current.workspaces[0].machine.id = "00000000-0000-4000-8000-000000000099"
+    await store.refresh()
+    const publishedIds: string[] = []
+    store.subscribe(() => { publishedIds.push(store.getSnapshot().source!.workspaces[0].machine.id) })
+    if (outcome === "success") finish(structuredClone(source))
+    else reject(new Error("old VM failed"))
+    await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBeUndefined())
+    expect(store.getSnapshot().source?.workspaces[0].machine.id).toBe(current.workspaces[0].machine.id)
+    expect(store.getSnapshot().source?.workspaces[0].lifecycleFailure).toBeUndefined()
+    expect(publishedIds).not.toContain(source.workspaces[0].machine.id)
+  } finally { store.dispose() }
+})
+
+it("a recreated sandbox does not inherit pending lifecycle state or action locks", async () => {
+  const commands: Array<(value: unknown) => void> = []
+  let current = structuredClone(source)
+  const mock = native({}, {
+    read_application_state: () => structuredClone(current),
+    workspace_action: () => new Promise(resolve => { commands.push(resolve) }),
+  })
+  const store = createProductionSource(mock.bridge)
+  try {
+    await store.initialize()
+    store.applicationActions.startWorkspace("dev")
+    current.workspaces[0].machine.id = "00000000-0000-4000-8000-000000000099"
+    await store.refresh()
+    expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBeUndefined()
+    store.applicationActions.startWorkspace("dev")
+    expect(commands).toHaveLength(2)
+    commands[0](structuredClone(source))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBe("start")
+    commands[1](current)
+    await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].lifecycleAction).toBeUndefined())
+  } finally { store.dispose() }
 })

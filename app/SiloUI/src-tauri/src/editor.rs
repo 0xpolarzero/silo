@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     fs,
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -142,7 +142,7 @@ pub(crate) fn require_openssh(purpose: &str) -> Result<(), String> {
     )
 }
 fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), String> {
-    if ssh.is_file() && keygen.is_file() {
+    if applications::launch::executable_file(ssh) && applications::launch::executable_file(keygen) {
         Ok(())
     } else {
         Err(format!(
@@ -153,14 +153,14 @@ fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), St
 
 fn validate_path(path: &str) -> Result<(), String> {
     if path.len() > 4096
-        || path.contains('\0')
+        || path.bytes().any(|byte| byte.is_ascii_control())
         || !(path == "/workspace"
             || path.strip_prefix("/workspace/").is_some_and(|tail| {
                 tail.split('/')
                     .all(|part| !part.is_empty() && part != "." && part != "..")
             }))
     {
-        return Err("Choose a folder inside /workspace.".into());
+        return Err("Choose a folder inside /workspace with no control characters.".into());
     }
     Ok(())
 }
@@ -206,7 +206,7 @@ fn editor_launch(
     Ok(launch)
 }
 
-/// Writes `~/.silo/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
+/// Writes `<channel home>/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
 /// any other workspace settings the user added and restoring Silo's own.
 fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
@@ -248,10 +248,21 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
             folder
         }
     ));
-    let mut document = serde_json::from_slice::<serde_json::Value>(&read_regular(&file)?)
-        .ok()
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
+    let old = read_regular(&file)?;
+    let invalid = || {
+        format!(
+            "Silo cannot update the editor workspace {} as a JSON object. The file was left unchanged. Remove comments or repair its JSON, then retry.",
+            file.display()
+        )
+    };
+    let mut document = if old.is_empty() && !file.exists() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice::<serde_json::Value>(&old).map_err(|_| invalid())?
+    };
+    if !document.is_object() {
+        return Err(invalid());
+    }
     document["folders"] = serde_json::json!([{ "uri": remote_uri(alias, path, false)? }]);
     document["remoteAuthority"] = serde_json::json!(format!("ssh-remote+{alias}"));
     if !document["settings"].is_object() {
@@ -266,13 +277,17 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
 }
 
 fn remote_uri(alias: &str, path: &str, zed: bool) -> Result<String, String> {
+    validate_path(path)?;
     let mut uri = reqwest::Url::parse(&if zed {
         format!("ssh://{alias}/")
     } else {
         format!("vscode-remote://ssh-remote+{alias}/")
     })
     .map_err(|_| FAILED)?;
-    uri.set_path(path);
+    uri.path_segments_mut()
+        .map_err(|_| FAILED)?
+        .clear()
+        .extend(path.split('/').skip(1));
     Ok(uri.into())
 }
 
@@ -305,40 +320,67 @@ pub(crate) fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
 
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     read_regular(path)?;
-    let mut file =
-        tempfile::NamedTempFile::new_in(path.parent().ok_or(FAILED)?).map_err(|_| FAILED)?;
+    let parent = path.parent().ok_or(FAILED)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|_| FAILED)?;
     file.as_file()
         .set_permissions(fs::Permissions::from_mode(0o600))
         .map_err(|_| FAILED)?;
     file.write_all(bytes).map_err(|_| FAILED)?;
     file.as_file().sync_all().map_err(|_| FAILED)?;
     file.persist(path).map_err(|_| FAILED)?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| FAILED)?;
     Ok(())
 }
 
 pub(crate) fn key(path: &Path) -> Result<(), String> {
-    if !read_regular(path)?.is_empty() {
+    let bytes = read_regular(path)?;
+    if !bytes.is_empty() {
+        let metadata = fs::symlink_metadata(path).map_err(|_| FAILED)?;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            write_private(path, &bytes)?;
+        }
         return Ok(());
     }
     let mut command = Command::new("/usr/bin/ssh-keygen");
     command
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", "Silo", "-f"])
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            crate::channel::current().product_name(),
+            "-f",
+        ])
         .arg(path);
     run(&mut command, Duration::from_secs(5))
 }
 
 pub(crate) fn public_key(path: &Path) -> Result<String, String> {
-    let output = applications::launch::sanitize_child(&mut Command::new("/usr/bin/ssh-keygen"))
-        .args(["-y", "-f"])
-        .arg(path)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
+    let mut command = Command::new("/usr/bin/ssh-keygen");
+    command.args(["-y", "-f"]).arg(path);
+    public_key_from_command(&mut command, Duration::from_secs(5))
+}
+
+fn public_key_from_command(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    let mut output = tempfile::tempfile().map_err(|_| FAILED)?;
+    run_with_stdout(
+        command,
+        timeout,
+        Stdio::from(output.try_clone().map_err(|_| FAILED)?),
+    )?;
+    output.seek(SeekFrom::Start(0)).map_err(|_| FAILED)?;
+    let mut text = String::new();
+    output
+        .take(4097)
+        .read_to_string(&mut text)
         .map_err(|_| FAILED)?;
-    if !output.status.success() {
+    if text.len() > 4096 {
         return Err(FAILED.into());
     }
-    let text = String::from_utf8(output.stdout).map_err(|_| FAILED)?;
     let mut fields = text.split_whitespace();
     let kind = fields.next().ok_or(FAILED)?;
     let value = fields.next().ok_or(FAILED)?;
@@ -380,7 +422,17 @@ fn prepare(
 
 /// The `Include` that makes the entries in `root` visible to the user's `ssh`.
 fn include_line(root: &Path) -> Result<String, String> {
-    Ok(format!("Include {}", ssh_quote(&root.join("*.conf"))?))
+    let mut pattern = String::new();
+    for character in root.to_str().ok_or(FAILED)?.chars() {
+        if matches!(character, '\\' | '[' | ']' | '?' | '*') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    Ok(format!(
+        "Include {}",
+        ssh_quote(&Path::new(&pattern).join("*.conf"))?
+    ))
 }
 
 fn owned(metadata: &fs::Metadata) -> bool {
@@ -463,6 +515,7 @@ fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -551,9 +604,13 @@ fn host_patterns(config: &Path, alias: &str, name: &str) -> String {
 }
 
 fn run(command: &mut Command, timeout: Duration) -> Result<(), String> {
+    run_with_stdout(command, timeout, Stdio::null())
+}
+
+fn run_with_stdout(command: &mut Command, timeout: Duration, stdout: Stdio) -> Result<(), String> {
     let mut child = applications::launch::sanitize_child(command)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(stdout)
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| FAILED)?;
@@ -661,6 +718,27 @@ pub(crate) fn prepare_remote_private(
     vm: &str,
     path: &str,
 ) -> Result<(String, PathBuf), String> {
+    prepare_remote_transport(app, host, vm, path, false).map(|(alias, config, _)| (alias, config))
+}
+pub(crate) fn prepare_remote_network_private(
+    app: &AppHandle,
+    host: &str,
+    vm: &str,
+) -> Result<(String, PathBuf, std::net::IpAddr), String> {
+    let (alias, config, address) = prepare_remote_transport(app, host, vm, "/workspace", true)?;
+    Ok((
+        alias,
+        config,
+        address.ok_or("Guest network address is unavailable.")?,
+    ))
+}
+fn prepare_remote_transport(
+    app: &AppHandle,
+    host: &str,
+    vm: &str,
+    path: &str,
+    forwarding: bool,
+) -> Result<(String, PathBuf, Option<std::net::IpAddr>), String> {
     validate_path(path)?;
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     uuid::Uuid::parse_str(vm).map_err(|_| "Invalid VM identity.")?;
@@ -676,7 +754,8 @@ pub(crate) fn prepare_remote_private(
         public_key(&client)?
     };
     // The remote call can take minutes; keep the file lock free meanwhile.
-    let (host_public, user) = crate::remote_access::prepare(app, host, vm, &client_public, path)?;
+    let (host_public, user, address) =
+        crate::remote_access::prepare(app, host, vm, &client_public, path, forwarding)?;
     let _guard = files_lock();
     let alias = format!(
         "{}-{host}-{vm}",
@@ -688,7 +767,7 @@ pub(crate) fn prepare_remote_private(
     let config = root.join(format!("{host}-{vm}.conf"));
     let contents = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, contents.as_bytes())?;
-    Ok((alias, config))
+    Ok((alias, config, address))
 }
 
 fn proxy_command<S: AsRef<str>>(parts: &[S]) -> String {
@@ -813,36 +892,72 @@ fn with_proxy(contents: &str, proxy: &str) -> Option<String> {
 
 /// Rewrites every `*.conf` Silo wrote in `root`, where `rewrite` maps a file stem
 /// and its contents to the new contents, or `None` to leave the file alone.
-fn rewrite_configs(root: &Path, rewrite: &dyn Fn(&str, &str) -> Option<String>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
+fn rewrite_configs(
+    root: &Path,
+    rewrite: &dyn Fn(&str, &str) -> Option<String>,
+) -> Result<(), String> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {
+            return Err(format!(
+                "Could not read editor configurations in {}.",
+                root.display()
+            ))
+        }
     };
-    for entry in entries.flatten() {
+    let mut failures = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                failures.push(format!(
+                    "Could not read an editor configuration in {}.",
+                    root.display()
+                ));
+                continue;
+            }
+        };
         let path = entry.path();
         if path.extension().is_none_or(|extension| extension != "conf") {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            failures.push(format!(
+                "Invalid editor configuration name in {}.",
+                root.display()
+            ));
             continue;
         };
-        let Ok(bytes) = read_regular(&path) else {
-            continue;
-        };
-        let Ok(contents) = String::from_utf8(bytes) else {
-            continue;
-        };
-        if let Some(updated) = rewrite(stem, &contents).filter(|updated| *updated != contents) {
-            let _ = write_private(&path, updated.as_bytes());
+        let result = (|| {
+            let bytes = read_regular(&path)?;
+            let contents = String::from_utf8(bytes)
+                .map_err(|_| "The SSH configuration is not UTF-8.".to_owned())?;
+            if let Some(updated) = rewrite(stem, &contents).filter(|updated| *updated != contents) {
+                write_private(&path, updated.as_bytes())?;
+            }
+            Ok::<_, String>(())
+        })();
+        if let Err(error) = result {
+            failures.push(format!("{}: {error}", path.display()));
         }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Some editor configurations could not be repaired. {}",
+            failures.join(" ")
+        ))
     }
 }
 
 /// Rewrites the ProxyCommand of every `*.conf` Silo wrote in `root`, where
 /// `proxy_for` maps a file stem to its current command.
-fn refresh_configs(root: &Path, proxy_for: &dyn Fn(&str) -> Option<String>) {
+fn refresh_configs(root: &Path, proxy_for: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
     rewrite_configs(root, &|stem, contents| {
         with_proxy(contents, &proxy_for(stem)?)
-    });
+    })
 }
 
 /// Points a local entry written for another runtime home at `paths`: the runtime
@@ -885,8 +1000,8 @@ fn user_config_has_line(user_home: &Path, line: &str) -> bool {
 /// The previous home is never written. The old `Include` line stays: the new one
 /// goes first and `ssh` keeps the first value it finds, so the repointed entries
 /// win, a glob that matches nothing is harmless, and the user's file keeps
-/// everything but the one prepended line. Safe to repeat. Fails only when the
-/// `Include` could not be added, with the message `install_include` explains.
+/// everything but the one prepended line. Safe to repeat. Reports failed entry
+/// rewrites before adding the `Include`.
 fn repoint_converted_entries(
     paths: &RuntimePaths,
     user_home: &Path,
@@ -896,7 +1011,7 @@ fn repoint_converted_entries(
     let _guard = files_lock();
     rewrite_configs(&root, &|name, contents| {
         with_local_entry(contents, paths, name)
-    });
+    })?;
     if !user_config_has_line(user_home, &include_line(&previous_home.join("ssh"))?) {
         return Ok(());
     }
@@ -1033,13 +1148,16 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
             return;
         }
         let _guard = files_lock();
+        let mut failures = Vec::new();
         if let Ok(paths) = runtime::runtime_paths(&app) {
-            refresh_configs(&paths.home.join("ssh"), &|name| {
+            if let Err(error) = refresh_configs(&paths.home.join("ssh"), &|name| {
                 local_proxy(&paths, name).ok()
-            });
+            }) {
+                failures.push(error);
+            }
         }
         if let Ok(home) = app.path().home_dir() {
-            refresh_configs(
+            if let Err(error) = refresh_configs(
                 &crate::channel::current()
                     .state_dir(&home)
                     .join("desktop-remote/ssh"),
@@ -1048,6 +1166,20 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
                     (stem.as_bytes().get(36) == Some(&b'-')).then_some(())?;
                     remote_proxy(host, vm).ok()
                 },
+            ) {
+                failures.push(error);
+            }
+        }
+        drop(_guard);
+        if !failures.is_empty() {
+            crate::notifications::notify(
+                &app,
+                crate::notifications::failure(
+                    "startup:editor-connections",
+                    "Editor connections need attention",
+                    &failures.join(" "),
+                    None,
+                ),
             );
         }
     });
@@ -1070,6 +1202,37 @@ pub(crate) fn prepare_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_file_writers_report_an_unreadable_parent_after_replacement() {
+        use std::os::unix::fs::MetadataExt;
+        for private in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            if fs::metadata(directory.path()).unwrap().uid() == 0 {
+                return; // Root bypasses the permission boundary exercised here.
+            }
+            let path = directory.path().join("config");
+            fs::write(&path, b"previous SSH configuration").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+            let result = if private {
+                write_private(&path, b"complete replacement").map_err(std::io::Error::other)
+            } else {
+                replace_file(&path, b"complete replacement")
+            };
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"complete replacement");
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                if private { 0o600 } else { 0o640 }
+            );
+            assert!(
+                result.is_err(),
+                "an unsynchronized rename must not report success"
+            );
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
     #[test]
     fn a_panic_while_writing_ssh_files_does_not_disable_editor_connections() {
         let _ = std::thread::spawn(|| {
@@ -1094,7 +1257,52 @@ mod tests {
         fs::write(&ssh, b"").unwrap();
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
         fs::write(&keygen, b"").unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        fs::set_permissions(&keygen, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_ok());
+    }
+
+    #[test]
+    fn public_key_output_from_a_stalled_helper_is_rejected() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'ssh-ed25519 test'; exec /bin/sleep 0.2"]);
+        assert!(public_key_from_command(&mut command, Duration::from_millis(20)).is_err());
+    }
+
+    #[test]
+    fn public_key_helper_requires_successful_completion() {
+        for (script, expected) in [
+            ("printf 'ssh-ed25519 test'", Some("ssh-ed25519 test")),
+            ("printf 'ssh-ed25519 test'; exit 1", None),
+        ] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", script]);
+            assert_eq!(
+                public_key_from_command(&mut command, Duration::from_secs(1))
+                    .ok()
+                    .as_deref(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn generated_key_comment_names_the_channel_and_existing_keys_are_preserved() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("id_ed25519");
+        key(&path).unwrap();
+        let public = fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap();
+        assert!(public.ends_with(&format!(" {}\n", crate::channel::current().product_name())));
+        let private = fs::read(&path).unwrap();
+        key(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), private);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap(),
+            public
+        );
     }
 
     #[test]
@@ -1114,6 +1322,37 @@ mod tests {
         }
     }
     #[test]
+    fn editor_handoff_keeps_percent_names_and_encoded_dot_segments_literal() {
+        let directory = tempfile::tempdir().unwrap();
+        for (path, encoded) in [
+            ("/workspace/a%2Fb", "/workspace/a%252Fb"),
+            ("/workspace/%2e%2e/outside", "/workspace/%252e%252e/outside"),
+            ("/workspace/%2E./outside", "/workspace/%252E./outside"),
+            ("/workspace/100% done", "/workspace/100%25%20done"),
+        ] {
+            validate_path(path).unwrap();
+            for zed in [false, true] {
+                let uri =
+                    reqwest::Url::parse(&remote_uri("silo-test-dev", path, zed).unwrap()).unwrap();
+                assert_eq!(uri.path(), encoded, "{path:?}, zed={zed}");
+            }
+            let file = vscode_workspace(directory.path(), "silo-test-dev", path).unwrap();
+            let document: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+            assert_eq!(
+                document["folders"][0]["uri"],
+                format!("vscode-remote://ssh-remote+silo-test-dev{encoded}"),
+            );
+        }
+        for path in ["/workspace/a\nb", "/workspace/a\rb", "/workspace/a\tb"] {
+            for zed in [false, true] {
+                assert!(remote_uri("silo-test-dev", path, zed).is_err());
+            }
+            assert!(vscode_workspace(directory.path(), "silo-test-dev", path).is_err());
+        }
+    }
+
+    #[test]
     fn remote_paths_stay_in_uri_and_are_encoded() {
         let uri = remote_uri("silo-test-dev", "/workspace/a b/#test?x", true).unwrap();
         assert_eq!(uri, "ssh://silo-test-dev/workspace/a%20b/%23test%3Fx");
@@ -1124,6 +1363,73 @@ mod tests {
             assert!(validate_path(invalid).is_err());
         }
     }
+    #[test]
+    fn control_characters_cannot_change_the_requested_editor_folder() {
+        for path in ["/workspace/a\tb", "/workspace/a\nb", "/workspace/a\rb"] {
+            assert!(validate_path(path).is_err());
+            assert!(remote_uri("silo-test-dev", path, true).is_err());
+            assert!(remote_uri("silo-test-dev", path, false).is_err());
+        }
+    }
+
+    #[test]
+    fn literal_percent_sequences_keep_the_guest_folder_identity() {
+        for (path, encoded) in [
+            ("/workspace/some%20comments", "/workspace/some%2520comments"),
+            ("/workspace/a%2Fb", "/workspace/a%252Fb"),
+            ("/workspace/%2e%2e/secret", "/workspace/%252e%252e/secret"),
+            ("/workspace/100%", "/workspace/100%25"),
+        ] {
+            validate_path(path).unwrap();
+            for (zed, prefix) in [
+                (true, "ssh://silo-test-dev"),
+                (false, "vscode-remote://ssh-remote+silo-test-dev"),
+            ] {
+                assert_eq!(
+                    remote_uri("silo-test-dev", path, zed).unwrap(),
+                    format!("{prefix}{encoded}")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn ssh_includes_keep_wildcard_characters_in_directory_names_literal() {
+        let home = tempfile::tempdir().unwrap();
+        for (index, name) in ["home[1]", "home?", "home*", "home\\folder"]
+            .into_iter()
+            .enumerate()
+        {
+            let root = home.path().join(name).join("ssh");
+            fs::create_dir_all(&root).unwrap();
+            let hostname = format!("selected-vm-{index}");
+            fs::write(
+                root.join("dev.conf"),
+                format!("Host silo-test-dev\n  HostName {hostname}\n"),
+            )
+            .unwrap();
+            let config = home.path().join("config");
+            fs::write(&config, format!("{}\n", include_line(&root).unwrap())).unwrap();
+            let output = Command::new("/usr/bin/ssh")
+                .args(["-G", "-F"])
+                .arg(&config)
+                .arg("silo-test-dev")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains(&format!("hostname {hostname}\n")),
+                "{name}: the Include must read the exact directory"
+            );
+        }
+    }
+
     #[test]
     fn shell_and_ssh_paths_are_escaped() {
         assert_eq!(quote("a'b $()"), "'a'\\''b $()'");
@@ -1145,6 +1451,23 @@ mod tests {
     }
 
     #[test]
+    fn reused_ssh_keys_repair_broad_permissions_without_rotating_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("client");
+        key(&file).unwrap();
+        let private = fs::read(&file).unwrap();
+        let public = public_key(&file).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o666)).unwrap();
+        key(&file).unwrap();
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read(&file).unwrap(), private);
+        assert_eq!(public_key(&file).unwrap(), public);
+    }
+
+    #[test]
     fn editor_configurations_get_a_fresh_proxy_command_at_startup() {
         let root = tempfile::tempdir().unwrap();
         let config = "Host silo-abc-dev\n  HostName silo-abc-dev\n  User silo\n  ProxyCommand '/tmp/.mount_old/usr/libexec/silo/tools/msb' 'ssh' 'serve' 'dev'\n\nHost *\n";
@@ -1159,7 +1482,8 @@ mod tests {
                 "/home/me/.silo/abc",
                 name,
             ]))
-        });
+        })
+        .unwrap();
         let updated = fs::read_to_string(root.path().join("dev.conf")).unwrap();
         assert_eq!(
             updated,
@@ -1317,6 +1641,25 @@ mod tests {
     }
 
     #[test]
+    fn an_unparseable_workspace_is_preserved_instead_of_replaced() {
+        let home = tempfile::tempdir().unwrap();
+        let root = crate::channel::current().state_dir(home.path());
+        let file = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap();
+        for contents in [
+            "{\n// keep my workspace settings\n\"settings\": {\"editor.fontSize\": 15}}",
+            "{\"settings\":",
+            "[]",
+            "",
+        ] {
+            fs::write(&file, contents).unwrap();
+            let error = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap_err();
+            assert!(error.contains("workspace"));
+            assert!(error.contains("unchanged"));
+            assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+        }
+    }
+
+    #[test]
     fn zed_keeps_its_ssh_uri_and_no_workspace_file() {
         let home = tempfile::tempdir().unwrap();
         let zed = applications::launch::EditorCommand {
@@ -1333,6 +1676,40 @@ mod tests {
     }
 
     const INCLUDE: &str = "Include \"/home/user/.silo/abc/ssh/*.conf\"";
+
+    #[test]
+    fn ssh_includes_treat_runtime_directory_names_as_literal_paths() {
+        let home = tempfile::tempdir().unwrap();
+        for name in ["ssh[fixture]", "ssh?fixture", "ssh*fixture", "ssh\\fixture"] {
+            let root = home.path().join(name);
+            fs::create_dir_all(&root).unwrap();
+            fs::write(
+                root.join("dev.conf"),
+                "Host silo-glob-fixture\n  HostName 127.0.0.9\n",
+            )
+            .unwrap();
+            let config = home.path().join("fixture.conf");
+            fs::write(&config, format!("{}\n", include_line(&root).unwrap())).unwrap();
+            let output = Command::new("/usr/bin/ssh")
+                .env("HOME", home.path())
+                .args(["-G", "-F"])
+                .arg(&config)
+                .arg("silo-glob-fixture")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: SSH configuration parsing failed"
+            );
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .lines()
+                    .any(|line| line == "hostname 127.0.0.9"),
+                "{name}: the included host was not found"
+            );
+        }
+    }
 
     #[test]
     fn a_stow_linked_ssh_config_is_updated_through_its_link() {
@@ -1985,6 +2362,73 @@ mod tests {
     }
 
     #[test]
+    fn repair_reports_failed_writes_and_retries_all_transport_directives() {
+        // Root can write through directory permission bits.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let computer = migrated();
+        let root = computer.converted.home.join("ssh");
+        let entry = root.join("dev.conf");
+        let original = fs::read(&entry).unwrap();
+        let config = computer.config();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(write_private(&entry, b"cannot replace").is_err());
+        let repair = computer.repair(&computer.converted);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(repair, Repair::Failed(_)), "{repair:?}");
+        assert_eq!(fs::read(&entry).unwrap(), original);
+        assert_eq!(computer.config(), config);
+        assert_eq!(computer.repair(&computer.converted), Repair::Done);
+        let updated = computer.entry(&computer.converted);
+        for directive in ["ProxyCommand", "IdentityFile", "UserKnownHostsFile"] {
+            let value = updated
+                .lines()
+                .find(|line| line.starts_with(&format!("  {directive} ")))
+                .unwrap();
+            assert!(
+                value.contains(&computer.converted.home.display().to_string()),
+                "{value}"
+            );
+            assert!(!value.contains(&computer.previous.home.display().to_string()));
+        }
+    }
+
+    #[test]
+    fn repair_reports_unreadable_files_and_finishes_the_writable_batch() {
+        let computer = migrated();
+        let root = computer.converted.home.join("ssh");
+        let outside = computer.directory.path().join("unrelated-config");
+        fs::write(&outside, "keep this file").unwrap();
+        let unreadable = root.join("unreadable.conf");
+        std::os::unix::fs::symlink(&outside, &unreadable).unwrap();
+        let config = computer.config();
+        let repair = computer.repair(&computer.converted);
+        assert!(
+            matches!(&repair, Repair::Failed(error) if error.contains("unreadable.conf")),
+            "{repair:?}"
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep this file");
+        assert!(fs::symlink_metadata(&unreadable)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(computer.config(), config);
+        assert!(computer
+            .entry(&computer.converted)
+            .contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+        fs::remove_file(&unreadable).unwrap();
+        assert_eq!(computer.repair(&computer.converted), Repair::Done);
+    }
+
+    #[test]
+    fn repair_accepts_an_absent_optional_configuration_directory() {
+        let computer = migrated();
+        fs::remove_dir_all(computer.converted.home.join("ssh")).unwrap();
+        assert_eq!(computer.repair(&computer.converted), Repair::Done);
+    }
+
+    #[test]
     fn a_failure_other_than_the_line_to_add_is_not_reported_as_one() {
         let computer = migrated();
         // A runtime home `ssh` can't be told about: the `Include` can't be written at all.
@@ -2033,7 +2477,7 @@ mod tests {
         let target = computer.directory.path().join("target.conf");
         fs::write(&target, computer.entry(&computer.converted)).unwrap();
         std::os::unix::fs::symlink(&target, ssh.join("linked.conf")).unwrap();
-        computer.repoint().unwrap();
+        assert!(computer.repoint().unwrap_err().contains("linked.conf"));
         assert_eq!(fs::read_to_string(ssh.join("mine.conf")).unwrap(), foreign);
         assert_eq!(
             fs::read_to_string(ssh.join("bad name.conf")).unwrap(),

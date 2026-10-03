@@ -28,12 +28,34 @@ const dropped = { confirmedDeletions: requestA.machines.slice(1).map(({ id }) =>
 const dependencies = { checks: [], retry: vi.fn() }
 
 describe("production onboarding submission errors", () => {
+  it("passes connected token availability to onboarding independently of OAuth", () => {
+    const source = { applicationActions: {} } as unknown as ProductionSource
+    const connected = { ...application, github: { ...application.github, personalToken: { state: "connected" as const, saved: true } } }
+    const view = render(<ProductionOnboarding application={connected} dependencies={dependencies} source={source} />)
+    expect(captured.props!.tokenConnected).toBe(true)
+    view.rerender(<ProductionOnboarding application={application} dependencies={dependencies} source={source} />)
+    expect(captured.props!.tokenConnected).toBe(false)
+  })
+
   it("passes an intentionally empty restored draft to identity verification", () => {
     const store = createMemorySettingsStore({}, { currentStep: "review", machines: [], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} })
     const verifySetupIdentities = vi.fn().mockResolvedValue(undefined)
     const source = { verifySetupIdentities, applicationActions: {} } as unknown as ProductionSource
     render(<SettingsProvider store={store}><ProductionOnboarding application={application} dependencies={dependencies} source={source} /></SettingsProvider>)
     expect(verifySetupIdentities).toHaveBeenCalledWith({ machineConfiguration: { schemaVersion: 1, machines: [] }, github: { connectionState: application.github.state, workspaces: [] } })
+  })
+
+  it("verifies an omitted identity for a recovered sandbox named constructor as unapplied", () => {
+    const machine = { ...requestB.machines[0], name: "constructor" }
+    const store = createMemorySettingsStore({}, { currentStep: "review", machines: [machine], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} })
+    const verifySetupIdentities = vi.fn().mockResolvedValue(undefined)
+    const source = { verifySetupIdentities, applicationActions: {} } as unknown as ProductionSource
+    render(<SettingsProvider store={store}><ProductionOnboarding application={application} dependencies={dependencies} source={source} /></SettingsProvider>)
+
+    expect(verifySetupIdentities).toHaveBeenCalledWith({
+      machineConfiguration: { schemaVersion: 1, machines: [machine] },
+      github: { connectionState: application.github.state, workspaces: [{ workspace: "constructor", repositories: [], identity: { name: "", email: "", apply: false } }] },
+    })
   })
 
   it("ignores an older rejection while the newer submission succeeds", async () => {

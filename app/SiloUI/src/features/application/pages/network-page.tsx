@@ -16,7 +16,7 @@ export function NetworkPage({ workspaces, browser, network, error, actions, acti
 }) {
   const fieldID = useId()
   const controller = useNetworkPorts({ workspaces, network, error, actions, active })
-  const { draft, rows, errors, addDisabledReason, runningLocalWorkspaces, busy } = controller
+  const { draft, rows, errors, addDisabledReason, runningLocalWorkspaces, busy, error: statusError } = controller
   const draftRow = <NetworkPortForm controller={controller} fieldID={fieldID} />
 
   return <TooltipProvider delayDuration={150}><div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
@@ -24,16 +24,16 @@ export function NetworkPage({ workspaces, browser, network, error, actions, acti
       ? <Tooltip><TooltipTrigger asChild><span tabIndex={0}><Button variant="outline" size="xs" disabled><Plus />Add port</Button></span></TooltipTrigger><TooltipContent>{addDisabledReason}</TooltipContent></Tooltip>
       : <Button variant="outline" size="xs" disabled={!actions.saveNetworkPort || !runningLocalWorkspaces.length || busy} onClick={() => controller.add()}><Plus />Add port</Button>}</div>
 
-    {(error || errors.length > 0) && <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/20 px-3 py-2 text-xs text-destructive"><span>{error || errors.join(" · ")}</span><Button size="sm" variant="ghost" onClick={() => void actions.refreshNetwork?.()}>Retry</Button></div>}
-    {!network && !error && actions.refreshNetwork && !draft ? <div role="status" aria-label="Loading network" className="space-y-2 rounded-lg border border-border p-3">{[0, 1, 2].map(i => <div key={i} className="h-7 animate-pulse rounded bg-muted motion-reduce:animate-none" />)}</div>
-      : rows.length === 0 && !draft ? error || errors.length > 0 ? null : <EmptyState icon={<Network />} title={workspaces.length === 0 ? "No matching sandboxes" : "No ports"} />
+    {(statusError || errors.length > 0) && <div role="alert" className="flex items-center justify-between gap-3 rounded-md border border-destructive/20 px-3 py-2 text-xs text-destructive"><span>{statusError || errors.join(" · ")}</span><Button size="sm" variant="ghost" onClick={() => void actions.refreshNetwork?.()}>Retry</Button></div>}
+    {controller.loading && rows.length === 0 && !statusError && errors.length === 0 && !draft ? <div role="status" aria-label="Loading network" className="space-y-2 rounded-lg border border-border p-3">{[0, 1, 2].map(i => <div key={i} className="h-7 animate-pulse rounded bg-muted motion-reduce:animate-none" />)}</div>
+      : rows.length === 0 && !draft ? statusError || errors.length > 0 ? null : <EmptyState icon={<Network />} title={workspaces.length === 0 ? "No matching sandboxes" : "No ports"} />
       : <div className="flex max-h-full min-h-0 self-start w-full flex-col overflow-hidden rounded-lg border border-border"><div role="table" aria-label="Network" className="flex min-h-0 flex-col text-xs">
         <div role="row" className={`${grid} shrink-0 border-b border-border bg-muted/45 font-medium text-muted-foreground`}><span role="columnheader">Port</span><span role="columnheader" className="hidden sm:block">Address</span><span role="columnheader">State</span><span role="columnheader">Sandbox</span><span role="columnheader" className="sr-only">Actions</span></div>
-        <div className="min-h-0 divide-y divide-border overflow-y-auto bg-card" data-table-scroll="network">{draft && !draft.editing && draftRow}{rows.map(({ workspace, port, host }) => {
+        <div className="min-h-0 divide-y divide-border overflow-y-auto bg-card" data-table-scroll="network">{draft && !draft.editing && draftRow}{rows.map(({ workspace, port, host, error: rowError }) => {
           const key = `${workspaceTarget(workspace)}:${port.port}`
           if (draft?.editing && draft.workspace === workspaceTarget(workspace) && draft.port === String(port.port)) return <NetworkPortForm key={key} controller={controller} fieldID={fieldID} />
           const address = networkAddress(port, host)
-          const state = networkPortState(workspace, port, error, errors)
+          const state = networkPortState(workspace, port, rowError)
           return <div key={key} role="row" className={`${grid} hover:bg-muted/55 focus-within:bg-muted/55`}>
             <span role="cell" className="font-mono font-medium">{port.port}</span><span role="cell" className="hidden min-w-0 font-mono text-muted-foreground sm:block">{address ? <Tooltip><TooltipTrigger asChild><span className="block truncate">{address}</span></TooltipTrigger><TooltipContent>{address}</TooltipContent></Tooltip> : "—"}</span>
             <span role="cell" className={state === "Reachable" ? "text-emerald-700 dark:text-emerald-400" : "text-muted-foreground"}>{state}</span>

@@ -133,18 +133,24 @@ export function createSystemIntegrationStore(
       // Authorization can change outside Silo. Every explicit enable starts
       // from a fresh native read instead of trusting the rendered snapshot.
       let fresh: SystemIntegrations
-      try {
-        fresh = systemIntegrationsSchema.parse(await service.read())
-      } catch (error) {
-        // Do not turn a failed preflight into a second read or an authorization
-        // request. Authority remains unknown until an independent refresh.
-        publish({ initialized: false })
-        await report(error)
-        return
+      for (;;) {
+        const sequence = ++refreshSequence
+        try {
+          fresh = systemIntegrationsSchema.parse(await service.read())
+          if (sequence === refreshSequence) break
+          // A focus read or another OS action superseded this preflight. Read
+          // again so the explicit enable uses current permission authority.
+        } catch (error) {
+          if (sequence !== refreshSequence) continue
+          // A current failed preflight cannot establish authorization.
+          publish({ initialized: false })
+          await report(error)
+          return
+        }
       }
       let verified = fresh.notifications
       ++refreshSequence
-      publish({ notifications: verified, initialized: true })
+      publish({ ...fresh, initialized: true })
       if (verified.state === "notDetermined") {
         verified = status(notificationStateSchema).parse(await service.requestNotifications())
         ++refreshSequence

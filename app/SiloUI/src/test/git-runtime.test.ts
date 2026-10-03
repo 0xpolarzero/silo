@@ -1,3 +1,4 @@
+import { Readable } from "node:stream"
 import { execFileSync } from "node:child_process"
 import { chmod, lstat, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -74,7 +75,7 @@ describe("bundled Git release staging", () => {
       targetTriple: "aarch64-apple-darwin",
       selected,
       licenses: [],
-      fetchBytes: async () => Buffer.from("corrupt"),
+      fetchStream: async () => Readable.from([Buffer.from("corrupt")]),
     })).rejects.toThrow("checksum mismatch")
     expect(await readFile(join(published, "manifest.json"), "utf8")).toBe("existing\n")
   })
@@ -89,14 +90,14 @@ describe("bundled Git release staging", () => {
       sha256: gitRuntimeSha256(fixture.bytes),
     }
     const licenses = [{ name: "LICENSE.txt", url: "https://example.test/LICENSE", sha256: gitRuntimeSha256(license) }]
-    const fetchBytes = vi.fn(async (url: string) => url === licenses[0].url ? license : fixture.bytes)
+    const fetchStream = vi.fn(async (url: string) => Readable.from([url === licenses[0].url ? license : fixture.bytes]))
 
     const staged = await stageGitRuntime({
       appRoot,
       targetTriple: "aarch64-apple-darwin",
       selected,
       licenses,
-      fetchBytes,
+      fetchStream,
     })
 
     expect((await stat(staged.gitPath)).mode & 0o777).toBe(0o755)
@@ -119,7 +120,7 @@ describe("bundled Git release staging", () => {
         packagedResourceDirectory: "git-support",
       },
     })
-    expect(fetchBytes).toHaveBeenCalledTimes(2)
+    expect(fetchStream).toHaveBeenCalledTimes(2)
   })
 
   it("rejects an archive that omits an HTTPS helper", async () => {
@@ -132,7 +133,7 @@ describe("bundled Git release staging", () => {
       targetTriple: "aarch64-apple-darwin",
       selected: { ...selected, archive: "fixture.tar.gz", sha256: gitRuntimeSha256(archive) },
       licenses: [],
-      fetchBytes: async () => archive,
+      fetchStream: async () => Readable.from([archive]),
       extractArchive: async (_archive: string, destination: string) => {
         await mkdir(join(destination, "bin"), { recursive: true })
         await mkdir(join(destination, "libexec/git-core"), { recursive: true })
@@ -159,7 +160,7 @@ describe("bundled Git release staging", () => {
       targetTriple: "aarch64-apple-darwin",
       selected,
       licenses: [],
-      fetchBytes: async () => fixture.bytes,
+      fetchStream: async () => Readable.from([fixture.bytes]),
       extractArchive: async (_archive: string, destination: string) => {
         const outside = join(appRoot, "outside")
         await mkdir(join(destination, "bin"), { recursive: true })

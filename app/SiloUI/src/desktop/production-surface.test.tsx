@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { createMemorySettingsStore, createSettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
 import type { ProductionSource } from "./production-source"
 import type { DependencyStore } from "./dependencies"
-import { ProductionSurface } from "./production-surface"
+import { ProductionSurface, StartupLoading } from "./production-surface"
 
 const native = vi.hoisted(() => ({ invoke: vi.fn(async (_command: string, _args?: unknown): Promise<unknown> => undefined) }))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => false }))
@@ -136,6 +136,14 @@ describe("local sandboxes updating while connected computers are shown", () => {
 })
 
 describe("status panel while application state loads", () => {
+  it("shows loading instead of an empty inventory before saved sandboxes are read", () => {
+    render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><StartupLoading statusPanel /></SettingsProvider>)
+    expect(screen.getByText("Loading sandboxes…")).toBeVisible()
+    expect(screen.queryByText("No sandboxes yet")).not.toBeInTheDocument()
+    expect(screen.queryByText("Add your first sandbox in Silo.")).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Open Silo" })).toBeEnabled()
+  })
+
   it("keeps Open Silo and Quit usable in the tray skeleton", async () => {
     state.source = null
     state.loading = true

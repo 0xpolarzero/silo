@@ -59,3 +59,48 @@ it("accepts a notice without a sandbox and rejects an unknown category", () => {
   expect(noticeSchema.safeParse({ ...notice, sandbox: null }).success).toBe(true)
   expect(noticeSchema.safeParse({ ...notice, category: "health" }).success).toBe(false)
 })
+
+it("ignores notices after disposal while native registration is still pending", async () => {
+  let register!: (stop: () => void) => void
+  let emit!: (event: { payload: unknown }) => void
+  const stop = vi.fn()
+  native.listen.mockImplementation((_event: string, handler: typeof emit) => {
+    emit = handler
+    return new Promise(resolve => { register = resolve })
+  })
+  const handler = vi.fn()
+  const dispose = listenForNotices(handler)
+  dispose()
+  emit({ payload: notice })
+  register(stop)
+  await Promise.resolve()
+  emit({ payload: notice })
+  expect(stop).toHaveBeenCalledOnce()
+  expect(handler).not.toHaveBeenCalled()
+})
+
+it("receives later native notices after focus retries failed registration", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+  const stop = vi.fn()
+  let emit: ((event: { payload: unknown }) => void) | undefined
+  native.listen.mockRejectedValueOnce(new Error("Event bridge not ready"))
+    .mockImplementation(async (_event: string, handler: NonNullable<typeof emit>) => { emit = handler; return stop })
+  const handler = vi.fn()
+  const dispose = listenForNotices(handler)
+  try {
+    await vi.waitFor(() => expect(logged).toHaveBeenCalledWith("Silo notice:", expect.any(Error)))
+    window.dispatchEvent(new Event("focus"))
+    await Promise.resolve()
+    await Promise.resolve()
+    emit?.({ payload: notice })
+    expect(handler).toHaveBeenCalledExactlyOnceWith(notice)
+    dispose()
+    native.listen.mockClear()
+    window.dispatchEvent(new Event("focus"))
+    expect(native.listen).not.toHaveBeenCalled()
+    expect(stop).toHaveBeenCalledOnce()
+  } finally {
+    dispose()
+    logged.mockRestore()
+  }
+})

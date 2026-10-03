@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 import { toast } from "sonner"
@@ -8,13 +8,45 @@ import { SettingsProvider } from "@/features/preferences/settings-store"
 import { OverviewPage } from "./overview-page"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
-import type { WorkspaceStorageState } from "../model/workspace-storage"
+import { workspaceStorageStateSchema, type WorkspaceStorageState } from "../model/workspace-storage"
 
 afterEach(() => { toast.dismiss() })
 function Panel(props: React.ComponentProps<typeof WorkspaceStoragePanel>) { return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster /><WorkspaceStoragePanel {...props} /></SettingsProvider> }
 
 const gib = 1024 ** 3
 const storage: WorkspaceStorageState = { history: [], workspaceHostBytes: 36 * gib, runtimeHostBytes: 5 * gib, checkpointHostBytes: 3 * gib, checkpointCount: 2, workspaceUsedBytes: gib, workspaceCapacityBytes: 64 * gib, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
+
+it.each(["__proto__", "constructor", "toString", "future-trigger"])("shows unknown reclaim trigger %s as Automatic", async trigger => {
+  const state = workspaceStorageStateSchema.parse({ ...storage, history: [{ at: 1000, trigger, reclaimedBytes: 0, error: null }] })
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue(state)} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Reclaim history, 1 attempt" }))
+  expect(screen.getByText(/^Automatic ·/)).toBeVisible()
+  expect(screen.getByText("No unused space to reclaim")).toBeVisible()
+})
+
+it.each([
+  ["manual", "Manual"], ["scheduled", "Scheduled"], ["beforeStop", "Before stop"],
+  ["afterStart", "After start"], ["legacy", "Previous reclaim"],
+])("preserves the label for reclaim trigger %s", async (trigger, label) => {
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, history: [{ at: 1000, trigger, reclaimedBytes: 0, error: null }] })} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Reclaim history, 1 attempt" }))
+  expect(screen.getByText(new RegExp(`^${label} ·`))).toBeVisible()
+})
+
+it.each([[1, "attempt"], [2, "attempts"]])("pluralizes the reclaim history label for %i %s", async (count, noun) => {
+  const history = Array.from({ length: count }, (_, i) => ({ at: 1000 + i, trigger: "manual", reclaimedBytes: 0, error: null }))
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, history })} reclaim={vi.fn()} />)
+  expect(await screen.findByRole("button", { name: `Reclaim history, ${count} ${noun}` })).toBeVisible()
+})
+
+it("distinguishes reclaim attempts from different years", async () => {
+  const history = ["2026-10-01T12:00:00Z", "2025-10-01T12:00:00Z"].map(at => ({ at: Date.parse(at) / 1000, trigger: "manual", reclaimedBytes: 0, error: null }))
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, history })} reclaim={vi.fn()} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Reclaim history, 2 attempts" }))
+  const entries = screen.getByLabelText("Reclaim history entries")
+  expect(entries).toHaveTextContent("2025")
+  expect(entries).toHaveTextContent("2026")
+})
 
 it("distinguishes host allocation from guest usage and reports measured recovery", async () => {
   const read = vi.fn().mockResolvedValue(storage)
@@ -63,8 +95,12 @@ it("shows failures without claiming recovery and permits retry", async () => {
   const user = userEvent.setup()
   render(<Panel workspaceId="vm-id" running read={read} reclaim={reclaim} />)
   expect(await screen.findByText("Storage unavailable")).toBeVisible()
-  await user.click(screen.getByRole("button", { name: "Refresh storage" }))
+  expect(screen.queryByText(/No checkpoints are saved/)).not.toBeInTheDocument()
+  expect(screen.queryByText("No reclaims yet")).not.toBeInTheDocument()
+  expect(screen.getByText("Refresh storage to check saved checkpoints.")).toBeVisible()
+  await user.click(screen.getByRole("button", { name: "Retry" }))
   expect(await screen.findByText("36.00 GiB")).toBeVisible()
+  expect(screen.getByText("No reclaims yet")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Reclaim unused space" }))
   expect(await screen.findByText("Workspace trim failed")).toBeVisible()
   expect(screen.getAllByRole("button", { name: "Retry" }).length).toBeGreaterThan(0)
@@ -188,4 +224,26 @@ it("expands a failed reclaim's error inline from its Details button", async () =
   expect(screen.getByText(/Unused blocks were released; workspace files and capacity were preserved/)).toBeVisible()
   await user.click(details)
   expect(screen.queryByText(/its original length was restored/)).not.toBeInTheDocument()
+})
+
+
+it("uses current disabled state and prevents overlapping toast Retry reads", async () => {
+  let finish!: (value: WorkspaceStorageState) => void
+  const read = vi.fn().mockRejectedValueOnce(new Error("Initial storage read failed"))
+    .mockImplementationOnce(() => new Promise<WorkspaceStorageState>(resolve => { finish = resolve }))
+  const view = render(<Panel workspaceId="vm-id" running read={read} />)
+  expect(await screen.findByText("Initial storage read failed")).toBeVisible()
+  const retry = screen.getByRole("button", { name: "Retry" })
+  view.rerender(<Panel workspaceId="vm-id" running disabled read={read} />)
+  fireEvent.click(retry)
+  expect(read).toHaveBeenCalledOnce()
+  view.rerender(<Panel workspaceId="vm-id" running read={read} />)
+  act(() => { fireEvent.click(retry); fireEvent.click(retry) })
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole("button", { name: "Refresh storage" })).toBeDisabled()
+  expect(screen.queryByText("36.00 GiB")).not.toBeInTheDocument()
+  await act(async () => finish(storage))
+  expect(await screen.findByText("36.00 GiB")).toBeVisible()
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole("button", { name: "Refresh storage" })).toBeEnabled()
 })

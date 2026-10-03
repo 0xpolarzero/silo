@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { describe, expect, it, vi } from "vitest"
@@ -23,6 +23,18 @@ function ConfirmationHarness({ onDismiss }: { onDismiss: () => void }) {
 }
 
 describe("InlineConfirmation", () => {
+  it("keeps the confirmation when Escape belongs to IME composition", async () => {
+    const user = userEvent.setup()
+    const onDismiss = vi.fn()
+    render(<ConfirmationHarness onDismiss={onDismiss} />)
+    await user.click(screen.getByRole("button", { name: "Arm" }))
+    fireEvent.keyDown(screen.getByRole("button", { name: "Confirm" }), { key: "Escape", isComposing: true })
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeVisible()
+    expect(onDismiss).not.toHaveBeenCalled()
+    await user.keyboard("{Escape}")
+    expect(onDismiss).toHaveBeenCalledOnce()
+  })
+
   it("keeps inside presses and dismisses on Escape or an outside press", async () => {
     const user = userEvent.setup()
     const onDismiss = vi.fn()
@@ -41,5 +53,30 @@ describe("InlineConfirmation", () => {
     fireEvent.pointerDown(screen.getByRole("button", { name: "Outside" }))
     expect(screen.queryByRole("button", { name: "Confirm" })).not.toBeInTheDocument()
     expect(onDismiss).toHaveBeenCalledTimes(2)
+  })
+
+  it("leaves Escape inside a separate dialog to that dialog", async () => {
+    const user = userEvent.setup()
+    const onDismiss = vi.fn()
+    render(<>
+      <ConfirmationHarness onDismiss={onDismiss} />
+      <div role="dialog" aria-label="Commands"><input aria-label="Search commands" /></div>
+    </>)
+    await user.click(screen.getByRole("button", { name: "Arm" }))
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+    screen.getByRole("textbox", { name: "Search commands" }).dispatchEvent(event)
+    expect(event.defaultPrevented).toBe(false)
+    expect(onDismiss).not.toHaveBeenCalled()
+  })
+
+  it("still consumes Escape from inside its own containing dialog", async () => {
+    const user = userEvent.setup()
+    const onDismiss = vi.fn()
+    render(<div role="dialog" aria-label="Status"><ConfirmationHarness onDismiss={onDismiss} /></div>)
+    await user.click(screen.getByRole("button", { name: "Arm" }))
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+    act(() => { screen.getByRole("button", { name: "Confirm" }).dispatchEvent(event) })
+    expect(event.defaultPrevented).toBe(true)
+    expect(onDismiss).toHaveBeenCalledOnce()
   })
 })

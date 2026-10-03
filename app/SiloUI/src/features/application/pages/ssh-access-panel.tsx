@@ -3,7 +3,7 @@ import { ConnectionIcon } from "@/components/connection-icon"
 import { ActionsMenu } from "@/components/actions-menu"
 import { ConfirmPopover } from "@/components/confirm-popover"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
-import { useEffect, useId, useState } from "react"
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import { Check, ChevronDown, Download, Pencil, Terminal, TriangleAlert } from "lucide-react"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Button } from "@/components/ui/button"
@@ -28,7 +28,7 @@ export function SshAccessPanel({ workspaces, state, error, actions, active }: { 
   return <TooltipProvider delayDuration={150}><section aria-label="SSH access" className="space-y-2 text-xs">
     <h3 className="font-medium">SSH access</h3>
     {error && <div role="alert" className="text-destructive">{error}<Button variant="ghost" size="xs" onClick={() => void actions.refreshSshAccess?.()}>Retry SSH status</Button></div>}
-    {workspaces.filter(w => w.machine.kind === "vm").map(workspace => <SshAccessRow key={workspaceTarget(workspace)} workspace={workspace} access={state?.workspaces.find(s => s.workspace === workspaceTarget(workspace))} save={actions.saveSshAccess} connection={actions.sshConnection} stale={Boolean((error && !workspace.computer) || workspace.computer?.connected === false || workspace.freshness === "stale")} />)}
+    {workspaces.filter(w => w.machine.kind === "vm").map(workspace => <SshAccessRow key={JSON.stringify([workspace.computer?.id, workspace.machine.id])} workspace={workspace} access={state?.workspaces.find(s => s.workspace === workspaceTarget(workspace))} save={actions.saveSshAccess} connection={actions.sshConnection} stale={Boolean((error && !workspace.computer) || workspace.computer?.connected === false || workspace.freshness === "stale")} />)}
   </section></TooltipProvider>
 }
 
@@ -36,6 +36,11 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
   stale = stale || Boolean(access?.unavailable)
   const id = useId()
   const [busy, setBusy] = useState(false)
+  const pending = useRef(false)
+  const sequence = useRef(0)
+  const handlers = useRef<{ change: typeof change; connect: typeof connect } | null>(null)
+  useLayoutEffect(() => { handlers.current = { change, connect } })
+  useEffect(() => () => { sequence.current++; handlers.current = null }, [])
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   useEffect(() => {
@@ -49,22 +54,33 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
   const external = access?.bindAddress !== "127.0.0.1"
   const blocked = readOnly || busy || !save || stale
   async function change(patch: Partial<SshAccessRequest>) {
-    if (!access || !save || blocked) return false
+    if (!access || !save || blocked || pending.current) return false
+    const request = ++sequence.current
+    pending.current = true
     setBusy(true); setError(null); setCopied(null)
     try {
-      await save({ workspace: access.workspace, enabled: access.enabled, port: access.port, bindAddress: access.bindAddress, keys: access.keys, ...patch })
-      return true
-    } catch (cause) { showActionFailure("SSH settings not saved", cause, () => { void change(patch) }, { native: false }); return false }
-    finally { setBusy(false) }
+      await save({ workspace: access.workspace, enabled: access.enabled, port: access.port, bindAddress: access.bindAddress, ...patch })
+      return request === sequence.current
+    } catch (cause) {
+      if (request === sequence.current) showActionFailure("SSH settings not saved", cause, () => { if (request === sequence.current) void handlers.current?.change(patch) }, { native: false })
+      return false
+    } finally { if (request === sequence.current) { pending.current = false; setBusy(false) } }
   }
   async function connect(download: boolean, network: boolean) {
-    if (!access || !connection || blocked) return
+    if (!access || !connection || blocked || pending.current) return
+    const request = ++sequence.current
+    pending.current = true
     setBusy(true); setError(null); setCopied(null)
     try {
       const command = await connection(access.workspace, download, network)
-      if (!download && command) { await navigator.clipboard.writeText(command); setCopied(network ? "network" : "local") }
-    } catch (cause) { showActionFailure(download ? "SSH key file not saved" : "SSH command not copied", cause, () => { void connect(download, network) }, { native: false }) }
-    finally { setBusy(false) }
+      if (request !== sequence.current) return
+      if (!download && command) {
+        await navigator.clipboard.writeText(command)
+        if (request === sequence.current) setCopied(network ? "network" : "local")
+      }
+    } catch (cause) {
+      if (request === sequence.current) showActionFailure(download ? "SSH key file not saved" : "SSH command not copied", cause, () => { if (request === sequence.current) void handlers.current?.connect(download, network) }, { native: false })
+    } finally { if (request === sequence.current) { pending.current = false; setBusy(false) } }
   }
   const networkAddresses = access?.addresses.filter(value => value !== "127.0.0.1") ?? []
   const badge = stale ? "SSH status unavailable" : access ? statuses[access.state] : "SSH unavailable"

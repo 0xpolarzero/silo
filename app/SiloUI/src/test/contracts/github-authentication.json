@@ -1,0 +1,56 @@
+[
+  {
+    "accessEnabled": false,
+    "account": null,
+    "hostIdentity": null,
+    "personalToken": {
+      "saved": false,
+      "state": "disconnected"
+    },
+    "policyRevision": 0,
+    "repositoryCatalog": [],
+    "repositoryCatalogStatus": {
+      "status": "available"
+    },
+    "state": "disconnected",
+    "workspaceOperations": [],
+    "workspaces": [
+      {
+        "allRepositoriesAllowChanges": false,
+        "authenticationMethod": null,
+        "identity": {
+          "apply": false,
+          "email": "",
+          "name": ""
+        },
+        "repositories": [],
+        "repositoryMode": "selected",
+        "workspace": "dev-0"
+      },
+      {
+        "allRepositoriesAllowChanges": false,
+        "authenticationMethod": "oauth",
+        "identity": {
+          "apply": false,
+          "email": "",
+          "name": ""
+        },
+        "repositories": [],
+        "repositoryMode": "selected",
+        "workspace": "dev-1"
+      },
+      {
+        "allRepositoriesAllowChanges": false,
+        "authenticationMethod": "token",
+        "identity": {
+          "apply": false,
+          "email": "",
+          "name": ""
+        },
+        "repositories": [],
+        "repositoryMode": "selected",
+        "workspace": "dev-2"
+      }
+    ]
+  }
+]

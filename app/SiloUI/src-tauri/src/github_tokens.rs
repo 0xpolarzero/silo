@@ -128,6 +128,16 @@ pub(crate) fn execute(
 ) -> Result<Value, String> {
     execute_with(config, operation, body, github_http::send)
 }
+pub(crate) fn execute_for_workspace(
+    config: &Configuration,
+    operation: Operation,
+    body: Value,
+    workspace: &str,
+) -> Result<Value, String> {
+    execute_with(config, operation, body, |request| {
+        github_http::send_for_workspace(request, workspace)
+    })
+}
 fn execute_with(
     config: &Configuration,
     operation: Operation,
@@ -135,7 +145,11 @@ fn execute_with(
     mut send: impl FnMut(Request) -> Result<Value, String>,
 ) -> Result<Value, String> {
     if config.client_id.is_empty()
-        || !config.client_id.bytes().all(|b| b.is_ascii_alphanumeric())
+        || matches!(config.client_id.as_str(), "." | "..")
+        || !config
+            .client_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'.')
         || config.client_secret.is_empty()
         || config.client_secret.len() > 1024
         || config.client_secret.bytes().any(|b| b <= 32 || b == 127)
@@ -179,9 +193,28 @@ fn execute_with(
             {
                 return Err(INVALID.into());
             }
-            session(send(oauth(
+            let response = send(oauth(
                 json!({"client_id":config.client_id,"client_secret":config.client_secret,"code":code,"code_verifier":verifier,"redirect_uri":redirect}),
-            ))?)
+            ))?;
+            let result = session(response.clone());
+            if result.is_err() {
+                // The exchange may issue a non-expiring token that Silo cannot
+                // keep. Discard only this token; a previous login may share its grant.
+                if let Ok(token) = text(&response["access_token"]) {
+                    let _ = send(Request {
+                        method: Method::DELETE,
+                        url: format!(
+                            "https://api.github.com/applications/{}/token",
+                            config.client_id
+                        ),
+                        authentication: app(),
+                        body: json!({"access_token":token}),
+                        safe: true,
+                        revoke: true,
+                    });
+                }
+            }
+            result
         }
         Operation::Refresh => session(send(oauth(
             json!({"client_id":config.client_id,"client_secret":config.client_secret,"grant_type":"refresh_token","refresh_token":text(&input["refreshToken"])?}),
@@ -254,8 +287,11 @@ fn execute_with(
                     .as_array()
                     .ok_or("GitHub returned an invalid installation list.")?;
                 for installation in installations {
+                    // GitHub lists only this token's App; client_id is optional.
                     if installation["account"]["id"].as_u64() != Some(owner)
-                        || installation["client_id"] != config.client_id
+                        || installation.get("client_id").is_some_and(|client_id| {
+                            client_id.as_str() != Some(config.client_id.as_str())
+                        })
                         || !installation["suspended_at"].is_null()
                     {
                         continue;
@@ -336,13 +372,71 @@ mod tests {
     }
     #[test]
     fn code_exchange_carries_pkce_directly_and_requires_rotating_session() {
-        let result=execute_with(&config(),Operation::Exchange,json!({"code":"fixture-code","codeVerifier":"a".repeat(43),"redirectUri":"http://127.0.0.1:4321/github/callback"}),|r| {
-            assert_eq!(r.url,"https://github.com/login/oauth/access_token"); assert!(!r.safe);
-            assert_eq!(r.body["code_verifier"],"a".repeat(43)); assert_eq!(r.body["client_secret"],"fixture-secret");
-            Ok(json!({"access_token":"access","refresh_token":"refresh","expires_in":28800,"refresh_token_expires_in":15811200}))
-        }).unwrap();
-        assert_eq!(result["accessToken"], "access");
+        for client_id in ["Iv23test", "Iv1.ab1112223334445c"] {
+            let config = Configuration {
+                client_id: client_id.into(),
+                ..config()
+            };
+            let result = execute_with(
+                &config,
+                Operation::Exchange,
+                json!({"code":"fixture-code","codeVerifier":"a".repeat(43),"redirectUri":"http://127.0.0.1:4321/github/callback"}),
+                |r| {
+                    assert_eq!(r.url, "https://github.com/login/oauth/access_token");
+                    assert!(!r.safe);
+                    assert_eq!(r.body["client_id"], client_id);
+                    assert_eq!(r.body["code_verifier"], "a".repeat(43));
+                    assert_eq!(r.body["client_secret"], "fixture-secret");
+                    Ok(json!({"access_token":"access","refresh_token":"refresh","expires_in":28800,"refresh_token_expires_in":15811200}))
+                },
+            )
+            .unwrap();
+            assert_eq!(result["accessToken"], "access");
+        }
         assert!(session(json!({"access_token":"access"})).is_err());
+    }
+    #[test]
+    fn rejected_exchange_revokes_its_unstored_token_without_revoking_the_grant() {
+        for response in [
+            json!({"access_token":"non-expiring-fixture","token_type":"bearer","scope":""}),
+            json!({"access_token":"invalid-session-fixture","refresh_token":"refresh","expires_in":0,"refresh_token_expires_in":15897600}),
+        ] {
+            let token = response["access_token"].as_str().unwrap().to_owned();
+            let mut calls = 0;
+            let result = execute_with(
+                &config(),
+                Operation::Exchange,
+                json!({"code":"fixture-code","codeVerifier":"a".repeat(43),"redirectUri":"http://127.0.0.1:4321/github/callback"}),
+                |request| {
+                    calls += 1;
+                    if calls == 1 {
+                        assert_eq!(request.method, Method::POST);
+                        return Ok(response.clone());
+                    }
+                    assert_eq!(request.method, Method::DELETE);
+                    assert_eq!(
+                        request.url,
+                        "https://api.github.com/applications/Iv23test/token"
+                    );
+                    assert_eq!(request.body, json!({"access_token":token}));
+                    assert!(matches!(request.authentication, Authentication::App { .. }));
+                    assert!(request.safe && request.revoke);
+                    Ok(json!({"revoked":true}))
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                calls, 2,
+                "Rejected exchange left its issued token unrevoked"
+            );
+        }
+        let mut calls = 0;
+        assert!(execute_with(
+            &config(), Operation::Exchange,
+            json!({"code":"fixture-code","codeVerifier":"a".repeat(43),"redirectUri":"http://127.0.0.1:4321/github/callback"}),
+            |_| { calls += 1; Ok(json!({})) },
+        ).is_err());
+        assert_eq!(calls, 1);
     }
     #[test]
     fn callback_and_verifier_are_validated_before_network() {
@@ -365,38 +459,118 @@ mod tests {
     }
     #[test]
     fn refresh_and_each_revocation_have_distinct_contracts() {
-        execute_with(&config(),Operation::Refresh,json!({"refreshToken":"refresh"}),|r| {assert_eq!(r.body["grant_type"],"refresh_token");assert!(!r.safe);Ok(json!({"access_token":"access","refresh_token":"new-refresh","expires_in":1,"refresh_token_expires_in":2}))}).unwrap();
-        for (operation, path) in [
-            (Operation::RevokeToken, "token"),
-            (Operation::RevokeAuthorization, "grant"),
-        ] {
-            execute_with(&config(), operation, json!({"accessToken":"access"}), |r| {
-                assert_eq!(r.method, Method::DELETE);
-                assert!(r.safe && r.revoke);
-                assert!(r.url.ends_with(path));
-                assert_eq!(r.body["access_token"], "access");
-                match r.authentication {
-                    Authentication::App {
-                        client_id,
-                        client_secret,
-                    } => {
-                        assert_eq!(client_id, "Iv23test");
-                        assert_eq!(client_secret, "fixture-secret");
-                    }
-                    _ => panic!("App authentication required"),
-                };
-                Ok(json!({"revoked":true}))
-            })
+        for client_id in ["Iv23test", "Iv1.ab1112223334445c"] {
+            let config = Configuration {
+                client_id: client_id.into(),
+                ..config()
+            };
+            execute_with(
+                &config,
+                Operation::Refresh,
+                json!({"refreshToken":"refresh"}),
+                |r| {
+                    assert_eq!(r.body["client_id"], client_id);
+                    assert_eq!(r.body["grant_type"], "refresh_token");
+                    assert!(!r.safe);
+                    Ok(json!({"access_token":"access","refresh_token":"new-refresh","expires_in":1,"refresh_token_expires_in":2}))
+                },
+            )
             .unwrap();
+            for (operation, path) in [
+                (Operation::RevokeToken, "token"),
+                (Operation::RevokeAuthorization, "grant"),
+            ] {
+                execute_with(&config, operation, json!({"accessToken":"access"}), |r| {
+                    assert_eq!(r.method, Method::DELETE);
+                    assert!(r.safe && r.revoke);
+                    assert_eq!(
+                        r.url,
+                        format!("https://api.github.com/applications/{client_id}/{path}")
+                    );
+                    assert_eq!(r.body["access_token"], "access");
+                    match r.authentication {
+                        Authentication::App {
+                            client_id: sent_client_id,
+                            client_secret,
+                        } => {
+                            assert_eq!(sent_client_id, client_id);
+                            assert_eq!(client_secret, "fixture-secret");
+                        }
+                        _ => panic!("App authentication required"),
+                    };
+                    Ok(json!({"revoked":true}))
+                })
+                .unwrap();
+            }
         }
     }
     #[test]
     fn scoped_read_omits_write_only_authority_and_binds_owner_and_repositories() {
-        let mut calls = 0;
-        execute_with(&config(),Operation::Scope,input(),|r| {calls+=1;if calls==1 {assert!(r.safe);return Ok(json!({"installations":[installation(json!({"contents":"write","workflows":"write","codespaces_secrets":"write","issues":"admin"}))]}));}
-            assert!(!r.safe);assert_eq!(r.body["target_id"],7);assert_eq!(r.body["repository_ids"],json!([11,12]));assert_eq!(r.body["permissions"],json!({"contents":"read","issues":"read","metadata":"read"}));Ok(scoped())
-        }).unwrap();
-        assert_eq!(calls, 2);
+        for client_id in ["Iv23test", "Iv1.ab1112223334445c"] {
+            let config = Configuration {
+                client_id: client_id.into(),
+                ..config()
+            };
+            let mut calls = 0;
+            execute_with(&config, Operation::Scope, input(), |r| {
+                calls += 1;
+                if calls == 1 {
+                    assert!(r.safe);
+                    let mut installed = installation(json!({"contents":"write","workflows":"write","codespaces_secrets":"write","issues":"admin"}));
+                    installed["client_id"] = json!(client_id);
+                    return Ok(json!({"installations":[installed]}));
+                }
+                assert!(!r.safe);
+                assert_eq!(
+                    r.url,
+                    format!("https://api.github.com/applications/{client_id}/token/scoped")
+                );
+                match r.authentication {
+                    Authentication::App {
+                        client_id: sent_client_id,
+                        client_secret,
+                    } => {
+                        assert_eq!(sent_client_id, client_id);
+                        assert_eq!(client_secret, "fixture-secret");
+                    }
+                    _ => panic!("App authentication required"),
+                }
+                assert_eq!(r.body["target_id"], 7);
+                assert_eq!(r.body["repository_ids"], json!([11, 12]));
+                assert_eq!(r.body["permissions"], json!({"contents":"read","issues":"read","metadata":"read"}));
+                Ok(scoped())
+            })
+            .unwrap();
+            assert_eq!(calls, 2);
+        }
+    }
+    #[test]
+    fn unsafe_client_ids_are_rejected_before_network() {
+        for client_id in [
+            "",
+            "../token",
+            ".",
+            "..",
+            "Iv1/test",
+            "Iv1\\test",
+            "Iv1.test?x=1",
+            "Iv1.test#x",
+            "Iv1.test%2Ftoken",
+            "Iv1.test\n",
+            "Iv1.test\0",
+        ] {
+            let config = Configuration {
+                client_id: client_id.into(),
+                ..config()
+            };
+            assert!(execute_with(
+                &config,
+                Operation::Refresh,
+                json!({"refreshToken":"refresh"}),
+                |_| panic!("unexpected network"),
+            )
+            .is_err());
+        }
     }
     #[test]
     fn all_mode_omits_repo_filter_and_write_keeps_allowed_app_permissions() {
@@ -551,6 +725,30 @@ mod tests {
             assert!(execute_with(&config(), Operation::Scope, input(), |r| {
                 assert_eq!(r.method, Method::GET);
                 Ok(json!({"installations":[item.clone()]}))
+            })
+            .is_err());
+        }
+    }
+    #[test]
+    fn installations_without_optional_client_id_can_mint() {
+        let mut installed = installation(json!({"contents":"read"}));
+        installed.as_object_mut().unwrap().remove("client_id");
+        let body = scoped_permissions(input(), installed).unwrap();
+        assert_eq!(body["target_id"], 7);
+        assert_eq!(body["repository_ids"], json!([11, 12]));
+        assert_eq!(
+            body["permissions"],
+            json!({"contents":"read","metadata":"read"})
+        );
+    }
+    #[test]
+    fn malformed_installation_client_ids_never_mint() {
+        for client_id in [Value::Null, json!(7), json!({}), json!([])] {
+            let mut installed = installation(json!({"contents":"read"}));
+            installed["client_id"] = client_id;
+            assert!(execute_with(&config(), Operation::Scope, input(), |r| {
+                assert_eq!(r.method, Method::GET);
+                Ok(json!({"installations":[installed.clone()]}))
             })
             .is_err());
         }

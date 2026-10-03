@@ -1011,3 +1011,31 @@ fn consent_era_owners_report_unknown_not_a_status_that_never_progresses() {
         "This computer is offline."
     );
 }
+
+#[test]
+fn tar_pipeline_reaps_the_producer_when_the_consumer_cannot_start() {
+    let root = tempfile::tempdir().unwrap();
+    let first = Command::new("/bin/sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = first.id() as libc::pid_t;
+    let result = TarStream::pipe(first, &mut Command::new(root.path().join("missing")));
+    let mut status = 0;
+    // This PID belongs to our child. ECHILD proves the pipeline collected its exit.
+    let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+    let error = std::io::Error::last_os_error();
+    if waited == 0 {
+        // Clean up the fixture even when the regression fails.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+            libc::waitpid(pid, &mut status, 0);
+        }
+    }
+    assert!(result.is_err());
+    assert_eq!(waited, -1, "pipeline left its producer unreaped");
+    assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+}

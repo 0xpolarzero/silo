@@ -109,7 +109,7 @@ it("keeps local state fresh after remote lifecycle failure and launches editors 
   } finally { store.dispose() }
 })
 
-it("uses qualified remote port mappings and revokes reachability after a failed network refresh", async () => {
+it("uses qualified remote port mappings and isolates reachability after a failed local network refresh", async () => {
   const local = applicationSourceForScenario("running")
   const remote = structuredClone(local)
   remote.workspaces = [remote.workspaces[0]]
@@ -144,7 +144,7 @@ it("uses qualified remote port mappings and revokes reachability after a failed 
     expect(invoke).toHaveBeenCalledWith("remote_remove_network_port", { hostId: "office", vmId: remote.workspaces[0].machine.id, port: 3000 })
     networkFailure = true
     await store.applicationActions.refreshNetwork!()
-    expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)?.ports[0].listening).toBe(false)
+    expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)?.ports[0].listening).toBe(true)
   } finally { store.dispose() }
 })
 
@@ -361,5 +361,92 @@ it.each([true, false])("reconciles a lost start reply without another push (host
     const requestIds = calls.filter(([command]) => command === "start_repository_push" || command === "repository_push_status").map(([, args]) => args.operationId)
     expect(new Set(requestIds).size).toBe(1)
     expect(requestIds[0]).toEqual(expect.any(String))
+  } finally { store.dispose() }
+})
+
+
+it("backs off failed computer snapshots independently and refreshes immediately on focus", async () => {
+  vi.useFakeTimers()
+  const local = applicationSourceForScenario("running")
+  let failing = false
+  const invoke = nativeBridgeMock({
+    ...initializationHandlers(),
+    read_application_state: () => local,
+    read_setup_activity: () => [],
+    remote_host_list: () => ["broken", "healthy"].map(id => ({ id, name: id, address: `user@${id}` })),
+    remote_host_snapshot: args => {
+      if (failing && args?.hostId === "broken") throw new Error("Connection lost")
+      return local
+    },
+    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+    read_network_state: () => ({ workspaces: [] }),
+    remote_network_state: () => ({ workspaces: [] }),
+  })
+  const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
+  const reads = (id: string) => invoke.mock.calls.filter(([command, args]) => command === "remote_host_snapshot" && args?.hostId === id).length
+  try {
+    await store.initialize()
+    const initial = reads("broken")
+    failing = true
+    await vi.advanceTimersByTimeAsync(10_000)
+    let failedReads = initial + 1
+    expect(reads("broken")).toBe(failedReads)
+    for (const delay of [20_000, 40_000, 60_000, 60_000]) {
+      const healthy = reads("healthy")
+      await vi.advanceTimersByTimeAsync(delay - 1)
+      expect(reads("broken")).toBe(failedReads)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(reads("broken")).toBe(++failedReads)
+      expect(reads("healthy")).toBe(healthy + delay / 10_000)
+    }
+    failing = false
+    window.dispatchEvent(new Event("focus"))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reads("broken")).toBe(++failedReads)
+    expect(store.getSnapshot().source!.remoteComputers!.find(computer => computer.id === "broken")?.connected).toBe(true)
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(reads("broken")).toBe(++failedReads)
+    store.dispose()
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect(reads("broken")).toBe(failedReads)
+  } finally { store.dispose() }
+})
+
+
+it("backs off failed computer-list polling while local state stays fresh", async () => {
+  vi.useFakeTimers()
+  const local = applicationSourceForScenario("running")
+  let failing = false
+  const invoke = nativeBridgeMock({
+    ...initializationHandlers(),
+    read_application_state: () => local,
+    read_setup_activity: () => [],
+    remote_host_list: () => { if (failing) throw new Error("Unreadable list"); return [] },
+    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+    read_network_state: () => ({ workspaces: [] }),
+  })
+  const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
+  const reads = (command: string) => invoke.mock.calls.filter(([name]) => name === command).length
+  try {
+    await store.initialize()
+    failing = true
+    await vi.advanceTimersByTimeAsync(10_000)
+    let calls = reads("remote_host_list")
+    expect(store.getSnapshot().source!.remoteComputersError).toContain("Unreadable list")
+    for (const delay of [20_000, 40_000, 60_000, 60_000]) {
+      const localReads = reads("read_application_state")
+      await vi.advanceTimersByTimeAsync(delay - 1)
+      expect(reads("remote_host_list")).toBe(calls)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(reads("remote_host_list")).toBe(++calls)
+      expect(reads("read_application_state")).toBe(localReads + delay / 10_000)
+    }
+    failing = false
+    window.dispatchEvent(new Event("focus"))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reads("remote_host_list")).toBe(++calls)
+    expect(store.getSnapshot().source!.remoteComputersError).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(reads("remote_host_list")).toBe(++calls)
   } finally { store.dispose() }
 })

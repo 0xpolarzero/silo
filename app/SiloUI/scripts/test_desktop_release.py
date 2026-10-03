@@ -49,6 +49,38 @@ class DesktopBuildTests(unittest.TestCase):
         sign.assert_not_called()
         verify.assert_not_called()
 
+    def test_local_configuration_overlay_cannot_redirect_the_bundle_before_signing(self):
+        names = {'identifier': 'org.example.production', 'productName': 'Fixture Production'}
+        output = self.target / 'release/bundle/macos'
+        previous = output / 'Fixture Production.app'
+        previous.mkdir(parents=True)
+        (previous / 'build-marker').write_text('previous build')
+
+        def builder(args, **kwargs):
+            result = self.command(args, **kwargs)
+            if args[0] == 'node':
+                identity = dict(names)
+                for index, argument in enumerate(args):
+                    if argument == '--config':
+                        overlay = json.loads(args[index + 1])
+                        identity.update({key: overlay[key] for key in names if key in overlay})
+                bundle = output / (identity['productName'] + '.app')
+                bundle.mkdir(parents=True, exist_ok=True)
+                (bundle / 'build-marker').write_text(identity['identifier'])
+            return result
+
+        def sign_current(bundle):
+            self.assertEqual((bundle / 'build-marker').read_text(), names['identifier'])
+
+        overlay = json.dumps({'productName': 'Redirected App', 'identifier': 'org.example.other'})
+        with patch('build_desktop.channel_names', return_value={'production': names}), \
+                patch('build_desktop.sign_runtime', side_effect=sign_current) as sign, \
+                patch('build_desktop.verify_bundle') as verify:
+            self.assertEqual(build(['--config', overlay], root=self.root,
+                                   platform='darwin', run=builder), previous)
+        sign.assert_called_once_with(previous)
+        verify.assert_called_once_with(previous)
+
     def test_signature_or_policy_failure_fails_the_build(self):
         for failing in ('sign_runtime', 'verify_bundle'):
             with self.subTest(failing=failing), patch('build_desktop.sign_runtime'), \
@@ -97,6 +129,26 @@ class DesktopBuildTests(unittest.TestCase):
         self.assertEqual(command[3:6], args)
         self.assertEqual(command[-3], 'src-tauri/tauri.linux.package.conf.json')
         self.assertEqual(json.loads(command[-1]), {'bundle': {'createUpdaterArtifacts': False}})
+
+    def test_tauri_configuration_precedes_raw_cargo_arguments(self):
+        cases = [('darwin', ['--debug', '--no-bundle']),
+                 ('linux', ['--debug', '--bundles', 'deb']),
+                 ('linux', ['--bundles', 'deb'])]
+        for platform, options in cases:
+            self.calls.clear()
+            with self.subTest(platform=platform, options=options):
+                build(options + ['--', '--locked'], root=self.root, platform=platform, run=self.command)
+                command = self.calls[0][0]
+                separator = command.index('--')
+                self.assertEqual(command[separator + 1:], ['--locked'])
+                tauri_arguments = command[3:separator]
+                if '--debug' in options:
+                    self.assertIn('src-tauri/tauri.dev.conf.json', tauri_arguments)
+                if platform == 'linux':
+                    self.assertIn('src-tauri/tauri.linux.package.conf.json', tauri_arguments)
+                    self.assertEqual(json.loads(tauri_arguments[-1]), {
+                        'bundle': {'createUpdaterArtifacts': False},
+                    })
 
     def test_distribution_artifacts_cannot_be_made_before_finalization(self):
         for args in (['--bundles', 'dmg'], ['--bundles=all'], ['-b', 'app', 'dmg'],

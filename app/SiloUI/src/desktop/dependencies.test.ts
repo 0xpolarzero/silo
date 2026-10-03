@@ -12,6 +12,45 @@ const checks = [
 ] as const
 
 describe("native dependency report validation", () => {
+  it("does not invoke native checks when disposed before the queued request starts", async () => {
+    vi.useFakeTimers()
+    const invokeChecks = vi.fn().mockResolvedValue(undefined)
+    const store = createNativeDependencyStore(invokeChecks)
+    const listener = vi.fn()
+    store.subscribe(listener)
+    try {
+      store.retry()
+      store.dispose()
+      const before = store.getSnapshot()
+      await vi.runAllTimersAsync()
+      store.retry()
+      expect(invokeChecks).not.toHaveBeenCalled()
+      expect(store.getSnapshot()).toBe(before)
+      expect(listener).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { store.dispose(); vi.useRealTimers() }
+  })
+
+  it("drops a queued Retry when disposed before the in-flight request rejects", async () => {
+    vi.useFakeTimers()
+    let reject!: (error: Error) => void
+    const invokeChecks = vi.fn(() => new Promise((_resolve, fail) => { reject = fail }))
+    const store = createNativeDependencyStore(invokeChecks)
+    try {
+      store.retry()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(invokeChecks).toHaveBeenCalledOnce()
+      store.retry()
+      store.dispose()
+      const before = store.getSnapshot()
+      reject(new Error("Bridge closed"))
+      await vi.runAllTimersAsync()
+      expect(invokeChecks).toHaveBeenCalledOnce()
+      expect(store.getSnapshot()).toBe(before)
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { store.dispose(); vi.useRealTimers() }
+  })
+
   it("accepts one current result for every required check", () => {
     expect(validateDependencyReport({ schemaVersion: 1, requestId: "current", checkedAtMs: 10_000, checks }, "current", 10_100)).toHaveLength(5)
   })
@@ -40,6 +79,27 @@ describe("native dependency report validation", () => {
     await waitFor(() => expect(store.getSnapshot().every(({ status }) => status === "pass")).toBe(true))
     expect(invokeChecks).toHaveBeenCalledTimes(2)
     store.dispose()
+  })
+
+  it("retains completed checks and specific failures when native probes exhaust their shared budget", async () => {
+    vi.useFakeTimers()
+    const partial = checks.map((check) => check.id === "tool-git" ? {
+      ...check, status: "timeout" as const, detail: "The signature check timed out.", remediation: "Retry checks.",
+    } : check)
+    const invokeChecks = vi.fn((_command, { requestId }) => new Promise((resolve) => {
+      setTimeout(() => resolve({ schemaVersion: 1, requestId, checkedAtMs: Date.now(), checks: partial }), 13_000)
+    }))
+    const store = createNativeDependencyStore(invokeChecks)
+    try {
+      store.retry()
+      await vi.advanceTimersByTimeAsync(13_000)
+      expect(store.getSnapshot()).toEqual(partial)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(store.getSnapshot()).toEqual(partial)
+    } finally {
+      store.dispose()
+      vi.useRealTimers()
+    }
   })
 
   it("keeps watchdog timeout terminal when the native result arrives late", async () => {

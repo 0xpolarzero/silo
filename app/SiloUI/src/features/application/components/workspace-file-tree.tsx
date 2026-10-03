@@ -43,7 +43,7 @@ function Directory({ workspace, path, label, store, expanded, toggle, register, 
           {entry.kind === "folder" ? <Collapsible open={expanded.has(entry.path)} onOpenChange={(open) => toggle(entry.path, open)}>
             <div className="group/folder flex items-center rounded-md pr-1 hover:bg-muted focus-within:bg-muted"><CollapsibleTrigger className={`${rowClass} min-w-0 flex-1`} aria-label={`Folder ${visibleText(entry.name)}`}>
               <ChevronRight className="tree-caret size-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none" aria-hidden="true" />
-              <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="truncate">{visibleText(entry.name)}</span>
+              <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="truncate" title={visibleText(entry.name)}>{visibleText(entry.name)}</span>
             </CollapsibleTrigger>
               {onOpenEditor && <FolderActions editor={editor} path={entry.path} onOpen={() => onOpenEditor(workspace, entry.path)} />}
             </div>
@@ -53,7 +53,7 @@ function Directory({ workspace, path, label, store, expanded, toggle, register, 
           </Collapsible> : <div className="flex h-8 items-center gap-2 rounded-md px-2 font-mono text-xs" title={entry.kind === "symlink" ? "Symbolic link" : undefined}>
             <span className="size-3.5 shrink-0" aria-hidden="true" />
             {entry.kind === "symlink" ? <Link className="size-4 shrink-0 text-muted-foreground" aria-label="Symbolic link" /> : <File className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
-            <span className="truncate select-text">{visibleText(entry.name)}</span>
+            <span className="truncate select-text" title={visibleText(entry.name)}>{visibleText(entry.name)}</span>
           </div>}
         </li>
       ))}
@@ -96,23 +96,41 @@ export function WorkspaceFileTree({ workspace, store, active, editor, onOpenEdit
   const polling = open && available && active
   useEffect(() => {
     if (!polling) return
-    const refresh = () => {
-      if (document.visibilityState === "hidden") return
-      for (const path of shown.current) void store.load(target, path, { refresh: true })
+    let disposed = false
+    const failures = new Map<string, { delay: number; nextRead: number }>()
+    const refresh = (force = false) => {
+      if (disposed || document.visibilityState === "hidden") return
+      for (const path of failures.keys()) if (!shown.current.has(path)) failures.delete(path)
+      for (const path of shown.current) {
+        const key = directoryKey(target, path)
+        const snapshot = store.getSnapshot(key)
+        if (!snapshot.error) failures.delete(path)
+        if (snapshot.loading || (!force && (failures.get(path)?.nextRead ?? 0) > Date.now())) continue
+        void store.load(target, path, { refresh: true }).then(() => {
+          if (disposed) return
+          if (!store.getSnapshot(key).error) failures.delete(path)
+          else {
+            const delay = Math.min((failures.get(path)?.delay ?? refreshInterval) * 2, 60000)
+            failures.set(path, { delay, nextRead: Date.now() + delay })
+          }
+        })
+      }
     }
     const timer = window.setInterval(refresh, refreshInterval)
-    document.addEventListener("visibilitychange", refresh)
-    window.addEventListener("focus", refresh)
+    const onReturn = () => refresh(true)
+    document.addEventListener("visibilitychange", onReturn)
+    window.addEventListener("focus", onReturn)
     return () => {
+      disposed = true
       window.clearInterval(timer)
-      document.removeEventListener("visibilitychange", refresh)
-      window.removeEventListener("focus", refresh)
+      document.removeEventListener("visibilitychange", onReturn)
+      window.removeEventListener("focus", onReturn)
     }
   }, [polling, store, target])
   return <li><Collapsible open={open} onOpenChange={setOpen}>
     <div className="group/folder flex items-center rounded-md pr-1 hover:bg-muted focus-within:bg-muted"><CollapsibleTrigger className="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&[data-state=open]_.tree-caret]:rotate-90">
       <ChevronRight className="tree-caret size-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none" aria-hidden="true" />
-      <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="truncate">{workspace.machine.name}</span>
+      <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="truncate" title={workspace.machine.name}>{workspace.machine.name}</span>
     </CollapsibleTrigger>
       {onOpenEditor && <FolderActions editor={editor} path="/workspace" onOpen={() => onOpenEditor(target, "/workspace")} disabled={!available} />}
     </div>

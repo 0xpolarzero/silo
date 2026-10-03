@@ -7,8 +7,16 @@ items; this plan's [ledger](#ledger) lists **all** findings from the 20 reviewer
 reports and the consolidating reviewer, deduplicated (merged entries name every
 source area).
 
-Nothing in this plan has been implemented. It was written against `main` at
-`82e3842`; the review itself was of `60b23ca`.
+The original plan was written against `main` at `82e3842`; the review itself
+was of `60b23ca`. No plan work had been implemented at that initial snapshot.
+The [ledger](#ledger) now records landed fixes and their verification; read each
+entry's appended status for its remediation outcome. The original findings
+and proposed fixes remain as historical evidence, not claims about current HEAD.
+
+The execution phases, work-package ownership and orchestration below describe
+that remediation campaign. For current development and verification commands,
+follow [AGENTS.md](../AGENTS.md), the [release guide](SiloUI-RELEASES.md) and
+the checked-in [CI workflow](../.github/workflows/ci.yml).
 
 ## How to read the ledger
 
@@ -36,7 +44,7 @@ Verification tags:
 - `gh` live check against a disposable GitHub repository and App installation.
 - `release` release pipeline dry run.
 
-Status: every entry starts **Open**. The coordinator (and only the coordinator)
+Status: entries without an appended status remain **Open**. The coordinator (and only the coordinator)
 appends one of **[Fixed `<sha>`]**, **[Already fixed `<sha>`]**, **[Won't fix:
 reason]**, **[Not reproducible]**, or **[Blocked: reason]** to the entry.
 

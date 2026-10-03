@@ -115,13 +115,17 @@ fn nothing_names_the_previous_generation_until_the_migration_finishes() {
             .unwrap_err()
             .contains("manual repair"));
     }
-    for status in FINISHED {
-        assert_eq!(
-            usable_storage(dir.path(), true, status).unwrap(),
-            dir.path().join("runtime"),
-            "an upgrade that needs no conversion keeps using its runtime: {status}"
-        );
-    }
+    assert_eq!(
+        usable_storage(dir.path(), true, "not-required").unwrap(),
+        dir.path().join("runtime"),
+        "an upgrade that needs no conversion keeps using its runtime"
+    );
+    let before = snapshot(dir.path());
+    assert_eq!(
+        usable_storage(dir.path(), true, "complete").unwrap_err(),
+        MISSING_GENERATION
+    );
+    assert_eq!(snapshot(dir.path()), before);
 }
 
 #[test]

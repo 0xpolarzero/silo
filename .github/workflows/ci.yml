@@ -25,6 +25,8 @@ jobs:
         working-directory: app/SiloUI
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
@@ -46,19 +48,23 @@ jobs:
       - name: Check build.rs declares every registered Tauri command
         run: python3 scripts/check-command-manifest.py
       - name: Install Debian and APT tooling for script tests
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg dpkg-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg dpkg-dev pkexec
       - name: Run every release and packaging script test
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
-      - name: Typecheck the website demo
+      - name: Test Debian package lifecycle on the disposable runner
+        run: sudo env SILO_APT_LIFECYCLE_TEST=1 python3 -m unittest discover -s scripts -p 'test_debian_installation.py'
+      - name: Check the website demo
         working-directory: website
         run: |
           npm ci
           npm run typecheck
-      - name: Typecheck the demo films
+          npm test -- --maxWorkers=2
+      - name: Check the demo films
         working-directory: demo
         run: |
           npm ci
           npm run typecheck
+          npm test
 
   docs:
     name: Documentation links
@@ -66,6 +72,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # lychee checks links; offline mode checks only local files, so web links
       # never make CI flaky. The download is pinned to the release asset digest.
       - name: Install lychee
@@ -80,15 +88,21 @@ jobs:
           lychee=$(find "$RUNNER_TEMP/lychee" -type f -name lychee | head -n 1)
           test -x "$lychee"
           echo "LYCHEE=$lychee" >> "$GITHUB_ENV"
-      - name: Check relative links in Markdown documentation
+      - name: Check relative links in documentation
         run: >-
           "$LYCHEE" --offline --no-progress
           README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' 'app/SiloUI/tests/**/*.md'
+          'app/SiloUI/docs/**/*.html' 'app/SiloUI/src/**/*.md'
+          'app/SiloUI/src-tauri/guest/**/*.md' 'app/SiloUI/.changeset/*.md'
           'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
 
   rust:
     name: Rust tests
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     defaults:
       run:
@@ -104,19 +118,34 @@ jobs:
       CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: app/SiloUI/package-lock.json
       - run: node scripts/preflight.mjs
-      - name: Install Linux build dependencies and the pinned Rust toolchain
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends build-essential pkg-config libwebkit2gtk-4.1-dev libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf libdbus-1-dev libclang-dev libcap-ng-dev cmake fish
+      - name: Install macOS shell test dependency
+        if: runner.os == 'macOS'
+        run: brew install fish
+      - name: Install pinned Rust toolchain
+        run: |
           runtime_toolchain=$(node -p "require(process.env.GITHUB_WORKSPACE + '/app/SiloUI/runtime-inputs.json').toolchain")
           rustup toolchain install "$runtime_toolchain" --profile minimal --component rustfmt
           rustup default "$runtime_toolchain"
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: runner.os == 'macOS'
+        with:
+          python-version: '3.12'
+      - name: Test macOS release signing with disposable fixtures
+        if: runner.os == 'macOS'
+        run: python3 -m unittest discover -s scripts -p 'test_macos_release.py'
       - name: Check Rust formatting
         run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -130,3 +159,5 @@ jobs:
       - run: npm run runtime:prepare
       # Process-wide state is isolated inside the suite; use default test threads.
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Test patched updater transport and atomic installation
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib

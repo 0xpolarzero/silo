@@ -18,7 +18,8 @@ import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
-import { RepositoryPushButton, RepositoryPushFeedback, useRepositoryPushToasts, type PushRepository } from "@/features/application/components/repository-push-feedback"
+import { RepositoryPushButton, RepositoryPushFeedback, type PushRepository } from "@/features/application/components/repository-push-feedback"
+import { useRepositoryPushToasts } from "@/features/application/components/use-repository-push-toasts"
 import type { OperationQueue } from "@/features/application/model/operation-queue"
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
 import type { ApplicationActions, ApplicationSource, ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, RepositoryPushTarget, WorkspaceDetailSection } from "@/features/application/model/application-source"
@@ -333,6 +334,7 @@ export function WorkspacesPage({
   onDismissRepositoryPush,
   onCreateSandbox,
   operationQueue,
+  notifyOperations = true,
 }: {
   /** The application source, for the same availability rules as the other surfaces. */
   source: ApplicationSource
@@ -357,11 +359,14 @@ export function WorkspacesPage({
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
   /** Opens the new-sandbox editor; omitted while a sandbox cannot be created. */
   onCreateSandbox?: () => void
+  /** Standalone pages own notifications; ApplicationApp owns them across navigation. */
+  notifyOperations?: boolean
   /** Lets a running push be cancelled from its notification. */
   operationQueue?: OperationQueue
 }) {
   const [logWindow, setLogWindow] = useState<LogWindow>()
   useRepositoryPushToasts(repositoryPushOperations, {
+    enabled: notifyOperations,
     onPush: onPushRepository,
     onDismiss: onDismissRepositoryPush,
     queue: operationQueue,

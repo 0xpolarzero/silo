@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { useEffect, useState, type ReactNode } from "react"
+import { useEffect, useRef, useState, type ReactNode } from "react"
 import { AlertCircle, LoaderCircle } from "lucide-react"
 import { z } from "zod"
 import { SiloWindow } from "@/components/silo-window"
@@ -67,27 +67,47 @@ export function RuntimeMigrationBoundary({ children, backend = nativeBackend }: 
   const [acknowledged, setAcknowledged] = useState(false)
   // Each attempt subscribes and reads again, so Retry recovers from either failing.
   const [attempt, setAttempt] = useState(0)
+  const publicationSequence = useRef({ sequence: 0 })
 
   useEffect(() => {
+    const publication = publicationSequence.current
     let active = true
     let unsubscribe: (() => void) | undefined
     let eventSeen = false
+    async function read() {
+      const sequence = ++publication.sequence
+      try {
+        const next = await backend.read()
+        if (active && sequence === publication.sequence) { setState(next); setError(null) }
+      } catch (cause) {
+        if (active && sequence === publication.sequence) setError(message(cause))
+      }
+    }
     void backend.subscribe(() => {
+      if (!active) return
       eventSeen = true
-      void backend.read().then(next => { if (active) { setState(next); setError(null) } }).catch(cause => { if (active) setError(message(cause)) })
+      void read()
     }).then(stop => {
       if (!active) { stop(); return }
       unsubscribe = stop
-      return backend.read().then(next => { if (active && !eventSeen) { setState(next); setError(null) } })
+      if (!eventSeen) return read()
     }).catch(cause => { if (active) setError(message(cause)) })
-    return () => { active = false; unsubscribe?.() }
+    return () => { active = false; ++publication.sequence; unsubscribe?.() }
   }, [backend, attempt])
 
-  async function run(operation: () => Promise<RuntimeMigrationState>) {
+  async function run(operation: () => Promise<RuntimeMigrationState>, readAfter = false) {
+    const sequence = ++publicationSequence.current.sequence
     setBusy(true)
     setError(null)
-    try { setState(await operation()) } catch (cause) { setError(message(cause)) }
-    finally { setBusy(false) }
+    try {
+      let next = await operation()
+      if (sequence !== publicationSequence.current.sequence) return
+      // Retry returns its launch snapshot; conversion can already have finished.
+      if (readAfter) next = await backend.read()
+      if (sequence === publicationSequence.current.sequence) { setState(next); setError(null) }
+    } catch (cause) {
+      if (sequence === publicationSequence.current.sequence) setError(message(cause))
+    } finally { setBusy(false) }
   }
 
   if (state?.status === "not-required") return children
@@ -119,7 +139,7 @@ export function RuntimeMigrationBoundary({ children, backend = nativeBackend }: 
         <p>Review the logs and retry. You can back up your work yourself before continuing. Continuing leaves unmigrated originals in place; affected sandboxes may be unavailable in the new runtime.</p>
         <label className="flex items-start gap-2"><input type="checkbox" className="mt-0.5" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} /><span>I understand that failed sandboxes have not been converted and will remain unavailable until recovered.</span></label>
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" disabled={busy} onClick={() => void run(backend.retry)}>Retry migration</Button>
+          <Button size="sm" disabled={busy} onClick={() => void run(backend.retry, true)}>Retry migration</Button>
           {issue && <Button size="sm" variant="outline" asChild><a href={issue} target="_blank" rel="noopener noreferrer">Prepare GitHub issue</a></Button>}
           <Button size="sm" variant="outline" disabled={busy || !acknowledged || !state.canContinue} onClick={() => void run(backend.continueAfterFailure)}>Continue with available sandboxes</Button>
         </div>
