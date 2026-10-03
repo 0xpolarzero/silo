@@ -6,7 +6,7 @@ Use your usual editor and terminal, give an AI agent a Linux desktop, and choose
 
 [Download](https://github.com/0xpolarzero/silo/releases/latest) · [Website and demo](https://silo.polarzero.xyz) · [Build from source](docs/SiloUI-BUILD-FROM-SOURCE.md) · [Documentation](docs/README.md)
 
-![Silo showing a Linux desktop, local and remote computers, and GitHub access controls](docs/silo-showcase.jpg)
+![Silo showing a Linux desktop, local and remote computers, and GitHub access controls](docs/silo-showcase.webp)
 
 ## What you can do
 
