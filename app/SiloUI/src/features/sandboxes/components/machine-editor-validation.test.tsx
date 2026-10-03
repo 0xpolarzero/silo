@@ -30,7 +30,7 @@ describe("machine editor validation", () => {
     const name = screen.getByRole("textbox", { name: "Sandbox name" })
     await user.clear(name)
     await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "16")
-    await user.click(screen.getByRole("button", { name: "Save" }))
+    await user.click(screen.getByRole("button", { name: "Create" }))
 
     expect(onMachinesChange).not.toHaveBeenCalled()
     expect(name).toHaveFocus()
@@ -41,7 +41,7 @@ describe("machine editor validation", () => {
     expect(screen.getByRole("combobox", { name: "Memory" })).not.toHaveAttribute("aria-describedby")
 
     await user.type(name, "dev")
-    await user.click(screen.getByRole("button", { name: "Save" }))
+    await user.click(screen.getByRole("button", { name: "Create" }))
     expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveFocus()
   })
 })

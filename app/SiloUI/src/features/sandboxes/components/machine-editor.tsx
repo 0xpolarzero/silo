@@ -360,7 +360,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         </div>
       </InlineConfirmation> : <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>
-        <Button ref={saveButton} type="button" size="sm" disabled={saving || deletedElsewhere || Boolean(blockedReason)} aria-describedby={blockedReason && !saving ? blockedReasonId : undefined} onClick={() => save()}>{saving ? "Saving…" : requiresStop ? "Stop and save…" : "Save"}</Button>
+        <Button ref={saveButton} type="button" size="sm" disabled={saving || deletedElsewhere || Boolean(blockedReason)} aria-describedby={blockedReason && !saving ? blockedReasonId : undefined} onClick={() => save()}>{!editor.originalID ? (saving ? "Creating…" : "Create") : saving ? "Saving…" : requiresStop ? "Stop and save…" : "Save"}</Button>
       </div>}
       {errors.form && <p className="text-xs text-destructive" role="alert">{errors.form}</p>}
     </div>

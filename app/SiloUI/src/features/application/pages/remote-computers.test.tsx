@@ -60,7 +60,7 @@ it("creates a VM on the selected computer without rewriting the local inventory"
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")
-  await user.click(screen.getByRole("button", { name: "Save" }))
+  await user.click(screen.getByRole("button", { name: "Create" }))
   expect(actions.saveRemoteMachine).toHaveBeenCalledWith("office", expect.objectContaining({ kind: "vm" }), undefined)
   expect(onMachinesChange).not.toHaveBeenCalled()
 })
@@ -97,7 +97,7 @@ it("removes the last VM from a remote computer and can create from an empty list
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")
-  await user.click(screen.getByRole("button", { name: "Save" }))
+  await user.click(screen.getByRole("button", { name: "Create" }))
   expect(actions.saveRemoteMachine).toHaveBeenCalledWith("office", expect.objectContaining({ kind: "vm" }), undefined)
 })
 
@@ -135,7 +135,7 @@ it("keeps a local edit scoped to local machines when a connected computer is rem
 })
 
 
-it("keeps a new sandbox draft when its selected computer is removed before Save", async () => {
+it("keeps a new sandbox draft when its selected computer is removed before Create", async () => {
   const { source, actions, onMachinesChange, user, view } = setup()
   render(<Toaster />)
   await user.click(screen.getByRole("button", { name: "Add" }))
@@ -144,12 +144,12 @@ it("keeps a new sandbox draft when its selected computer is removed before Save"
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "2")
   view.rerender(<OverviewPage source={{ ...source, workspaces: source.workspaces.filter(workspace => !workspace.computer), remoteComputers: [] }}
     actions={actions} onMachinesChange={onMachinesChange} />)
-  await user.click(screen.getByRole("button", { name: "Save" }))
+  await user.click(screen.getByRole("button", { name: "Create" }))
   expect(actions.saveRemoteMachine).not.toHaveBeenCalled()
   expect(onMachinesChange).not.toHaveBeenCalled()
   expect(await screen.findByText("The selected computer was removed. Choose another computer before saving.")).toBeVisible()
   expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("2")
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "")
-  await user.click(screen.getByRole("button", { name: "Save" }))
+  await user.click(screen.getByRole("button", { name: "Create" }))
   expect(onMachinesChange).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ cpus: 2 })]), expect.any(Array))
 })

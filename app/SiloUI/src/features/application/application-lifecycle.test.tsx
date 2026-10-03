@@ -226,7 +226,7 @@ it("starts a new sandbox as an in-card configuration operation", async () => {
   expect(name).toHaveFocus()
   await user.clear(name)
   await user.type(name, "scratch")
-  await user.click(overview.getByRole("button", { name: "Save" }))
+  await user.click(overview.getByRole("button", { name: "Create" }))
 
   expect(overview.getByText("3 configured · Applying sandbox changes")).toBeVisible()
   const scratchRow = within(overview.getByRole("list", { name: "Configured sandboxes" })).getByText("scratch").closest("li") as HTMLElement

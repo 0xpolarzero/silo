@@ -13,7 +13,7 @@ async function addSandbox(user: ReturnType<typeof userEvent.setup>) {
   const name = overview.getByRole("textbox", { name: "Sandbox name" })
   await user.clear(name)
   await user.type(name, "scratch")
-  await user.click(overview.getByRole("button", { name: "Save" }))
+  await user.click(overview.getByRole("button", { name: "Create" }))
 }
 
 function failedOperation(source: ApplicationSource, message: string): SandboxConfigurationOperation {
