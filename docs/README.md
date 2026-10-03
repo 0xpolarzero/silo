@@ -57,7 +57,6 @@ above for current behavior and build commands.
 - [Micro-review index and finding counts](research/micro-reviews/README.md): original audits and fix-loop findings, including [status, storage and updates](research/micro-reviews/fe-status-storage-updates-fixes.md). Counts include fixed findings and overlap across reports; each record states its scope and verification limits.
 - [Changeset audit, 2026-10-02](research/micro-reviews/changesets.md): metadata, user-facing wording, duplicate corrections, and commit coverage since `f9421925`.
 
-
 ### Runtime, checkpoints and network
 
 - [Native bridge contract audit](research/native-bridge-contract-2026-09-30.md): Rust-emitted state fixtures, typed error codes, remote compatibility, and verification limits.
