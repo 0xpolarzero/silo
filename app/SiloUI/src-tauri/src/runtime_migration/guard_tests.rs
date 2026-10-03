@@ -25,7 +25,7 @@ fn previous(app_data: &Path) -> PathBuf {
     fs::create_dir_all(old.join("volumes/dev")).unwrap();
     let vm: runtime::MachineConfigurationRequest = serde_json::from_value(serde_json::json!({
         "schemaVersion": 1,
-        "machines": [{"kind":"vm","id":VM_ID,"name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
+        "machines": [{"id":VM_ID,"name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
     }))
     .unwrap();
     runtime::write_metadata(&old.join("machines.json"), &vm).unwrap();

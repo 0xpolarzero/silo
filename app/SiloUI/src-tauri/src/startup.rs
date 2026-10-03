@@ -70,10 +70,7 @@ fn settings_for_launch(
     {
         let configuration =
             crate::runtime::read_metadata(metadata).map_err(|error| error.to_string())?;
-        let mut local = configuration
-            .machines
-            .iter()
-            .filter(|machine| machine.is_vm());
+        let mut local = configuration.machines.iter();
         let initial = local
             .clone()
             .find(|machine| machine.name() == "dev")
@@ -98,7 +95,6 @@ fn settings_for_launch(
                 .map_err(|error| error.to_string())?
                 .machines
                 .into_iter()
-                .filter(|machine| machine.is_vm())
                 .map(|machine| machine.id().to_owned())
                 .collect();
             ids.retain(|id| id.as_str().is_some_and(|id| available.contains(id)));
@@ -296,7 +292,7 @@ mod tests {
     use serde_json::json;
 
     fn vm(id: &str, name: &str) -> Value {
-        json!({"kind":"vm", "id":id, "name":name, "cpus":2, "maxCPUs":2,
+        json!({"id":id, "name":name, "cpus":2, "maxCPUs":2,
             "memoryGiB":2, "maxMemoryGiB":2, "workspaceStorageGiB":10, "runtimeStorageGiB":10})
     }
 
@@ -333,15 +329,10 @@ mod tests {
         let metadata = directory.path().join("machines.json");
         let first = "00000000-0000-4000-8000-000000000001";
         let dev = "00000000-0000-4000-8000-000000000002";
-        let remote = json!({"kind":"ssh", "id":"00000000-0000-4000-8000-000000000003", "name":"remote", "host":"example.test", "user":"owner", "port":22});
         let settings = json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true});
         for (machines, expected) in [
-            (
-                vec![remote.clone(), vm(first, "alpha"), vm(dev, "dev")],
-                vec![dev],
-            ),
-            (vec![remote.clone(), vm(first, "alpha")], vec![first]),
-            (vec![remote], vec![]),
+            (vec![vm(first, "alpha"), vm(dev, "dev")], vec![dev]),
+            (vec![vm(first, "alpha")], vec![first]),
             (vec![], vec![]),
         ] {
             std::fs::write(

@@ -2300,7 +2300,6 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
         BackupError::InvalidRequest(format!("{name} has invalid Silo sandbox metadata."))
     })?;
     const FIELDS: &[&str] = &[
-        "kind",
         "id",
         "name",
         "cpus",
@@ -2317,7 +2316,6 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
         || object.get("desktop").is_some_and(|desktop| {
             serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err()
         })
-        || object.get("kind").and_then(Value::as_str) != Some("vm")
         || object.get("name").and_then(Value::as_str) != Some(name)
         || object
             .get("id")
@@ -3833,7 +3831,6 @@ mod tests {
 
     fn machine_config(name: &str) -> Value {
         serde_json::json!({
-            "kind": "vm",
             "id": "2f6b739d-ff7a-4be8-aa5e-f6694e4ab0d8",
             "name": name,
             "cpus": 4,

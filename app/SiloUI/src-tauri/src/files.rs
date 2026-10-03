@@ -167,7 +167,7 @@ pub(crate) async fn list_workspace_directory(
         let workspace_id = metadata
             .machines
             .iter()
-            .find(|machine| machine.is_vm() && machine.name() == workspace)
+            .find(|machine| machine.name() == workspace)
             .ok_or("Sandbox no longer exists.")?
             .id()
             .to_owned();

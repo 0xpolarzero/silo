@@ -996,7 +996,7 @@ fn built_in_machine(paths: &RuntimePaths, name: &str) -> Option<MachineConfigura
         .ok()?
         .machines
         .into_iter()
-        .find(|machine| machine.is_vm() && machine.name() == name && is_built_in(machine))
+        .find(|machine| machine.name() == name && is_built_in(machine))
 }
 
 /// A runner the background apply can own.

@@ -757,7 +757,7 @@ fn perform(
     let vm_id = metadata
         .machines
         .iter()
-        .find(|m| m.is_vm() && m.name() == workspace)
+        .find(|m| m.name() == workspace)
         .map(|m| m.id().to_owned())
         .ok_or("Choose a managed Silo VM.")?;
     // Host-push reads and writes one VM's guest; it waits its turn for that VM.
@@ -1031,7 +1031,7 @@ pub(crate) fn push_committed(
     let vm_id = metadata
         .machines
         .iter()
-        .find(|m| m.is_vm() && m.name() == workspace)
+        .find(|m| m.name() == workspace)
         .map(|m| m.id().to_owned())
         .ok_or("Choose a managed Silo VM.")?;
     let head = guest(
@@ -1241,7 +1241,7 @@ pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_
             let vm_id = metadata
                 .machines
                 .iter()
-                .find(|machine| machine.is_vm() && machine.name() == workspace)?
+                .find(|machine| machine.name() == workspace)?
                 .id();
             discoveries()
                 .0

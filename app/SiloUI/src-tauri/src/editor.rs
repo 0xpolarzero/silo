@@ -52,7 +52,7 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     if !metadata
         .machines
         .iter()
-        .any(|machine| machine.name() == name && machine.is_vm())
+        .any(|machine| machine.name() == name)
     {
         return Err("This sandbox does not support local editor connections.".into());
     }

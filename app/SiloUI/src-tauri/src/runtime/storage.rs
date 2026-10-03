@@ -154,7 +154,7 @@ fn machine(paths: &RuntimePaths, id: &str) -> Result<MachineConfiguration, Runti
     read_metadata(&paths.metadata)?
         .machines
         .into_iter()
-        .find(|m| m.is_vm() && m.id() == id)
+        .find(|m| m.id() == id)
         .ok_or_else(|| failure("Storage maintenance is available only for a configured local VM."))
 }
 fn verify(machine: &MachineConfiguration, observed: &InspectedSandbox) -> Result<(), RuntimeError> {
@@ -631,11 +631,7 @@ fn periodic(
     unresolved: &HashMap<String, RuntimeError>,
 ) -> Result<bool, RuntimeError> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let mut machines: Vec<_> = read_metadata(&paths.metadata)?
-        .machines
-        .into_iter()
-        .filter(MachineConfiguration::is_vm)
-        .collect();
+    let mut machines = read_metadata(&paths.metadata)?.machines;
     if machines.is_empty() {
         return Ok(false);
     }

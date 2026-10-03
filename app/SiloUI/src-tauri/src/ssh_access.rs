@@ -342,14 +342,15 @@ pub(crate) fn reconcile(paths: &RuntimePaths) {
         .iter()
         .filter(|c| c.enabled)
         .map(|config| {
-            let observed =
-                if metadata.machines.iter().any(|m| {
-                    m.is_vm() && m.name() == config.workspace && m.id() == config.machine_id
-                }) {
-                    inspect_running(paths, config)
-                } else {
-                    Err("The sandbox identity changed. Configure SSH access again.".into())
-                };
+            let observed = if metadata
+                .machines
+                .iter()
+                .any(|m| m.name() == config.workspace && m.id() == config.machine_id)
+            {
+                inspect_running(paths, config)
+            } else {
+                Err("The sandbox identity changed. Configure SSH access again.".into())
+            };
             (config, observed)
         })
         .collect();
@@ -583,7 +584,6 @@ fn state(paths: &RuntimePaths) -> Result<State, String> {
         workspaces: metadata
             .machines
             .iter()
-            .filter(|m| m.is_vm())
             .map(|machine| {
                 let config = configs
                     .iter()
@@ -816,12 +816,9 @@ fn save_with(
     let machine = metadata
         .machines
         .iter()
-        .find(|m| {
-            m.is_vm()
-                && match target {
-                    Target::Name(name) => m.name() == name,
-                    Target::Id(id) => m.id() == id,
-                }
+        .find(|m| match target {
+            Target::Name(name) => m.name() == name,
+            Target::Id(id) => m.id() == id,
         })
         .ok_or("This sandbox no longer exists on its computer. Refresh SSH access.")?;
     let workspace = machine.name().to_owned();
@@ -885,7 +882,7 @@ fn save_with(
         metadata
             .machines
             .iter()
-            .any(|m| m.is_vm() && m.name() == c.workspace && m.id() == c.machine_id)
+            .any(|m| m.name() == c.workspace && m.id() == c.machine_id)
     });
     if enabled && port == 2222 && !configs.iter().any(|c| c.machine_id == machine.id()) {
         config.port = available_port(&configs, &config.bind_address, |address, port| {
@@ -1291,7 +1288,7 @@ sys.stdin.buffer.read()
         fs::write(
             &p.metadata,
             serde_json::json!({"schemaVersion":1,"machines":[{
-                "kind":"vm","id":config().machine_id,"name":"dev","cpus":2,"maxCPUs":2,
+                "id":config().machine_id,"name":"dev","cpus":2,"maxCPUs":2,
                 "memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10
             }]})
             .to_string(),

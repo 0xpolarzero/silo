@@ -30,12 +30,8 @@ fn restore_live_checkpoint_with_current_profile(
         .map_err(|_| "Could not capture the authenticated checkpoint fixture.".to_string())?;
     let mut fork = source.clone();
     let fork_id = uuid::Uuid::new_v4().to_string();
-    if let MachineConfiguration::Vm { id, name, .. } = &mut fork {
-        *id = fork_id.clone();
-        *name = fork_name.into();
-    } else {
-        return Err("Checkpoint fixture source is not a VM.".into());
-    }
+    fork.id = fork_id.clone();
+    fork.name = fork_name.into();
     let mut metadata =
         read_metadata(&paths.metadata).map_err(|_| "Could not prepare the checkpoint fixture.")?;
     metadata.machines.push(fork.clone());

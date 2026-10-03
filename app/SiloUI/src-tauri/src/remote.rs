@@ -945,10 +945,9 @@ fn request_timeout(request: &Value) -> Duration {
         && (request
             .pointer("/params/machine/desktop")
             .is_some_and(|v| !v.is_null())
-            || (request.pointer("/params/machine/kind") == Some(&json!("vm"))
-                && request
-                    .pointer("/params/expected")
-                    .is_none_or(Value::is_null))))
+            || request
+                .pointer("/params/expected")
+                .is_none_or(Value::is_null)))
         || (request["method"] == "desktop.action"
             && matches!(
                 request["params"]["action"].as_str(),
@@ -2211,7 +2210,7 @@ mod tests {
     #[test]
     fn creating_a_remote_vm_has_time_for_an_owner_defaulted_desktop() {
         let _test_state = crate::test_support::global_state();
-        let vm = json!({"kind":"vm","name":"dev"});
+        let vm = json!({"name":"dev"});
         let upsert = |machine: Value, expected: Value| {
             request_timeout(
                 &json!({"method":"runtime.upsert","params":{"machine":machine,"expected":expected}}),
@@ -2223,10 +2222,6 @@ mod tests {
             Duration::from_secs(2100)
         );
         assert_eq!(upsert(vm.clone(), vm.clone()), Duration::from_secs(600));
-        assert_eq!(
-            upsert(json!({"kind":"ssh","name":"other"}), Value::Null),
-            Duration::from_secs(600)
-        );
     }
 
     #[test]

@@ -7,7 +7,7 @@ fn machine(paths: &RuntimePaths, name: &str) -> Result<MachineConfiguration, Run
     read_metadata(&paths.metadata)?
         .machines
         .into_iter()
-        .find(|m| m.is_vm() && m.name() == name)
+        .find(|m| m.name() == name)
         .ok_or_else(|| RuntimeError::Invalid("This sandbox no longer exists.".into()))
 }
 fn path(paths: &RuntimePaths, machine: &MachineConfiguration) -> PathBuf {
@@ -104,7 +104,7 @@ mod tests {
 
     fn configured(dir: &tempfile::TempDir, id: &str) -> (RuntimePaths, MachineConfiguration) {
         let paths = super::super::tests::paths(dir);
-        let machine: MachineConfiguration = serde_json::from_value(json!({"kind":"vm","id":id,"name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1})).unwrap();
+        let machine: MachineConfiguration = serde_json::from_value(json!({"id":id,"name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1})).unwrap();
         write_metadata(
             &paths.metadata,
             &MachineConfigurationRequest {

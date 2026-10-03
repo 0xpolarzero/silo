@@ -93,11 +93,7 @@ pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
     let application = applications::selected_terminal(app)?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
-    if !metadata
-        .machines
-        .iter()
-        .any(|m| m.name() == name && m.is_vm())
-    {
+    if !metadata.machines.iter().any(|m| m.name() == name) {
         return Err("Choose a local Silo VM.".into());
     }
     running_vm(&paths, name)?;

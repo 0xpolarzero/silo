@@ -354,7 +354,7 @@ fn machine(paths: &RuntimePaths, id: &str) -> Result<MachineConfiguration, Runti
     read_metadata(&paths.metadata)?
         .machines
         .into_iter()
-        .find(|machine| machine.is_vm() && machine.id() == id)
+        .find(|machine| machine.id() == id)
         .ok_or_else(|| RuntimeError::Invalid("This workspace is not a local VM.".into()))
 }
 
@@ -868,9 +868,6 @@ pub(crate) fn forget_removed(paths: &RuntimePaths, id: &str) -> Result<(), Runti
 pub(super) fn pending_workspace(
     machine: MachineConfiguration,
 ) -> Result<ApplicationWorkspace, RuntimeError> {
-    if !machine.is_vm() {
-        return Err(error("A checkpoint fork must be a local VM."));
-    }
     Ok(ApplicationWorkspace {
         machine,
         purpose: "Local MicroSandbox".into(),
@@ -881,7 +878,6 @@ pub(super) fn pending_workspace(
         attention: None,
         freshness: Freshness::Fresh,
         settling: false,
-        host: "127.0.0.1".into(),
         repositories: Vec::new(),
         files: Vec::new(),
         ports: Vec::new(),
@@ -1290,10 +1286,10 @@ pub(super) fn start_pending(
     }
     if pending.state == "full" {
         args.push("--cow-mem".into());
-    } else if let MachineConfiguration::Vm {
-        cpus, memory_gib, ..
-    } = machine
-    {
+    } else {
+        let MachineConfiguration {
+            cpus, memory_gib, ..
+        } = machine;
         // Disk restore starts a new VM and otherwise uses the runtime's 1 CPU / 512 MiB
         // defaults. Preserve the user's saved Silo resources on imported cold boots.
         args.extend([
@@ -1512,7 +1508,7 @@ pub(super) fn fork_source(
     let source = metadata
         .machines
         .iter()
-        .find(|machine| machine.is_vm() && machine.id() == workspace_id)
+        .find(|machine| machine.id() == workspace_id)
         .ok_or_else(|| RuntimeError::Invalid("The source workspace is not a local VM.".into()))?
         .clone();
     // Fail before an expensive capture; the inventory write checks again.
@@ -1614,7 +1610,7 @@ fn fork_commit_with_metadata_writer(
     let source = metadata
         .machines
         .iter()
-        .find(|machine| machine.is_vm() && machine.id() == fork.source_id)
+        .find(|machine| machine.id() == fork.source_id)
         .ok_or_else(|| {
             RuntimeError::Invalid(
                 "The source sandbox no longer exists. No fork was created.".into(),
@@ -1631,7 +1627,8 @@ fn fork_commit_with_metadata_writer(
     )?;
     let child_id = uuid::Uuid::new_v4().to_string();
     let mut child = source.clone();
-    if let MachineConfiguration::Vm { id, name, .. } = &mut child {
+    {
+        let MachineConfiguration { id, name, .. } = &mut child;
         *id = child_id.clone();
         *name = new_name.into();
     }
@@ -3082,7 +3079,7 @@ pub(crate) fn recover_interrupted(
         unresolved: HashMap::new(),
         cleanup_error: retry_deleted_snapshots(runner, paths).err(),
     };
-    for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
+    for machine in metadata.machines.iter() {
         let result = (|| {
             let mut record = load(paths, machine.id())?;
             let Some(inflight) = record.inflight_checkpoint.clone() else {
@@ -3684,7 +3681,8 @@ mod tests {
 
     fn built_in_machine() -> MachineConfiguration {
         let mut machine = machine();
-        if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+        {
+            let MachineConfiguration { desktop, .. } = &mut machine;
             *desktop = Some(crate::desktop::DesktopConfiguration {
                 start_with_sandbox: true,
                 built_in: true,
@@ -3926,7 +3924,7 @@ mod tests {
         crate::test_support::paths(directory.path())
     }
     fn machine() -> MachineConfiguration {
-        MachineConfiguration::Vm {
+        MachineConfiguration {
             id: ID.into(),
             name: "dev".into(),
             cpus: 1,
@@ -4588,7 +4586,8 @@ mod tests {
         let paths = paths(&directory);
         let mut child = machine();
         let child_id = "00000000-0000-4000-8000-000000000002";
-        if let MachineConfiguration::Vm { id, name, .. } = &mut child {
+        {
+            let MachineConfiguration { id, name, .. } = &mut child;
             *id = child_id.into();
             *name = "fork".into();
         }
@@ -4797,7 +4796,8 @@ mod tests {
         let paths = paths(&directory);
         let mut child = machine();
         let child_id = "00000000-0000-4000-8000-000000000002";
-        if let MachineConfiguration::Vm { id, name, .. } = &mut child {
+        {
+            let MachineConfiguration { id, name, .. } = &mut child;
             *id = child_id.into();
             *name = "fork".into();
         }
@@ -5801,7 +5801,7 @@ mod tests {
         let paths = paths(directory);
         let mut machines = vec![machine()];
         if let Some(record) = &fork {
-            let MachineConfiguration::Vm {
+            let MachineConfiguration {
                 cpus,
                 max_cpus,
                 memory_gib,
@@ -5810,11 +5810,8 @@ mod tests {
                 runtime_storage_gib,
                 desktop,
                 ..
-            } = machine()
-            else {
-                unreachable!()
-            };
-            machines.push(MachineConfiguration::Vm {
+            } = machine();
+            machines.push(MachineConfiguration {
                 id: FORK_ID.into(),
                 name: "branch".into(),
                 cpus,

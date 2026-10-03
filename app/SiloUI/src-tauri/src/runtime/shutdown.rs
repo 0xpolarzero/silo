@@ -114,9 +114,7 @@ fn stop_local_vms_with(
             machines.push(pending);
         }
     }
-    if runtime_never_initialized(paths)
-        || (!machines.iter().any(MachineConfiguration::is_vm) && !paths.home.exists())
-    {
+    if runtime_never_initialized(paths) || (machines.is_empty() && !paths.home.exists()) {
         return Ok(());
     }
     let present: HashSet<_> = list_managed(runner, paths)?
@@ -129,33 +127,34 @@ fn stop_local_vms_with(
         physical_memory_bytes: None,
     };
     let mut failures: Vec<String> = present.iter()
-        .filter(|name| !machines.iter().any(|machine| machine.is_vm() && machine.name() == name.as_str()))
+        .filter(|name| !machines.iter().any(|machine| machine.name() == name.as_str()))
         .map(|name| format!("{name}: Silo found a managed VM without a matching saved identity. Repair its configuration before quitting."))
         .collect();
     let mut targets = Vec::new();
     for machine in machines
         .iter()
-        .filter(|machine| machine.is_vm() && present.contains(machine.name()))
+        .filter(|machine| present.contains(machine.name()))
     {
         let committed_vm = committed.iter().any(|entry| entry.id() == machine.id());
         // A replacement may reuse a removed VM's name. Its journal retains both
         // identities, but only the identity actually present needs to stop.
-        if machines.iter().any(|other| {
-            other.is_vm() && other.name() == machine.name() && other.id() != machine.id()
-        }) && inspect_workspace(runner, paths, machine.name()).is_ok_and(|observed| {
-            observed.name == machine.name()
-                && ensure_managed(&observed).is_ok()
-                && machines.iter().any(|other| {
-                    other.is_vm()
-                        && other.name() == machine.name()
-                        && other.id() != machine.id()
-                        && observed
-                            .config
-                            .pointer("/labels/silo.machine-id")
-                            .and_then(Value::as_str)
-                            == Some(other.id())
-                })
-        }) {
+        if machines
+            .iter()
+            .any(|other| other.name() == machine.name() && other.id() != machine.id())
+            && inspect_workspace(runner, paths, machine.name()).is_ok_and(|observed| {
+                observed.name == machine.name()
+                    && ensure_managed(&observed).is_ok()
+                    && machines.iter().any(|other| {
+                        other.name() == machine.name()
+                            && other.id() != machine.id()
+                            && observed
+                                .config
+                                .pointer("/labels/silo.machine-id")
+                                .and_then(Value::as_str)
+                                == Some(other.id())
+                    })
+            })
+        {
             continue;
         }
         // A VM that is already stopped with no saved action needs no stop and
@@ -394,7 +393,7 @@ mod tests {
     }
     fn setup(directory: &tempfile::TempDir) -> RuntimePaths {
         let paths = super::super::tests::paths(directory);
-        let machines = ["first", "second"].map(|name| json!({"kind":"vm","id":id(name),"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":10,"runtimeStorageGiB":10}));
+        let machines = ["first", "second"].map(|name| json!({"id":id(name),"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":10,"runtimeStorageGiB":10}));
         fs::write(
             &paths.metadata,
             json!({"schemaVersion":1,"machines":machines}).to_string(),
@@ -613,38 +612,14 @@ mod tests {
         assert_eq!(runner.states.lock().unwrap()["second"], "Stopped");
     }
     #[test]
-    fn saved_ssh_connections_are_never_contacted_or_stopped() {
-        let _test_state = crate::test_support::global_state();
-        let dir = tempfile::tempdir().unwrap();
-        let paths = setup(&dir);
-        let runner = runner(None);
-        let mut metadata = read_metadata(&paths.metadata).unwrap();
-        metadata.machines.push(MachineConfiguration::Ssh {
-            id: "00000000-0000-4000-8000-000000000003".into(),
-            name: "remote".into(),
-            host: "office.example".into(),
-            user: "owner".into(),
-            port: 22,
-        });
-        write_metadata(&paths.metadata, &metadata).unwrap();
-        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
-        assert!(!runner
-            .calls
-            .lock()
-            .unwrap()
-            .iter()
-            .flatten()
-            .any(|arg| arg == "remote" || arg == "office.example"));
-        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 3);
-    }
-    #[test]
     fn replaced_vm_is_not_stopped_and_prevents_successful_quit() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
         let mut metadata = read_metadata(&paths.metadata).unwrap();
-        if let MachineConfiguration::Vm { id, .. } = &mut metadata.machines[0] {
+        {
+            let MachineConfiguration { id, .. } = &mut metadata.machines[0];
             *id = "00000000-0000-4000-8000-000000000004".into();
         }
         write_metadata(&paths.metadata, &metadata).unwrap();
@@ -737,7 +712,8 @@ mod tests {
             let paths = setup(&dir);
             let mut replacement = read_metadata(&paths.metadata).unwrap();
             let new_id = uuid::Uuid::new_v4().to_string();
-            if let MachineConfiguration::Vm { id, .. } = &mut replacement.machines[0] {
+            {
+                let MachineConfiguration { id, .. } = &mut replacement.machines[0];
                 *id = new_id.clone();
             }
             configuration_recovery::begin(&paths, &replacement).unwrap();

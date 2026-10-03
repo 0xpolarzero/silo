@@ -6,7 +6,7 @@ use std::sync::Mutex as StdMutex;
 const VM_ID: &str = "00000000-0000-4000-8000-000000000001";
 
 fn machine(built_in: bool) -> MachineConfiguration {
-    MachineConfiguration::Vm {
+    MachineConfiguration {
         id: VM_ID.into(),
         name: "dev".into(),
         cpus: 1,
@@ -92,14 +92,6 @@ fn only_built_in_vms_get_the_mount_and_it_is_read_only() {
                 &format!("{}:/opt/silo/chatgpt:ro,uid=0,gid=0", dir.display())
             ]
         );
-        let ssh = MachineConfiguration::Ssh {
-            id: "s".into(),
-            name: "s".into(),
-            host: "h".into(),
-            user: "u".into(),
-            port: 22,
-        };
-        assert!(mount_args(&ssh).unwrap().is_empty());
     });
 }
 
@@ -555,29 +547,9 @@ fn independent_vm_fixtures_do_not_share_pending_approval_state() {
 }
 
 fn machine_of(id: &str, built_in: bool) -> MachineConfiguration {
-    match machine(built_in) {
-        MachineConfiguration::Vm {
-            name,
-            cpus,
-            max_cpus,
-            memory_gib,
-            max_memory_gib,
-            workspace_storage_gib,
-            runtime_storage_gib,
-            desktop,
-            ..
-        } => MachineConfiguration::Vm {
-            id: id.into(),
-            name,
-            cpus,
-            max_cpus,
-            memory_gib,
-            max_memory_gib,
-            workspace_storage_gib,
-            runtime_storage_gib,
-            desktop,
-        },
-        other => other,
+    MachineConfiguration {
+        id: id.into(),
+        ..machine(built_in)
     }
 }
 

@@ -80,7 +80,7 @@ fn machine(paths: &RuntimePaths, name: &str) -> Result<MachineConfiguration, Run
     metadata
         .machines
         .into_iter()
-        .find(|m| m.name() == name && m.is_vm())
+        .find(|m| m.name() == name)
         .ok_or_else(|| {
             error(format!(
                 "Sandbox '{name}' is not a configured local VM. No action was performed."
@@ -506,7 +506,7 @@ fn recover_with(
     // file) out of automatic start rather than guess.
     if !unreadable.is_empty() {
         if let Ok(metadata) = read_metadata(&paths.metadata) {
-            for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
+            for machine in metadata.machines.iter() {
                 if unreadable.contains(&path(paths, machine.id())) {
                     recovered.keep_stopped.insert(machine.id().to_owned());
                 }
@@ -623,7 +623,7 @@ mod tests {
             metadata: dir.path().join("machines.json"),
             volumes: dir.path().join("volumes"),
         };
-        let machine = MachineConfiguration::Vm {
+        let machine = MachineConfiguration {
             id: ID.into(),
             name: "dev".into(),
             cpus: 1,

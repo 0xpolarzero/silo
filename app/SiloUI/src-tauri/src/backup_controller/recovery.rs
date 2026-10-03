@@ -1394,7 +1394,7 @@ mod tests {
     fn save_machine(paths: &runtime::RuntimePaths, name: &str, id: &str) {
         let request: runtime::MachineConfigurationRequest = serde_json::from_value(serde_json::json!({
             "schemaVersion": 1,
-            "machines": [{"kind":"vm","id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
+            "machines": [{"id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
         }))
         .unwrap();
         runtime::write_metadata(&paths.metadata, &request).unwrap();
@@ -2695,7 +2695,7 @@ mod tests {
         fs::create_dir_all(old.join("microsandbox").join(LOAD_STAGE).join("partial")).unwrap();
         let machines: Vec<_> = saved
             .iter()
-            .map(|(name, id)| serde_json::json!({"kind":"vm","id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}))
+            .map(|(name, id)| serde_json::json!({"id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}))
             .collect();
         let request: runtime::MachineConfigurationRequest =
             serde_json::from_value(serde_json::json!({"schemaVersion": 1, "machines": machines}))
@@ -3426,7 +3426,7 @@ mod tests {
         let saved = uuid::Uuid::new_v4().to_string();
         let request: runtime::MachineConfigurationRequest = serde_json::from_value(serde_json::json!({
             "schemaVersion": 1,
-            "machines": [{"kind":"vm","id":saved,"name":"copy","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
+            "machines": [{"id":saved,"name":"copy","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
         }))
         .unwrap();
         runtime::write_metadata(&paths.metadata, &request).unwrap();

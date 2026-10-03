@@ -70,7 +70,7 @@ fn fixture() -> (
 ) {
     let directory = tempfile::tempdir().unwrap();
     let paths = super::super::tests::paths(&directory);
-    let machine = MachineConfiguration::Vm {
+    let machine = MachineConfiguration {
         id: "00000000-0000-4000-8000-000000000001".into(),
         name: "dev".into(),
         cpus: 1,
@@ -572,7 +572,8 @@ fn maintenance_tick_preserves_damaged_checkpoint_and_trims_healthy_owner() {
     }
     let (_dir, paths, machine, observed) = fixture();
     let mut damaged = machine.clone();
-    if let MachineConfiguration::Vm { id, name, .. } = &mut damaged {
+    {
+        let MachineConfiguration { id, name, .. } = &mut damaged;
         *id = "00000000-0000-4000-8000-000000000002".into();
         *name = "damaged".into();
     }

@@ -300,49 +300,32 @@ pub struct MachineConfigurationRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
-pub enum MachineConfiguration {
-    Vm {
-        id: String,
-        name: String,
-        cpus: u8,
-        #[serde(rename = "maxCPUs")]
-        max_cpus: u8,
-        #[serde(rename = "memoryGiB")]
-        memory_gib: u32,
-        #[serde(rename = "maxMemoryGiB")]
-        max_memory_gib: u32,
-        #[serde(rename = "workspaceStorageGiB")]
-        workspace_storage_gib: u32,
-        #[serde(rename = "runtimeStorageGiB")]
-        runtime_storage_gib: u32,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        desktop: Option<crate::desktop::DesktopConfiguration>,
-    },
-    Ssh {
-        id: String,
-        name: String,
-        host: String,
-        user: String,
-        port: u16,
-    },
+#[serde(deny_unknown_fields)]
+pub struct MachineConfiguration {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) cpus: u8,
+    #[serde(rename = "maxCPUs")]
+    pub(crate) max_cpus: u8,
+    #[serde(rename = "memoryGiB")]
+    pub(crate) memory_gib: u32,
+    #[serde(rename = "maxMemoryGiB")]
+    pub(crate) max_memory_gib: u32,
+    #[serde(rename = "workspaceStorageGiB")]
+    pub(crate) workspace_storage_gib: u32,
+    #[serde(rename = "runtimeStorageGiB")]
+    pub(crate) runtime_storage_gib: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) desktop: Option<crate::desktop::DesktopConfiguration>,
 }
 
 impl MachineConfiguration {
     pub(crate) fn id(&self) -> &str {
-        match self {
-            Self::Vm { id, .. } | Self::Ssh { id, .. } => id,
-        }
+        &self.id
     }
 
     pub(crate) fn name(&self) -> &str {
-        match self {
-            Self::Vm { name, .. } | Self::Ssh { name, .. } => name,
-        }
-    }
-
-    pub(crate) fn is_vm(&self) -> bool {
-        matches!(self, Self::Vm { .. })
+        &self.name
     }
 }
 
@@ -364,11 +347,7 @@ pub(crate) enum ChangeRejection {
 /// remote change paths so both apply against fresh state instead of a stale snapshot.
 fn without_built_in(machine: &MachineConfiguration) -> MachineConfiguration {
     let mut machine = machine.clone();
-    if let MachineConfiguration::Vm {
-        desktop: Some(desktop),
-        ..
-    } = &mut machine
-    {
+    if let Some(desktop) = &mut machine.desktop {
         desktop.built_in = false;
     }
     machine
@@ -398,7 +377,7 @@ pub(crate) fn change_machine(
             // ...and the owner's value survives the replacement.
             let mut machine = machine.clone();
             if let (
-                MachineConfiguration::Vm {
+                MachineConfiguration {
                     desktop: Some(next),
                     ..
                 },
@@ -622,7 +601,6 @@ struct ApplicationWorkspace {
     /// Silo's own records (checkpoints, failures, secrets) stay current. Omitted when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     settling: bool,
-    host: String,
     repositories: Vec<Value>,
     files: Vec<Value>,
     ports: Vec<Value>,
@@ -1049,7 +1027,7 @@ pub(crate) fn run_msb(
             if let Some(machine) = read_metadata(&paths.metadata)?
                 .machines
                 .into_iter()
-                .find(|machine| machine.is_vm() && machine.name() == name)
+                .find(|machine| machine.name() == name)
             {
                 if checkpoints::needs_explicit_start(paths, machine.id())? {
                     return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(
@@ -1900,15 +1878,12 @@ fn validate_requested_resources(
     host: &HostResources,
 ) -> Result<(), RuntimeError> {
     for machine in &request.machines {
-        let MachineConfiguration::Vm {
+        let MachineConfiguration {
             name,
             max_cpus,
             max_memory_gib,
             ..
-        } = machine
-        else {
-            continue;
-        };
+        } = machine;
         validate_host_ceiling(name, *max_cpus, *max_memory_gib, host)?;
     }
     Ok(())
@@ -2073,7 +2048,7 @@ fn verify_workspace_identities_in(
         let Some(machine) = metadata
             .machines
             .iter()
-            .find(|machine| machine.name() == identity.workspace && machine.is_vm())
+            .find(|machine| machine.name() == identity.workspace)
         else {
             return Ok(false);
         };
@@ -2172,7 +2147,7 @@ fn configure_workspace_identities_in(
         let Some(machine) = metadata
             .machines
             .iter()
-            .find(|machine| machine.name() == identity.workspace && machine.is_vm())
+            .find(|machine| machine.name() == identity.workspace)
         else {
             return Err(RuntimeError::Invalid(format!(
                 "Sandbox '{}' is not a configured local VM. Its Git identity was not changed.",
@@ -2475,7 +2450,7 @@ fn apply_github_policy_with(
         .map_err(|error| error.to_string())?
         .machines
         .into_iter()
-        .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+        .find(|machine| machine.id() == vm_id && machine.name() == workspace)
         .ok_or("The sandbox identity changed. No GitHub access was applied.")?;
     let capability = run_msb(
         paths,
@@ -2689,10 +2664,7 @@ fn plan_log_cleanup(
     now: Instant,
 ) -> Vec<String> {
     let mut state = log_cleanup();
-    for workspace in workspaces
-        .iter_mut()
-        .filter(|workspace| workspace.machine.is_vm())
-    {
+    for workspace in workspaces.iter_mut() {
         if workspace.attention.is_none()
             && state
                 .failed
@@ -2710,8 +2682,7 @@ fn plan_log_cleanup(
     let due: Vec<String> = workspaces
         .iter()
         .filter(|workspace| {
-            workspace.machine.is_vm()
-                && matches!(workspace.state, WorkspaceState::Stopped)
+            matches!(workspace.state, WorkspaceState::Stopped)
                 && !workspace.settling
                 && workspace.freshness == Freshness::Fresh
                 && state
@@ -2796,8 +2767,7 @@ fn enrich_application_state(
         Repositories::LastKnown => keep_last_known_repositories(paths, &mut source.workspaces),
         Repositories::Discover { refresh } => {
             for workspace in &mut source.workspaces {
-                if workspace.machine.is_vm()
-                    && matches!(workspace.state, WorkspaceState::Running)
+                if matches!(workspace.state, WorkspaceState::Running)
                     && !workspace.settling
                     && workspace.freshness == Freshness::Fresh
                 {
@@ -2999,7 +2969,6 @@ pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Readi
         source
             .workspaces
             .into_iter()
-            .filter(|workspace| workspace.machine.is_vm())
             .map(|workspace| {
                 let id = workspace.machine.id().to_owned();
                 let state = if workspace.attention.is_some() {
@@ -3260,7 +3229,7 @@ pub async fn workspace_action(
             let machine = metadata
                 .machines
                 .iter()
-                .find(|machine| machine.id() == vm_id && machine.is_vm())
+                .find(|machine| machine.id() == vm_id)
                 .ok_or_else(|| RuntimeError::Invalid("This VM no longer exists.".into()))?;
             // No state event while the gate is held: the queue event already shows the
             // action, and this VM's row keeps its last state until the post-release event
@@ -3528,7 +3497,7 @@ fn creation_needs(
     };
     apply_desktop_defaults(paths, &previous, &mut request);
     let mut needs = crate::creation_inputs::Needs::default();
-    for machine in request.machines.iter().filter(|machine| machine.is_vm()) {
+    for machine in request.machines.iter() {
         if previous.machines.iter().any(|old| old.id() == machine.id()) {
             continue;
         }
@@ -4319,16 +4288,15 @@ const INVENTORY_MISMATCH: &str = "Silo's saved sandbox configuration does not ma
 /// fails the whole read; a VM's own failure is carried in its row for `settle_rows`.
 fn read_rows(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Vec<Row>, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
-    let listed = if metadata.machines.iter().any(MachineConfiguration::is_vm) {
-        list_managed(runner, paths)?
-    } else {
+    let listed = if metadata.machines.is_empty() {
         Vec::new()
+    } else {
+        list_managed(runner, paths)?
     };
     let listed_names: HashSet<&str> = listed.iter().map(|entry| entry.name.as_str()).collect();
     let configured: HashSet<&str> = metadata
         .machines
         .iter()
-        .filter(|machine| machine.is_vm())
         .map(MachineConfiguration::name)
         .collect();
     if listed_names.iter().any(|name| !configured.contains(name)) {
@@ -4343,13 +4311,6 @@ fn read_rows(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Vec<Row
     };
     let mut rows = Vec::with_capacity(metadata.machines.len());
     for machine in metadata.machines.iter().cloned() {
-        if !machine.is_vm() {
-            rows.push(Row {
-                workspace: ssh_workspace(machine),
-                unread: None,
-            });
-            continue;
-        }
         let listed = listed_names.contains(machine.name());
         let row = match (from_record(&machine), listed) {
             (true, false) => Row {
@@ -4401,9 +4362,6 @@ fn settle_rows(
                  mut workspace,
                  unread,
              }| {
-                if !workspace.machine.is_vm() {
-                    return Ok(workspace);
-                }
                 let previous = last.get(workspace.machine.id());
                 if !settled(workspace.machine.id()) {
                     match (previous, &unread) {
@@ -4494,10 +4452,7 @@ fn remember_settled(paths: &RuntimePaths, workspaces: &[ApplicationWorkspace]) {
     readings
         .retain(|(metadata, id), _| *metadata != paths.metadata || present.contains(id.as_str()));
     for workspace in workspaces {
-        if workspace.machine.is_vm()
-            && !workspace.settling
-            && workspace.freshness == Freshness::Fresh
-        {
+        if !workspace.settling && workspace.freshness == Freshness::Fresh {
             readings.insert(
                 (paths.metadata.clone(), workspace.machine.id().to_owned()),
                 workspace.clone(),
@@ -4553,9 +4508,6 @@ fn last_known_workspaces(
         .machines
         .into_iter()
         .map(|machine| {
-            if !machine.is_vm() {
-                return ssh_workspace(machine);
-            }
             let mut workspace = unread_workspace(machine);
             if let Some(previous) = last.get(workspace.machine.id()) {
                 keep_runtime_fields(&mut workspace, previous);
@@ -4575,10 +4527,7 @@ fn last_known_workspaces(
 fn keep_last_known_repositories(paths: &RuntimePaths, workspaces: &mut [ApplicationWorkspace]) {
     let last = last_settled(paths);
     for workspace in workspaces {
-        if workspace.machine.is_vm()
-            && matches!(workspace.state, WorkspaceState::Running)
-            && workspace.repositories.is_empty()
-        {
+        if matches!(workspace.state, WorkspaceState::Running) && workspace.repositories.is_empty() {
             if let Some(previous) = last.get(workspace.machine.id()) {
                 workspace.repositories = previous.repositories.clone();
             }
@@ -4598,7 +4547,6 @@ fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
         attention: None,
         freshness: Freshness::Fresh,
         settling: false,
-        host: "127.0.0.1".into(),
         repositories: Vec::new(),
         files: Vec::new(),
         ports: Vec::new(),
@@ -4611,23 +4559,6 @@ fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
         checkpoint_operation: None,
         unfinished_restore: None,
     }
-}
-
-/// Keep legacy SSH settings visible without inventing a remote runtime state.
-fn ssh_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
-    let host = match &machine {
-        MachineConfiguration::Ssh { host, .. } => host.clone(),
-        MachineConfiguration::Vm { .. } => String::new(),
-    };
-    let mut workspace = unread_workspace(machine);
-    workspace.host = host;
-    workspace.purpose = "SSH sandbox".into();
-    workspace.freshness = Freshness::Stale;
-    workspace.attention = Some(WorkspaceAttention {
-        level: AttentionLevel::Warning,
-        message: "Legacy SSH sandbox connections are unavailable. Add this computer in Computers to manage its Silo sandboxes.".into(),
-    });
-    workspace
 }
 
 /// A persisted running checkpoint operation is interrupted only when no operation
@@ -4661,31 +4592,28 @@ fn application_source_for_workspaces(
     // Journal read failures are reported as an Activity warning by read() below.
     let mut failures = runtime_activity::failures(paths).unwrap_or_default();
     for workspace in &mut workspaces {
-        if workspace.machine.is_vm() {
-            workspace.lifecycle_failure = failures.remove(workspace.machine.id());
-            match checkpoints::load(paths, workspace.machine.id()) {
-                Ok(checkpoint) => {
-                    workspace.pending_checkpoint_restore =
-                        checkpoints::view_pending(&checkpoint, workspace.machine.name());
-                    workspace.unfinished_restore =
-                        checkpoints::view_unfinished_restore(&checkpoint);
-                    workspace.checkpoints = checkpoint.checkpoints;
-                    let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
-                    workspace.checkpoint_operation = checkpoint
-                        .checkpoint_operation
-                        .map(|operation| checkpoint_operation_view(operation, live));
-                }
-                // One unreadable record must not fail every sandbox: flag only this one.
-                Err(error) => {
-                    workspace.checkpoints = Vec::new();
-                    workspace.pending_checkpoint_restore = None;
-                    workspace.checkpoint_operation = None;
-                    workspace.unfinished_restore = None;
-                    workspace.attention = Some(WorkspaceAttention {
+        workspace.lifecycle_failure = failures.remove(workspace.machine.id());
+        match checkpoints::load(paths, workspace.machine.id()) {
+            Ok(checkpoint) => {
+                workspace.pending_checkpoint_restore =
+                    checkpoints::view_pending(&checkpoint, workspace.machine.name());
+                workspace.unfinished_restore = checkpoints::view_unfinished_restore(&checkpoint);
+                workspace.checkpoints = checkpoint.checkpoints;
+                let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
+                workspace.checkpoint_operation = checkpoint
+                    .checkpoint_operation
+                    .map(|operation| checkpoint_operation_view(operation, live));
+            }
+            // One unreadable record must not fail every sandbox: flag only this one.
+            Err(error) => {
+                workspace.checkpoints = Vec::new();
+                workspace.pending_checkpoint_restore = None;
+                workspace.checkpoint_operation = None;
+                workspace.unfinished_restore = None;
+                workspace.attention = Some(WorkspaceAttention {
                         level: AttentionLevel::Error,
                         message: format!("{error} Checkpoints and actions that need them are unavailable for this sandbox."),
                     });
-                }
             }
         }
         workspace.pending_secret_revocations =
@@ -4880,9 +4808,7 @@ fn ensure_current_machine(
     if !read_metadata(&paths.metadata)?
         .machines
         .iter()
-        .any(|current| {
-            current.is_vm() && current.id() == machine.id() && current.name() == machine.name()
-        })
+        .any(|current| current.id() == machine.id() && current.name() == machine.name())
     {
         return Err(RuntimeError::Invalid(
             "The sandbox identity changed. Its replacement was preserved.".into(),
@@ -4967,7 +4893,6 @@ fn vm_workspace(
         attention,
         freshness: Freshness::Fresh,
         settling: false,
-        host: "127.0.0.1".into(),
         repositories: Vec::new(),
         files: Vec::new(),
         ports: Vec::new(),
@@ -4987,17 +4912,14 @@ fn configuration_attention(
     machine: &MachineConfiguration,
     inspected: &InspectedSandbox,
 ) -> Option<WorkspaceAttention> {
-    let MachineConfiguration::Vm {
+    let MachineConfiguration {
         cpus,
         max_cpus,
         memory_gib,
         max_memory_gib,
         runtime_storage_gib,
         ..
-    } = machine
-    else {
-        return None;
-    };
+    } = machine;
     let expected = (
         u64::from(*cpus),
         u64::from(*max_cpus),
@@ -5027,13 +4949,7 @@ fn configuration_attention(
             .pointer("/image/Oci/root_disk/size_mib")
             .and_then(Value::as_u64),
     );
-    let workspace_storage_gib = match machine {
-        MachineConfiguration::Vm {
-            workspace_storage_gib,
-            ..
-        } => *workspace_storage_gib,
-        _ => return None,
-    };
+    let workspace_storage_gib = machine.workspace_storage_gib;
     let mounts_match = inspected
         .config
         .get("mounts")
@@ -5119,11 +5035,7 @@ fn launch_start_guard<'a>(
     id: &str,
 ) -> Result<LaunchAdmission<'a>, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
-    let Some(machine) = metadata
-        .machines
-        .iter()
-        .find(|machine| machine.id() == id && machine.is_vm())
-    else {
+    let Some(machine) = metadata.machines.iter().find(|machine| machine.id() == id) else {
         return Ok(LaunchAdmission::Unguarded);
     };
     let guard = gate.kind(operation_gate::OperationKind::Lifecycle).acquire(
@@ -5164,11 +5076,6 @@ fn start_at_launch_with(
     let machine = metadata.machines.iter().find(|machine| machine.id() == id)
         .ok_or_else(|| RuntimeError::Invalid("A sandbox selected for launch no longer exists. Update the startup selection in Settings.".into()))?;
     let name = machine.name();
-    if !machine.is_vm() {
-        return Err(RuntimeError::Invalid(format!(
-            "{name} is a remote SSH sandbox. Automatic remote startup is unavailable."
-        )));
-    }
     if checkpoints::needs_explicit_start(paths, machine.id())? {
         return Ok(LaunchStart::NeedsExplicitStart(name.to_owned()));
     }
@@ -5206,7 +5113,7 @@ fn explicit_workspace_action_with(
         if let Some(machine) = read_metadata(&paths.metadata)?
             .machines
             .into_iter()
-            .find(|machine| machine.is_vm() && machine.name() == name)
+            .find(|machine| machine.name() == name)
         {
             if checkpoints::needs_explicit_start(paths, machine.id())? {
                 checkpoints::start_pending(runner, paths, &machine)?;
@@ -5229,7 +5136,7 @@ fn workspace_action_with(
         if let Some(machine) = read_metadata(&paths.metadata)?
             .machines
             .into_iter()
-            .find(|machine| machine.is_vm() && machine.name() == name)
+            .find(|machine| machine.name() == name)
         {
             if checkpoints::needs_explicit_start(paths, machine.id())? {
                 return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(
@@ -5325,12 +5232,10 @@ fn apply_whole_configuration_with_progress(
         if let Some(old) = previous_by_id.get(machine.id()) {
             if *old != machine {
                 validate_machine_update(old, machine)?;
-                if machine.is_vm() {
-                    ensure_machine_identity(
-                        machine,
-                        &inspect_workspace(runner, paths, machine.name())?,
-                    )?;
-                }
+                ensure_machine_identity(
+                    machine,
+                    &inspect_workspace(runner, paths, machine.name())?,
+                )?;
             }
         }
     }
@@ -5377,7 +5282,7 @@ fn apply_whole_configuration_with_progress(
                     create_machine_with_progress(runner, paths, machine, progress)?;
                 }
                 Some(old) if *old == machine => {
-                    if machine.is_vm() && retry_workspace == Some(machine.name()) {
+                    if retry_workspace == Some(machine.name()) {
                         progress("workspace-verification", machine.name(), 0);
                         verify_machine_configuration(runner, paths, machine)?;
                         progress("workspace-verification", machine.name(), 1);
@@ -5397,11 +5302,9 @@ fn apply_whole_configuration_with_progress(
             progress("workspace-settings", machine.name(), 0);
             write_metadata(&paths.metadata, &applied)?;
             progress("workspace-configuration", machine.name(), 1);
-            if machine.is_vm() {
-                progress("workspace-verification", machine.name(), 0);
-                verify_machine_configuration(runner, paths, machine)?;
-                progress("workspace-verification", machine.name(), 1);
-            }
+            progress("workspace-verification", machine.name(), 0);
+            verify_machine_configuration(runner, paths, machine)?;
+            progress("workspace-verification", machine.name(), 1);
         }
         write_metadata(&paths.metadata, &request)?;
         configuration_recovery::finish(paths)
@@ -5443,11 +5346,12 @@ fn validate_machine_update(
     if previous.name() != machine.name() {
         return Err(RuntimeError::Invalid(format!("Bundled MicroSandbox cannot rename sandbox '{}'. Keep its name or create a new sandbox.", previous.name())));
     }
-    match (previous, machine) {
-        (MachineConfiguration::Ssh { .. }, MachineConfiguration::Ssh { .. }) => Ok(()),
-        (MachineConfiguration::Vm { workspace_storage_gib: old_workspace, runtime_storage_gib: old_runtime, .. }, MachineConfiguration::Vm { workspace_storage_gib, runtime_storage_gib, .. }) if old_workspace == workspace_storage_gib && old_runtime == runtime_storage_gib => Ok(()),
-        (MachineConfiguration::Vm { .. }, MachineConfiguration::Vm { .. }) => Err(RuntimeError::Invalid("Storage disks cannot be resized in place. Keep both saved sizes or create a new sandbox.".into())),
-        _ => Err(RuntimeError::Invalid("A sandbox cannot change between a local VM and SSH configuration.".into())),
+    if previous.workspace_storage_gib == machine.workspace_storage_gib
+        && previous.runtime_storage_gib == machine.runtime_storage_gib
+    {
+        Ok(())
+    } else {
+        Err(RuntimeError::Invalid("Storage disks cannot be resized in place. Keep both saved sizes or create a new sandbox.".into()))
     }
 }
 
@@ -5502,7 +5406,7 @@ fn create_machine_with_progress(
     machine: &MachineConfiguration,
     progress: &dyn Fn(&str, &str, u8),
 ) -> Result<(), RuntimeError> {
-    let MachineConfiguration::Vm {
+    let MachineConfiguration {
         id,
         name,
         cpus,
@@ -5512,10 +5416,7 @@ fn create_machine_with_progress(
         workspace_storage_gib,
         runtime_storage_gib,
         desktop,
-    } = machine
-    else {
-        return Ok(());
-    };
+    } = machine;
     // Needed before anything is claimed or created: a VM without its mount never gets it.
     let mounts = crate::computer_use::mount_args(machine)?;
     configuration_recovery::claim(paths, machine)?;
@@ -5679,7 +5580,7 @@ pub(crate) fn create_disposable_test_machine(
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<MachineConfiguration, RuntimeError> {
-    let machine = MachineConfiguration::Vm {
+    let machine = MachineConfiguration {
         id: uuid::Uuid::new_v4().to_string(),
         name: name.into(),
         cpus: 1,
@@ -5703,7 +5604,7 @@ pub(crate) fn create_disposable_desktop_machine(
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<MachineConfiguration, RuntimeError> {
-    let machine = MachineConfiguration::Vm {
+    let machine = MachineConfiguration {
         id: uuid::Uuid::new_v4().to_string(),
         name: name.into(),
         cpus: 2,
@@ -5760,7 +5661,7 @@ pub(crate) fn start_disposable_test_import(
     let machine = read_metadata(&paths.metadata)?
         .machines
         .into_iter()
-        .find(|machine| machine.is_vm() && machine.name() == name)
+        .find(|machine| machine.name() == name)
         .ok_or_else(|| RuntimeError::Invalid("Imported test sandbox is missing.".into()))?;
     checkpoints::start_pending(&ProcessRunner, paths, &machine)
 }
@@ -5834,9 +5735,7 @@ fn remove_machine_volumes(
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
-    let MachineConfiguration::Vm { name, .. } = machine else {
-        return Ok(());
-    };
+    let MachineConfiguration { name, .. } = machine;
     let mut failure = None;
     for role in ["workspace"] {
         if let Err(error) = remove_disk_path(&disk_path(paths, name, role)) {
@@ -5873,7 +5772,7 @@ fn update_machine(
     previous: &MachineConfiguration,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
-    // Renames, storage resizes, VM/SSH switches and desktop removal are rejected here.
+    // Renames, storage resizes and desktop removal are rejected here.
     validate_machine_update(previous, machine)?;
     if crate::desktop::only_desktop_changed(previous, machine) {
         ensure_machine_identity(previous, &inspect_workspace(runner, paths, machine.name())?)?;
@@ -5886,10 +5785,10 @@ fn update_machine(
                 .ok_or_else(|| RuntimeError::Invalid("Desktop removal is not supported.".into()))?,
         );
     }
-    match (previous, machine) {
-        (
-            MachineConfiguration::Vm { name, .. },
-            MachineConfiguration::Vm {
+    {
+        {
+            let MachineConfiguration { name, .. } = previous;
+            let MachineConfiguration {
                 id,
                 cpus,
                 max_cpus,
@@ -5898,8 +5797,7 @@ fn update_machine(
                 workspace_storage_gib,
                 runtime_storage_gib,
                 ..
-            },
-        ) => {
+            } = machine;
             let inspected = inspect_workspace(runner, paths, name)?;
             ensure_machine_identity(previous, &inspected)?;
             if inspected.status == "Running" {
@@ -5958,15 +5856,13 @@ fn update_machine(
             }
             Ok(())
         }
-        // An SSH entry has no local runtime to change.
-        _ => Ok(()),
     }
 }
 
 /// What deleting a VM removes from the runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RemovalTarget {
-    /// Nothing: an SSH entry, or a pending checkpoint restore with no runtime VM yet.
+    /// Nothing: a pending checkpoint restore with no runtime VM yet.
     Nothing,
     /// An ordinary stopped VM.
     Stopped,
@@ -5981,9 +5877,7 @@ fn preflight_removal(
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<RemovalTarget, RuntimeError> {
-    let MachineConfiguration::Vm { name, .. } = machine else {
-        return Ok(RemovalTarget::Nothing);
-    };
+    let MachineConfiguration { name, .. } = machine;
     // An unreadable checkpoint record leaves the pending state unknown; the runtime and
     // its labels then decide, so a damaged record never blocks deleting its sandbox.
     let pending = checkpoints::is_pending(paths, machine.id()).ok();
@@ -6088,50 +5982,35 @@ fn validate_request(request: &MachineConfigurationRequest) -> Result<(), Runtime
                 "Sandbox names must be unique.".into(),
             ));
         }
-        match machine {
-            MachineConfiguration::Vm {
-                cpus,
-                max_cpus,
-                memory_gib,
-                max_memory_gib,
-                workspace_storage_gib,
-                runtime_storage_gib,
-                ..
-            } => {
-                if *cpus == 0 || cpus > max_cpus {
-                    return Err(RuntimeError::Invalid(format!(
-                        "Sandbox '{}' has an invalid CPU limit or ceiling.",
-                        machine.name()
-                    )));
-                }
-                if *memory_gib == 0 || memory_gib > max_memory_gib {
-                    return Err(RuntimeError::Invalid(format!(
-                        "Sandbox '{}' has an invalid memory limit or ceiling.",
-                        machine.name()
-                    )));
-                }
-                let total = workspace_storage_gib
-                    .checked_add(*runtime_storage_gib)
-                    .and_then(|gib| gib.checked_mul(1024));
-                if *workspace_storage_gib == 0 || *runtime_storage_gib == 0 || total.is_none() {
-                    return Err(RuntimeError::Invalid(format!(
-                        "Sandbox '{}' has an invalid storage allocation.",
-                        machine.name()
-                    )));
-                }
-            }
-            MachineConfiguration::Ssh { host, user, .. } => {
-                if host.trim().is_empty()
-                    || host.chars().any(char::is_whitespace)
-                    || user.trim().is_empty()
-                    || user.chars().any(char::is_whitespace)
-                {
-                    return Err(RuntimeError::Invalid(format!(
-                        "Sandbox '{}' has an invalid SSH host or user.",
-                        machine.name()
-                    )));
-                }
-            }
+        let MachineConfiguration {
+            cpus,
+            max_cpus,
+            memory_gib,
+            max_memory_gib,
+            workspace_storage_gib,
+            runtime_storage_gib,
+            ..
+        } = machine;
+        if *cpus == 0 || cpus > max_cpus {
+            return Err(RuntimeError::Invalid(format!(
+                "Sandbox '{}' has an invalid CPU limit or ceiling.",
+                machine.name()
+            )));
+        }
+        if *memory_gib == 0 || memory_gib > max_memory_gib {
+            return Err(RuntimeError::Invalid(format!(
+                "Sandbox '{}' has an invalid memory limit or ceiling.",
+                machine.name()
+            )));
+        }
+        let total = workspace_storage_gib
+            .checked_add(*runtime_storage_gib)
+            .and_then(|gib| gib.checked_mul(1024));
+        if *workspace_storage_gib == 0 || *runtime_storage_gib == 0 || total.is_none() {
+            return Err(RuntimeError::Invalid(format!(
+                "Sandbox '{}' has an invalid storage allocation.",
+                machine.name()
+            )));
         }
     }
     Ok(())
@@ -6201,7 +6080,7 @@ pub(crate) fn resolve_vm_id(paths: &RuntimePaths, name: &str) -> Result<String, 
     read_metadata(&paths.metadata)?
         .machines
         .into_iter()
-        .find(|machine| machine.is_vm() && machine.name() == name)
+        .find(|machine| machine.name() == name)
         .map(|machine| machine.id().to_owned())
         .ok_or_else(|| RuntimeError::Invalid("This VM no longer exists.".into()))
 }
@@ -7152,7 +7031,8 @@ esac
         let dir = tempfile::tempdir().unwrap();
         let previous = vm();
         let mut desired = previous.clone();
-        if let MachineConfiguration::Vm { desktop, .. } = &mut desired {
+        {
+            let MachineConfiguration { desktop, .. } = &mut desired;
             *desktop = Some(crate::desktop::DesktopConfiguration {
                 start_with_sandbox: true,
                 built_in: false,
@@ -7180,7 +7060,8 @@ esac
         let dir = tempfile::tempdir().unwrap();
         let desired = vm();
         let mut previous = desired.clone();
-        if let MachineConfiguration::Vm { desktop, .. } = &mut previous {
+        {
+            let MachineConfiguration { desktop, .. } = &mut previous;
             *desktop = Some(crate::desktop::DesktopConfiguration {
                 start_with_sandbox: true,
                 built_in: false,
@@ -7466,7 +7347,8 @@ esac
                 .any(|entry| entry.vm_name.as_deref() == Some("dev"))
         });
         let mut replacement = vm();
-        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+        {
+            let MachineConfiguration { id, .. } = &mut replacement;
             *id = "22222222-2222-4222-8222-222222222222".into();
         }
         write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
@@ -7531,7 +7413,8 @@ esac
             })
         });
         let mut replacement = vm();
-        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+        {
+            let MachineConfiguration { id, .. } = &mut replacement;
             *id = "22222222-2222-4222-8222-222222222222".into();
         }
         write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
@@ -8407,7 +8290,7 @@ esac
     }
 
     pub(super) fn vm() -> MachineConfiguration {
-        MachineConfiguration::Vm {
+        MachineConfiguration {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
             cpus: 4,
@@ -8594,7 +8477,8 @@ esac
     fn an_older_controller_cannot_stop_a_built_in_desktop_from_starting_with_its_vm() {
         let built_in = |start| {
             let mut machine = vm();
-            if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+            {
+                let MachineConfiguration { desktop, .. } = &mut machine;
                 *desktop = Some(crate::desktop::DesktopConfiguration {
                     start_with_sandbox: start,
                     built_in: true,
@@ -8604,7 +8488,8 @@ esac
         };
         let legacy = |start| {
             let mut machine = vm();
-            if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+            {
+                let MachineConfiguration { desktop, .. } = &mut machine;
                 *desktop = Some(crate::desktop::DesktopConfiguration {
                     start_with_sandbox: start,
                     built_in: false,
@@ -8705,7 +8590,8 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut machine = vm();
-        if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+        {
+            let MachineConfiguration { desktop, .. } = &mut machine;
             *desktop = Some(crate::desktop::DesktopConfiguration {
                 start_with_sandbox: false,
                 built_in: false,
@@ -8781,7 +8667,8 @@ esac
             let paths = paths(&directory);
             write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
             let mut edited = vm();
-            if let MachineConfiguration::Vm { cpus, .. } = &mut edited {
+            {
+                let MachineConfiguration { cpus, .. } = &mut edited;
                 *cpus = 5;
             }
             let candidate = request(vec![edited]);
@@ -8831,29 +8718,17 @@ esac
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let remote = MachineConfiguration::Ssh {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "remote".into(),
-            host: "host".into(),
-            user: "user".into(),
-            port: 22,
-        };
-        configuration_recovery::begin(&paths, &request(vec![remote.clone(), vm()])).unwrap();
-        // The first addition committed; the VM failed while preparing its disk.
-        write_metadata(&paths.metadata, &request(vec![remote.clone()])).unwrap();
+        configuration_recovery::begin(&paths, &request(vec![vm()])).unwrap();
+        // The VM failed while preparing its disk before its metadata committed.
+        write_metadata(&paths.metadata, &request(Vec::new())).unwrap();
         configuration_recovery::claim(&paths, &vm()).unwrap();
         fs::write(disk_path(&paths, "dev", "workspace"), b"incomplete").unwrap();
         let mut corrected = vm();
-        if let MachineConfiguration::Vm { memory_gib, .. } = &mut corrected {
-            *memory_gib = 8;
-        }
-        let revised = request(vec![remote.clone(), corrected]);
+        corrected.memory_gib = 8;
+        let revised = request(vec![corrected]);
         let runner = StubRunner::successful_json(vec![json!([])]);
         configuration_recovery::prepare_retry(&runner, &paths, Some(&revised)).unwrap();
-        assert_eq!(
-            read_metadata(&paths.metadata).unwrap(),
-            request(vec![remote])
-        );
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), request(Vec::new()));
         assert!(!paths.volumes.join("dev").exists());
         let journal: Value = serde_json::from_slice(
             &fs::read(
@@ -9179,24 +9054,14 @@ exit 9
         let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let remote = MachineConfiguration::Ssh {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "remote".into(),
-            host: "host".into(),
-            user: "user".into(),
-            port: 22,
-        };
-        write_metadata(&paths.metadata, &request(vec![vm(), remote.clone()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         fs::create_dir_all(paths.volumes.join("dev")).unwrap();
         fs::write(disk_path(&paths, "dev", "workspace"), b"deleted-vm-disk").unwrap();
-        configuration_recovery::begin(&paths, &request(vec![remote.clone()])).unwrap();
+        configuration_recovery::begin(&paths, &request(Vec::new())).unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
         configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {})
             .unwrap();
-        assert_eq!(
-            read_metadata(&paths.metadata).unwrap(),
-            request(vec![remote])
-        );
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), request(Vec::new()));
         assert!(!paths.volumes.join("dev").exists());
     }
 
@@ -9921,14 +9786,9 @@ exit 9
                         let mut changed = self.changed.lock().unwrap();
                         if !*changed {
                             *changed = true;
-                            let remote = MachineConfiguration::Ssh {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                name: "remote".into(),
-                                host: "host".into(),
-                                user: "user".into(),
-                                port: 22,
-                            };
-                            write_metadata(&paths.metadata, &request(vec![remote])).unwrap();
+                            let mut edited = vm();
+                            edited.cpus += 1;
+                            write_metadata(&paths.metadata, &request(vec![edited])).unwrap();
                         }
                         inspect(paths, "Running").to_string()
                     }
@@ -9951,8 +9811,8 @@ exit 9
             read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new())
                 .unwrap();
         assert_eq!(source.workspaces.len(), 1);
-        assert_eq!(source.workspaces[0].machine.name(), "remote");
-        assert_eq!(runner.calls.lock().unwrap().len(), 2);
+        assert_eq!(source.workspaces[0].machine.cpus, vm().cpus + 1);
+        assert_eq!(runner.calls.lock().unwrap().len(), 4);
     }
 
     #[test]
@@ -10069,7 +9929,8 @@ exit 9
 
     fn second_vm() -> MachineConfiguration {
         let mut other = vm();
-        if let MachineConfiguration::Vm { id, name, .. } = &mut other {
+        {
+            let MachineConfiguration { id, name, .. } = &mut other;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
@@ -10369,18 +10230,11 @@ exit 9
     }
 
     #[test]
-    fn native_state_omits_legacy_placeholders_and_does_not_guess_ssh_state() {
+    fn native_state_omits_legacy_placeholders() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let ssh = MachineConfiguration::Ssh {
-            id: "00000000-0000-4000-8000-000000000009".into(),
-            name: "remote".into(),
-            host: "example.test".into(),
-            user: "me".into(),
-            port: 22,
-        };
-        write_metadata(&paths.metadata, &request(vec![ssh, vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let runner = StubRunner::successful_json(vec![
             json!([{"name":"dev","status":"Running","image":"ubuntu"}]),
             inspect(&paths, "Running"),
@@ -10389,12 +10243,6 @@ exit 9
             serde_json::to_value(read_application_state_with(&runner, &paths).unwrap()).unwrap();
         assert!(encoded.get("preferences").is_none());
         assert!(encoded.get("backup").is_none());
-        assert_eq!(encoded["workspaces"][0]["state"], "failed");
-        assert_eq!(encoded["workspaces"][0]["freshness"], "stale");
-        assert!(encoded["workspaces"][0]["attention"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("Computers"));
     }
 
     #[test]
@@ -10469,7 +10317,8 @@ exit 9
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
             let mut machine = vm();
-            if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+            {
+                let MachineConfiguration { desktop, .. } = &mut machine;
                 *desktop = Some(crate::desktop::DesktopConfiguration {
                     start_with_sandbox: true,
                     built_in: false,
@@ -10507,7 +10356,8 @@ exit 9
 
     fn built_in_vm() -> MachineConfiguration {
         let mut machine = vm();
-        if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+        {
+            let MachineConfiguration { desktop, .. } = &mut machine;
             *desktop = Some(crate::desktop::DesktopConfiguration {
                 start_with_sandbox: true,
                 built_in: true,
@@ -10649,7 +10499,8 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut plain = vm();
-        if let MachineConfiguration::Vm { desktop, .. } = &mut plain {
+        {
+            let MachineConfiguration { desktop, .. } = &mut plain;
             *desktop = None;
         }
         let request = |machines: Vec<MachineConfiguration>| MachineConfigurationRequest {
@@ -10774,12 +10625,12 @@ exit 9
         let paths = paths(&directory);
         let previous = vm();
         let mut changed = previous.clone();
-        if let MachineConfiguration::Vm {
-            workspace_storage_gib,
-            runtime_storage_gib,
-            ..
-        } = &mut changed
         {
+            let MachineConfiguration {
+                workspace_storage_gib,
+                runtime_storage_gib,
+                ..
+            } = &mut changed;
             *workspace_storage_gib += 1;
             *runtime_storage_gib += 2;
         }
@@ -10800,7 +10651,8 @@ exit 9
             let previous = request(vec![vm()]);
             write_metadata(&paths.metadata, &previous).unwrap();
             let mut changed = vm();
-            if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+            {
+                let MachineConfiguration { cpus, .. } = &mut changed;
                 *cpus = 2;
             }
             let mut replacement = inspect(&paths, status);
@@ -10839,7 +10691,8 @@ exit 9
             let paths = paths(&directory);
             let previous = vm();
             let mut changed = previous.clone();
-            if let MachineConfiguration::Vm { cpus, desktop, .. } = &mut changed {
+            {
+                let MachineConfiguration { cpus, desktop, .. } = &mut changed;
                 if desktop_only {
                     *desktop = Some(crate::desktop::DesktopConfiguration {
                         start_with_sandbox: true,
@@ -10868,7 +10721,8 @@ exit 9
         let paths = paths(&directory);
         let previous = vm();
         let mut changed = previous.clone();
-        if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+        {
+            let MachineConfiguration { cpus, .. } = &mut changed;
             *cpus = 2;
         }
         let mut replacement = inspect(&paths, "Stopped");
@@ -10899,7 +10753,8 @@ exit 9
         let paths = paths(&directory);
         let previous = vm();
         let mut changed = previous.clone();
-        if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+        {
+            let MachineConfiguration { cpus, .. } = &mut changed;
             *cpus = 2;
         }
         let runner = StubRunner::successful_json(vec![
@@ -11104,35 +10959,15 @@ exit 9
     }
 
     #[test]
-    fn launch_skips_running_and_rejects_missing_ssh_and_unready() {
+    fn launch_skips_running_and_rejects_missing_and_unready() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(
-            &paths.metadata,
-            &request(vec![
-                vm(),
-                MachineConfiguration::Ssh {
-                    id: "00000000-0000-4000-8000-000000000002".into(),
-                    name: "remote".into(),
-                    host: "example.test".into(),
-                    user: "user".into(),
-                    port: 22,
-                },
-            ]),
-        )
-        .unwrap();
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         let runner = StubRunner::successful_json(vec![inspect(&paths, "Running")]);
         start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap();
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
         assert!(start_at_launch_with(&runner, &paths, &generous_host(), "deleted").is_err());
-        assert!(start_at_launch_with(
-            &runner,
-            &paths,
-            &generous_host(),
-            "00000000-0000-4000-8000-000000000002"
-        )
-        .is_err());
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
         let runner = StubRunner::successful_json(vec![
             inspect(&paths, "Stopped"),
@@ -11247,13 +11082,15 @@ exit 9
     fn validation_rejects_duplicates_and_invalid_resource_order() {
         let _test_state = crate::test_support::global_state();
         let mut duplicate = vm();
-        if let MachineConfiguration::Vm { name, .. } = &mut duplicate {
+        {
+            let MachineConfiguration { name, .. } = &mut duplicate;
             *name = "dev".into();
         }
         assert!(validate_request(&request(vec![vm(), duplicate])).is_err());
 
         let mut invalid = vm();
-        if let MachineConfiguration::Vm { cpus, max_cpus, .. } = &mut invalid {
+        {
+            let MachineConfiguration { cpus, max_cpus, .. } = &mut invalid;
             *cpus = 8;
             *max_cpus = 4;
         }
@@ -11293,7 +11130,6 @@ exit 9
             "schemaVersion": 1,
             "machines": [
                 {
-                    "kind": "vm",
                     "id": "00000000-0000-4000-8000-000000000001",
                     "name": "dev",
                     "cpus": 2,
@@ -11302,14 +11138,6 @@ exit 9
                     "maxMemoryGiB": 4,
                     "workspaceStorageGiB": 10,
                     "runtimeStorageGiB": 5
-                },
-                {
-                    "kind": "ssh",
-                    "id": "00000000-0000-4000-8000-000000000002",
-                    "name": "remote",
-                    "host": "example.test",
-                    "user": "developer",
-                    "port": 2222
                 }
             ]
         });
@@ -11317,7 +11145,7 @@ exit 9
         validate_request(&request).unwrap();
         assert!(matches!(
             request.machines[0],
-            MachineConfiguration::Vm { desktop: None, .. }
+            MachineConfiguration { desktop: None, .. }
         ));
         assert_eq!(serde_json::to_value(&request).unwrap(), saved);
     }
@@ -11494,7 +11322,8 @@ exit 9
             write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
             let lane = |_: &MachineConfiguration, _: &str| {
                 let mut replacement = vm();
-                if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+                {
+                    let MachineConfiguration { id, .. } = &mut replacement;
                     *id = "22222222-2222-4222-8222-222222222222".into();
                 }
                 write_metadata(&paths.metadata, &request(vec![replacement]))?;
@@ -11664,7 +11493,8 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut other = vm();
-        if let MachineConfiguration::Vm { id, name, .. } = &mut other {
+        {
+            let MachineConfiguration { id, name, .. } = &mut other;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
@@ -12297,7 +12127,8 @@ exit 9
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
             let mut other = vm();
-            if let MachineConfiguration::Vm { id, name, .. } = &mut other {
+            {
+                let MachineConfiguration { id, name, .. } = &mut other;
                 *id = "00000000-0000-4000-8000-000000000002".into();
                 *name = "work".into();
             }
@@ -12414,16 +12245,15 @@ exit 9
         let paths = paths(&directory);
         let first = vm();
         let mut second = vm();
-        if let MachineConfiguration::Vm { id, name, .. } = &mut second {
+        {
+            let MachineConfiguration { id, name, .. } = &mut second;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
-        let remote = MachineConfiguration::Ssh {
+        let remote = MachineConfiguration {
             id: "00000000-0000-4000-8000-000000000003".into(),
-            name: "remote".into(),
-            host: "example.com".into(),
-            user: "user".into(),
-            port: 22,
+            name: "keep".into(),
+            ..vm()
         };
         let previous = request(vec![first, second, remote.clone()]);
         write_metadata(&paths.metadata, &previous).unwrap();
@@ -12453,16 +12283,15 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut second = vm();
-        if let MachineConfiguration::Vm { id, name, .. } = &mut second {
+        {
+            let MachineConfiguration { id, name, .. } = &mut second;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
-        let remote = MachineConfiguration::Ssh {
+        let remote = MachineConfiguration {
             id: "00000000-0000-4000-8000-000000000003".into(),
-            name: "remote".into(),
-            host: "example.com".into(),
-            user: "user".into(),
-            port: 22,
+            name: "keep".into(),
+            ..vm()
         };
         write_metadata(
             &paths.metadata,
@@ -12510,7 +12339,8 @@ exit 9
         let paths = paths(&directory);
         let first = vm();
         let mut second = vm();
-        if let MachineConfiguration::Vm { id, name, .. } = &mut second {
+        {
+            let MachineConfiguration { id, name, .. } = &mut second;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
@@ -12787,7 +12617,7 @@ fn apply_secrets_at_paths(paths: RuntimePaths, workspace: &str) -> Result<Vec<St
             .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))?
             .machines
             .into_iter()
-            .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+            .find(|machine| machine.id() == vm_id && machine.name() == workspace)
             .ok_or_else(|| {
                 secrets_runtime::Attempt::Final(
                     "The sandbox identity changed. No secrets were applied.".into(),
@@ -12846,7 +12676,7 @@ fn revoke_secret_with(
     let Some(machine) = metadata
         .machines
         .iter()
-        .find(|machine| machine.is_vm() && machine.name() == record.workspace)
+        .find(|machine| machine.name() == record.workspace)
     else {
         return Ok(true);
     };
@@ -12915,7 +12745,7 @@ pub(crate) fn validate_secret_workspaces(
         if !metadata
             .machines
             .iter()
-            .any(|machine| machine.is_vm() && machine.name() == workspace)
+            .any(|machine| machine.name() == workspace)
         {
             return Err("Secrets can only be assigned to local Silo sandboxes.".into());
         }
@@ -12947,7 +12777,7 @@ mod change_configuration_tests {
     use super::*;
 
     fn vm(id: &str, name: &str, cpus: u8) -> MachineConfiguration {
-        MachineConfiguration::Vm {
+        MachineConfiguration {
             id: id.into(),
             name: name.into(),
             cpus,

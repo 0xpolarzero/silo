@@ -318,7 +318,7 @@ pub(crate) async fn open_desktop(
                 .map_err(|e| e.to_string())?
                 .machines
                 .iter()
-                .any(|m| m.is_vm() && m.name() == workspace)
+                .any(|m| m.name() == workspace)
             {
                 return Err("Sandbox no longer exists.".into());
             }

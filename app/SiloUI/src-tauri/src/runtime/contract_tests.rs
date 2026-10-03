@@ -70,7 +70,7 @@ fn application_and_remote_snapshot_match_wire_contract() {
         }
     }
     let _reset = ResetSecrets;
-    let machine = MachineConfiguration::Vm {
+    let machine = MachineConfiguration {
         id: ID.into(),
         name: "dev".into(),
         cpus: 2,
@@ -81,18 +81,11 @@ fn application_and_remote_snapshot_match_wire_contract() {
         runtime_storage_gib: 20,
         desktop: None,
     };
-    let legacy = MachineConfiguration::Ssh {
-        id: "00000000-0000-4000-8000-000000000002".into(),
-        name: "legacy".into(),
-        host: "legacy.example.test".into(),
-        user: "silo".into(),
-        port: 22,
-    };
     write_metadata(
         &paths.metadata,
         &MachineConfigurationRequest {
             schema_version: 1,
-            machines: vec![machine, legacy],
+            machines: vec![machine],
         },
     )
     .unwrap();

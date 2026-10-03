@@ -858,7 +858,7 @@ fn begin_export(
         let machine = metadata
             .machines
             .iter()
-            .find(|machine| machine.is_vm() && machine.name() == sandbox)
+            .find(|machine| machine.name() == sandbox)
             .ok_or_else(|| {
                 format!(
                     "Sandbox '{sandbox}' is not managed by Silo. Choose a Silo sandbox to export."
@@ -1342,7 +1342,7 @@ fn backup_at_paths(
         let machine = metadata
             .machines
             .iter()
-            .find(|machine| machine.is_vm() && machine.name() == name)
+            .find(|machine| machine.name() == name)
             .ok_or_else(|| {
                 format!("Sandbox '{name}' is not managed by Silo. Choose a Silo sandbox to export.")
             })?;
@@ -1415,15 +1415,12 @@ fn backup_volumes(
     machine: &runtime::MachineConfiguration,
     inspected: &mut runtime::InspectedSandbox,
 ) -> Result<(), String> {
-    let runtime::MachineConfiguration::Vm {
+    let runtime::MachineConfiguration {
         name,
         workspace_storage_gib,
         runtime_storage_gib,
         ..
-    } = machine
-    else {
-        return Err("Only local sandboxes have exportable disk storage.".into());
-    };
+    } = machine;
     if !normalize_backup_root_capacity(
         &mut inspected.config,
         u64::from(*runtime_storage_gib) * 1024,
@@ -1622,7 +1619,7 @@ fn sandbox_identity(app: &AppHandle, name: &str) -> Option<crate::notifications:
     metadata
         .machines
         .iter()
-        .find(|machine| machine.is_vm() && machine.name() == name)
+        .find(|machine| machine.name() == name)
         .map(|machine| crate::notifications::NoticeSandbox {
             id: machine.id().to_string(),
             name: name.to_string(),
@@ -1951,7 +1948,7 @@ fn unpack_and_save(
     object.insert("name".into(), Value::String(new_name.into()));
     let machine: runtime::MachineConfiguration = serde_json::from_value(machine_value)
         .map_err(|_| "The export file has invalid sandbox settings. Choose another export file or export the original sandbox again.".to_string())?;
-    if !matches!(machine, runtime::MachineConfiguration::Vm { .. }) {
+    if !matches!(machine, runtime::MachineConfiguration { .. }) {
         return Err("The export file does not contain settings for a local sandbox. Choose another export file.".into());
     }
     enter_commit(controller, cancellation)?;
@@ -3599,7 +3596,7 @@ mod tests {
     }
 
     fn imported_machine(id: &str) -> runtime::MachineConfiguration {
-        serde_json::from_value(serde_json::json!({"kind":"vm","id":id,"name":"copy","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1})).unwrap()
+        serde_json::from_value(serde_json::json!({"id":id,"name":"copy","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1})).unwrap()
     }
 
     const GROUP: &str = "silo-import-0123456789abcdef0123456789abcdef";

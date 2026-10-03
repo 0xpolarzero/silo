@@ -156,7 +156,7 @@ pub(crate) async fn ssh_connection(
             runtime::shutdown::ensure_accepting_operations()?;
             let name = workspace.ok_or("Missing sandbox name.")?;
             let metadata = runtime::read_metadata(&paths.metadata).map_err(|_| "Could not read sandboxes.")?;
-            let vm = metadata.machines.iter().find(|m| m.is_vm() && m.name() == name).ok_or("Sandbox no longer exists.")?;
+            let vm = metadata.machines.iter().find(|m| m.name() == name).ok_or("Sandbox no longer exists.")?;
             let value = ssh_access::connection_material(&paths, vm.id())?;
             let private = value["privateKey"].as_str().ok_or("Could not read the connection key.")?;
             let root = legacy_connection_root(&paths.home);

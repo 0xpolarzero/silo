@@ -174,11 +174,7 @@ fn initial(path: &Path, app_data: &Path) -> Result<MigrationState, String> {
         })?;
         let mut state = read(path)?
             .ok_or("The selected runtime has no migration record. Existing data was preserved.")?;
-        let vm_count = machines
-            .machines
-            .iter()
-            .filter(|machine| machine.is_vm())
-            .count();
+        let vm_count = machines.machines.iter().count();
         if state.status != "complete" {
             if selected == CLEAN && vm_count != 0 {
                 return Err("The new sandbox storage folder already contains sandboxes. Existing data was preserved. Report this problem before retrying migration.".into());
@@ -226,11 +222,7 @@ fn initial(path: &Path, app_data: &Path) -> Result<MigrationState, String> {
     let metadata = app_data.join("runtime/machines.json");
     let machines = runtime::read_metadata(&metadata)
         .map_err(|_| "Existing sandbox settings could not be read. No data was changed.")?;
-    let total = machines
-        .machines
-        .iter()
-        .filter(|machine| machine.is_vm())
-        .count();
+    let total = machines.machines.iter().count();
     let state = if total == 0 {
         fresh("not-required", 0)
     } else {
@@ -323,32 +315,18 @@ fn prepare_clean_generation(app_data: &Path) -> Result<(), String> {
         }
         let existing = runtime::read_metadata(&target.join("machines.json"))
             .map_err(|_| "A prior clean runtime attempt could not be verified.")?;
-        if existing.machines.iter().any(|machine| machine.is_vm()) {
+        if !existing.machines.is_empty() {
             return Err(
                 "A prior clean runtime attempt contains sandboxes. No data was changed.".into(),
             );
         }
-        if existing.machines
-            != source
-                .machines
-                .iter()
-                .filter(|machine| !machine.is_vm())
-                .cloned()
-                .collect::<Vec<_>>()
-        {
-            return Err("A prior clean runtime attempt differs from current remote settings. No data was changed.".into());
-        }
         return Ok(());
     }
-    let remote = runtime::MachineConfigurationRequest {
+    let clean = runtime::MachineConfigurationRequest {
         schema_version: source.schema_version,
-        machines: source
-            .machines
-            .into_iter()
-            .filter(|machine| !machine.is_vm())
-            .collect(),
+        machines: Vec::new(),
     };
-    runtime::write_metadata(&target.join("machines.json"), &remote).map_err(|_| {
+    runtime::write_metadata(&target.join("machines.json"), &clean).map_err(|_| {
         "Clean runtime settings could not be prepared. Previous data was preserved.".to_string()
     })?;
     Ok(())
@@ -707,11 +685,7 @@ fn convert_with(
     let old_runtime = app_data.join("runtime");
     let old_metadata = runtime::read_metadata(&old_runtime.join("machines.json"))
         .map_err(|_| "Existing sandbox settings could not be read. No data was changed.")?;
-    let machines: Vec<_> = old_metadata
-        .machines
-        .iter()
-        .filter(|machine| machine.is_vm())
-        .collect();
+    let machines: Vec<_> = old_metadata.machines.iter().collect();
     if machines.is_empty() {
         return Err("No existing sandboxes need conversion.".into());
     }
@@ -1189,7 +1163,7 @@ mod tests {
     fn one_vm(name: &str, id: &str) -> runtime::MachineConfigurationRequest {
         serde_json::from_value(serde_json::json!({
             "schemaVersion": 1,
-            "machines": [{"kind":"vm","id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
+            "machines": [{"id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
         })).unwrap()
     }
 
@@ -1371,8 +1345,7 @@ mod tests {
         let previous: runtime::MachineConfigurationRequest = serde_json::from_value(serde_json::json!({
             "schemaVersion": 1,
             "machines": [
-                {"kind":"vm","id":"fcfbc268-ae3f-40ff-8dfa-8af78911e52f","name":"old", "cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1},
-                {"kind":"ssh","id":"9d12fdcc-92b2-4326-9149-a1854cc2f6c5","name":"remote","host":"example.test","user":"u","port":22}
+                {"id":"fcfbc268-ae3f-40ff-8dfa-8af78911e52f","name":"old", "cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}
             ]
         })).unwrap();
         runtime::write_metadata(&old.join("machines.json"), &previous).unwrap();
@@ -1403,8 +1376,7 @@ mod tests {
             app_data.join(CLEAN).join("microsandbox")
         );
         let clean = runtime::read_metadata(&app_data.join(CLEAN).join("machines.json")).unwrap();
-        assert_eq!(clean.machines.len(), 1);
-        assert!(!clean.machines[0].is_vm());
+        assert!(clean.machines.is_empty());
         assert_eq!(fs::read(old.join("machines.json")).unwrap(), before);
         assert_eq!(fs::read(old.join("workspace.raw")).unwrap(), b"original");
         assert_eq!(

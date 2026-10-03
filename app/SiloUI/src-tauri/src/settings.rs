@@ -317,27 +317,17 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
     let Some(machine) = value.as_object() else {
         return false;
     };
-    let fields = match machine.get("kind").and_then(Value::as_str) {
-        Some("vm") => &[
-            "id",
-            "kind",
-            "name",
-            "cpus",
-            "maxCPUs",
-            "memoryGiB",
-            "maxMemoryGiB",
-            "workspaceStorageGiB",
-            "runtimeStorageGiB",
-        ][..],
-        Some("ssh") => &["id", "kind", "name", "host", "user", "port"][..],
-        _ => return false,
-    };
-    let optional = if machine["kind"] == "vm" {
-        &["desktop"][..]
-    } else {
-        &[][..]
-    };
-    if !only_fields(machine, fields, optional)
+    let fields = &[
+        "id",
+        "name",
+        "cpus",
+        "maxCPUs",
+        "memoryGiB",
+        "maxMemoryGiB",
+        "workspaceStorageGiB",
+        "runtimeStorageGiB",
+    ][..];
+    if !only_fields(machine, fields, &["desktop"])
         || machine.get("desktop").is_some_and(|desktop| {
             desktop.get("startWithSandbox").is_none()
                 || serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone())
@@ -352,54 +342,31 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
     {
         return false;
     }
-    if machine["kind"] == "vm" {
-        return [
-            "cpus",
-            "maxCPUs",
-            "memoryGiB",
-            "maxMemoryGiB",
-            "workspaceStorageGiB",
-            "runtimeStorageGiB",
-        ]
-        .iter()
-        .all(|key| {
-            if unfinished {
-                machine[*key].as_f64().is_some_and(f64::is_finite)
-            } else {
-                machine[*key]
-                    .as_u64()
-                    .is_some_and(|value| (1..=u64::from(u32::MAX)).contains(&value))
-            }
-        }) && (unfinished
-            || (machine["cpus"].as_u64() <= machine["maxCPUs"].as_u64()
-                && machine["memoryGiB"].as_u64() <= machine["maxMemoryGiB"].as_u64()
-                && machine["workspaceStorageGiB"]
-                    .as_u64()
-                    .unwrap_or(u64::MAX)
-                    .checked_add(machine["runtimeStorageGiB"].as_u64().unwrap_or(u64::MAX))
-                    .is_some_and(|total| total <= u64::from(u32::MAX) / 1024)));
-    }
-
-    if unfinished {
-        return machine["host"].is_string()
-            && machine["user"].is_string()
-            && machine["port"].is_number();
-    }
-    machine["host"].as_str().is_some_and(|host| {
-        !host.trim().is_empty()
-            && host.trim().encode_utf16().count() <= 253
-            && !host.trim().chars().any(char::is_whitespace)
-    }) && machine["user"].as_str().is_some_and(|user| {
-        let user = user.trim().as_bytes();
-        !user.is_empty()
-            && user.len() <= 64
-            && (user[0].is_ascii_alphabetic() || user[0] == b'_')
-            && user
-                .iter()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(byte))
-    }) && machine["port"]
-        .as_f64()
-        .is_some_and(|port| port.fract() == 0. && (1. ..=65535.).contains(&port))
+    [
+        "cpus",
+        "maxCPUs",
+        "memoryGiB",
+        "maxMemoryGiB",
+        "workspaceStorageGiB",
+        "runtimeStorageGiB",
+    ]
+    .iter()
+    .all(|key| {
+        if unfinished {
+            machine[*key].as_f64().is_some_and(f64::is_finite)
+        } else {
+            machine[*key]
+                .as_u64()
+                .is_some_and(|value| (1..=u64::from(u32::MAX)).contains(&value))
+        }
+    }) && (unfinished
+        || (machine["cpus"].as_u64() <= machine["maxCPUs"].as_u64()
+            && machine["memoryGiB"].as_u64() <= machine["maxMemoryGiB"].as_u64()
+            && machine["workspaceStorageGiB"]
+                .as_u64()
+                .unwrap_or(u64::MAX)
+                .checked_add(machine["runtimeStorageGiB"].as_u64().unwrap_or(u64::MAX))
+                .is_some_and(|total| total <= u64::from(u32::MAX) / 1024)))
 }
 
 // This boundary accepts unfinished text, but never accepts credentials, runtime state, or arbitrary fields.
@@ -1631,11 +1598,13 @@ mod tests {
     fn unfinished_draft() -> Value {
         json!({
             "currentStep":"workspaces", "machines": [{
-                "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"ssh", "name":"dev",
-                "host":"server.local", "user":"dev", "port":22
+                "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "name":"dev",
+                "cpus":2,"maxCPUs":4,"memoryGiB":4,"maxMemoryGiB":8,
+                "workspaceStorageGiB":10,"runtimeStorageGiB":10
             }], "unfinishedMachineEditor": {
-                "draft": {"id":"025da8eb-56bf-4519-85cb-3316b2feb549", "kind":"ssh", "name":"",
-                    "host":"", "user":"", "port":0}, "insertAt":1
+                "draft": {"id":"025da8eb-56bf-4519-85cb-3316b2feb549", "name":"",
+                    "cpus":0,"maxCPUs":0,"memoryGiB":0,"maxMemoryGiB":0,
+                    "workspaceStorageGiB":0,"runtimeStorageGiB":0}, "insertAt":1
             }, "workspaceSelections":{"dev":[{"repository":"owner/repo", "allowPushes":false}]},
             "workspaceIdentities":{"dev":{"name":"", "email":"unfinished@", "apply":false}}
         })
@@ -1878,7 +1847,7 @@ mod tests {
     fn unfinished_vm_resources_allow_custom_input_but_saved_limits_are_checked() {
         let mut draft = unfinished_draft();
         let vm = json!({
-            "id":"025da8eb-56bf-4519-85cb-3316b2feb549", "kind":"vm", "name":"unfinished name",
+            "id":"025da8eb-56bf-4519-85cb-3316b2feb549", "name":"unfinished name",
             "cpus":12,"maxCPUs":4,"memoryGiB":48,"maxMemoryGiB":16,
             "workspaceStorageGiB":60,"runtimeStorageGiB":80
         });
@@ -1898,7 +1867,7 @@ mod tests {
     fn malformed_saved_desktop_policy_protects_the_original_draft() {
         let mut draft = unfinished_draft();
         draft["machines"][0] = json!({
-            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"vm", "name":"dev",
+            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "name":"dev",
             "cpus":2,"maxCPUs":4,"memoryGiB":4,"maxMemoryGiB":8,
             "workspaceStorageGiB":60,"runtimeStorageGiB":80
         });
@@ -1933,7 +1902,7 @@ mod tests {
         let mut store = SettingsStore::load(Some(path.clone()));
         let mut draft = unfinished_draft();
         draft["machines"][0] = json!({
-            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"vm", "name":"dev",
+            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "name":"dev",
             "cpus":3,"maxCPUs":5,"memoryGiB":10,"maxMemoryGiB":12,
             "workspaceStorageGiB":35,"runtimeStorageGiB":25,"desktop":{"startWithSandbox":false}
         });

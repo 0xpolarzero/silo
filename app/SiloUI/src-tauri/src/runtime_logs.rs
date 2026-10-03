@@ -651,7 +651,7 @@ pub(super) fn query_local(
     let machine = configuration
         .machines
         .iter()
-        .find(|machine| machine.is_vm() && machine.id() == request.sandbox_id)
+        .find(|machine| machine.id() == request.sandbox_id)
         .ok_or("This sandbox no longer exists on this computer.")?;
     validate_name(machine.name()).map_err(|e| e.to_string())?;
     let directory = paths

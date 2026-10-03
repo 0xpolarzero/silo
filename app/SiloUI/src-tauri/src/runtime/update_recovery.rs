@@ -81,7 +81,7 @@ fn inspect_exact(
     if !saved
         .machines
         .iter()
-        .any(|m| m.is_vm() && m.id() == machine.id && m.name() == machine.name)
+        .any(|m| m.id() == machine.id && m.name() == machine.name)
     {
         return Err(format!(
             "{} was removed or replaced. No replacement sandbox was changed.",
@@ -115,9 +115,10 @@ fn running(
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|machine| {
-            !metadata.machines.iter().any(|saved| {
-                saved.is_vm() && saved.id() == machine.id() && saved.name() == machine.name()
-            })
+            !metadata
+                .machines
+                .iter()
+                .any(|saved| saved.id() == machine.id() && saved.name() == machine.name())
         })
         .collect();
     if !unfinished.is_empty() {
@@ -134,7 +135,7 @@ fn running(
         }
         listed = Some(present);
     }
-    for m in metadata.machines.iter().filter(|m| m.is_vm()) {
+    for m in metadata.machines.iter() {
         // Unstarted forks, restores and imports have no runtime VM yet, so they
         // cannot be running and must not block updates.
         if checkpoints::pending_view(paths, m.id(), false).map_err(|e| e.to_string())? {
@@ -255,10 +256,7 @@ fn resume_unless_removed(
     let saved = read_saved_metadata(&paths.metadata)
         .map_err(|e| e.to_string())?
         .ok_or("Silo's sandbox configuration is missing. Update recovery was preserved; restore the configuration before retrying.")?;
-    let configured = saved
-        .machines
-        .iter()
-        .any(|m| m.is_vm() && m.id() == machine.id);
+    let configured = saved.machines.iter().any(|m| m.id() == machine.id);
     if !configured {
         return Ok(());
     }
@@ -336,10 +334,11 @@ mod tests {
         for has_committed in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let paths = super::super::tests::paths(&dir);
-            let mut request: MachineConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+            let mut request: MachineConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
             let committed = has_committed.then(|| {
                 let mut machine = request.machines[0].clone();
-                if let MachineConfiguration::Vm { id, name, .. } = &mut machine {
+                {
+                    let MachineConfiguration { id, name, .. } = &mut machine;
                     *id = uuid::Uuid::new_v4().to_string();
                     *name = "committed".into();
                 }
@@ -384,7 +383,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         configuration_recovery::begin(&paths, &request).unwrap();
         assert!(running(&EmptyRuntime, &paths).unwrap().is_empty());
     }
@@ -560,7 +559,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let kept = uuid::Uuid::new_v4().to_string();
-        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":kept,"name":"kept","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":kept,"name":"kept","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
         let removed = RunningMachine {
             id: uuid::Uuid::new_v4().to_string(),
@@ -607,7 +606,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let id = uuid::Uuid::new_v4().to_string();
-        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":id,"name":"fork","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":id,"name":"fork","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
         let mut record = checkpoints::Record::default();
         record.pending_checkpoint_restore = Some(checkpoints::PendingRestore {
@@ -677,7 +676,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let id = uuid::Uuid::new_v4().to_string();
-        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
         for status in [
             "Crashed", "Stopped", "Created", "Running", "Starting", "Draining", "Unknown",
@@ -717,7 +716,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let id = uuid::Uuid::new_v4().to_string();
-        let request: MachineConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request: MachineConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
         let runner = Inspect(
             json!({"name":"dev","status":"running","config":{"labels":{"silo.managed":"true","silo.machine-id":uuid::Uuid::new_v4().to_string()}}}),

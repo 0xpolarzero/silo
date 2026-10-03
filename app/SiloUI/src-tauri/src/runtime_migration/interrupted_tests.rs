@@ -20,7 +20,7 @@ const MEMBER: &str = "silo-backup-0-1-2";
 fn one_vm(name: &str, id: &str) -> runtime::MachineConfigurationRequest {
     serde_json::from_value(serde_json::json!({
         "schemaVersion": 1,
-        "machines": [{"kind":"vm","id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
+        "machines": [{"id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
     }))
     .unwrap()
 }

@@ -64,11 +64,6 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
                     .map(|m| m.id())
                     .or_else(|| params["vmId"].as_str())
                     .ok_or("Missing VM identity.")?;
-                if expected.as_ref().is_some_and(|m| !m.is_vm())
-                    || replacement.as_ref().is_some_and(|m| !m.is_vm())
-                {
-                    return Err("Remote management only accepts virtual machines.".into());
-                }
                 change_machine(
                     &mut request.machines,
                     id,
@@ -171,7 +166,7 @@ fn run_remote_action(
         .map_err(BridgeError::from)?
         .machines
         .into_iter()
-        .find(|m| m.id() == vm_id && m.is_vm())
+        .find(|m| m.id() == vm_id)
         .map(|m| m.name().to_owned())
         .ok_or("This VM no longer exists on this computer.")?;
     let base_label = lifecycle_label(&action, &name);
@@ -213,7 +208,7 @@ fn run_remote_action(
         let machine = request
             .machines
             .iter()
-            .find(|m| m.id() == vm_id && m.is_vm())
+            .find(|m| m.id() == vm_id)
             .ok_or_else(|| {
                 RuntimeError::Invalid("This VM no longer exists on this computer.".into())
             })?;
@@ -240,7 +235,7 @@ fn run_remote_action(
 mod tests {
     use super::*;
     fn vm(id: &str) -> MachineConfiguration {
-        MachineConfiguration::Vm {
+        MachineConfiguration {
             id: id.into(),
             name: id.into(),
             cpus: 2,
@@ -320,15 +315,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let mut machine = vm(ID);
-        if let MachineConfiguration::Vm {
-            name,
-            cpus,
-            max_cpus,
-            memory_gib,
-            max_memory_gib,
-            ..
-        } = &mut machine
         {
+            let MachineConfiguration {
+                name,
+                cpus,
+                max_cpus,
+                memory_gib,
+                max_memory_gib,
+                ..
+            } = &mut machine;
             (*name, *cpus, *max_cpus, *memory_gib, *max_memory_gib) = ("dev".into(), 1, 1, 1, 1);
         }
         write_metadata(
@@ -504,7 +499,8 @@ mod tests {
     }
 
     fn with_desktop(mut machine: MachineConfiguration, built_in: bool) -> MachineConfiguration {
-        if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+        {
+            let MachineConfiguration { desktop, .. } = &mut machine;
             *desktop = Some(crate::desktop::DesktopConfiguration {
                 start_with_sandbox: true,
                 built_in,
@@ -520,19 +516,18 @@ mod tests {
         // The older controller parsed the snapshot and lost `builtIn`.
         let expected = with_desktop(vm("a"), false);
         let mut edited = with_desktop(vm("a"), false);
-        if let MachineConfiguration::Vm { cpus, .. } = &mut edited {
+        {
+            let MachineConfiguration { cpus, .. } = &mut edited;
             *cpus = 3;
         }
         let mut machines = vec![owned.clone()];
         change_machine(&mut machines, "a", Some(&expected), Some(&edited)).unwrap();
         assert!(crate::computer_use::is_built_in(&machines[0]));
-        assert!(matches!(
-            &machines[0],
-            MachineConfiguration::Vm { cpus: 3, .. }
-        ));
+        assert!(matches!(&machines[0], MachineConfiguration { cpus: 3, .. }));
         // A real difference is still stale.
         let mut other = expected.clone();
-        if let MachineConfiguration::Vm { cpus, .. } = &mut other {
+        {
+            let MachineConfiguration { cpus, .. } = &mut other;
             *cpus = 1;
         }
         assert!(change_machine(&mut machines, "a", Some(&other), None).is_err());
@@ -552,7 +547,7 @@ pub(crate) fn local_vm_name_in(paths: &RuntimePaths, id: &str) -> Result<String,
         .map_err(|e| e.to_string())?
         .machines
         .into_iter()
-        .find(|m| m.id() == id && m.is_vm())
+        .find(|m| m.id() == id)
         .map(|m| m.name().to_owned())
         .ok_or("This VM no longer exists on this computer.".into())
 }

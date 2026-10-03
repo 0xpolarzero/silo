@@ -7,7 +7,7 @@ const ID: &str = "00000000-0000-4000-8000-000000000001";
 const ATTEMPT: &str = "6b79cf8f-70b3-4d2f-93d1-3b8b7a7c0001";
 
 fn built_in_machine() -> MachineConfiguration {
-    MachineConfiguration::Vm {
+    MachineConfiguration {
         id: ID.into(),
         name: "dev".into(),
         cpus: 1,

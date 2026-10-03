@@ -298,7 +298,7 @@ mod tests {
             &paths.metadata,
             &runtime::MachineConfigurationRequest {
                 schema_version: 1,
-                machines: vec![runtime::MachineConfiguration::Vm {
+                machines: vec![runtime::MachineConfiguration {
                     id: id.into(),
                     name: name.into(),
                     cpus: 1,

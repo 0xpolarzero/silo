@@ -367,11 +367,7 @@ fn configured_vm(
 ) -> Result<Option<runtime::InspectedSandbox>, String> {
     let metadata = runtime::read_metadata(&paths.metadata)
         .map_err(|_| "Could not read sandbox configuration.")?;
-    if !metadata
-        .machines
-        .iter()
-        .any(|m| m.is_vm() && m.name() == name)
-    {
+    if !metadata.machines.iter().any(|m| m.name() == name) {
         return Err("Choose a local Silo VM.".into());
     }
     let inspected = match runtime::observe_vm(&ProcessRunner, paths, name)
@@ -787,7 +783,6 @@ fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, Str
     let machines: Vec<_> = metadata
         .machines
         .iter()
-        .filter(|m| m.is_vm())
         .map(|m| (m.name(), m.id()))
         .collect();
     for batch in machines.chunks(3) {
@@ -1205,7 +1200,7 @@ mod tests {
         fs::write(
             &paths.metadata,
             serde_json::json!({"schemaVersion":1,"machines":[{
-                "kind":"vm","id":"00000000-0000-4000-8000-000000000001","name":"dev",
+                "id":"00000000-0000-4000-8000-000000000001","name":"dev",
                 "cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,
                 "workspaceStorageGiB":10,"runtimeStorageGiB":10
             }]})
@@ -1522,7 +1517,7 @@ mod tests {
         fs::write(
             &paths.metadata,
             json!({"schemaVersion":1,"machines":[{
-                "kind":"vm","id":"00000000-0000-4000-8000-000000000001","name":"dev",
+                "id":"00000000-0000-4000-8000-000000000001","name":"dev",
                 "cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,
                 "workspaceStorageGiB":10,"runtimeStorageGiB":10
             }]})

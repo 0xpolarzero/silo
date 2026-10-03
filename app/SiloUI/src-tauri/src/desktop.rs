@@ -21,10 +21,7 @@ fn default_start() -> bool {
 }
 
 pub(crate) fn configuration(machine: &MachineConfiguration) -> Option<&DesktopConfiguration> {
-    match machine {
-        MachineConfiguration::Vm { desktop, .. } => desktop.as_ref(),
-        _ => None,
-    }
+    machine.desktop.as_ref()
 }
 /// Guest images from v4 on contain the desktop. Their version looks like `ubuntu-24.04-v4`.
 pub(crate) fn image_includes_desktop(image_version: &str) -> bool {
@@ -47,9 +44,7 @@ pub(crate) fn default_new_vm_desktops(
     let built_in_image = image_includes_desktop(image_version);
     for machine in machines {
         let old = previous.iter().find(|old| old.id() == machine.id());
-        let MachineConfiguration::Vm { desktop, .. } = machine else {
-            continue;
-        };
+        let desktop = &mut machine.desktop;
         match old {
             Some(old) => {
                 let was_built_in = configuration(old).is_some_and(|old| old.built_in);
@@ -83,18 +78,10 @@ pub(crate) fn only_desktop_changed(
 ) -> bool {
     let mut previous = previous.clone();
     let mut next = next.clone();
-    match (&mut previous, &mut next) {
-        (
-            MachineConfiguration::Vm { desktop: old, .. },
-            MachineConfiguration::Vm { desktop: new, .. },
-        ) => {
-            let changed = old != new;
-            *old = None;
-            *new = None;
-            changed && previous == next
-        }
-        _ => false,
-    }
+    let changed = previous.desktop != next.desktop;
+    previous.desktop = None;
+    next.desktop = None;
+    changed && previous == next
 }
 
 pub(crate) fn guest(
@@ -317,7 +304,7 @@ fn machine_at(
         .map_err(|e| e.to_string())?
         .machines
         .into_iter()
-        .find(|m| m.is_vm() && m.name() == workspace)
+        .find(|m| m.name() == workspace)
         .ok_or("This sandbox no longer exists on this computer.")?;
     if expected_id.is_some_and(|id| machine.id() != id) {
         return Err("The sandbox changed identity. Refresh before accessing its desktop.".into());
@@ -937,7 +924,7 @@ mod tests {
     }
 
     fn vm(id: &str, desktop: Option<DesktopConfiguration>) -> MachineConfiguration {
-        MachineConfiguration::Vm {
+        MachineConfiguration {
             id: id.into(),
             name: format!("vm-{id}"),
             cpus: 2,
@@ -978,13 +965,6 @@ mod tests {
             existing.clone(),
             vm("fresh", None),
             vm("chosen", Some(manual.clone())),
-            MachineConfiguration::Ssh {
-                id: "ssh".into(),
-                name: "ssh".into(),
-                host: "h".into(),
-                user: "u".into(),
-                port: 22,
-            },
         ];
         default_new_vm_desktops(
             &mut machines,
@@ -1011,7 +991,6 @@ mod tests {
             }),
             "a new built-in VM always starts its desktop, even from duplicated manual settings"
         );
-        assert_eq!(configuration(&machines[3]), None);
     }
 
     #[test]
@@ -1081,7 +1060,8 @@ mod tests {
         )
         .unwrap();
         let mut replacement = original.clone();
-        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+        {
+            let MachineConfiguration { id, .. } = &mut replacement;
             *id = "00000000-0000-4000-8000-000000000002".into();
         }
         let runner = ScriptedRunner::new([]);
@@ -1621,7 +1601,8 @@ mod tests {
         )
         .unwrap();
         let mut replacement = original.clone();
-        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+        {
+            let MachineConfiguration { id, .. } = &mut replacement;
             *id = "00000000-0000-4000-8000-000000000002".into();
         }
         let runner = ConnectionRunner {
@@ -1769,7 +1750,7 @@ mod tests {
             "Stopped",
             json!({"silo.managed":"true","silo.machine-id":"id"}),
         )]);
-        let machine: MachineConfiguration = serde_json::from_value(json!({"kind":"vm","id":"id","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":false}})).unwrap();
+        let machine: MachineConfiguration = serde_json::from_value(json!({"id":"id","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":false}})).unwrap();
         assert_eq!(
             status_with(&runner, &paths(dir.path()), &machine).unwrap(),
             json!({"installed":true,"state":"vm-stopped","autoStart":false,
@@ -1782,7 +1763,7 @@ mod tests {
         runner.assert_finished();
     }
     fn built_in_machine() -> MachineConfiguration {
-        serde_json::from_value(json!({"kind":"vm","id":"00000000-0000-4000-8000-000000000001","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":true,"builtIn":true}})).unwrap()
+        serde_json::from_value(json!({"id":"00000000-0000-4000-8000-000000000001","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":true,"builtIn":true}})).unwrap()
     }
 
     #[test]
@@ -1810,7 +1791,7 @@ mod tests {
             "Stopped",
             json!({"silo.managed":"true","silo.machine-id":"id"}),
         )]);
-        let machine: MachineConfiguration = serde_json::from_value(json!({"kind":"vm","id":"id","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":true}})).unwrap();
+        let machine: MachineConfiguration = serde_json::from_value(json!({"id":"id","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":true}})).unwrap();
         assert!(status_with(&runner, &paths, &machine)
             .unwrap()
             .get("computerUse")

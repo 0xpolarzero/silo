@@ -141,7 +141,7 @@ pub(crate) fn uses(
     metadata: &MachineConfigurationRequest,
 ) -> Result<HashMap<Key, Vec<Use>>, RuntimeError> {
     let mut all: HashMap<Key, Vec<Use>> = HashMap::new();
-    for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
+    for machine in metadata.machines.iter() {
         let record = load(paths, machine.id())?;
         for (key, purpose) in record_uses(&record, machine.name()) {
             all.entry(key).or_default().push(Use {

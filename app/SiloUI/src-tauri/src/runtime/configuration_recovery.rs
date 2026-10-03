@@ -70,10 +70,7 @@ pub(super) fn shutdown_machines(
             machines.push(machine);
         }
     }
-    Ok(machines
-        .into_iter()
-        .filter(MachineConfiguration::is_vm)
-        .collect())
+    Ok(machines)
 }
 
 /// The target configuration of an interrupted attempt, if one is pending. Used by the
@@ -288,12 +285,11 @@ fn reconcile(
     }
     let listed = list_managed(runner, paths)?;
     for machine in journal.request.machines.iter().filter(|machine| {
-        machine.is_vm()
-            && !journal
-                .previous
-                .machines
-                .iter()
-                .any(|old| old.id() == machine.id())
+        !journal
+            .previous
+            .machines
+            .iter()
+            .any(|old| old.id() == machine.id())
     }) {
         if listed.iter().any(|entry| entry.name == machine.name()) {
             let inspected = inspect_workspace(runner, paths, machine.name())?;
@@ -356,7 +352,7 @@ fn reconcile(
             .iter()
             .any(|next| next.id() == machine.id())
     }) {
-        if !machine.is_vm() || !listed.iter().any(|entry| entry.name == machine.name()) {
+        if !listed.iter().any(|entry| entry.name == machine.name()) {
             crate::network::workspace_removed(paths, machine.name()).map_err(failure)?;
             crate::secrets::workspace_removed(machine.name()).map_err(failure)?;
             remove_machine_volumes(paths, machine)?;
@@ -392,9 +388,7 @@ fn reconcile(
                 .iter()
                 .any(|next| next.id() == machine.id())
     }) {
-        if machine.is_vm() {
-            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name())?;
-        }
+        checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name())?;
         checkpoints::forget_removed(paths, machine.id())?;
     }
     Ok(())
@@ -410,12 +404,11 @@ fn verify_committed_edits(
     // edit reached that checkpoint still needs verification after relaunch.
     let current = read_metadata(&paths.metadata)?;
     for machine in journal.request.machines.iter().filter(|machine| {
-        machine.is_vm()
-            && journal
-                .previous
-                .machines
-                .iter()
-                .any(|old| old.id() == machine.id() && old != *machine)
+        journal
+            .previous
+            .machines
+            .iter()
+            .any(|old| old.id() == machine.id() && old != *machine)
             && current.machines.contains(machine)
             && requested.machines.contains(machine)
     }) {
@@ -629,7 +622,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&directory);
-        let vm = MachineConfiguration::Vm {
+        let vm = MachineConfiguration {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
             cpus: 1,
@@ -819,7 +812,7 @@ mod tests {
             metadata: root.join("machines.json"),
             volumes: root.join("volumes"),
         };
-        let machine = MachineConfiguration::Vm {
+        let machine = MachineConfiguration {
             id: uuid::Uuid::new_v4().to_string(),
             name: "dev".into(),
             cpus: 1,
@@ -898,19 +891,12 @@ mod tests {
             metadata: root.join("machines.json"),
             volumes: root.join("volumes"),
         };
-        let remote = MachineConfiguration::Ssh {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "remote".into(),
-            host: "host".into(),
-            user: "user".into(),
-            port: 22,
-        };
         let current = MachineConfigurationRequest {
             schema_version: 1,
-            machines: vec![remote.clone()],
+            machines: Vec::new(),
         };
         write_metadata(&paths.metadata, &current).unwrap();
-        let new = MachineConfiguration::Vm {
+        let new = MachineConfiguration {
             id: uuid::Uuid::new_v4().to_string(),
             name: "dev".into(),
             cpus: 1,
@@ -923,7 +909,7 @@ mod tests {
         };
         let request = MachineConfigurationRequest {
             schema_version: 1,
-            machines: vec![remote, new],
+            machines: vec![new],
         };
         begin(&paths, &request).unwrap();
         assert!(blocks_snapshot(&paths, false).unwrap());
@@ -931,13 +917,11 @@ mod tests {
         // The existing verifier still checks real runtime state, rather than
         // presenting the pending requested VM as successfully created.
         let source = read_application_state_with(&EmptyRuntime, &paths).unwrap();
-        assert_eq!(source.workspaces.len(), 1);
+        assert_eq!(source.workspaces.len(), 0);
         assert_eq!(read_metadata(&paths.metadata).unwrap(), current);
         assert!(path(&paths).is_file());
         let mut revised = request;
-        if let MachineConfiguration::Vm { memory_gib, .. } = &mut revised.machines[1] {
-            *memory_gib = 2;
-        }
+        revised.machines[0].memory_gib = 2;
         prepare_retry(&EmptyRuntime, &paths, Some(&revised)).unwrap();
         assert!(load(&paths)
             .unwrap()
@@ -949,22 +933,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&directory);
-        let remote = MachineConfiguration::Ssh {
-            id: uuid::Uuid::new_v4().to_string(),
-            name: "remote".into(),
-            host: "host".into(),
-            user: "user".into(),
-            port: 22,
-        };
-        write_metadata(
-            &paths.metadata,
-            &MachineConfigurationRequest {
-                schema_version: 1,
-                machines: vec![remote.clone()],
-            },
-        )
-        .unwrap();
-        let new = MachineConfiguration::Vm {
+        let new = MachineConfiguration {
             id: uuid::Uuid::new_v4().to_string(),
             name: "dev".into(),
             cpus: 1,
@@ -977,7 +946,7 @@ mod tests {
         };
         let request = MachineConfigurationRequest {
             schema_version: 1,
-            machines: vec![remote, new],
+            machines: vec![new],
         };
         let settled = STARTUP_SETTLED.swap(true, Ordering::SeqCst);
         let blocked_while_live = {
@@ -1025,14 +994,18 @@ mod tests {
             metadata: root.join("machines.json"),
             volumes: root.join("volumes"),
         };
-        let remote = |name: &str| MachineConfiguration::Ssh {
+        let entry = |name: &str| MachineConfiguration {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.into(),
-            host: "host".into(),
-            user: "user".into(),
-            port: 22,
+            cpus: 1,
+            max_cpus: 2,
+            memory_gib: 4,
+            max_memory_gib: 8,
+            workspace_storage_gib: 10,
+            runtime_storage_gib: 10,
+            desktop: None,
         };
-        let (a, b, c) = (remote("a"), remote("b"), remote("c"));
+        let (a, b, c) = (entry("a"), entry("b"), entry("c"));
         // The interrupted attempt was adding "b" to an inventory that held "a".
         let previous = MachineConfigurationRequest {
             schema_version: 1,

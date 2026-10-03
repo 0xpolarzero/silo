@@ -182,7 +182,6 @@ fn read_host_vm_ids(metadata: &Path) -> Result<HashMap<String, String>, String> 
     Ok(config
         .machines
         .into_iter()
-        .filter(|m| m.is_vm())
         .map(|m| (m.name().to_owned(), m.id().to_owned()))
         .collect())
 }
