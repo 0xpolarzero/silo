@@ -1039,3 +1039,32 @@ fn tar_pipeline_reaps_the_producer_when_the_consumer_cannot_start() {
     assert_eq!(waited, -1, "pipeline left its producer unreaped");
     assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
 }
+
+#[test]
+fn a_download_of_unknown_size_ends_with_the_stream() {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 2048];
+        let _ = stream.read(&mut request).unwrap();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nlcu bytes",
+            )
+            .unwrap();
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let part = dir.path().join("archive.part");
+    let downloader = HttpDownloader {
+        attempts: 1,
+        backoff: Duration::ZERO,
+        plain_http: true,
+    };
+    downloader
+        .fetch(&format!("http://{address}/archive"), &part, 0, &mut |_| {})
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(fs::read(&part).unwrap(), b"lcu bytes");
+}

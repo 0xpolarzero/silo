@@ -36,6 +36,7 @@ mod network;
 mod notifications;
 mod owned_tunnel;
 mod pre_upgrade_backup;
+mod preparation;
 mod remote;
 mod remote_access;
 mod remote_network;
@@ -118,6 +119,8 @@ fn main() {
             desktop::set_computer_use_approval,
             chatgpt_app::chatgpt_app_status,
             chatgpt_app::chatgpt_app_retry,
+            preparation::read_preparation_status,
+            preparation::retry_preparation,
             desktop_viewer::open_desktop,
             desktop_viewer::desktop_viewer_attach,
             desktop_viewer::desktop_viewer_detach,

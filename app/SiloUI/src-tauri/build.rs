@@ -26,6 +26,8 @@ fn main() {
             "set_computer_use_approval",
             "chatgpt_app_status",
             "chatgpt_app_retry",
+            "read_preparation_status",
+            "retry_preparation",
             "open_desktop",
             "desktop_viewer_attach",
             "desktop_viewer_detach",

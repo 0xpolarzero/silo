@@ -31,6 +31,8 @@ import { createFixtureMigrationBackend, fixtureBackupForMode, preUpgradeBackupFi
 import { createFixtureEditorInclude, editorIncludeFixtureModeFromSearch } from "./editor-include"
 import { createComputerUseBridge } from "@/desktop/computer-use-bridge"
 import { ComputerUseProvider } from "@/desktop/computer-use-provider"
+import { createFixturePreparationBackend, preparationFixtureFromSearch } from "./preparation"
+import { createPreparationStore, PreparationProvider } from "@/desktop/preparation"
 import { chatGptFixtureFromSearch, computerUseFixtureFromSearch, createFixtureComputerUseBackend, withComputerUseFixture, withRemoteComputersFixture } from "./computer-use"
 import { createFixtureUnseenResult, unseenResultFixtureModeFromSearch } from "./transfer-result-notice"
 
@@ -73,6 +75,8 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const chatGptMode = chatGptFixtureFromSearch(window.location.search)
   const chatGptRemoteMode = chatGptFixtureFromSearch(window.location.search, "chatgpt-remote")
   const computerUseBridge = useMemo(() => computerUseMode || chatGptMode || chatGptRemoteMode ? createComputerUseBridge(createFixtureComputerUseBackend(computerUseMode ?? "ready", chatGptMode ?? "ready", chatGptRemoteMode ?? chatGptMode ?? "ready")) : null, [computerUseMode, chatGptMode, chatGptRemoteMode])
+  const preparationMode = preparationFixtureFromSearch(window.location.search)
+  const preparationStore = useMemo(() => preparationMode ? createPreparationStore(createFixturePreparationBackend(preparationMode)) : null, [preparationMode])
   const queuedSource = operationQueue ? { ...baseSource, operationQueue } : baseSource
   const sourceWithComputerUse = computerUseMode ? withComputerUseFixture(queuedSource, computerUseMode) : queuedSource
   const fixtureSource = computerUseBridge ? withRemoteComputersFixture(sourceWithComputerUse) : sourceWithComputerUse
@@ -156,5 +160,6 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
       )}
     </>
   )
-  return computerUseBridge ? <ComputerUseProvider bridge={computerUseBridge}>{content}</ComputerUseProvider> : content
+  const withPreparation = preparationStore ? <PreparationProvider store={preparationStore}>{content}</PreparationProvider> : content
+  return computerUseBridge ? <ComputerUseProvider bridge={computerUseBridge}>{withPreparation}</ComputerUseProvider> : withPreparation
 }

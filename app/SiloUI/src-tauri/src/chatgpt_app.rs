@@ -64,6 +64,8 @@ const REQUIRED_EXECUTABLES: [&str; 3] = [
 ];
 const MAX_ENTRIES: usize = 200_000;
 const MAX_UNPACKED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// The most a download of unknown size may write.
+const UNKNOWN_SIZE_LIMIT: u64 = 1024 * 1024 * 1024;
 /// Longest path or link target (bytes), and longest single component.
 const MAX_NAME_BYTES: usize = 4096;
 const MAX_COMPONENT_BYTES: usize = 255;
@@ -450,7 +452,7 @@ impl Dir {
 
 /// Restores owner access on directories so a tampered tree (for example modes
 /// changed to 0500) can still be deleted.
-fn make_tree_deletable(path: &Path) -> std::io::Result<()> {
+pub(crate) fn make_tree_deletable(path: &Path) -> std::io::Result<()> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_dir() || meta.uid() != effective_uid() {
         return Ok(());
@@ -603,7 +605,9 @@ fn open_part(part: &Path, append: bool) -> std::io::Result<File> {
 }
 
 /// Fetches `url` into `part` (resuming if the file already has a prefix) until
-/// it holds `total` bytes, reporting the byte count. Tests substitute this.
+/// it holds `total` bytes, reporting the byte count. A `total` of 0 means the size is not
+/// known: the download is complete when the server ends the stream (the caller verifies
+/// it by checksum). Tests substitute this.
 pub(crate) trait Downloader {
     fn fetch(
         &self,
@@ -664,11 +668,11 @@ impl HttpDownloader {
             )
         };
         let mut have = safe_part_len(part).map_err(|_| disk())?;
-        if have > total {
+        if total > 0 && have > total {
             fs::remove_file(part).map_err(|_| disk())?;
             have = 0;
         }
-        if have == total {
+        if total > 0 && have == total {
             progress(have);
             return Ok(());
         }
@@ -689,6 +693,9 @@ impl HttpDownloader {
         let append = match status.as_u16() {
             206 => true,
             200 => false,
+            // An unknown size cannot tell a finished download from a stale one: keep it for
+            // the caller's checksum, which discards it when it does not match.
+            416 if total == 0 => return Ok(()),
             416 => {
                 let _ = fs::remove_file(part);
                 return Err(Error::retry("The ChatGPT download restarted."));
@@ -697,6 +704,11 @@ impl HttpDownloader {
         };
         let mut file = open_part(part, append).map_err(|_| disk())?;
         let mut written = if append { have } else { 0 };
+        let limit = if total == 0 {
+            UNKNOWN_SIZE_LIMIT
+        } else {
+            total
+        };
         let mut buffer = vec![0u8; 256 * 1024];
         loop {
             let count = response
@@ -705,7 +717,7 @@ impl HttpDownloader {
             if count == 0 {
                 break;
             }
-            if written + count as u64 > total {
+            if written + count as u64 > limit {
                 drop(file);
                 let _ = fs::remove_file(part);
                 return Err(Error::retry(
@@ -717,7 +729,7 @@ impl HttpDownloader {
             progress(written);
         }
         file.sync_all().map_err(|_| disk())?;
-        if written == total {
+        if total == 0 || written == total {
             Ok(())
         } else {
             Err(Error::retry("The ChatGPT download ended early."))
@@ -771,7 +783,7 @@ impl Downloader for HttpDownloader {
     }
 }
 
-fn sha256_file(path: &Path) -> std::io::Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> std::io::Result<String> {
     let mut file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
