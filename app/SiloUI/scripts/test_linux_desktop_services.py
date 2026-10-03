@@ -48,7 +48,7 @@ class DesktopServiceFixtureTests(unittest.TestCase):
                 namespace['product_name'] = eval(expression('product_name'), namespace)
                 self.assertTrue(eval(compile(ast.Expression(title), str(SOURCE), 'eval'), namespace))
                 self.assertEqual(eval(expression('metadata'), namespace),
-                                 Path('/synthetic/data') / identifier / 'runtime/machines.json')
+                                 Path('/synthetic/data') / identifier / 'runtime/computers.json')
 
 
 if __name__ == '__main__':

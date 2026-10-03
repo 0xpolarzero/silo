@@ -18,7 +18,7 @@ function fixture(name: string): unknown[] {
 describe("Rust-emitted native wire contracts", () => {
   for (const [name, parse] of [
     ["application-state", parseApplicationSource],
-    ["remote-host-snapshot", parseRemoteApplicationSource],
+    ["device-snapshot", parseRemoteApplicationSource],
   ] as const) {
     it(`preserves native workspace, checkpoint, and activity data from ${name}`, () => {
       const raw = fixture(name)

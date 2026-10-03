@@ -109,11 +109,11 @@ def prepare_environment():
             raise RuntimeError("Use a fresh task-owned XDG data root; existing migration/runtime state must not be replaced")
         runtime = app_data / "runtime"
         operation = runtime / "configuration-operation.json"
-        machine_file = runtime / "machines.json"
+        machine_file = runtime / "computers.json"
         if operation.is_file():
-            machines = json.loads(operation.read_text()).get("request", {}).get("machines", [])
+            machines = json.loads(operation.read_text()).get("request", {}).get("computers", [])
         elif machine_file.is_file():
-            machines = json.loads(machine_file.read_text()).get("machines", [])
+            machines = json.loads(machine_file.read_text()).get("computers", [])
         else:
             machines = []
         sources = [item for item in machines if item.get("name") == workspace_name]
@@ -370,7 +370,7 @@ def create_source_archive(browser, wait, evidence, name, history_path):
 def open_or_create_editor_vm(browser, wait, name):
     click(browser, wait, By.ID, "application-nav-workspaces")
     wait.until(lambda _: browser.find_element(By.ID, "application-panel-workspaces").is_displayed())
-    matches = browser.find_elements(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']")
+    matches = browser.find_elements(By.CSS_SELECTOR, f"[data-computer-name='{name}']")
     if matches:
         return
     click(browser, wait, By.XPATH, "//button[normalize-space()='Add']")
@@ -386,7 +386,7 @@ def open_or_create_editor_vm(browser, wait, name):
     if desktop.get_attribute("aria-checked") != "true":
         desktop.click()
     click(browser, wait, By.XPATH, "//button[normalize-space()='Save']")
-    wait.until(lambda _: browser.find_elements(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']"))
+    wait.until(lambda _: browser.find_elements(By.CSS_SELECTOR, f"[data-computer-name='{name}']"))
 
 
 def runtime_context(name):
@@ -412,7 +412,7 @@ def wait_for_preserved_setup(browser, wait, evidence, name):
         directory = json.loads(generation.read_text())["directory"]
     runtime = app_data / directory
     operation = runtime / "configuration-operation.json"
-    metadata = runtime / "machines.json"
+    metadata = runtime / "computers.json"
     activity = runtime / "setup-activity.json"
     deadline = time.monotonic() + int(os.environ.get("SILO_LINUX_SETUP_WAIT_SECONDS", "1800"))
     last_record = None
@@ -422,7 +422,7 @@ def wait_for_preserved_setup(browser, wait, evidence, name):
         configured = False
         if metadata.is_file():
             try:
-                configured = any(item.get("name") == name for item in json.loads(metadata.read_text()).get("machines", []))
+                configured = any(item.get("name") == name for item in json.loads(metadata.read_text()).get("computers", []))
             except (OSError, json.JSONDecodeError):
                 pass
         if configured and not operation.exists():
@@ -481,17 +481,17 @@ def desktop_window(browser, wait, name):
 
 
 def start_workspace(browser, wait, name):
-    row = browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']")
+    row = browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']")
     if "Running" not in row.text:
         click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Start {name}']")
-        wait.until(lambda _: "Running" in browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']").text)
+        wait.until(lambda _: "Running" in browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']").text)
 
 
 def stop_workspace(browser, wait, name):
-    row = browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']")
+    row = browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']")
     if "Running" in row.text:
         click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Stop {name}']")
-        wait.until(lambda _: "stopped" in browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']").text.lower())
+        wait.until(lambda _: "stopped" in browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']").text.lower())
 
 
 def stop_test_app(environment):
@@ -536,7 +536,7 @@ def stop_test_app(environment):
 
 
 def checkpoint_panel(browser, wait, name):
-    row = browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']")
+    row = browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']")
     if browser.find_elements(By.CSS_SELECTOR, f"section[aria-label='Checkpoints for {name}']"):
         return browser.find_element(By.CSS_SELECTOR, f"section[aria-label='Checkpoints for {name}']")
     click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='More actions for {name}']")
@@ -553,7 +553,7 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     # The packaged app opens on Overview in the current UI. Older builds expose
     # the Workspaces panel as a navigation route, so only navigate when the
     # observed source row is not already present.
-    if not browser.find_elements(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']"):
+    if not browser.find_elements(By.CSS_SELECTOR, f"[data-computer-name='{name}']"):
         click(browser, wait, By.ID, "application-nav-workspaces")
         wait.until(lambda _: browser.find_element(By.ID, "application-panel-workspaces").is_displayed())
     start_workspace(browser, wait, name)
@@ -608,8 +608,8 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     generation = app_data / "runtime-generation.json"
     if generation.is_file():
         runtime = app_data / json.loads(generation.read_text())["directory"]
-    machines_path = runtime / "machines.json"
-    before_machines = json.loads(machines_path.read_text())["machines"]
+    machines_path = runtime / "computers.json"
+    before_machines = json.loads(machines_path.read_text())["computers"]
     source_machine = next(item for item in before_machines if item["name"] == name)
     source_record = json.loads((runtime / "checkpoints" / f"{source_machine['id']}.json").read_text())
     checkpoint = next(item for item in source_record["checkpoints"] if item["name"] == title)
@@ -636,10 +636,10 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     click(browser, wait, By.XPATH, f"//li[.//*[normalize-space()='{title}']]//button[normalize-space()='Fork']")
     browser.find_element(By.CSS_SELECTOR, "input[aria-label='Fork name']").send_keys(fork_name)
     click(browser, wait, By.XPATH, "//button[normalize-space()='Create stopped fork']")
-    wait.until(lambda _: browser.find_elements(By.CSS_SELECTOR, f"[data-sandbox-name='{fork_name}']"))
-    fork = browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{fork_name}']")
+    wait.until(lambda _: browser.find_elements(By.CSS_SELECTOR, f"[data-computer-name='{fork_name}']"))
+    fork = browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{fork_name}']")
     assert "Stopped" in fork.text or "stopped" in fork.text.lower(), fork.text
-    after_machines = json.loads(machines_path.read_text())["machines"]
+    after_machines = json.loads(machines_path.read_text())["computers"]
     fork_candidates = [item for item in after_machines if item["name"] == fork_name]
     new_machine_ids = {item["id"] for item in after_machines} - {item["id"] for item in before_machines}
     if len(fork_candidates) != 1 or fork_candidates[0]["id"] not in new_machine_ids:
@@ -674,7 +674,7 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     panel = checkpoint_panel(browser, wait, name)
     click(browser, wait, By.XPATH, f"//li[.//*[normalize-space()='{title}']]//button[normalize-space()='Restore']")
     click(browser, wait, By.XPATH, "//button[normalize-space()='Save recovery point and restore']")
-    wait.until(lambda _: "stopped" in browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']").text.lower())
+    wait.until(lambda _: "stopped" in browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']").text.lower())
     start_workspace(browser, wait, name)
     browser.switch_to.window(viewer)
     screen = wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, "[aria-label='Linux desktop display']"))
@@ -789,14 +789,14 @@ def run():
             # The packaged app opens directly to its Overview list. The
             # Sandboxes control is a disclosure, not an Overview route.
             if not imported_fixture:
-                source_row = wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']"))
+                source_row = wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']"))
                 wait.until(lambda _: "stopped" in source_row.text.lower())
                 browser.save_screenshot(str(evidence / "source-overview-stopped.png"))
                 archive = archive_path
         else:
             open_or_create_editor_vm(browser, wait, name)
             click(browser, wait, By.ID, "application-nav-workspaces")
-            source_row = wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{name}']"))
+            source_row = wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']"))
             wait.until(lambda _: "stopped" in source_row.text.lower())
             browser.save_screenshot(str(evidence / "source-overview-stopped.png"))
             click(browser, wait, By.ID, "application-nav-backup")
