@@ -150,6 +150,7 @@ fn main() {
             "verify_workspace_identities",
             "workspace_action",
             "retry_machine_configuration",
+            "skip_computer_use_wait",
             "change_machine_configuration",
             "read_setup_activity",
             "read_operation_queue",

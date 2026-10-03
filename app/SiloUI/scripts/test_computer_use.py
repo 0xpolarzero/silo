@@ -46,6 +46,8 @@ class Guest(unittest.TestCase):
         self.state = root / 'state'
         self.mount = root / 'mount'
         self.image = root / 'image'
+        # The host's read-only LCU folder; absent unless a test creates it.
+        self.host_lcu = root / 'host-lcu'
         for directory in (self.state, self.mount / APP_DIR, self.image):
             directory.mkdir(parents=True)
         self.archive, self.sha = make_archive(self.image)
@@ -89,6 +91,7 @@ class Guest(unittest.TestCase):
             mock.patch.object(cu, 'STAGE', self.state / 'stage'),
             mock.patch.object(cu, 'LOG', root / 'log'),
             mock.patch.object(cu, 'IMAGE_DIR', self.image),
+            mock.patch.object(cu, 'HOST_DIR', self.host_lcu),
             mock.patch.object(cu, 'MOUNT', self.mount),
             mock.patch.object(cu, 'PREFIX', root / 'opt-lcu'),
             mock.patch.object(cu, 'mount_state', lambda *a, **k: self.mount_state),
@@ -129,6 +132,9 @@ class Guest(unittest.TestCase):
                           'url': 'https://example.invalid/' + ARCHIVE}}
         pinned['lcu'].update(lcu)
         (self.state / 'pinned.json').write_text(json.dumps(pinned))
+
+    def pinned_lcu(self):
+        return json.loads((self.state / 'pinned.json').read_text())
 
     def fake_run(self, argv, *, user=False, timeout=900, check=True, cwd=None, extra_env=None, quiet=False):
         self.commands.append((list(argv), bool(user), cwd))
@@ -621,6 +627,30 @@ class Apply(Guest):
             result = cu.apply('ask')
         self.assertEqual((result['state'], result['reason']), ('failed', 'desktop-session-not-running'))
         self.assertEqual(self.desktop_starts(), [])
+
+    def test_the_hosts_archive_is_preferred_over_the_staged_one_and_the_download(self):
+        self.host_lcu.mkdir()
+        (self.host_lcu / ARCHIVE).write_bytes(self.archive.read_bytes())
+        # The staged archive is stale; the host's matching copy is used and nothing is fetched.
+        (self.image / ARCHIVE).write_bytes(b'stale staged archive')
+        with mock.patch.object(cu, 'sha256_file', wraps=cu.sha256_file) as hashed:
+            used = cu.archive_path(self.pinned_lcu(), self.state / 'stage')
+        self.assertEqual(used, self.host_lcu / ARCHIVE)
+        self.assertEqual(hashed.call_count, 1)
+        self.assertEqual(self.curls(), [])
+
+    def test_a_host_archive_that_does_not_match_falls_back_to_the_staged_one(self):
+        self.host_lcu.mkdir()
+        (self.host_lcu / ARCHIVE).write_bytes(b'tampered')
+        used = cu.archive_path(self.pinned_lcu(), self.state / 'stage')
+        self.assertEqual(used, self.image / ARCHIVE)
+        self.assertEqual(self.curls(), [])
+
+    def test_a_host_archive_that_is_a_symlink_is_ignored(self):
+        self.host_lcu.mkdir()
+        (self.host_lcu / ARCHIVE).symlink_to(self.image / ARCHIVE)
+        used = cu.archive_path(self.pinned_lcu(), self.state / 'stage')
+        self.assertEqual(used, self.image / ARCHIVE)
 
     def test_a_staged_archive_that_does_not_match_is_downloaded_and_verified(self):
         # The staged file no longer matches the lock, so the pinned URL is used.

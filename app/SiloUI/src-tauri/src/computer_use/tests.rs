@@ -104,6 +104,73 @@ fn only_built_in_vms_get_the_mount_and_it_is_read_only() {
 }
 
 #[test]
+fn the_lcu_folder_is_lent_read_only_when_silo_has_one() {
+    with_published(|_| {
+        let lcu = tempfile::tempdir().unwrap();
+        let without = mount_args_with(&machine(true), None).unwrap();
+        assert_eq!(without.len(), 2);
+        let with = mount_args_with(&machine(true), Some(lcu.path().to_path_buf())).unwrap();
+        assert_eq!(with[..2], without[..]);
+        assert_eq!(
+            with[2..],
+            [
+                "-v".to_owned(),
+                format!(
+                    "{}:/opt/silo/lcu:ro,uid=0,gid=0",
+                    lcu.path().canonicalize().unwrap().display()
+                )
+            ]
+        );
+        // A folder that is gone is skipped, and a VM without computer use gets nothing.
+        let gone = lcu.path().join("gone");
+        assert_eq!(
+            mount_args_with(&machine(true), Some(gone)).unwrap().len(),
+            2
+        );
+        assert!(
+            mount_args_with(&machine(false), Some(lcu.path().to_path_buf()))
+                .unwrap()
+                .is_empty()
+        );
+    });
+}
+
+#[test]
+fn creation_applies_computer_use_in_one_temporary_boot_and_records_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let recorder = Recorder::new("{\"state\":\"ready\",\"apply\":{\"approval\":\"ask\",\"outcome\":\"applied\",\"reason\":null}}\n");
+    finish_in_creation(&recorder, &paths, VM_ID, "dev").unwrap();
+    let calls = recorder.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    // No `--no-start`: the call boots the stopped VM and the runtime stops it again.
+    assert!(!calls[0].contains(&"--no-start".to_owned()));
+    assert!(calls[0]
+        .last()
+        .unwrap()
+        .contains("apply --approval ask --boot"));
+    assert_eq!(
+        read_policy(&paths, VM_ID)
+            .last
+            .map(|attempt| attempt.outcome),
+        Some(Outcome::Applied)
+    );
+}
+
+#[test]
+fn a_failed_creation_apply_is_reported_short_and_left_for_the_first_start() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let recorder = Recorder::new("{\"state\":\"ready\",\"apply\":{\"approval\":\"ask\",\"outcome\":\"failed\",\"reason\":\"lcu-archive-unavailable\"}}\n");
+    assert_eq!(
+        finish_in_creation(&recorder, &paths, VM_ID, "dev"),
+        Err("lcu-archive-unavailable".into())
+    );
+    let missing = Recorder::new("{\"state\":\"ready\",\"apply\":{\"approval\":\"ask\",\"outcome\":\"failed\",\"reason\":\"app-missing\"}}\n");
+    assert!(finish_in_creation(&missing, &paths, VM_ID, "dev").is_err());
+}
+
+#[test]
 fn an_existing_but_empty_shared_folder_never_blocks_the_mount() {
     with_published(|dir| {
         assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);

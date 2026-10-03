@@ -108,6 +108,7 @@
     "allow-read-operation-queue",
     "allow-cancel-operation",
     "allow-retry-machine-configuration",
+    "allow-skip-computer-use-wait",
     "allow-change-machine-configuration",
     "allow-remote-host-list",
     "allow-remote-host-snapshot",

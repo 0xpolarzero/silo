@@ -113,6 +113,24 @@ error. They use temporary paths without running a VM.
   any OpenAI file are not in the image.
 - **Mount.** The computer's published ChatGPT folder is mounted read-only at
   `/opt/silo/chatgpt` (see the ChatGPT app doc; restores pass it again).
+- **During creation.** "Created" means ready: the first start is only a start.
+  The create toast shows one line and a bar. Before it takes the computer-wide
+  operation gate, creation waits (`creation_inputs.rs`) for the background VM image
+  import ("Waiting for the VM image", `preparation::ensure_image`) and, for a
+  built-in VM, for ChatGPT for Linux ("Downloading ChatGPT for Linux · 62%", from
+  the `chatgpt-app-status` cache). The waits hold no gate, so lifecycle operations
+  and Quit are never queued behind them, and Quit ends them. If the download fails,
+  the toast shows the reason with **Retry** and **Finish without computer use**;
+  the latter creates the VM without the apply and computer use finishes at first
+  start as for any VM. After the desktop configuration boot, creation runs the
+  apply once more in a deliberate temporary boot with the desktop session up
+  ("Setting up the desktop and computer use", approval mode, then the usual stop).
+  If that fails the VM is still created and the Created toast says computer use
+  finishes at first start; the boot apply retries as always.
+- **LCU archive mount.** When Silo holds the verified pinned LCU archive
+  (`preparation::lcu_folder()`), new VMs also get it read-only at `/opt/silo/lcu`;
+  the helper prefers that copy (hash must match the lock), then the staged image
+  copy, then the download. Existing VMs are unchanged.
 - **After every boot** (`prepare_booted`, so start and restore) Silo pushes
   `/usr/local/libexec/silo-computer-use`, `/var/lib/silo-computer-use/pinned.json`
   (the tested app/LCU pair) and runs `silo-computer-use apply --boot --approval

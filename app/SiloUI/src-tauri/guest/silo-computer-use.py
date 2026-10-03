@@ -48,6 +48,8 @@ LOCK = STATE / 'lock'
 STAGE = STATE / 'stage'
 LOG = Path('/var/log/silo-computer-use.log')
 IMAGE_DIR = Path('/usr/local/share/silo/lcu')
+# The host lends its verified archive here (read-only) to sandboxes created with it.
+HOST_DIR = Path('/opt/silo/lcu')
 PREFIX = Path('/opt/lcu')
 MOUNT = Path('/opt/silo/chatgpt')
 DESKTOP_COMMAND = '/usr/local/bin/silo-desktop'
@@ -332,11 +334,13 @@ def download(url, target):
 
 
 def archive_path(pinned, stage):
-    """The pinned archive: the one staged in the image when it matches, else a hash-checked download."""
+    """The pinned archive: the host's read-only copy, else the one staged in the image, each
+    only when its hash matches, else a hash-checked download."""
     lcu = pinned['lcu']
-    staged = IMAGE_DIR / lcu['archive']
-    if staged.is_file() and not staged.is_symlink() and sha256_file(staged) == lcu['sha256']:
-        return staged
+    for directory in (HOST_DIR, IMAGE_DIR):
+        candidate = directory / lcu['archive']
+        if candidate.is_file() and not candidate.is_symlink() and sha256_file(candidate) == lcu['sha256']:
+            return candidate
     target = stage / lcu['archive']
     download(lcu['url'], target)
     if sha256_file(target) != lcu['sha256']:

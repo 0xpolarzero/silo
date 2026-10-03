@@ -9,6 +9,7 @@ mod chatgpt_app;
 #[cfg(test)]
 mod command_permissions_tests;
 mod computer_use;
+mod creation_inputs;
 mod dependencies;
 mod desktop;
 mod desktop_proxy;
@@ -246,6 +247,7 @@ fn main() {
             runtime::read_operation_queue,
             runtime::cancel_operation,
             runtime::retry_machine_configuration,
+            runtime::skip_computer_use_wait,
             runtime::change_machine_configuration
         ])
         .setup(|app| {

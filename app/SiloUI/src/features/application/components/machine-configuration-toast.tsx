@@ -1,11 +1,11 @@
 import { createElement, useEffect, useRef, useState } from "react"
 
-import { useComputerUseBridge } from "@/desktop/computer-use-bridge"
+import { skipComputerUseWait, useComputerUseBridge } from "@/desktop/computer-use-bridge"
 import { CreatedSandboxApprovalSwitch } from "@/desktop/created-sandbox-toast"
 import { dismissOperationToast, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 
 import type { ApplicationWorkspace, SandboxConfigurationOperation } from "@/features/application/model/application-source"
-import { describeConfiguration } from "@/features/application/model/machine-configuration-progress"
+import { chatGptFailure, computerUsePending, describeConfiguration, waitingForChatGpt } from "@/features/application/model/machine-configuration-progress"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 
 const TOAST_ID = "machine-configuration"
@@ -28,7 +28,7 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
   const applying = operation?.status === "applying"
   const [debounced, setDebounced] = useState(false)
   const show = applying && (description?.kind !== "saving" || debounced)
-  const tracked = useRef<{ creating: string[]; startedAt: number; shown: boolean } | null>(null)
+  const tracked = useRef<{ creating: string[]; startedAt: number; shown: boolean; pending: boolean } | null>(null)
   const latest = useRef({ workspaces, bridge, onOpen })
   latest.current = { workspaces, bridge, onOpen }
 
@@ -41,11 +41,23 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
   useEffect(() => {
     if (!operation || !description) return
     if (operation.status === "applying") {
-      tracked.current ??= { creating: [], startedAt: Date.now(), shown: false }
+      tracked.current ??= { creating: [], startedAt: Date.now(), shown: false, pending: false }
       tracked.current.creating = description.creating
+      tracked.current.pending = computerUsePending(operation)
       if (!show) return
       tracked.current.shown = true
-      showOperationProgress(TOAST_ID, { title: description.title, step: description.step, progress: description.progress, startedAt: tracked.current.startedAt, sandbox: description.creating })
+      // Creation waits for ChatGPT for Linux before it takes its turn; the user may finish without computer use.
+      const waiting = description.kind === "creating" && waitingForChatGpt(operation)
+      const failed = waiting && chatGptFailure(operation) !== null
+      showOperationProgress(TOAST_ID, {
+        title: description.title,
+        step: description.step,
+        progress: description.progress,
+        startedAt: tracked.current.startedAt,
+        sandbox: description.creating,
+        action: failed && bridge ? { label: "Retry", onClick: () => { void bridge.chatGptFor().retry() } } : undefined,
+        cancel: waiting ? { label: "Finish without computer use", onCancel: () => { void skipComputerUseWait(operation.id) } } : undefined,
+      })
     } else if (operation.status === "failed" && tracked.current?.shown) {
       tracked.current = null
       showOperationFailure(TOAST_ID, description.kind === "creating" ? `Could not create ${description.creating[0]}` : "Sandbox changes failed", { description: operation.error.message, native: false })
@@ -72,7 +84,9 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
       persist: true,
       sandbox: created.map(workspace => workspace.machine.name),
       description: single && computerUse && first.machine.kind === "vm" && first.machine.desktop
-        ? createElement(CreatedSandboxApprovalSwitch, { bridge: computerUse, workspace: workspaceTarget(first) })
+        ? createElement("div", { className: "grid gap-1.5" },
+          finished.pending ? createElement("p", { className: "text-xs text-muted-foreground" }, "Computer use will finish setting up at first start.") : null,
+          createElement(CreatedSandboxApprovalSwitch, { bridge: computerUse, workspace: workspaceTarget(first) }))
         : undefined,
       action: single && open ? { label: "Open", onClick: () => open(first.machine.id) } : undefined,
     })

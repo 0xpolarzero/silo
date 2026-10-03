@@ -277,7 +277,6 @@ pub fn ensure_image(paths: &RuntimePaths, report: &dyn Fn(Option<u8>)) -> Result
 
 /// The read-only host folder holding the verified pinned LCU archive for this computer's guest
 /// architecture (file name as in guest/lcu-lock.json's URL), once ready.
-#[allow(dead_code)]
 pub fn lcu_folder() -> Option<PathBuf> {
     let root = LCU_ROOT.get()?;
     let spec = LcuSpec::bundled().ok()?;

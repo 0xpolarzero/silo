@@ -171,6 +171,14 @@ policy inside the VM's operation turn.
   possibly empty, before any VM starts, so a VM created before the automatic
   download finished gains computer use later, and a pinned-version change
   reaches existing VMs at their next boot.
+- Creation finishes everything, so the first start is only a start. It waits, outside
+  the computer-wide operation gate (a held gate stalls lifecycle operations and Quit),
+  for the background image import and the ChatGPT download, then after the desktop
+  configuration boot runs the apply once in a temporary boot with the session up. A
+  failed apply or a "Finish without computer use" choice leaves it to the first boot
+  apply and says so in the Created toast. New VMs also get the verified LCU archive
+  read-only at `/opt/silo/lcu` when Silo holds it; the helper prefers it over the
+  staged and downloaded copies.
 - At boot, a guest helper (`apply`) installs LCU against the mounted app when the
   pinned pair changes, runs `lcu setup --agent all --allow-missing`, and applies the VM's approval
   mode. All supported agents are registered automatically, including ones installed
