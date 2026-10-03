@@ -105,7 +105,7 @@ pub(crate) fn computer_host(name: &str, computer_id: &str) -> String {
     // One DNS label is at most 63 bytes, including the "-" and the id suffix.
     label.truncate(63 - 1 - id.len());
     let label = label.trim_end_matches('-');
-    let label = if label.is_empty() { "computer" } else { label };
+    let label = if label.is_empty() { "sandbox" } else { label };
     if id.is_empty() {
         format!("{label}.localhost")
     } else {
@@ -315,7 +315,7 @@ fn socket_path(paths: &RuntimePaths, computer: &str) -> std::path::PathBuf {
     let digest = format!("{:x}", Sha256::digest(computer.as_bytes()));
     paths
         .home
-        .join("run/computers")
+        .join("run/sandboxes")
         .join(&digest[..24])
         .join("control.sock")
 }
@@ -987,6 +987,15 @@ pub(crate) fn reconcile_started(paths: &RuntimePaths, computer: &str) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn migrated_port_forwards_load() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let config = read_config(&migrated.runtime_paths()).unwrap();
+        assert_eq!(config.mappings.len(), 1);
+        assert_eq!(config.mappings[0].computer, "dev");
+        assert_eq!(config.mappings[0].host_port, Some(8080));
+    }
+
     #[cfg(unix)]
     #[test]
     fn saved_ports_report_an_unreadable_parent_after_publication() {
@@ -1235,6 +1244,19 @@ mod tests {
     }
 
     #[test]
+    fn the_control_socket_is_where_microsandbox_creates_it() {
+        let temp = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
+        let paths = temp_paths(&temp);
+        // MicroSandbox's own layout: run/sandboxes/<first 24 hex of SHA-256(name)>/control.sock.
+        assert_eq!(
+            socket_path(&paths, "dev"),
+            paths
+                .home
+                .join("run/sandboxes/ef260e9aa3c673af240d17a2/control.sock")
+        );
+    }
+
+    #[test]
     fn each_computer_gets_its_own_valid_localhost_name() {
         let _test_state = crate::test_support::global_state();
         let id = "1A2B3C4D-0000-4000-8000-000000000001";
@@ -1249,7 +1271,7 @@ mod tests {
             computer_host("My App_2!", id),
             "my-app-2-1a2b3c4d.localhost"
         );
-        assert_eq!(computer_host("--", id), "computer-1a2b3c4d.localhost");
+        assert_eq!(computer_host("--", id), "sandbox-1a2b3c4d.localhost");
         assert_eq!(computer_host("dev", ""), "dev.localhost");
         for name in [
             "a".repeat(80),
