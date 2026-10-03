@@ -1973,14 +1973,15 @@ fn validate_authorization(config: &Config, request: &Value) -> Result<(), Bridge
     }
     crate::runtime::shutdown::ensure_accepting_operations()?;
     if request["version"].as_u64() != Some(VERSION as u64) {
-        // A device older than version 4 prints this reply as is.
+        // A device older than version 4 shows this reply as is and treats text that starts
+        // with "Silo versions are incompatible" as a refusal that closes its connections.
         let message = if request["version"]
             .as_u64()
             .is_some_and(|version| version > VERSION as u64)
         {
-            "This device runs an older version of Silo. Update Silo on this device."
+            "Silo versions are incompatible. This device runs an older version of Silo. Update Silo on this device."
         } else {
-            "This device runs a newer version of Silo. Update Silo on the device that is connecting."
+            "Silo versions are incompatible. This device runs a newer version of Silo. Update Silo on the device that is connecting."
         };
         return Err(BridgeError::incompatible_version(message, Some(VERSION)));
     }
@@ -3690,6 +3691,32 @@ mod health_tests {
     }
 
     #[test]
+    fn a_version_3_device_reply_is_a_version_mismatch() {
+        let _test_state = crate::test_support::global_state();
+        // The exact reply of a version 3 device: its error text, `internal` as the code.
+        let reply = json!({
+            "error": LEGACY_INCOMPATIBLE,
+            "code": "internal",
+            "message": LEGACY_INCOMPATIBLE,
+        });
+        let error = BridgeError::from_remote_reply(&reply).unwrap();
+        assert_eq!(error.code, ErrorCode::IncompatibleVersion);
+        assert_eq!(error.peer_version, None);
+        let device = uuid::Uuid::new_v4().to_string();
+        assert_eq!(poll_failed(&device, &error), PollFailure::Revoked);
+        poll_succeeded(&device);
+        assert_eq!(
+            name_version_mismatch(error, "Studio").message,
+            "Studio runs an older version of Silo. Update Silo on Studio."
+        );
+        let unrelated = json!({"error": "Busy.", "code": "internal", "message": "Busy."});
+        assert_eq!(
+            BridgeError::from_remote_reply(&unrelated).unwrap().code,
+            ErrorCode::Internal
+        );
+    }
+
+    #[test]
     fn a_new_connection_names_the_address_in_a_version_mismatch() {
         let address = "me@studio.local";
         let refused = |reply: Value| {
@@ -4925,15 +4952,17 @@ mod ssh_authorization_tests {
             assert_eq!(newer.peer_version, Some(VERSION));
             assert_eq!(
                 newer.message,
-                "This device runs an older version of Silo. Update Silo on this device."
+                "Silo versions are incompatible. This device runs an older version of Silo. Update Silo on this device."
             );
             changed["version"] = json!(VERSION - 1);
             let older = validate_authorization(&config, &changed).unwrap_err();
             assert_eq!(older.code, ErrorCode::IncompatibleVersion);
             assert_eq!(
                 older.message,
-                "This device runs a newer version of Silo. Update Silo on the device that is connecting."
+                "Silo versions are incompatible. This device runs a newer version of Silo. Update Silo on the device that is connecting."
             );
+            // The classification a version 3 requester applies to the message it receives.
+            assert!(older.message.starts_with("Silo versions are incompatible"));
         }
     }
 }

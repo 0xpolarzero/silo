@@ -81,6 +81,12 @@ impl BridgeError {
                 _ => ErrorCode::Internal,
             },
         };
+        // A version 3 device sends its mismatch text with the code `internal`.
+        let code = if code == ErrorCode::Internal && legacy == LEGACY_INCOMPATIBLE {
+            ErrorCode::IncompatibleVersion
+        } else {
+            code
+        };
         let mut error = Self::new(code, message);
         if code == ErrorCode::IncompatibleVersion {
             error.peer_version = peer_version;
