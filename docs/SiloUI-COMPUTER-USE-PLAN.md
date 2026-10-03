@@ -123,7 +123,7 @@ absolute).
   `--skip-system --offline`.
 - Pinned LCU release archive, hash-checked, staged for installation in the VM
   (done: `guest/lcu-lock.json`, `/usr/local/share/silo/lcu/`). The published v4 image
-  stages LCU 0.8.1; Silo now pins LCU 0.8.7 (below), which a VM downloads and
+  stages LCU 0.8.1; Silo now pins LCU 0.8.8 (below), which a VM downloads and
   verifies at setup until a new image stages it.
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
@@ -144,7 +144,7 @@ absolute).
 - Every computer does this itself at its own start, remote ones included; a
   controller never prepares an app for another computer.
 
-Done: lock (`lcuVersion` 0.8.7), download, verification, extraction and
+Done: lock (`lcuVersion` 0.8.8), download, verification, extraction and
 publication under `<app data>/chatgpt/published/`, started automatically at app
 start with retries (2026-10-02, replacing the one-time notice), cached status
 reads and a computer-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
@@ -466,6 +466,17 @@ running instance is up. During a wait the state is `preparing` ("Could not downl
 (network). Silo tries again automatically."); a boot, a switch change, a manual setup, a
 stop/restart or a deletion cancels it. After the last retry the failure stays until the next
 boot or a manual setup.
+
+### LCU 0.8.8 pin (2026-10-03)
+
+Silo pins LCU 0.8.8 (tag `v0.8.8`, commit 04fa368; linux-arm64
+`edf19c055648245fadcfe073cfdc06623f7b5503f9c866b374ab8134f9439de1`, linux-x64
+`c45e6375e8ee66d09882a6aa17eae6307243665d0f827b6619ea5990502e3d60`). It adds `lcu setup --allow-missing`, which registers the
+installed harnesses (Codex and Claude Code even before their CLI exists) and records the
+absent ones as pending, and `lcu setup --reconcile`, which registers a pending harness once its
+binary appears, with the saved approval mode. The guest helper uses both (see
+[Linux desktop](SiloUI-DESKTOP.md#built-in-computer-use)). `SYSTEM_PACKAGES` is unchanged.
+The section below describes the 0.8.7 pin it replaces.
 
 ### LCU 0.8.7 pin (2026-10-03)
 

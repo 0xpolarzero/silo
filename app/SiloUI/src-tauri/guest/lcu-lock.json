@@ -1,15 +1,15 @@
 {
   "schemaVersion": 1,
-  "version": "0.8.7",
-  "source": "https://github.com/0xpolarzero/lcu/releases/tag/v0.8.7",
+  "version": "0.8.8",
+  "source": "https://github.com/0xpolarzero/lcu/releases/tag/v0.8.8",
   "assets": {
     "arm64": {
-      "url": "https://github.com/0xpolarzero/lcu/releases/download/v0.8.7/lcu-0.8.7-linux-arm64.tar.gz",
-      "sha256": "9c7f87529f6fc19a40ad518cf54b4709eef11af304ae39f5a1293b906bb84afb"
+      "url": "https://github.com/0xpolarzero/lcu/releases/download/v0.8.8/lcu-0.8.8-linux-arm64.tar.gz",
+      "sha256": "edf19c055648245fadcfe073cfdc06623f7b5503f9c866b374ab8134f9439de1"
     },
     "amd64": {
-      "url": "https://github.com/0xpolarzero/lcu/releases/download/v0.8.7/lcu-0.8.7-linux-x64.tar.gz",
-      "sha256": "f2c8f7930635cfd9743bd5022a90b1da5bc67ca25f0406261655207499778269"
+      "url": "https://github.com/0xpolarzero/lcu/releases/download/v0.8.8/lcu-0.8.8-linux-x64.tar.gz",
+      "sha256": "c45e6375e8ee66d09882a6aa17eae6307243665d0f827b6619ea5990502e3d60"
     }
   }
 }

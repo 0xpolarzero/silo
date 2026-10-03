@@ -394,21 +394,21 @@ fn attempt(mode: Approval, outcome: Outcome, reason: Option<&str>) -> Attempt {
 #[test]
 fn the_pinned_pair_comes_from_the_two_locks_and_agrees() {
     let lcu: Value = serde_json::from_str(LCU_LOCK).unwrap();
-    assert_eq!(lcu["version"], "0.8.7");
+    assert_eq!(lcu["version"], "0.8.8");
     assert_eq!(
         lcu["assets"]["arm64"]["sha256"],
-        "9c7f87529f6fc19a40ad518cf54b4709eef11af304ae39f5a1293b906bb84afb"
+        "edf19c055648245fadcfe073cfdc06623f7b5503f9c866b374ab8134f9439de1"
     );
     assert_eq!(
         lcu["assets"]["amd64"]["sha256"],
-        "f2c8f7930635cfd9743bd5022a90b1da5bc67ca25f0406261655207499778269"
+        "c45e6375e8ee66d09882a6aa17eae6307243665d0f827b6619ea5990502e3d60"
     );
     for (arch, archive) in [
-        (DebArch::Arm64, "lcu-0.8.7-linux-arm64.tar.gz"),
-        (DebArch::Amd64, "lcu-0.8.7-linux-x64.tar.gz"),
+        (DebArch::Arm64, "lcu-0.8.8-linux-arm64.tar.gz"),
+        (DebArch::Amd64, "lcu-0.8.8-linux-x64.tar.gz"),
     ] {
         let pair = pinned(arch).unwrap();
-        assert_eq!(pair["lcu"]["version"], "0.8.7");
+        assert_eq!(pair["lcu"]["version"], "0.8.8");
         assert_eq!(pair["lcu"]["archive"], archive);
         assert!(pair["lcu"]["url"].as_str().unwrap().ends_with(archive));
         let app = chatgpt_app::Lock::bundled().unwrap();
