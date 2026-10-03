@@ -73,7 +73,7 @@ export function useApplicationFixture(source: ApplicationSource) {
   const forkCheckpoint = useCallback(async (target: string, checkpointId: string | null, newName: string) => {
     const selected = computers.find((computer) => computerTarget(computer) === target)
     if (!selected) throw "The source computer is not a local VM."
-    if (computers.some((computer) => computer.device?.id === selected.device?.id && computer.configuration.name === newName)) throw "The fork name is already in use or the workspace limit was reached."
+    if (computers.some((computer) => computer.device?.id === selected.device?.id && computer.configuration.name === newName)) throw "The fork name is already in use or the computer limit was reached."
     const pending = checkpointId === null ? selected.pendingCheckpointRestore : undefined
     const captured = checkpointId === null && !pending ? fixtureCheckpoint(selected, "Fork point", "manual") : undefined
     const point = captured ?? selected.checkpoints?.find((checkpoint) => checkpoint.id === checkpointId)

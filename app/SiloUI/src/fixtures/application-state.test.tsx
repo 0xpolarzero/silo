@@ -86,7 +86,7 @@ describe("native checkpoint fixture outcomes", () => {
   it("rejects a duplicate name on the selected device without publishing a fork", async () => {
     const source = checkpointSource()
     const { result } = renderHook(() => useApplicationFixture(source))
-    await expect(result.current.forkCheckpoint(source.computers[1].configuration.name, source.computers[1].checkpoints![0].id, source.computers[0].configuration.name)).rejects.toBe("The fork name is already in use or the workspace limit was reached.")
+    await expect(result.current.forkCheckpoint(source.computers[1].configuration.name, source.computers[1].checkpoints![0].id, source.computers[0].configuration.name)).rejects.toBe("The fork name is already in use or the computer limit was reached.")
     expect(result.current.source.computers).toEqual(source.computers)
   })
 
