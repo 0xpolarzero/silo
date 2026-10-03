@@ -75,11 +75,14 @@
 //! every file, so an interrupted run converts what is left at the next launch and a file
 //! converted before the interruption is left alone.
 //!
-//! A file that is not valid JSON, is larger than any build writes, is not a regular file
-//! or has a structure no build wrote is carried over unchanged (a renamed file keeps its
-//! bytes under the new name): the normal code treats it exactly as the earlier code did.
-//! A file that cannot be read or written stops the migration before the record is saved.
-//! Silo then does not start, explains why, and converts the rest at the next launch.
+//! A file that is not valid JSON or has a structure no build wrote is carried over
+//! unchanged (a renamed file keeps its bytes under the new name): the normal code treats it
+//! exactly as the earlier code did. A file that exists but cannot be converted safely (a
+//! link, a pipe, larger than any build writes), a file that cannot be read or written, a
+//! storage selection or migration record that cannot be read, and a channel folder that is
+//! a link or lies behind one stop the migration before anything is changed or the record is
+//! saved: skipping them would leave the converted code without data it expects. Silo then
+//! does not start, explains why, and converts the rest at the next launch.
 use serde_json::Value;
 use std::{
     fs,
@@ -117,22 +120,26 @@ pub(super) struct Locations {
 
 /// A file to convert. `source` and `destination` differ only when the file is renamed.
 struct Target {
+    /// The channel folder the file lives under; neither it nor a folder below it may be a link.
+    root: PathBuf,
     source: PathBuf,
     destination: PathBuf,
     convert: Convert,
 }
 
 impl Target {
-    fn in_place(path: PathBuf, convert: Convert) -> Self {
+    fn in_place(root: &Path, path: PathBuf, convert: Convert) -> Self {
         Self {
+            root: root.into(),
             source: path.clone(),
             destination: path,
             convert,
         }
     }
 
-    fn renamed(folder: &Path, from: &str, to: &str, convert: Convert) -> Self {
+    fn renamed(root: &Path, folder: &Path, from: &str, to: &str, convert: Convert) -> Self {
         Self {
+            root: root.into(),
             source: folder.join(from),
             destination: folder.join(to),
             convert,
@@ -165,6 +172,7 @@ pub(super) fn run_in(
         return Ok(());
     }
     let mut targets = vec![Target::in_place(
+        &locations.config,
         locations.config.join("settings.json"),
         convert::settings,
     )];
@@ -173,14 +181,28 @@ pub(super) fn run_in(
         ("secrets.json", convert::secrets),
         ("backup-operation.json", convert::backup_operation),
     ] {
-        targets.push(Target::in_place(locations.app_data.join(name), convert));
+        targets.push(Target::in_place(
+            &locations.app_data,
+            locations.app_data.join(name),
+            convert,
+        ));
     }
     targets.push(Target::in_place(
+        &locations.state,
         locations.state.join("desktop-remote/config.json"),
         convert::connections,
     ));
-    if let Some(storage) = live_storage(&locations.app_data) {
+    if let Some(storage) = live_storage(&locations.app_data)? {
         targets.extend(storage_targets(&storage)?);
+    }
+    ensure_unlinked(&locations.app_data, &locations.app_data)?;
+    for target in &targets {
+        ensure_unlinked(&target.root, target.source.parent().unwrap_or(&target.root))?;
+        ensure_unlinked(
+            &target.root,
+            target.destination.parent().unwrap_or(&target.root),
+        )?;
+        ensure_convertible(&target.source)?;
     }
     for target in &targets {
         convert_file(target, before_write)?;
@@ -193,8 +215,13 @@ pub(super) fn run_in(
 /// which is read before it. Safe to repeat.
 #[allow(dead_code)]
 pub(super) fn convert_storage_directory(storage: &Path) -> Result<(), String> {
-    for target in storage_targets(storage)? {
-        convert_file(&target, &|_| Ok(()))?;
+    let targets = storage_targets(storage)?;
+    for target in &targets {
+        ensure_unlinked(&target.root, target.source.parent().unwrap_or(&target.root))?;
+        ensure_convertible(&target.source)?;
+    }
+    for target in &targets {
+        convert_file(target, &|_| Ok(()))?;
     }
     Ok(())
 }
@@ -205,8 +232,10 @@ pub(super) fn convert_storage_directory(storage: &Path) -> Result<(), String> {
 #[allow(dead_code)]
 pub(super) fn read_previous_computers(folder: &Path) -> Result<Option<Value>, String> {
     for name in ["machines.json", "computers.json"] {
-        let Some(bytes) = read_regular(&folder.join(name)).map_err(|_| FAILED.to_string())? else {
-            continue;
+        let bytes = match read_source(&folder.join(name)).map_err(|_| FAILED.to_string())? {
+            Source::Missing => continue,
+            Source::Unusable => return Err(FAILED.into()),
+            Source::Bytes(bytes) => bytes,
         };
         let mut inventory: Value = serde_json::from_slice(&bytes)
             .map_err(|_| "Silo's saved computer configuration is invalid.".to_string())?;
@@ -217,25 +246,73 @@ pub(super) fn read_previous_computers(folder: &Path) -> Result<Option<Value>, St
     Ok(None)
 }
 
-/// The storage the normal runtime reads right now, if the conversion may touch it.
-fn live_storage(app_data: &Path) -> Option<PathBuf> {
-    match super::generation(app_data) {
-        Ok(Some(selected)) => return Some(app_data.join(selected)),
-        Ok(None) => {}
-        Err(_) => return None,
+/// The storage the normal runtime reads right now, if the conversion may touch it. A
+/// storage selection or migration record that cannot be read is an error, not "none".
+fn live_storage(app_data: &Path) -> Result<Option<PathBuf>, String> {
+    let unreadable = |error: String| {
+        eprintln!("Saved data update: {error}");
+        FAILED.to_string()
+    };
+    if let Some(selected) = super::generation(app_data).map_err(unreadable)? {
+        return Ok(Some(app_data.join(selected)));
     }
     let runtime = app_data.join("runtime");
-    match super::read(&app_data.join(super::FILE)) {
-        Ok(Some(state)) if state.status == "not-required" => Some(runtime),
-        Ok(Some(_)) | Err(_) => None,
-        Ok(None) => (!holds_computers(&runtime)).then_some(runtime),
+    Ok(
+        match super::read(&app_data.join(super::FILE)).map_err(unreadable)? {
+            Some(state) if state.status == "not-required" => Some(runtime),
+            Some(_) => None,
+            None => (!holds_computers(&runtime)).then_some(runtime),
+        },
+    )
+}
+
+/// Fails when `path` exists but is not a regular file of a size any build writes, before
+/// any file is changed.
+fn ensure_convertible(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() <= MAX_DOCUMENT_BYTES => Ok(()),
+        Ok(_) => {
+            eprintln!("Saved data update: {} cannot be converted.", path.display());
+            Err(FAILED.into())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotADirectory => Ok(()),
+        Err(_) => Err(FAILED.into()),
     }
+}
+
+/// Fails when `root` is a link or a folder between it and `folder` is one, so no write can
+/// leave the channel's own tree. Folders that do not exist yet are fine.
+fn ensure_unlinked(root: &Path, folder: &Path) -> Result<(), String> {
+    let linked = || {
+        eprintln!(
+            "Saved data update: {} is a link or lies behind one.",
+            folder.display()
+        );
+        FAILED.to_string()
+    };
+    let mut current = root.to_path_buf();
+    let relative = folder.strip_prefix(root).map_err(|_| linked())?;
+    let components = std::iter::once(None).chain(relative.components().map(Some));
+    for component in components {
+        if let Some(component) = component {
+            current.push(component);
+        }
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => return Err(linked()),
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => return Err(FAILED.into()),
+        }
+    }
+    Ok(())
 }
 
 /// Whether the inventory in `runtime` lists a computer, or cannot be shown to list none.
 fn holds_computers(runtime: &Path) -> bool {
     let Ok(Some(inventory)) = read_previous_computers(runtime) else {
-        return runtime.join("machines.json").exists() || runtime.join("computers.json").exists();
+        return fs::symlink_metadata(runtime.join("machines.json")).is_ok()
+            || fs::symlink_metadata(runtime.join("computers.json")).is_ok();
     };
     inventory
         .get("computers")
@@ -244,14 +321,17 @@ fn holds_computers(runtime: &Path) -> bool {
 }
 
 fn storage_targets(storage: &Path) -> Result<Vec<Target>, String> {
+    let root = storage.parent().unwrap_or(storage);
     let mut targets = vec![
         Target::renamed(
+            root,
             storage,
             "machines.json",
             "computers.json",
             computers_metadata,
         ),
         Target::renamed(
+            root,
             storage,
             "sandbox-activity.json",
             "computer-activity.json",
@@ -272,7 +352,7 @@ fn storage_targets(storage: &Path) -> Result<Vec<Target>, String> {
             convert::push_operations,
         ),
     ] {
-        targets.push(Target::in_place(storage.join(name), convert));
+        targets.push(Target::in_place(root, storage.join(name), convert));
     }
     for (folder, convert) in [
         ("checkpoints", convert::checkpoint_record as Convert),
@@ -281,7 +361,7 @@ fn storage_targets(storage: &Path) -> Result<Vec<Target>, String> {
         targets.extend(
             json_files(&storage.join(folder))?
                 .into_iter()
-                .map(|path| Target::in_place(path, convert)),
+                .map(|path| Target::in_place(root, path, convert)),
         );
     }
     Ok(targets)
@@ -297,10 +377,13 @@ fn json_files(folder: &Path) -> Result<Vec<PathBuf>, String> {
     };
     let mut files = Vec::new();
     for entry in entries {
-        let path = entry.map_err(|_| FAILED.to_string())?.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
+        let entry = entry.map_err(|_| FAILED.to_string())?;
+        let path = entry.path();
+        let is_folder = entry.file_type().is_ok_and(|kind| kind.is_dir());
+        if !is_folder
+            && path
+                .extension()
+                .is_some_and(|extension| extension == "json")
         {
             files.push(path);
         }
@@ -309,9 +392,15 @@ fn json_files(folder: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(files)
 }
 
-/// The bytes of a regular file, or `None` when there is none or it is not usable as one
-/// (a link, a pipe, larger than any build writes).
-fn read_regular(path: &Path) -> io::Result<Option<Vec<u8>>> {
+/// What `path` holds.
+enum Source {
+    Missing,
+    /// Present but not usable as a saved document: a link, a pipe, larger than any build writes.
+    Unusable,
+    Bytes(Vec<u8>),
+}
+
+fn read_source(path: &Path) -> io::Result<Source> {
     let (file, metadata) = match crate::backup::open_regular_file(path) {
         Ok(opened) => opened,
         Err(crate::backup::OpenRegularError::Io(error))
@@ -320,24 +409,28 @@ fn read_regular(path: &Path) -> io::Result<Option<Vec<u8>>> {
                 io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
             ) =>
         {
-            return Ok(None)
+            return Ok(Source::Missing)
         }
         Err(crate::backup::OpenRegularError::Io(error)) => return Err(error),
-        Err(crate::backup::OpenRegularError::NotRegular) => return Ok(None),
+        Err(crate::backup::OpenRegularError::NotRegular) => return Ok(Source::Unusable),
     };
     if metadata.len() > MAX_DOCUMENT_BYTES {
-        return Ok(None);
+        return Ok(Source::Unusable);
     }
     let mut bytes = Vec::new();
     file.take(MAX_DOCUMENT_BYTES + 1).read_to_end(&mut bytes)?;
-    Ok((bytes.len() as u64 <= MAX_DOCUMENT_BYTES).then_some(bytes))
+    Ok(if bytes.len() as u64 <= MAX_DOCUMENT_BYTES {
+        Source::Bytes(bytes)
+    } else {
+        Source::Unusable
+    })
 }
 
 fn convert_file(
     target: &Target,
     before_write: &dyn Fn(&Path) -> io::Result<()>,
 ) -> Result<(), String> {
-    let failed = |_| {
+    let fail = || {
         eprintln!(
             "Saved data update: {} could not be converted.",
             target
@@ -348,8 +441,11 @@ fn convert_file(
         );
         FAILED.to_string()
     };
-    let Some(original) = read_regular(&target.source).map_err(failed)? else {
-        return Ok(());
+    let failed = |_: io::Error| fail();
+    let original = match read_source(&target.source).map_err(failed)? {
+        Source::Missing => return Ok(()),
+        Source::Unusable => return Err(fail()),
+        Source::Bytes(bytes) => bytes,
     };
     let renamed = target.source != target.destination;
     let converted = serde_json::from_slice::<Value>(&original)
@@ -410,7 +506,7 @@ fn sync_folder(folder: Option<&Path>) -> io::Result<()> {
 /// Next to the other records rather than inside `runtime-migration.json`, whose reader
 /// rejects fields it does not know.
 fn recorded(app_data: &Path) -> bool {
-    let Ok(Some(bytes)) = read_regular(&app_data.join(RECORD)) else {
+    let Ok(Source::Bytes(bytes)) = read_source(&app_data.join(RECORD)) else {
         return false;
     };
     bytes.len() as u64 <= MAX_RECORD_BYTES

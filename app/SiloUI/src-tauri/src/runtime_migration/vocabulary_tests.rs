@@ -767,19 +767,192 @@ fn files_keep_their_permissions() {
 }
 
 #[test]
-fn a_linked_file_is_not_followed() {
+fn a_linked_file_is_not_followed_and_stops_the_migration() {
     let fixture = Fixture::new();
     let outside = fixture.dir.path().join("outside.json");
     put(&outside, &old_github());
     std::os::unix::fs::symlink(&outside, fixture.data("github.json")).unwrap();
     let before = fs::read(&outside).unwrap();
 
-    fixture.run().unwrap();
+    assert!(fixture.run().is_err());
 
     assert_eq!(fs::read(&outside).unwrap(), before);
     assert!(fs::symlink_metadata(fixture.data("github.json"))
         .unwrap()
         .is_symlink());
+    assert!(!fixture.data("vocabulary-migration.json").exists());
+}
+
+#[test]
+fn a_linked_inventory_or_activity_file_never_becomes_an_empty_one() {
+    for name in ["machines.json", "sandbox-activity.json"] {
+        let fixture = Fixture::new();
+        fixture.select(CLEAN, "complete");
+        write_old_storage(&fixture.data(CLEAN));
+        let outside = fixture.dir.path().join("outside.json");
+        fs::rename(fixture.data(CLEAN).join(name), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, fixture.data(CLEAN).join(name)).unwrap();
+        let before = snapshot(fixture.dir.path());
+
+        assert!(fixture.run().is_err(), "{name}");
+
+        assert_eq!(snapshot(fixture.dir.path()), before, "{name}");
+        assert!(!fixture.data("vocabulary-migration.json").exists());
+        assert!(!fixture.data(CLEAN).join("computers.json").exists());
+    }
+}
+
+#[test]
+fn an_oversized_document_stops_the_migration() {
+    let fixture = Fixture::new();
+    fixture.select(CLEAN, "complete");
+    write_old_storage(&fixture.data(CLEAN));
+    let inventory = fs::File::options()
+        .write(true)
+        .open(fixture.data(CLEAN).join("machines.json"))
+        .unwrap();
+    inventory.set_len(65 * 1024 * 1024).unwrap();
+
+    assert!(fixture.run().is_err());
+
+    assert!(fixture.data(CLEAN).join("machines.json").exists());
+    assert!(!fixture.data(CLEAN).join("computers.json").exists());
+    assert!(!fixture.data("vocabulary-migration.json").exists());
+}
+
+#[test]
+fn a_damaged_storage_selection_or_migration_state_stops_the_migration() {
+    for (file, bytes) in [
+        ("runtime-generation.json", &b"{broken"[..]),
+        (
+            "runtime-generation.json",
+            br#"{"version":1,"directory":"elsewhere"}"#,
+        ),
+        ("runtime-migration.json", &b"{broken"[..]),
+        (
+            "runtime-migration.json",
+            br#"{"version":9,"status":"complete"}"#,
+        ),
+    ] {
+        let fixture = Fixture::new();
+        write_old_storage(&fixture.data("runtime"));
+        fs::write(fixture.data(file), bytes).unwrap();
+        let before = snapshot(fixture.dir.path());
+
+        assert!(fixture.run().is_err(), "{file}");
+
+        assert_eq!(snapshot(fixture.dir.path()), before, "{file}");
+        assert!(!fixture.data("vocabulary-migration.json").exists());
+    }
+}
+
+#[test]
+fn an_unreadable_storage_selection_is_not_the_same_as_no_selection() {
+    let fixture = Fixture::new();
+    write_old_storage(&fixture.data(CLEAN));
+    fs::create_dir(fixture.data("runtime-generation.json")).unwrap();
+
+    assert!(fixture.run().is_err());
+
+    assert!(fixture.data(CLEAN).join("machines.json").exists());
+    assert!(!fixture.data("vocabulary-migration.json").exists());
+}
+
+/// `channel`'s `folder` replaced by a link into `other`'s tree, which holds a file in the
+/// earlier vocabulary at `relative`. Returns that file.
+fn link_into(
+    channel: &Path,
+    folder: &Path,
+    other: &Path,
+    relative: &str,
+    value: &Value,
+) -> PathBuf {
+    let real = other.join("real");
+    let file = real.join(relative);
+    put(&file, value);
+    fs::remove_dir_all(folder).ok();
+    fs::create_dir_all(folder.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&real, folder).unwrap();
+    assert!(channel.exists());
+    file
+}
+
+#[test]
+fn a_channel_folder_linked_into_the_other_channel_is_never_written_through() {
+    // Each direction: the Dev state folder reaches into production, and the reverse.
+    for _ in 0..2 {
+        let channel = Fixture::new();
+        let other = Fixture::new();
+        let file = link_into(
+            channel.dir.path(),
+            &channel.locations.state.join("desktop-remote"),
+            other.dir.path(),
+            "config.json",
+            &old_connections(),
+        );
+        let before = fs::read(&file).unwrap();
+
+        assert!(channel.run().is_err());
+
+        assert_eq!(fs::read(&file).unwrap(), before);
+        assert!(!channel.data("vocabulary-migration.json").exists());
+        // The other channel's own run is unaffected by its folder being linked to.
+        other.run().unwrap();
+    }
+}
+
+#[test]
+fn a_linked_channel_root_or_ancestor_of_a_target_is_refused() {
+    let outside = |fixture: &Fixture| fixture.dir.path().join("elsewhere");
+    for case in ["config", "app_data", "state", "generation", "checkpoints"] {
+        let mut fixture = Fixture::new();
+        let elsewhere = outside(&fixture);
+        let (link, value, relative) = match case {
+            "config" => (
+                fixture.locations.config.clone(),
+                old_settings(),
+                "settings.json",
+            ),
+            "app_data" => (
+                fixture.locations.app_data.clone(),
+                old_github(),
+                "github.json",
+            ),
+            "state" => (
+                fixture.locations.state.clone(),
+                old_connections(),
+                "desktop-remote/config.json",
+            ),
+            "generation" => (
+                fixture.data(CLEAN),
+                json!({"schemaVersion": 1, "machines": [old_computer(ID, "dev", false)]}),
+                "machines.json",
+            ),
+            _ => (
+                fixture.data(CLEAN).join("checkpoints"),
+                json!({"pendingCheckpointRestore": {"sourceWorkspace": "dev"}}),
+                "one.json",
+            ),
+        };
+        if case == "checkpoints" {
+            fixture.select(CLEAN, "complete");
+            fs::create_dir_all(fixture.data(CLEAN)).unwrap();
+        }
+        if case == "generation" {
+            fixture.select(CLEAN, "complete");
+        }
+        let file = link_into(fixture.dir.path(), &link, &elsewhere, relative, &value);
+        if case == "app_data" {
+            // The record and the selection live in the linked folder as well.
+            fixture.locations.app_data = link.clone();
+        }
+        let before = fs::read(&file).unwrap();
+
+        assert!(fixture.run().is_err(), "{case}");
+
+        assert_eq!(fs::read(&file).unwrap(), before, "{case}");
+        assert!(!elsewhere.join("real/vocabulary-migration.json").exists());
+    }
 }
 
 #[test]
@@ -933,4 +1106,66 @@ fn the_previous_inventory_is_read_from_either_file_without_changing_it() {
 
     fs::write(folder.join("machines.json"), b"{broken").unwrap();
     assert!(vocabulary::read_previous_computers(&folder).is_err());
+}
+
+#[test]
+fn a_renamed_file_written_but_not_yet_unlinked_is_finished_by_the_next_run() {
+    // The new file is on disk and the old one still is: the old one is the only build's
+    // latest write, so it wins and is then removed.
+    let fixture = Fixture::new();
+    fixture.select(CLEAN, "complete");
+    let storage = fixture.data(CLEAN);
+    write_old_storage(&storage);
+    fixture.run().unwrap();
+    fs::remove_file(fixture.data("vocabulary-migration.json")).unwrap();
+    assert_new_storage(&storage);
+
+    put(
+        &storage.join("machines.json"),
+        &json!({"schemaVersion": 1, "machines": [old_computer(ID, "renamed later", false)]}),
+    );
+    put(
+        &storage.join("sandbox-activity.json"),
+        &json!([old_event("stop")]),
+    );
+
+    fixture.run().unwrap();
+
+    assert_eq!(
+        get(&storage.join("computers.json")),
+        json!({"schemaVersion": 1, "computers": [new_computer(ID, "renamed later", false)]})
+    );
+    assert_eq!(
+        get(&storage.join("computer-activity.json")),
+        json!([new_event("stop")])
+    );
+    assert!(!storage.join("machines.json").exists());
+    assert!(!storage.join("sandbox-activity.json").exists());
+    assert!(fixture.data("vocabulary-migration.json").exists());
+}
+
+#[test]
+fn an_interruption_between_writing_and_unlinking_a_renamed_file_loses_nothing() {
+    // Stop when the next file is about to be written: `computers.json` is replaced and
+    // `machines.json` removed, while the activity file is still in the earlier name.
+    let fixture = Fixture::new();
+    fixture.select(CLEAN, "complete");
+    let storage = fixture.data(CLEAN);
+    write_old_storage(&storage);
+    let seen = Cell::new(false);
+    let result = vocabulary::run_in(&fixture.locations, &|path| {
+        if path.ends_with("computer-activity.json") {
+            seen.set(true);
+            assert!(!path.parent().unwrap().join("machines.json").exists());
+            return Err(io::Error::other("stopped"));
+        }
+        Ok(())
+    });
+    assert!(result.is_err() && seen.get());
+    assert!(storage.join("computers.json").exists());
+    assert!(storage.join("sandbox-activity.json").exists());
+
+    fixture.run().unwrap();
+
+    assert_new_storage(&storage);
 }
