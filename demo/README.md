@@ -85,7 +85,7 @@ notification delivery, or release readiness. Production app behavior is unchange
 ## References
 
 [Storyboard](../docs/SiloUI-DEMO-SCRIPT.md) ·
-[Remote behavior](../docs/SiloUI-REMOTE-COMPUTERS.md) ·
+[Remote behavior](../docs/SiloUI-CONNECTIONS.md) ·
 [Remotion compositions](https://www.remotion.dev/docs/composition) ·
 [Rendering](https://www.remotion.dev/docs/cli/render)
 

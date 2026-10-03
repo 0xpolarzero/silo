@@ -13,7 +13,7 @@ were inspected.
 - `app/SiloUI/src/features/sandboxes/components/sandbox-list.tsx`,
   `computer-badge.tsx`, `components/list-row.tsx`, `components/connection-icon.tsx`:
   compact rows, computer pill, server symbol for remote VMs, running tint.
-- `docs/SiloUI-REMOTE-COMPUTERS.md`: owner retains VM; controller opens terminal
+- `docs/SiloUI-CONNECTIONS.md`: owner retains VM; controller opens terminal
   and editor; SSH forwarding exposes local loopback, not public hosting.
 - `docs/SiloUI-LUDA.md`: optional desktop installs guest agent tooling; agent
   executables and credentials are not guaranteed; guest desktop must be running.

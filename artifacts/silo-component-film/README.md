@@ -74,7 +74,7 @@ is authored for this film.
 ## Direction and source evidence
 
 See [direction and references](DIRECTION.md), the product's
-[remote computer documentation](../../docs/SiloUI-REMOTE-COMPUTERS.md),
+[remote computer documentation](../../docs/SiloUI-CONNECTIONS.md),
 [desktop agent documentation](../../docs/SiloUI-LUDA.md), and
 [bundled help](../../app/SiloUI/docs/silo-help.html).
 

@@ -48,7 +48,7 @@ files or existing website tour implementation were read.
 - [Product README](../../README.md): Linux VMs, local and remote management,
   familiar editors and terminals, development-server access, desktops for
   agents, repository access, and credential scope.
-- [Remote computers](../../docs/SiloUI-REMOTE-COMPUTERS.md): terminals and
+- [Remote computers](../../docs/SiloUI-CONNECTIONS.md): terminals and
   editors launch on the controlling computer and connect to the guest through
   its owner; network access uses controller-side loopback SSH tunnels. The
   diagram distinguishes the laptop, hosting computer, VM port, and local

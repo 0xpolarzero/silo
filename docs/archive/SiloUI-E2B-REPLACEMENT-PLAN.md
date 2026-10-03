@@ -740,7 +740,7 @@ that resolves the highest-risk gaps before most of the rewrite is spent.
 Repository basis: current `src-tauri/src/runtime.rs`, `remote.rs`, `network.rs`,
 `desktop_viewer.rs`, `Cargo.toml`, `tauri.conf.json`, `src/desktop/production-source.ts`
 and `src/contracts/silo.ts`; the [PoC results](../research/e2b-local-poc-2026-09-22.md);
-[remote ownership](../SiloUI-REMOTE-COMPUTERS.md), [secrets](../SiloUI-SECRETS.md),
+[remote ownership](../SiloUI-CONNECTIONS.md), [secrets](../SiloUI-SECRETS.md),
 [GitHub](../SiloUI-GITHUB-IMPLEMENTATION.md), [native editor](../SiloUI-EDITOR-HANDOFF.md),
 [network](../SiloUI-NETWORK-PLAN.md), [backup](../SiloUI-RUNTIME-BACKUP-FINDINGS.md),
 [guest distribution](../SiloUI-GUEST-IMAGES.md) and
