@@ -105,7 +105,7 @@ function DetailSubtitle({ computer, source, readOnly, pendingSecrets, sshAccess,
   onOpenSsh?: () => void
 }) {
   const { configuration } = computer
-  const location = computer.device ? computer.device.name : "VM"
+  const location = computer.device ? computer.device.name : "This device"
   return <span>
     <ComputerStatus computer={computer} source={source} readOnly={readOnly} onCancel={onCancel} />
     <Sep />{location}

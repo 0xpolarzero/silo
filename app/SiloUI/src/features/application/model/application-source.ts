@@ -15,7 +15,7 @@ import type {
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 
 export type ApplicationTab = "computers" | "github" | "secrets" | "system" | "settings"
-export type SettingsSection = "general" | "devices" | "notifications"
+export type SettingsSection = "general" | "connections" | "notifications"
 export type ComputerSection = "overview" | "files" | "logs" | "network" | "activity"
 export type ComputerDetailSection = Exclude<ComputerSection, "overview">
 /** Tabs on a single computer's detail page, reached from the Computers overview. */

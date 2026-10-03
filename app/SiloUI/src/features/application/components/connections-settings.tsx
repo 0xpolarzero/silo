@@ -132,7 +132,7 @@ function NewComputerApprovalSetting() {
   return <section aria-label="Computer use" className="grid gap-3">
     <h2 className="text-xs font-medium">Computer use</h2>
     <div className="rounded-lg border p-3">
-      <div className="flex items-center justify-between gap-4"><div><label htmlFor="computer-use-auto-approval" className="text-xs font-medium">Allow agents to use the device without asking in new computers</label><p className="text-xs text-muted-foreground">Claude Code, Codex and similar agents stop asking before using the computer’s desktop. Not a security boundary.</p></div><Switch id="computer-use-auto-approval" checked={settings.computerUseAutoApproval} onCheckedChange={enabled => { void updateSettings({ computerUseAutoApproval: enabled }) }} /></div>
+      <div className="flex items-center justify-between gap-4"><div><label htmlFor="computer-use-auto-approval" className="text-xs font-medium">Allow agents to use the desktop without asking in new computers</label><p className="text-xs text-muted-foreground">Claude Code, Codex and similar agents stop asking before using the computer’s desktop. Not a security boundary.</p></div><Switch id="computer-use-auto-approval" checked={settings.computerUseAutoApproval} onCheckedChange={enabled => { void updateSettings({ computerUseAutoApproval: enabled }) }} /></div>
     </div>
   </section>
 }
@@ -178,8 +178,8 @@ function DevicesSection({ source, actions }: { source: ApplicationSource; action
   }
   const removeDevice = actions.removeDevice
   if (!actions.connectDevice) return null
-  return <section aria-label="Devices" className="grid gap-3">
-    <h2 className="text-xs font-medium">Devices</h2>
+  return <section aria-label="Connections" className="grid gap-3">
+    <h2 className="text-xs font-medium">Connections</h2>
     <div className="grid gap-3 rounded-lg border p-3">
       <div className="flex items-center justify-between gap-4"><div><label htmlFor="remote-management" className="text-xs font-medium">Allow remote management</label><p className="text-xs text-muted-foreground">Let devices with SSH access to your account manage these computers while Silo is running.</p><p className="text-xs text-muted-foreground">Quit stops local computers and disconnects remote sessions.</p></div><Switch id="remote-management" checked={source.connections?.enabled ?? false} disabled={busy || !source.connections || !actions.setConnectionsEnabled} onCheckedChange={enabled => { void perform("remote-management", () => actions.setConnectionsEnabled!(enabled)) }} /></div>
       {source.connections?.error && <p role="alert" className="text-xs text-destructive">{source.connections.error}</p>}

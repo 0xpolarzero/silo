@@ -70,7 +70,7 @@ const REMOTE_IDLE_POLL_MS = 15000
 const REMOTE_FAILURE_POLL_MAX_MS = 30000
 const working = (status: ChatGptAppStatus | null) => status?.state === "downloading" || status?.state === "verifying" || status?.state === "extracting" || status?.state === "idle"
 
-/** The device id of the device that owns a computer computer target, undefined for a local computer. */
+/** The device id of the device that owns a computer target, undefined for a local computer. */
 export function deviceOfComputer(computer: string | undefined): string | undefined {
   if (!computer) return undefined
   try { return parseRemoteComputerTarget(computer)?.deviceId } catch { return undefined }

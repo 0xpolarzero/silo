@@ -158,7 +158,7 @@ it.each(["native", "fixture"] as const)("updates unsaved startup defaults after 
   expect(write).not.toHaveBeenCalled()
 })
 
-it("puts remote management in Devices and preserves it across settings navigation", async () => {
+it("puts remote management in Connections and preserves it across settings navigation", async () => {
   const user = userEvent.setup()
   const source = applicationSourceForScenario("running")
   source.connections = { enabled: false, deviceId: "office", name: "Office Mac", address: "owner@office" }
@@ -169,9 +169,9 @@ it("puts remote management in Devices and preserves it across settings navigatio
   const settings = settingsPanel()
   expect(settings.queryByRole("switch", { name: "Allow remote management" })).not.toBeInTheDocument()
 
-  await user.click(navigation.getByRole("button", { name: "Devices" }))
-  expect(navigation.getByRole("button", { name: "Devices" })).toHaveAttribute("aria-current", "page")
-  expect(settings.getByRole("heading", { name: "Devices", level: 2 })).toBeVisible()
+  await user.click(navigation.getByRole("button", { name: "Connections" }))
+  expect(navigation.getByRole("button", { name: "Connections" })).toHaveAttribute("aria-current", "page")
+  expect(settings.getByRole("heading", { name: "Connections", level: 2 })).toBeVisible()
   expect(settings.queryByRole("combobox", { name: "Theme" })).not.toBeInTheDocument()
   await user.click(settings.getByRole("switch", { name: "Allow remote management" }))
   expect(setConnectionsEnabled).toHaveBeenCalledWith(true)
@@ -186,11 +186,11 @@ it("puts remote management in Devices and preserves it across settings navigatio
   expect(connectDevice).toHaveBeenCalledWith("owner@office")
 })
 
-it("opens Devices directly from the command palette", async () => {
+it("opens Connections directly from the command palette", async () => {
   const user = userEvent.setup()
   render(<ApplicationPreview source={applicationSourceForScenario("running")} actions={{ connectDevice: vi.fn() }} />)
   await user.keyboard("{Control>}k{/Control}")
-  await user.type(screen.getByRole("combobox", { name: "Search commands" }), "devices")
+  await user.type(screen.getByRole("combobox", { name: "Search commands" }), "connections")
   await user.keyboard("{Enter}")
-  expect(settingsPanel().getByRole("heading", { name: "Devices", level: 2 })).toBeVisible()
+  expect(settingsPanel().getByRole("heading", { name: "Connections", level: 2 })).toBeVisible()
 })

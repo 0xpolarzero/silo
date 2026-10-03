@@ -279,7 +279,7 @@ describe("New computer approval default", () => {
 
   it("is off by default and saves the choice", async () => {
     const store = withBridge()
-    const toggle = screen.getByRole("switch", { name: "Allow agents to use the device without asking in new computers" })
+    const toggle = screen.getByRole("switch", { name: "Allow agents to use the desktop without asking in new computers" })
     expect(toggle).not.toBeChecked()
     expect(screen.getByText("Claude Code, Codex and similar agents stop asking before using the computer’s desktop. Not a security boundary.")).toBeVisible()
     fireEvent.click(toggle)

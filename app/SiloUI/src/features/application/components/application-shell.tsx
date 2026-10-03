@@ -34,7 +34,7 @@ const computerItems = [
 
 const settingsItems = [
   { id: "general", label: "General", icon: SlidersHorizontal },
-  { id: "devices", label: "Devices", icon: Monitor },
+  { id: "connections", label: "Connections", icon: Monitor },
   { id: "notifications", label: "Notifications", icon: Bell },
 ] as const
 

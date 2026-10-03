@@ -424,7 +424,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <div hidden={settingsSection !== "general"}>
           <GeneralPage source={source} applicationPreferences={applicationPreferences} onApplicationPreferencesChange={changeApplicationPreferences} reduceMotion={reduceMotion} onReduceMotionChange={(enabled) => { void updateSettings({ reduceMotion: enabled }) }} />
         </div>
-        <div hidden={settingsSection !== "devices"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><ConnectionsSettings source={source} actions={actions} active={visibleTab === "settings" && settingsSection === "devices"} /></div>
+        <div hidden={settingsSection !== "connections"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><ConnectionsSettings source={source} actions={actions} active={visibleTab === "settings" && settingsSection === "connections"} /></div>
         <div hidden={settingsSection !== "notifications"}><NotificationsPage /></div>
       </section>
     </ApplicationShell>

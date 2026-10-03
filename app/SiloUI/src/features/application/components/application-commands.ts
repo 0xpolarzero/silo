@@ -55,7 +55,7 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
     { label: "GitHub", icon: GitFork, route: { tab: "github" }, keywords: ["git", "account", "access"] },
     { label: "Secrets", icon: KeyRound, route: { tab: "secrets" }, keywords: ["tokens", "credentials"] },
     { label: "Settings", icon: Settings2, route: { settingsSection: "general" }, keywords: ["general", "preferences", "applications"] },
-    { label: "Devices", icon: Monitor, route: { settingsSection: "devices" }, keywords: ["remote", "ssh", "connections", "management"] },
+    { label: "Connections", icon: Monitor, route: { settingsSection: "connections" }, keywords: ["remote", "ssh", "connections", "management"] },
     { label: "Notifications", icon: Bell, route: { settingsSection: "notifications" }, keywords: ["alerts"] },
   ]
   if (source.runtimeRepair) {

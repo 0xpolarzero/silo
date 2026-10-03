@@ -45,7 +45,7 @@ function ComputerIcon({ state, remote }: { state: ComputerIconState; remote: boo
       ) : state === "warning" ? (
         <TriangleAlert className="size-3.5" aria-hidden="true" />
       ) : (
-        <ConnectionIcon kind="vm" network={remote} label={`${remote ? "Remote" : "Local"} VM`} />
+        <ConnectionIcon kind="vm" network={remote} label={`${remote ? "Remote" : "Local"} computer`} />
       )}
     </ListRowIcon>
   )
