@@ -231,20 +231,14 @@ pub(super) fn run_in(
     save_record(&locations.app_data, before_write)
 }
 
-/// Converts `config.json` in a `desktop-remote` folder in place, for the modes that read
-/// it before the application runs the full conversion (`--remote-guest`, `--remote-bridge`).
-/// Does nothing for a file that is already current, missing, or not a regular file of a size
-/// any build writes. It does not write the record, so the full conversion still runs.
-pub(crate) fn convert_connections_settings(directory: &Path) -> Result<(), String> {
-    let path = directory.join("config.json");
-    match fs::symlink_metadata(&path) {
-        Ok(metadata) if metadata.is_file() && metadata.len() <= MAX_DOCUMENT_BYTES => {}
-        _ => return Ok(()),
-    }
-    convert_file(
-        &Target::in_place(directory, path, convert::connections),
-        &|_| Ok(()),
-    )
+/// Converts a parsed `desktop-remote/config.json` to the current vocabulary in memory.
+/// The modes that read it before the application runs the full conversion
+/// (`--remote-guest`, `--remote-bridge`) use this and never write the file, so they cannot
+/// replace settings the running application saved since.
+pub(crate) fn convert_connections_document(document: &mut Value) -> Result<(), String> {
+    convert::connections(document)
+        .map(|_| ())
+        .map_err(|Unexpected| "Connections settings are damaged.".to_string())
 }
 
 /// Converts the storage folder `storage` in place. The storage migration calls this on

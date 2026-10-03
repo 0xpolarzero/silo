@@ -137,7 +137,6 @@ fn read_config() -> Result<Config, String> {
 }
 fn read_config_in(dir: &Path) -> Result<Config, String> {
     use std::os::unix::fs::OpenOptionsExt;
-    crate::runtime_migration::vocabulary::convert_connections_settings(dir)?;
     match fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -158,7 +157,11 @@ fn read_config_in(dir: &Path) -> Result<Config, String> {
             if bytes.len() > MAX_CONFIG_BYTES {
                 return Err(CONFIG_TOO_LARGE.into());
             }
-            serde_json::from_slice(&bytes).map_err(|_| "Connections settings are damaged.".into())
+            let damaged = || String::from("Connections settings are damaged.");
+            let mut document: Value = serde_json::from_slice(&bytes).map_err(|_| damaged())?;
+            crate::runtime_migration::vocabulary::convert_connections_document(&mut document)
+                .map_err(|_| damaged())?;
+            serde_json::from_value(document).map_err(|_| damaged())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let config = Config {
@@ -2124,25 +2127,58 @@ fn connection_open(stream: &UnixStream) -> bool {
 mod tests {
     use super::*;
 
+    const LEGACY_CONFIG: &str = r#"{"hostId":"own-id","enabled":true,"hosts":[{"id":"studio-id","name":"Studio","address":"studio.example"}],"extra":1}"#;
+    fn modified(path: &Path) -> std::time::SystemTime {
+        fs::metadata(path).unwrap().modified().unwrap()
+    }
     #[test]
-    fn earlier_connections_settings_are_converted_when_read_before_the_application_starts() {
+    fn earlier_connections_settings_are_converted_in_memory_without_writing() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.json");
-        fs::write(
-            &path,
-            r#"{"hostId":"own-id","enabled":true,"hosts":[{"id":"studio-id","name":"Studio","address":"studio.example"}],"extra":1}"#,
-        )
-        .unwrap();
+        fs::write(&path, LEGACY_CONFIG).unwrap();
+        let before = modified(&path);
+        std::thread::sleep(std::time::Duration::from_millis(20));
         let config = read_config_in(directory.path()).unwrap();
         assert_eq!(config.device_id, "own-id");
+        assert!(config.enabled);
         assert_eq!(config.devices[0].name, "Studio");
-        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-        assert_eq!(saved["deviceId"], "own-id");
-        assert!(saved.get("hostId").is_none() && saved.get("hosts").is_none());
-        assert_eq!(saved["extra"], 1);
+        assert_eq!(config.extra["extra"], 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), LEGACY_CONFIG);
+        assert_eq!(modified(&path), before);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+    #[test]
+    fn earlier_connections_settings_read_through_a_linked_folder_write_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("production");
+        fs::create_dir(&target).unwrap();
+        let path = target.join("config.json");
+        fs::write(&path, LEGACY_CONFIG).unwrap();
+        let before = modified(&path);
+        let linked = root.path().join("desktop-remote");
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(read_config_in(&linked).unwrap().device_id, "own-id");
+        assert_eq!(fs::read_to_string(&path).unwrap(), LEGACY_CONFIG);
+        assert_eq!(modified(&path), before);
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
+    }
+    #[test]
+    fn compact_earlier_connections_settings_near_the_limit_are_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let prefix = r#"{"hostId":"own-id","enabled":false,"hosts":[],"pad":""#;
+        let suffix = r#""}"#;
+        let padding = MAX_CONFIG_BYTES - prefix.len() - suffix.len();
+        let document = format!("{prefix}{}{suffix}", "a".repeat(padding));
+        assert_eq!(document.len(), MAX_CONFIG_BYTES);
+        fs::write(directory.path().join("config.json"), &document).unwrap();
+        let config = read_config_in(directory.path()).unwrap();
+        assert_eq!(config.device_id, "own-id");
+        assert_eq!(config.extra["pad"].as_str().unwrap().len(), padding);
+        fs::write(directory.path().join("config.json"), format!("{document} ")).unwrap();
         assert_eq!(
-            read_config_in(directory.path()).unwrap().device_id,
-            "own-id"
+            read_config_in(directory.path()).err().as_deref(),
+            Some(CONFIG_TOO_LARGE)
         );
     }
     #[test]
