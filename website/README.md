@@ -57,7 +57,12 @@ variables, account, cookies, or analytics are required by the site.
   the production glass UI with the read-only demo fixtures. Unsuffixed PNGs are
   light; `-dark.png` variants are dark. Workflow captures are 1280 × 720;
   GitHub, secrets, and backup captures are 1280 × 800. `overview.png` supplies
-  the computers screenshot. `silo-tour.mp4` is the 59-second, 1920 × 1080 release
+  the computers screenshot. Regenerate the pairs with the dev server running
+  (`npm --prefix website run dev`) and `node website/scripts/capture-media.mjs
+  [name…]`, which drives Google Chrome headless against `demo.html` and paints
+  the landing-page gradient behind the transparent embed. The export screenshot
+  uses `demo.html?capture=export`, which shows the export entry the read-only
+  demo otherwise omits. `silo-tour.mp4` is the 59-second, 1920 × 1080 release
   film, rendered at 30 fps from `demo/src/release-film.tsx`; `silo-tour.png` is its
   matching poster. The film includes agent desktop use, local and remote
   computers, familiar tools, SSH and an agent connection, repository access,

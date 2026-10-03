@@ -15,6 +15,7 @@ import { SettingsProvider, createMemorySettingsStore } from '@/features/preferen
 import { ApplicationCatalogProvider } from '@/features/preferences/application-catalog';
 import { SystemIntegrationProvider } from '@/features/preferences/system-integrations-store';
 import { fixtureApplicationCatalog } from '@/fixtures/application-catalog';
+import { useBackupFixture } from '@/fixtures/application-backup';
 import { createFixtureSystemIntegrationStore } from '@/fixtures/system-integrations';
 import { demoActions, demoSource, readOnlyOperation } from './data';
 
@@ -46,10 +47,15 @@ function DemoPages() {
   }).filter(command => command.group !== 'Actions');
   const [directoryStore] = useState(() => createDirectoryStore(demoActions.listComputerDirectory));
   const overview = navigation.tab === 'computers' && navigation.computerSection === 'overview';
+  // Screenshot capture only (scripts/capture-media.mjs): shows the export entry the read-only demo omits.
+  const [exportCapture] = useState(() => new URLSearchParams(location.search).get('capture') === 'export');
+  const backup = useBackupFixture({ source: demoSource });
   let page: ReactNode;
   if (navigation.tab === 'computers') {
     page = navigation.computerSection === 'overview'
-      ? <OverviewPage readOnly source={demoSource} actions={demoActions} onConfigurationsChange={readOnlyOperation} />
+      ? exportCapture
+        ? <OverviewPage source={demoSource} actions={demoActions} onConfigurationsChange={readOnlyOperation} backup={backup} onExportComputer={readOnlyOperation} onImportComputer={readOnlyOperation} />
+        : <OverviewPage readOnly source={demoSource} actions={demoActions} onConfigurationsChange={readOnlyOperation} />
       : <ComputersPage
           source={demoSource}
           section={navigation.computerSection} onSectionChange={navigation.selectComputerSection}
