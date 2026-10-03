@@ -36,6 +36,8 @@ fn silo_key_comment() -> &'static str {
 const VERSION: u32 = 4;
 const LIMIT: usize = 4 * 1024 * 1024;
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+const CONNECTIONS_NOT_SET_UP: &str =
+    "Connections are not set up on this device. Open Silo here and turn Connections on first.";
 const CONFIG_TOO_LARGE: &str = "Connections settings exceed the 1 MiB safety limit.";
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 /// Serializes `config.json` reads and writes. Every holder reloads the file (written
@@ -132,10 +134,42 @@ fn directory_in(home: &Path) -> Result<PathBuf, String> {
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
     Ok(dir)
 }
+/// Connections settings for the app process: a missing file is initialized with a new
+/// device identity and saved.
 fn read_config() -> Result<Config, String> {
     read_config_in(&directory()?)
 }
 fn read_config_in(dir: &Path) -> Result<Config, String> {
+    if let Some(config) = read_stored_config_in(dir)? {
+        return Ok(config);
+    }
+    let config = Config {
+        device_id: uuid::Uuid::new_v4().to_string(),
+        enabled: false,
+        devices: vec![],
+        extra: serde_json::Map::new(),
+    };
+    save_config_in(dir, &config)?;
+    Ok(config)
+}
+/// The `desktop-remote` directory of the current channel as it exists, without creating
+/// or changing anything. Helper processes use it so they never write Connections state.
+fn existing_directory() -> Result<PathBuf, String> {
+    let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
+    Ok(existing_directory_in(Path::new(&home)))
+}
+fn existing_directory_in(home: &Path) -> PathBuf {
+    crate::channel::current()
+        .state_dir(home)
+        .join("desktop-remote")
+}
+/// Connections settings for helper processes: read only, and a missing file is an error
+/// rather than something to create.
+fn read_existing_config_in(dir: &Path) -> Result<Config, String> {
+    read_stored_config_in(dir)?.ok_or_else(|| CONNECTIONS_NOT_SET_UP.into())
+}
+/// The saved Connections settings, or `None` when the file does not exist. Writes nothing.
+fn read_stored_config_in(dir: &Path) -> Result<Option<Config>, String> {
     use std::os::unix::fs::OpenOptionsExt;
     match fs::OpenOptions::new()
         .read(true)
@@ -161,18 +195,11 @@ fn read_config_in(dir: &Path) -> Result<Config, String> {
             let mut document: Value = serde_json::from_slice(&bytes).map_err(|_| damaged())?;
             crate::runtime_migration::vocabulary::convert_connections_document(&mut document)
                 .map_err(|_| damaged())?;
-            serde_json::from_value(document).map_err(|_| damaged())
+            serde_json::from_value(document)
+                .map(Some)
+                .map_err(|_| damaged())
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let config = Config {
-                device_id: uuid::Uuid::new_v4().to_string(),
-                enabled: false,
-                devices: vec![],
-                extra: serde_json::Map::new(),
-            };
-            save_config_in(dir, &config)?;
-            Ok(config)
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -1706,7 +1733,7 @@ pub async fn remote_delete_computer(
 }
 /// Called before constructing Tauri. A bridge never launches the GUI or runtime.
 pub(crate) fn run_bridge() -> Result<(), String> {
-    let mut socket = UnixStream::connect(directory()?.join("control.sock"))
+    let mut socket = UnixStream::connect(existing_directory()?.join("control.sock"))
         .map_err(|_| "Silo is not running on this device.".to_string())?;
     let request = read_frame(std::io::stdin().lock())?;
     let streaming = request["method"] == "guest.ssh";
@@ -1780,7 +1807,7 @@ pub(crate) fn run_remote_stream(
     method: &str,
     params: Value,
 ) -> Result<(), String> {
-    let device = read_config()?
+    let device = read_existing_config_in(&existing_directory()?)?
         .devices
         .into_iter()
         .find(|h| h.id == device_id)
@@ -2162,6 +2189,43 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), LEGACY_CONFIG);
         assert_eq!(modified(&path), before);
         assert_eq!(fs::read_dir(&target).unwrap().count(), 1);
+    }
+    #[test]
+    fn helper_read_of_missing_connections_settings_writes_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        assert_eq!(
+            read_existing_config_in(directory.path()).err().as_deref(),
+            Some(CONNECTIONS_NOT_SET_UP)
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+    #[test]
+    fn helper_read_through_a_linked_folder_writes_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("production");
+        fs::create_dir(&target).unwrap();
+        let linked = root.path().join("desktop-remote");
+        std::os::unix::fs::symlink(&target, &linked).unwrap();
+        assert_eq!(
+            read_existing_config_in(&linked).err().as_deref(),
+            Some(CONNECTIONS_NOT_SET_UP)
+        );
+        assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+    #[test]
+    fn helper_directory_lookup_creates_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        assert!(existing_directory_in(home.path()).starts_with(home.path()));
+        assert_eq!(fs::read_dir(home.path()).unwrap().count(), 0);
+    }
+    #[test]
+    fn app_read_of_missing_connections_settings_initializes_them() {
+        let directory = tempfile::tempdir().unwrap();
+        let config = read_config_in(directory.path()).unwrap();
+        assert!(!config.enabled);
+        let saved = read_existing_config_in(directory.path()).unwrap();
+        assert_eq!(saved.device_id, config.device_id);
     }
     #[test]
     fn compact_earlier_connections_settings_near_the_limit_are_read() {
