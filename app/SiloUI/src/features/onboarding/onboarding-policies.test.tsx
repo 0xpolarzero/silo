@@ -41,7 +41,7 @@ it.each([false, true])("handles a computer named constructor with missing polici
     computers: [{ ...source.bootstrapConfiguration.computers[0], name: configuration.name }],
   } }
   const restored: OnboardingDraft | null = recovered ? {
-    currentStep: "github", configurations: [configuration], unfinishedComputerEditor: null,
+    currentStep: "github", computers: [configuration], unfinishedComputerEditor: null,
     computerSelections: {}, computerIdentities: {},
   } : null
   const view = setup(current, [], restored)
@@ -56,7 +56,7 @@ it.each([false, true])("handles a computer named constructor with missing polici
 
 it("shows a missing recovered Git identity as unapplied, matching the submission", async () => {
   const restored: OnboardingDraft = {
-    currentStep: "github", configurations: source.computerConfigurations, unfinishedComputerEditor: null,
+    currentStep: "github", computers: source.computerConfigurations, unfinishedComputerEditor: null,
     computerSelections: {}, computerIdentities: {},
   }
   const view = setup({ ...source, currentDeviceGitIdentity: null }, [], restored)
@@ -90,7 +90,7 @@ it("skips applying a blank host identity and adopts an identity that loads later
 
 it("finishes with current application preferences after keeping omitted computers", async () => {
   const restored: OnboardingDraft = {
-    currentStep: "review", configurations: [source.computerConfigurations[0]], unfinishedComputerEditor: null,
+    currentStep: "review", computers: [source.computerConfigurations[0]], unfinishedComputerEditor: null,
     computerSelections: {}, computerIdentities: {},
   }
   const view = setup({ ...source, existingConfigurations: source.computerConfigurations }, [], restored)
@@ -107,7 +107,7 @@ it("finishes with current application preferences after keeping omitted computer
 
 it("keeps saved GitHub policies when restoring an omitted computer before Finish", async () => {
   const restored: OnboardingDraft = {
-    currentStep: "review", configurations: [source.computerConfigurations[0]], unfinishedComputerEditor: null,
+    currentStep: "review", computers: [source.computerConfigurations[0]], unfinishedComputerEditor: null,
     computerSelections: {}, computerIdentities: {},
   }
   const savedPolicies = [policies[0], { ...policies[1], authenticationMethod: "token" as const }]
@@ -155,7 +155,7 @@ it("loads untouched policy fields without replacing explicit edits made during l
 
 it("keeps restored policy fields including deliberately empty selections when saved policies arrive", async () => {
   const restored: OnboardingDraft = {
-    currentStep: "github", configurations: source.computerConfigurations, unfinishedComputerEditor: null,
+    currentStep: "github", computers: source.computerConfigurations, unfinishedComputerEditor: null,
     computerSelections: { dev: [] },
     computerRepositoryAccess: { dev: { repositoryMode: "all", allRepositoriesAllowChanges: true } },
     computerIdentities: { dev: { name: "Recovered Author", email: "recovered@example.test", apply: true } },
@@ -228,7 +228,7 @@ it("summarizes token access separately from OAuth repository restrictions", asyn
 
 it("fills a missing authentication method in older recovered drafts without changing their repository choices", async () => {
   const restored: OnboardingDraft = {
-    currentStep: "github", configurations: source.computerConfigurations, unfinishedComputerEditor: null,
+    currentStep: "github", computers: source.computerConfigurations, unfinishedComputerEditor: null,
     computerSelections: { dev: [] }, computerIdentities: { dev: policies[0].identity },
     computerRepositoryAccess: { dev: { repositoryMode: "all", allRepositoriesAllowChanges: true } },
   }

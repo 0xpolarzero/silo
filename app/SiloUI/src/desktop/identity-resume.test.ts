@@ -5,7 +5,7 @@ import { createProductionSource, type ProductionBridge } from "./production-sour
 const application = applicationSourceForScenario("running")
 const configuration = application.computers[0].configuration
 const request = {
-  computerConfiguration: { schemaVersion: 1 as const, configurations: [configuration] },
+  computerConfiguration: { schemaVersion: 1 as const, computers: [configuration] },
   github: { connectionState: "disconnected" as const, computers: [{ computer: configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } }] },
 }
 const statuses = (store: ReturnType<typeof createProductionSource>) => store.getSnapshot().setupQueue.filter(({ id }) => id.startsWith("identity")).map(({ status }) => status)
@@ -23,7 +23,7 @@ describe("identity completion after relaunch", () => {
   it.each([true, false])("checks an empty draft against native saved configuration: %s", async (verified) => {
     const { store, verify, invoke } = setup()
     verify.mockResolvedValue(verified)
-    await store.verifySetupIdentities({ computerConfiguration: { schemaVersion: 1, configurations: [] }, github: { connectionState: "disconnected", computers: [] } })
+    await store.verifySetupIdentities({ computerConfiguration: { schemaVersion: 1, computers: [] }, github: { connectionState: "disconnected", computers: [] } })
     expect(invoke).toHaveBeenCalledWith("verify_computer_identities", { identities: [] })
     expect(statuses(store)).toEqual(verified ? ["succeeded", "succeeded"] : ["idle", "idle"])
     store.dispose()

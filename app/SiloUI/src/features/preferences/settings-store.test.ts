@@ -30,7 +30,7 @@ describe("settings synchronization", () => {
   })
 
   it("delivers only the latest queued draft while preserving an in-flight write", async () => {
-    const draft = { currentStep: "github" as const, configurations: [], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} }
+    const draft = { currentStep: "github" as const, computers: [], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} }
     let state = snapshot()
     let acknowledge!: () => void
     const writes: SettingsSnapshot["onboardingDraft"][] = []
@@ -75,7 +75,7 @@ describe("settings synchronization", () => {
     })
     try {
       await store.initialize()
-      await store.updateOnboardingDraft({ currentStep: "review", configurations: [], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
+      await store.updateOnboardingDraft({ currentStep: "review", computers: [], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
       await store.updateOnboardingDraft(null)
       failing = false
       await store.flush()

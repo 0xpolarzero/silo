@@ -83,7 +83,7 @@ it("adds, cancels, and saves a virtual configuration through the typed configura
   expect(saveComputerConfiguration).toHaveBeenCalledOnce()
   expect(saveComputerConfiguration.mock.lastCall?.[0]).toMatchObject({
     schemaVersion: 1,
-    configurations: [
+    computers: [
       { name: "dev" },
       { name: "playgrounds" },
       { name: "personal" },
@@ -110,7 +110,7 @@ it("restores an existing VM exactly on Cancel and persists a valid edit on Save"
   await user.click(configuredComputers().getByRole("button", { name: "Edit dev" }))
   await user.selectOptions(computerEditor().getByRole("combobox", { name: "Memory" }), "16")
   await user.click(computerEditor().getByRole("button", { name: "Save" }))
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations[0]).toMatchObject({ name: "dev", memoryGiB: 16 })
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers[0]).toMatchObject({ name: "dev", memoryGiB: 16 })
   expect(configuredComputers().getByRole("button", { name: "Edit dev" })).toBeVisible()
 })
 
@@ -184,12 +184,12 @@ it("duplicates after the source, cancels drafts, and generates collision-free co
 
   await user.click(configuredComputers().getByRole("button", { name: "Duplicate settings for dev" }))
   await user.click(computerEditor().getByRole("button", { name: "Create" }))
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations.map(({ name }: { name: string }) => name)).toEqual(["dev", "dev-copy", "playgrounds", "personal"])
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers.map(({ name }: { name: string }) => name)).toEqual(["dev", "dev-copy", "playgrounds", "personal"])
 
   await user.click(configuredComputers().getByRole("button", { name: "Duplicate settings for dev" }))
   expect(computerEditor().getByRole("textbox", { name: "Computer name" })).toHaveValue("dev-copy-2")
   await user.click(computerEditor().getByRole("button", { name: "Create" }))
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations.map(({ name }: { name: string }) => name)).toEqual(["dev", "dev-copy-2", "dev-copy", "playgrounds", "personal"])
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers.map(({ name }: { name: string }) => name)).toEqual(["dev", "dev-copy-2", "dev-copy", "playgrounds", "personal"])
 })
 
 
@@ -201,7 +201,7 @@ it("places a replacement duplicate after its source when another draft is open",
   expect(computerEditor().getByRole("textbox", { name: "Computer name" })).toHaveValue("playgrounds-copy")
   await user.click(computerEditor().getByRole("button", { name: "Create" }))
 
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations.map(({ name }: { name: string }) => name)).toEqual([
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers.map(({ name }: { name: string }) => name)).toEqual([
     "dev", "playgrounds", "playgrounds-copy", "personal",
   ])
 })
@@ -225,7 +225,7 @@ it("confirms deletion in a popover; Cancel or Escape keeps the computer", async 
 
   await user.click(configuredComputers().getByRole("button", { name: "Delete dev" }))
   await user.click(screen.getByRole("button", { name: /^Delete permanently$/ }))
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations.map(({ name }: { name: string }) => name)).toEqual(["playgrounds", "personal"])
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers.map(({ name }: { name: string }) => name)).toEqual(["playgrounds", "personal"])
   expect(screen.queryByRole("button", { name: "Edit dev" })).not.toBeInTheDocument()
 })
 
@@ -244,12 +244,12 @@ it("persists pointer drag reorder and the quiet keyboard reorder path", async ()
   fireEvent.dragStart(configuredComputers().getByRole("button", { name: "Reorder dev" }), { dataTransfer })
   fireEvent.dragOver(target!, { dataTransfer })
   fireEvent.drop(target!, { dataTransfer })
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations.map(({ name }: { name: string }) => name)).toEqual(["playgrounds", "personal", "dev"])
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers.map(({ name }: { name: string }) => name)).toEqual(["playgrounds", "personal", "dev"])
 
   const devHandle = configuredComputers().getByRole("button", { name: "Reorder dev" })
   act(() => devHandle.focus())
   await user.keyboard("{ArrowUp}")
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations.map(({ name }: { name: string }) => name)).toEqual(["playgrounds", "dev", "personal"])
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers.map(({ name }: { name: string }) => name)).toEqual(["playgrounds", "dev", "personal"])
   expect(screen.getByText("dev moved to position 2 of 3.")).toBeInTheDocument()
 })
 
@@ -260,7 +260,7 @@ it("saves smaller memory presets and custom whole GiB values", async () => {
   await user.selectOptions(computerEditor().getByRole("combobox", { name: "Memory" }), "12")
   await user.selectOptions(computerEditor().getByRole("combobox", { name: "Memory ceiling" }), "12")
   await user.click(computerEditor().getByRole("button", { name: "Create" }))
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations).toEqual(expect.arrayContaining([
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers).toEqual(expect.arrayContaining([
     expect.objectContaining({ name: "dev-copy", memoryGiB: 12, maxMemoryGiB: 12 }),
   ]))
   await user.click(configuredComputers().getByRole("button", { name: "Edit dev-copy" }))
@@ -269,7 +269,7 @@ it("saves smaller memory presets and custom whole GiB values", async () => {
   await user.clear(input)
   await user.type(input, "10")
   await user.click(computerEditor().getByRole("button", { name: "Save" }))
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations).toEqual(expect.arrayContaining([
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers).toEqual(expect.arrayContaining([
     expect.objectContaining({ name: "dev-copy", memoryGiB: 10, maxMemoryGiB: 12 }),
   ]))
   await user.click(configuredComputers().getByRole("button", { name: "Edit dev-copy" }))
@@ -284,7 +284,7 @@ it("saves smaller memory presets and custom whole GiB values", async () => {
   }
   await user.selectOptions(computerEditor().getByRole("combobox", { name: "Memory" }), "8")
   await user.click(computerEditor().getByRole("button", { name: "Save" }))
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations).toEqual(expect.arrayContaining([
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers).toEqual(expect.arrayContaining([
     expect.objectContaining({ name: "dev-copy", memoryGiB: 8, maxMemoryGiB: 12 }),
   ]))
 })
@@ -300,7 +300,7 @@ it("saves custom CPU and disk values and reopens them", async () => {
     await user.type(input, value)
   }
   await user.click(computerEditor().getByRole("button", { name: "Create" }))
-  expect(saveComputerConfiguration.mock.lastCall?.[0].configurations).toEqual(expect.arrayContaining([
+  expect(saveComputerConfiguration.mock.lastCall?.[0].computers).toEqual(expect.arrayContaining([
     expect.objectContaining({ name: "dev-copy", cpus: 3, maxCPUs: 5, workspaceStorageGiB: 35, runtimeStorageGiB: 25 }),
   ]))
   await user.click(configuredComputers().getByRole("button", { name: "Edit dev-copy" }))

@@ -242,7 +242,7 @@ export function useComputerEditing({
     } else {
       updated.splice(editor?.insertAt ?? updated.length, 0, configuration)
     }
-    dispatchChange(configurationRequest(getDeviceId ? updated.filter(configuration => !getDeviceId(configuration)) : updated).configurations, baseline ? scopedBaseline() : undefined, configuration)
+    dispatchChange(configurationRequest(getDeviceId ? updated.filter(configuration => !getDeviceId(configuration)) : updated).computers, baseline ? scopedBaseline() : undefined, configuration)
     setEditor(null)
   }
 
@@ -280,7 +280,7 @@ export function useComputerEditing({
       return
     }
     const base = baseline ?? configurations
-    dispatchChange(configurationRequest(base.filter(({ id }) => id !== configuration.id)).configurations, baseline ? scopedBaseline() : undefined)
+    dispatchChange(configurationRequest(base.filter(({ id }) => id !== configuration.id)).computers, baseline ? scopedBaseline() : undefined)
   }
 
   // Delete a configuration without the list's confirmation — the detail page confirms
@@ -292,7 +292,7 @@ export function useComputerEditing({
     if (blocked) throw new Error(blocked)
     const baseline = structuredClone(configurations as SetupComputerConfiguration[])
     if (onDeleteComputer) { await onDeleteComputer(configuration, baseline); return }
-    const next = configurationRequest(baseline.filter(({ id }) => id !== configuration.id)).configurations
+    const next = configurationRequest(baseline.filter(({ id }) => id !== configuration.id)).computers
     const outcome = onConfigurationsChange(next, scopedBaseline(baseline, getDeviceId?.(configuration) ?? ""))
     if (outcome) await outcome
   }

@@ -96,13 +96,13 @@ function displayComputers(source: ApplicationSource): ApplicationComputer[] {
   const operation = source.computerConfigurationOperation
   if (!operation) return source.computers
   const committedIDs = new Set(source.computers.map(({ configuration }) => configuration.id))
-  const candidatesByID = new Map(operation.candidate.configurations.map((configuration) => [configuration.id, configuration]))
+  const candidatesByID = new Map(operation.candidate.computers.map((configuration) => [configuration.id, configuration]))
   return [
     ...source.computers.map((computer) => ({
       ...computer,
       configuration: candidatesByID.get(computer.configuration.id) ?? computer.configuration,
     })),
-    ...operation.candidate.configurations
+    ...operation.candidate.computers
       .filter(({ id }) => !committedIDs.has(id))
       .map(emptyComputer),
   ]
@@ -122,7 +122,7 @@ function configurationRowView(
   committedComputer: ApplicationComputer | undefined,
   operation: ComputerConfigurationOperation,
 ): ConfigurationRowView | undefined {
-  const candidate = operation.candidate.configurations.find(({ id }) => id === computer.configuration.id)
+  const candidate = operation.candidate.computers.find(({ id }) => id === computer.configuration.id)
   const candidateName = candidate?.name ?? computer.configuration.name
   const removed = Boolean(committedComputer && !candidate)
   const addedOrChanged = !committedComputer || JSON.stringify(setupComputerConfigurationSchema.parse(committedComputer.configuration)) !== JSON.stringify(candidate && setupComputerConfigurationSchema.parse(candidate))

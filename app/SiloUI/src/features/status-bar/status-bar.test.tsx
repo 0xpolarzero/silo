@@ -211,7 +211,7 @@ describe("status bar", () => {
   })
 
   it("shows computer changes waiting for approval with a way to review them", async () => {
-    const operation = { id: "op", status: "awaiting-approval" as const, candidate: { schemaVersion: 1 as const, configurations: [] }, progressEvents: [], error: null, result: { resumed: false, phase: "computers", requiresApproval: true, vmsStarted: false, message: "Approve the new computer to finish setting it up." } }
+    const operation = { id: "op", status: "awaiting-approval" as const, candidate: { schemaVersion: 1 as const, computers: [] }, progressEvents: [], error: null, result: { resumed: false, phase: "computers", requiresApproval: true, vmsStarted: false, message: "Approve the new computer to finish setting it up." } }
     const { user, actions } = setup({ computerConfigurationOperation: operation })
     expect(screen.getByRole("button", { name: "Silo status bar" })).toHaveAccessibleDescription("Approval needed")
     const notice = screen.getByRole("status", { name: "Computer changes need approval" })

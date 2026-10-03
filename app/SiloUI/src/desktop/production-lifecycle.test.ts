@@ -44,7 +44,7 @@ describe("production setup drain", () => {
     try {
       await store.initialize()
       const request = {
-        computerConfiguration: { schemaVersion: 1 as const, configurations: source.computers.filter(({ device }) => !device).map(({ configuration }) => configuration) },
+        computerConfiguration: { schemaVersion: 1 as const, computers: source.computers.filter(({ device }) => !device).map(({ configuration }) => configuration) },
         applications: source.preferences,
         github: { connectionState: "connected" as const, computers: source.computers.filter(({ device }) => !device).map(({ configuration }) => ({ computer: configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
       }
@@ -83,7 +83,7 @@ describe("production setup drain", () => {
       await store.initialize()
       const configurations = source.computers.filter(({ device }) => !device).map(({ configuration }) => configuration)
       const step = store.submitSetupStep("github", {
-        computerConfiguration: { schemaVersion: 1, configurations },
+        computerConfiguration: { schemaVersion: 1, computers: configurations },
         applications: source.preferences,
         github: { connectionState: "connected", computers: configurations.map((configuration) => ({ computer: configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
       })
@@ -164,8 +164,8 @@ describe("saved computer list for the loading skeleton", () => {
   const configuration = source.computers[0].configuration
   it.each([
     ["an unreadable list", () => Promise.reject(new Error("configuration locked")), []],
-    ["an over-long list", () => Promise.resolve({ schemaVersion: 1, configurations: Array.from({ length: 65 }, () => configuration) }), Array.from({ length: 65 }, () => configuration)],
-    ["a newer schema with an unknown entry", () => Promise.resolve({ schemaVersion: 2, configurations: [configuration, { id: "x", kind: "future" }] }), [configuration]],
+    ["an over-long list", () => Promise.resolve({ schemaVersion: 1, computers: Array.from({ length: 65 }, () => configuration) }), Array.from({ length: 65 }, () => configuration)],
+    ["a newer schema with an unknown entry", () => Promise.resolve({ schemaVersion: 2, computers: [configuration, { id: "x", kind: "future" }] }), [configuration]],
   ] as const)("never fails startup on %s", async (_case, read, expected) => {
     const mock = bridge({ invoke: (command) => command === "read_computer_configuration" ? read() : undefined })
     const logged = vi.spyOn(console, "error").mockImplementation(() => {})

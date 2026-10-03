@@ -173,7 +173,7 @@ it("enables Finish only after every queue operation succeeds", async () => {
   expect(finishSetup).toHaveBeenCalledWith({
     computerConfiguration: {
       schemaVersion: 1,
-      configurations: onboardingScenarios.complete.computerConfigurations,
+      computers: onboardingScenarios.complete.computerConfigurations,
     },
     applications: {
       terminal: "Terminal",

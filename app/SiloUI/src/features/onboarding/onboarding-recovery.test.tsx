@@ -42,7 +42,7 @@ describe("onboarding restart recovery", () => {
   it("reports failed draft delivery and retries the latest edits before clearing the warning", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {})
     let saved: SettingsSnapshot = { revision: 0, settings: {}, saveError: null, onboardingDraft: {
-      currentStep: "github", configurations: onboardingScenarios.complete.computerConfigurations,
+      currentStep: "github", computers: onboardingScenarios.complete.computerConfigurations,
       unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {},
     } }
     let failing = true
@@ -76,23 +76,23 @@ describe("onboarding restart recovery", () => {
   it("deletes the last computer, preserves the empty draft after restart, and finishes setup", async () => {
     const user = userEvent.setup()
     const configuration = onboardingScenarios.complete.computerConfigurations[0]
-    const first = createMemorySettingsStore({}, { currentStep: "computers", configurations: [configuration], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
+    const first = createMemorySettingsStore({}, { currentStep: "computers", computers: [configuration], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
     const handlers = { ...actions(), submitStep: vi.fn() }
     const view = render(onboarding(first, handlers, { scenario: "complete" }))
     await user.click(screen.getByRole("button", { name: `Delete ${configuration.name}` }))
     await user.click(screen.getByRole("button", { name: /^Delete permanently$/ }))
     expect(screen.queryByRole("button", { name: `Delete ${configuration.name}` })).not.toBeInTheDocument()
-    expect(first.getSnapshot().onboardingDraft?.configurations).toEqual([])
+    expect(first.getSnapshot().onboardingDraft?.computers).toEqual([])
     view.unmount()
 
     const restored = await restartStore(first)
     render(onboarding(restored, handlers, { scenario: "complete" }))
     expect(screen.queryByRole("button", { name: `Delete ${configuration.name}` })).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Continue" }))
-    expect(handlers.submitStep).toHaveBeenCalledWith("computers", expect.objectContaining({ computerConfiguration: { schemaVersion: 1, configurations: [] } }))
+    expect(handlers.submitStep).toHaveBeenCalledWith("computers", expect.objectContaining({ computerConfiguration: { schemaVersion: 1, computers: [] } }))
     await user.click(screen.getByRole("tab", { name: /Review/ }))
     await user.click(screen.getByRole("button", { name: "Finish" }))
-    expect(handlers.finishSetup).toHaveBeenCalledWith(expect.objectContaining({ computerConfiguration: { schemaVersion: 1, configurations: [] } }))
+    expect(handlers.finishSetup).toHaveBeenCalledWith(expect.objectContaining({ computerConfiguration: { schemaVersion: 1, computers: [] } }))
   })
 
   it("fills untouched identities when host detection finishes without replacing manual edits", async () => {
@@ -119,14 +119,14 @@ describe("onboarding restart recovery", () => {
   it("submits a restored computer draft once when Continue is clicked", async () => {
     const first = createMemorySettingsStore()
     const configuration = { ...onboardingScenarios.complete.computerConfigurations[0], name: "recovered" }
-    await first.updateOnboardingDraft({ currentStep: "computers", configurations: [configuration], unfinishedComputerEditor: null, computerSelections: { recovered: [] }, computerIdentities: { recovered: { name: "Saved Author", email: "saved@example.test", apply: true } } })
+    await first.updateOnboardingDraft({ currentStep: "computers", computers: [configuration], unfinishedComputerEditor: null, computerSelections: { recovered: [] }, computerIdentities: { recovered: { name: "Saved Author", email: "saved@example.test", apply: true } } })
     const restored = await restartStore(first)
     const handlers = { ...actions(), submitStep: vi.fn() }
     render(onboarding(restored, handlers))
     expect(handlers.submitStep).not.toHaveBeenCalled()
     await userEvent.setup().click(screen.getByRole("button", { name: "Continue" }))
     expect(handlers.submitStep).toHaveBeenCalledOnce()
-    expect(handlers.submitStep).toHaveBeenCalledWith("computers", expect.objectContaining({ computerConfiguration: { schemaVersion: 1, configurations: [configuration] }, github: expect.objectContaining({ computers: [{ computer: "recovered", repositories: [], identity: { name: "Saved Author", email: "saved@example.test", apply: true } }] }) }))
+    expect(handlers.submitStep).toHaveBeenCalledWith("computers", expect.objectContaining({ computerConfiguration: { schemaVersion: 1, computers: [configuration] }, github: expect.objectContaining({ computers: [{ computer: "recovered", repositories: [], identity: { name: "Saved Author", email: "saved@example.test", apply: true } }] }) }))
     expect(handlers.saveComputerConfiguration).not.toHaveBeenCalled()
     expect(screen.getByRole("tab", { name: /GitHub/ })).toHaveAttribute("aria-selected", "true")
   })

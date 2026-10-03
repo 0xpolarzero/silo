@@ -30,7 +30,7 @@ export type ComputerEditorDraft = z.infer<typeof computerEditorDraftSchema>
 
 export const onboardingDraftSchema = z.object({
   currentStep: z.enum(onboardingSteps),
-  configurations: setupComputerConfigurationRequestSchema.shape.configurations,
+  computers: setupComputerConfigurationRequestSchema.shape.computers,
   unfinishedComputerEditor: computerEditorDraftSchema.nullable(),
   computerSelections: z.record(z.string(), z.array(z.object({
     repository: z.string(),
@@ -41,7 +41,7 @@ export const onboardingDraftSchema = z.object({
     name: z.string(), email: z.string(), apply: z.boolean(),
   }).strict()),
 }).strict().superRefine((draft, context) => {
-  const result = setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, configurations: draft.configurations })
+  const result = setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, computers: draft.computers })
   if (!result.success) {
     for (const issue of result.error.issues) context.addIssue({ ...issue })
   }

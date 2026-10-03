@@ -48,7 +48,7 @@ export function OnboardingPreview({ source: initialSource, actions, initialGitHu
       reopenGitHubAuthorization: () => actions?.reopenGitHubAuthorization?.(),
       saveComputerConfiguration: (request) => {
         actions?.saveComputerConfiguration?.(request)
-        setSource((current) => ({ ...current, computerConfigurations: request.configurations }))
+        setSource((current) => ({ ...current, computerConfigurations: request.computers }))
       },
       retryComputerSetup: () => {
         actions?.retryComputerSetup?.()

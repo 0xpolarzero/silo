@@ -56,12 +56,12 @@ export const setupComputerConfigurationSchema = z.object({
 
 export const setupComputerConfigurationRequestSchema = z.object({
   schemaVersion: z.literal(1),
-  configurations: z.array(setupComputerConfigurationSchema).max(64),
+  computers: z.array(setupComputerConfigurationSchema).max(64),
 }).strict().refine((configuration) => {
-  const names = configuration.configurations.map(({ name }) => name.toLowerCase())
+  const names = configuration.computers.map(({ name }) => name.toLowerCase())
   return new Set(names).size === names.length
 }, { message: "Computer names must be unique." }).refine((configuration) => {
-  const ids = configuration.configurations.map(({ id }) => id)
+  const ids = configuration.computers.map(({ id }) => id)
   return new Set(ids).size === ids.length
 }, { message: "Computer IDs must be unique." })
 

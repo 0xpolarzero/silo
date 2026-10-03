@@ -1315,7 +1315,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   function configureConfigurations(request: SetupComputerConfigurationRequest, action?: ConfigureAction): Promise<ApplicationSource> {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
-    const resolved: ConfigureAction = action ?? { kind: "changes", changes: deriveComputerChanges(committedConfigurations(), request.configurations) }
+    const resolved: ConfigureAction = action ?? { kind: "changes", changes: deriveComputerChanges(committedConfigurations(), request.computers) }
     // A no-op submission changes nothing; resolve with the current source untouched.
     if (resolved.kind === "changes" && resolved.changes.length === 0) {
       if (!snapshot.source) return Promise.reject(new Error("Computer configuration has not loaded. Refresh and retry."))
@@ -1394,7 +1394,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     lastIdentityJob = undefined
     setSetupStatus(["identityRun", "identityVerify"], "idle")
     const identities = request.github.computers.map(({ computer, identity }) => ({ computer, ...identity }))
-    const configurations = request.computerConfiguration.configurations
+    const configurations = request.computerConfiguration.computers
     if (identities.length !== configurations.length || configurations.some(({ name }) => !identities.some(({ computer }) => computer === name))) return
     try {
       const verified = z.boolean().parse(await native.invoke("verify_computer_identities", { identities }))
@@ -1415,11 +1415,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       && !current.computerConfigurationOperation && !activeConfiguration
       && !setupJobs.some((job) => job.items.some(({ status }) => status === "running" || status === "queued"))
       && current.computers.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting")
-      && JSON.stringify(current.computers.map(({ configuration }) => setupComputerConfigurationSchema.parse(configuration))) === JSON.stringify(request.computerConfiguration.configurations.map((configuration) => setupComputerConfigurationSchema.parse(configuration)))
+      && JSON.stringify(current.computers.map(({ configuration }) => setupComputerConfigurationSchema.parse(configuration))) === JSON.stringify(request.computerConfiguration.computers.map((configuration) => setupComputerConfigurationSchema.parse(configuration)))
     // Initial setup and continues send the specific creations/edits as one batch. When
     // the configuration already matches what was committed but an earlier attempt did
     // not complete, resume that attempt instead of sending an empty change set.
-    const changes = configurationsUnchanged ? [] : deriveComputerChanges(committedConfigurations(), request.computerConfiguration.configurations)
+    const changes = configurationsUnchanged ? [] : deriveComputerChanges(committedConfigurations(), request.computerConfiguration.computers)
     const replaced = replacesEveryComputer(request)
     if (replaced) return Promise.reject(replaced)
     const computerJob = configurationsUnchanged
@@ -1466,7 +1466,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function replacesEveryComputer(request: OnboardingCompletionRequest) {
     const committed = committedConfigurations()
     if (committed.length === 0) return null
-    const kept = new Set(request.computerConfiguration.configurations.map(({ id }) => id))
+    const kept = new Set(request.computerConfiguration.computers.map(({ id }) => id))
     if (committed.some(({ id }) => kept.has(id))) return null
     return new Error(`Setup does not delete existing computers (${committed.map(({ name }) => name).join(", ")}). Reopen Silo to load them, or delete them from Silo after setup. No computer changed.`)
   }
@@ -1518,7 +1518,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     // overwriting concurrent work, when the VM changed while the edit waited. When no
     // baseline is supplied (e.g. onboarding drafts) the current committed list is used.
     // Several simultaneous changes travel as one atomic batch; a no-op does nothing.
-    const changes = deriveComputerChanges(baseline ?? committedConfigurations(), request.configurations)
+    const changes = deriveComputerChanges(baseline ?? committedConfigurations(), request.computers)
     if (changes.length === 0) return Promise.resolve()
     return configureConfigurations(request, { kind: "changes", changes }).then(() => undefined)
   }
@@ -2053,8 +2053,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     // blocks or fails startup: an unreadable or unexpected list shows no rows.
     async loadConfiguration() {
       try {
-        const configuration = z.object({ configurations: z.array(z.unknown()) }).parse(await native.invoke("read_computer_configuration"))
-        const configurations = configuration.configurations.flatMap((configuration) => {
+        const configuration = z.object({ computers: z.array(z.unknown()) }).parse(await native.invoke("read_computer_configuration"))
+        const configurations = configuration.computers.flatMap((configuration) => {
           const parsed = setupComputerConfigurationSchema.safeParse(configuration)
           return parsed.success ? [parsed.data] : []
         })

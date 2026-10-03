@@ -233,7 +233,7 @@ it("starts a new computer as an in-card configuration operation", async () => {
   expect(within(scratchRow).getByRole("status")).toHaveTextContent("Preparing computer configuration.")
   expect(within(scratchRow).queryByText("Stopped")).not.toBeInTheDocument()
   expect(actions.saveComputerConfiguration).toHaveBeenCalledWith(expect.objectContaining({
-    configurations: expect.arrayContaining([expect.objectContaining({ name: "scratch" })]),
+    computers: expect.arrayContaining([expect.objectContaining({ name: "scratch" })]),
   }), expect.anything())
 })
 
@@ -273,7 +273,7 @@ it("keeps committed detail pages stable while an edit is being applied", async (
   await user.click(settings.getByRole("switch", { name: "Start computers at launch" }))
   expect(settings.getByRole("button", { name: "Remove dev" })).toBeVisible()
   expect(actions.saveComputerConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-    configurations: expect.arrayContaining([expect.objectContaining({ name: "dev", cpus: 4 })]),
+    computers: expect.arrayContaining([expect.objectContaining({ name: "dev", cpus: 4 })]),
   }), expect.anything())
 })
 
@@ -294,7 +294,7 @@ it("shows an unscoped removal failure and restores lifecycle controls when dismi
   const source = structuredClone(applicationSourceForScenario("running"))
   source.computerConfigurationOperation = {
     id: "removal", status: "failed", result: null, progressEvents: [],
-    candidate: { schemaVersion: 1, configurations: source.computers.filter(w => w.configuration.name !== "dev").map(w => w.configuration) },
+    candidate: { schemaVersion: 1, computers: source.computers.filter(w => w.configuration.name !== "dev").map(w => w.configuration) },
     error: { code: "native_bridge_failed", computer: null, message: "Stop computer 'dev' before removing it.", recovery: null, retryable: true },
   }
   const { user } = renderApplication("running", source)
@@ -318,7 +318,7 @@ it("keeps a removed computer as a progress tombstone until the native snapshot c
   expect(row).toHaveAttribute("aria-busy", "true")
   expect(within(row).getByRole("status")).toHaveTextContent("Deleting the computer’s files and checkpoints.")
   expect(actions.saveComputerConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-    configurations: expect.not.arrayContaining([expect.objectContaining({ name: "playgrounds" })]),
+    computers: expect.not.arrayContaining([expect.objectContaining({ name: "playgrounds" })]),
   }), expect.anything())
 })
 

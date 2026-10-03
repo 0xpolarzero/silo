@@ -315,7 +315,7 @@ describe("production command behavior", () => {
       await store.initialize()
       const complete = vi.fn(async () => {})
       const finished = store.finishSetup({
-        computerConfiguration: { schemaVersion: 1, configurations }, applications: source.preferences,
+        computerConfiguration: { schemaVersion: 1, computers: configurations }, applications: source.preferences,
         github: { connectionState: "connected", computers: configurations.map(configuration => ({ computer: configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
       }, complete)
       const failure = vi.fn()

@@ -52,7 +52,7 @@ describe("native settings transport", () => {
     const configuration = { ...fixtureComputerDefaults[0], cpus: 1, maxCPUs: 255, [field]: 256 }
     if (field === "cpus") configuration.maxCPUs = 256
     native.invoke.mockResolvedValue({ ...snapshot(1, { theme: "dark" }), onboardingDraft: {
-      currentStep: "review", configurations: [configuration], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {},
+      currentStep: "review", computers: [configuration], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {},
     } })
     const settings = store()
     await settings.initialize()
@@ -64,7 +64,7 @@ describe("native settings transport", () => {
   it("reads the main window's authorized draft when a public settings event arrives", async () => {
     const draft: OnboardingDraft = {
       currentStep: "github",
-      configurations: [...fixtureComputerDefaults],
+      computers: [...fixtureComputerDefaults],
       unfinishedComputerEditor: null,
       computerSelections: {},
       computerIdentities: { dev: { name: "Saved author", email: "saved@example.com", apply: true } },
@@ -355,7 +355,7 @@ describe("native settings transport", () => {
     vi.spyOn(console, "error").mockImplementation(() => {})
     const savedDraft: OnboardingDraft = {
       currentStep: "github",
-      configurations: [...fixtureComputerDefaults],
+      computers: [...fixtureComputerDefaults],
       unfinishedComputerEditor: null,
       computerSelections: {},
       computerIdentities: { dev: { name: "Saved author", email: "saved@example.com", apply: true } },

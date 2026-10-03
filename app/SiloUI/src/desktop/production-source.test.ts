@@ -757,7 +757,7 @@ describe("production application bridge", () => {
 
   it("publishes saved computer configuration before requesting live state", async () => {
     const configurations = source.computers.map(({ configuration }) => structuredClone(configuration))
-    const invoke = nativeBridgeMock({ read_computer_configuration: () => ({ schemaVersion: 1, configurations }) })
+    const invoke = nativeBridgeMock({ read_computer_configuration: () => ({ schemaVersion: 1, computers: configurations }) })
     const mock = native({ invoke: invoke as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     const changed = vi.fn()
@@ -772,7 +772,7 @@ describe("production application bridge", () => {
   })
 
   it("accepts an empty saved configuration for a fresh install", async () => {
-    const mock = native({ invoke: nativeBridgeMock({ read_computer_configuration: () => ({ schemaVersion: 1, configurations: [] }) }) as ProductionBridge["invoke"] })
+    const mock = native({ invoke: nativeBridgeMock({ read_computer_configuration: () => ({ schemaVersion: 1, computers: [] }) }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
 
     await store.loadConfiguration()
@@ -783,9 +783,9 @@ describe("production application bridge", () => {
   })
 
   it.each([
-    { schemaVersion: 2, configurations: [] },
-    { schemaVersion: 1, configurations: [{ name: "invalid" }] },
-    { schemaVersion: 1, configurations: "unreadable" },
+    { schemaVersion: 2, computers: [] },
+    { schemaVersion: 1, computers: [{ name: "invalid" }] },
+    { schemaVersion: 1, computers: "unreadable" },
     null,
   ])("publishes no computer rows for malformed saved configuration, without failing startup: %j", async (configuration) => {
     const mock = native({ invoke: nativeBridgeMock({ read_computer_configuration: () => configuration }) as ProductionBridge["invoke"] })
@@ -1114,7 +1114,7 @@ describe("production application bridge", () => {
     const committed = source.computers.filter(({ device }) => !device).map(({ configuration }) => configuration)
     const first = committed[0]
     const edited = { ...first, cpus: first.cpus === 1 ? 2 : 1 }
-    await store.configureConfigurations({ schemaVersion: 1, configurations: [edited, ...committed.slice(1)] })
+    await store.configureConfigurations({ schemaVersion: 1, computers: [edited, ...committed.slice(1)] })
     expect(store.getSnapshot().source?.github.deviceIdentity).toEqual(deviceIdentity)
     currentIdentity = undefined
     await store.refresh()
@@ -1148,7 +1148,7 @@ describe("production application bridge", () => {
     const committed = initial.computers.filter(({ device }) => !device).map(({ configuration }) => configuration)
     const first = committed[0]
     const edited = { ...first, cpus: first.cpus === 1 ? 2 : 1 }
-    await store.configureConfigurations({ schemaVersion: 1, configurations: [edited, ...committed.slice(1)] })
+    await store.configureConfigurations({ schemaVersion: 1, computers: [edited, ...committed.slice(1)] })
     expect(observed).not.toContain(0)
     expect(store.getSnapshot().source?.computers[0].logs).toEqual([oldLog, newLog])
     unsubscribe()
@@ -1166,7 +1166,7 @@ describe("production application bridge", () => {
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
     const committedComputers = store.getSnapshot().source?.computers.map(({ configuration }) => configuration)
-    await expect(store.configureConfigurations({ schemaVersion: 1, configurations: [] })).rejects.toThrow("Stop computer")
+    await expect(store.configureConfigurations({ schemaVersion: 1, computers: [] })).rejects.toThrow("Stop computer")
     expect(store.getSnapshot().source?.computerConfigurationOperation).toMatchObject({ status: "failed", error: { computer: null, message: "Stop computer 'dev' before removing it." } })
     store.applicationActions.dismissComputerConfigurationError()
     await store.refresh()
@@ -1193,7 +1193,7 @@ describe("production application bridge", () => {
     const committed = store.getSnapshot().source!.computers.filter((computer) => !computer.device).map(({ configuration }) => configuration)
     const original = committed[0]
     const edited = { ...original, cpus: original.cpus === 1 ? 2 : 1 }
-    await expect(store.configureConfigurations({ schemaVersion: 1, configurations: [edited, ...committed.slice(1)] })).rejects.toThrow("Verification failed")
+    await expect(store.configureConfigurations({ schemaVersion: 1, computers: [edited, ...committed.slice(1)] })).rejects.toThrow("Verification failed")
     store.applicationActions.retryComputerConfiguration("dev")
     // The retry resumes the recorded attempt by computer; it does not resend a list.
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("retry_computer_configuration", {
@@ -1216,7 +1216,7 @@ describe("production application bridge", () => {
     const committed = store.getSnapshot().source!.computers.filter((computer) => !computer.device).map(({ configuration }) => configuration)
     const original = committed[0]
     const edited = { ...original, cpus: original.cpus === 1 ? 2 : 1 }
-    store.applicationActions.saveComputerConfiguration({ schemaVersion: 1, configurations: [edited, ...committed.slice(1)] })
+    store.applicationActions.saveComputerConfiguration({ schemaVersion: 1, computers: [edited, ...committed.slice(1)] })
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("change_computer_configuration", {
       change: { kind: "upsert", configuration: edited, expected: original },
       requestId: expect.any(String),
@@ -1242,7 +1242,7 @@ describe("production application bridge", () => {
     const baselineEntry = { ...original, maxCPUs: 99 }
     const baseline = [baselineEntry, ...committed.slice(1)]
     const edited = { ...original, maxCPUs: 7 }
-    store.applicationActions.saveComputerConfiguration({ schemaVersion: 1, configurations: [edited, ...committed.slice(1)] }, baseline)
+    store.applicationActions.saveComputerConfiguration({ schemaVersion: 1, computers: [edited, ...committed.slice(1)] }, baseline)
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("change_computer_configuration", {
       change: { kind: "upsert", configuration: edited, expected: baselineEntry },
       requestId: expect.any(String),

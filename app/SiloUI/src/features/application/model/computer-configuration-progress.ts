@@ -111,7 +111,7 @@ function creationStage(step: string | undefined, fraction: number | undefined, d
 }
 
 export function describeConfiguration(operation: ComputerConfigurationOperation, committedNames: ReadonlyMap<string, string>): ComputerConfigurationProgress {
-  const candidates = operation.candidate.configurations
+  const candidates = operation.candidate.computers
   const creating = candidates.filter(configuration => !committedNames.has(configuration.id))
   const deleting = [...committedNames.keys()].filter(id => !candidates.some(configuration => configuration.id === id))
   const latest = operation.progressEvents.findLast(event => event.safeForDisplay)

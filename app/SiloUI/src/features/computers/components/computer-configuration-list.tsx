@@ -226,7 +226,7 @@ export function ComputerConfigurationList({ devices, getDeviceId, onCommitComput
       setAnnouncement(`${moved.name} moved to position ${boundedTarget + 1} of ${orderable.length}.`)
       return
     }
-    const pending = dispatchChange(configurationRequest(updated).configurations, reorderBaseline)
+    const pending = dispatchChange(configurationRequest(updated).computers, reorderBaseline)
     if (pending) {
       reorderPending.current = true
       void pending.finally(() => { reorderPending.current = false })

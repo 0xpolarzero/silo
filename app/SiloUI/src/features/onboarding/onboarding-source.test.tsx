@@ -14,7 +14,7 @@ describe("onboarding source boundary", () => {
   it("counts restored draft VMs before the real setup queue starts", async () => {
     const settings = createMemorySettingsStore()
     const configurations = onboardingScenarios.complete.computerConfigurations
-    await settings.updateOnboardingDraft({ currentStep: "computers", configurations, unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
+    await settings.updateOnboardingDraft({ currentStep: "computers", computers: configurations, unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
     const actions = { connectGitHub: vi.fn(), saveComputerConfiguration: vi.fn(), retryComputerSetup: vi.fn(), finishSetup: vi.fn(), submitStep: vi.fn() }
     const source = { ...onboardingScenarios.complete, computerConfigurations: [], bootstrapConfiguration: { ...onboardingScenarios.complete.bootstrapConfiguration, computers: [] }, progressEvents: [], bootstrapResult: null, setupQueue: [{ id: "computerRun" as const, status: "idle" as const }, { id: "computerVerify" as const, status: "idle" as const }] }
     await act(async () => { render(<SettingsProvider store={settings}><OnboardingApp source={source} actions={actions} githubConnectionState="disconnected" completed={false} /></SettingsProvider>) })
@@ -30,7 +30,7 @@ describe("onboarding source boundary", () => {
     const view = render(wrap({ ...onboardingScenarios.complete, computerConfigurations: [] }))
     await userEvent.setup().click(screen.getByRole("tab", { name: /GitHub/ }))
     await act(async () => { view.rerender(wrap(onboardingScenarios.complete)) })
-    expect(settings.getSnapshot().onboardingDraft?.configurations).toEqual(onboardingScenarios.complete.computerConfigurations)
+    expect(settings.getSnapshot().onboardingDraft?.computers).toEqual(onboardingScenarios.complete.computerConfigurations)
     expect(screen.getByRole("tab", { name: /GitHub/ })).toHaveAttribute("aria-selected", "true")
   })
 

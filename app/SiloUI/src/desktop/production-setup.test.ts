@@ -8,7 +8,7 @@ afterEach(() => { vi.useRealTimers() })
 
 const application = applicationSourceForScenario("running")
 const request: OnboardingCompletionRequest = {
-  computerConfiguration: { schemaVersion: 1, configurations: [application.computers[0].configuration] },
+  computerConfiguration: { schemaVersion: 1, computers: [application.computers[0].configuration] },
   applications: application.preferences,
   github: { connectionState: "disconnected", computers: [{ computer: application.computers[0].configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } }] },
 }
@@ -45,7 +45,7 @@ async function setup(savedActivity: SiloProgressEvent[] = [], currentApplication
 describe("production setup queue", () => {
   it("finishes setup with zero computers and persists completion", async () => {
     const { store, invoke } = await setup([], { ...application, computers: [] })
-    const emptyRequest: OnboardingCompletionRequest = { ...request, computerConfiguration: { schemaVersion: 1, configurations: [] }, github: { connectionState: "disconnected", computers: [] } }
+    const emptyRequest: OnboardingCompletionRequest = { ...request, computerConfiguration: { schemaVersion: 1, computers: [] }, github: { connectionState: "disconnected", computers: [] } }
     const markComplete = vi.fn().mockResolvedValue(undefined)
     await store.submitSetupStep("computers", emptyRequest)
     await store.finishSetup(emptyRequest, markComplete)
@@ -110,7 +110,7 @@ describe("production setup queue", () => {
   it("does not resubmit already verified computers when continuing GitHub after relaunch", async () => {
     const { store, configurations, identities } = await setup()
     const resumed = structuredClone(request)
-    resumed.computerConfiguration.configurations = application.computers.map(({ configuration }) => configuration)
+    resumed.computerConfiguration.computers = application.computers.map(({ configuration }) => configuration)
     resumed.github.computers = application.computers.map(({ configuration }) => ({ ...request.github.computers[0], computer: configuration.name }))
     const observed: string[] = []
     const unsubscribe = store.subscribe(() => {
@@ -170,7 +170,7 @@ describe("production setup queue", () => {
     const job = store.submitSetupStep("computers", request)
     await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
     const requestId = invoke.mock.calls.find(([command]) => command === "change_computer_configuration")?.[1]?.requestId
-    const event = { schemaVersion: 1, type: "progress", requestId, phase: "verification", step: "computer-verification", computer: request.computerConfiguration.configurations[0].name, revision: "a".repeat(64), fraction: 0.5, message: "Checking VM", safeForDisplay: true }
+    const event = { schemaVersion: 1, type: "progress", requestId, phase: "verification", step: "computer-verification", computer: request.computerConfiguration.computers[0].name, revision: "a".repeat(64), fraction: 0.5, message: "Checking VM", safeForDisplay: true }
     emit({ ...event, requestId: "old-request" })
     expect(store.getSnapshot().setupEvents).toEqual([])
     emit(event)
@@ -233,7 +233,7 @@ describe("production setup queue", () => {
   it("saves and verifies only token policies when OAuth is disconnected", async () => {
     const { store, github, invoke } = await setup()
     const selected = structuredClone(request)
-    selected.computerConfiguration.configurations = application.computers.map(({ configuration }) => configuration)
+    selected.computerConfiguration.computers = application.computers.map(({ configuration }) => configuration)
     selected.github.computers = application.computers.map(({ configuration }, index) => ({
       ...request.github.computers[0], computer: configuration.name,
       authenticationMethod: index === 0 ? "token" : "oauth",
@@ -384,7 +384,7 @@ describe("production setup queue", () => {
     const { store, invoke } = await setup()
     const existing = application.computers.map(({ configuration }) => configuration)
     const replacement = { ...existing[0], id: "7f3c2a10-4b5d-4e6f-8a9b-0c1d2e3f4a5b", name: "fresh-default" }
-    const defaults: OnboardingCompletionRequest = { ...request, computerConfiguration: { schemaVersion: 1, configurations: [replacement] } }
+    const defaults: OnboardingCompletionRequest = { ...request, computerConfiguration: { schemaVersion: 1, computers: [replacement] } }
     await expect(store.submitSetupStep("computers", defaults)).rejects.toThrow(/does not delete/)
     await expect(store.finishSetup(defaults, vi.fn().mockResolvedValue(undefined))).rejects.toThrow(/does not delete/)
     expect(invoke).not.toHaveBeenCalledWith("change_computer_configuration", expect.anything())
@@ -400,7 +400,7 @@ describe("production setup queue", () => {
     const first = store.submitSetupStep("github", request)
     await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
     const changed = structuredClone(request)
-    changed.computerConfiguration.configurations[0].name = "changed-vm"
+    changed.computerConfiguration.computers[0].name = "changed-vm"
     const second = store.submitSetupStep("computers", changed)
     computerA.resolve(application)
     await vi.waitFor(() => expect(identities).toHaveBeenCalledOnce())

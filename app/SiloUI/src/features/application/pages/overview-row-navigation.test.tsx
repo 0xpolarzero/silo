@@ -36,7 +36,7 @@ it.each([
 it("does not offer a page for a computer that is still being created", () => {
   const source = structuredClone(applicationSourceForScenario("running", undefined, undefined, "add-configuring"))
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onConfigurationsChange={vi.fn()} />)
-  const added = source.computerConfigurationOperation!.candidate.configurations.find(({ id }) => !source.computers.some(({ configuration }) => configuration.id === id))!
+  const added = source.computerConfigurationOperation!.candidate.computers.find(({ id }) => !source.computers.some(({ configuration }) => configuration.id === id))!
   const row = within(screen.getByText(added.name).closest("li")!)
   expect(row.queryByRole("button", { name: `Open ${added.name}` })).not.toBeInTheDocument()
 })

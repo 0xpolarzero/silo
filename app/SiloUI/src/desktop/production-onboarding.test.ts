@@ -10,7 +10,7 @@ const application = applicationSourceForScenario("running")
 describe("production onboarding", () => {
   it("enables Finish after an empty computer configuration is saved and verified", () => {
     const emptyApplication = { ...application, computers: [] }
-    const setup = { setupCandidate: { schemaVersion: 1, configurations: [] }, setupQueue: [
+    const setup = { setupCandidate: { schemaVersion: 1, computers: [] }, setupQueue: [
       { id: "computerRun", status: "succeeded" }, { id: "computerVerify", status: "succeeded" },
     ], setupEvents: [] } as unknown as ProductionSnapshot
     const dependencies = { checks: onboardingScenarios.complete.preflightChecks, retry: vi.fn() }
@@ -84,7 +84,7 @@ describe("production onboarding", () => {
     expect(projectOnboarding(failed, "disconnected").finishBlocker).toEqual(failed.finishBlocker)
     // Nothing blocks a configured device, and a running setup explains itself.
     expect(productionOnboardingSource(application, dependencies, application.preferences).finishBlocker).toBeNull()
-    const applying = { ...withDev({ state: "starting" }), computerConfigurationOperation: { id: "a", status: "applying", candidate: { schemaVersion: 1, configurations: [] }, progressEvents: [], result: null, error: null } } as typeof application
+    const applying = { ...withDev({ state: "starting" }), computerConfigurationOperation: { id: "a", status: "applying", candidate: { schemaVersion: 1, computers: [] }, progressEvents: [], result: null, error: null } } as typeof application
     expect(productionOnboardingSource(applying, dependencies, application.preferences).finishBlocker).toBeNull()
   })
 

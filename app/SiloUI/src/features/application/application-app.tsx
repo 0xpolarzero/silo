@@ -47,7 +47,7 @@ function computerAttentionCounts(source: Pick<ApplicationSource, "computers" | "
   ]))
   const operation = source.computerConfigurationOperation
   if (operation?.status === "failed" && operation.error.computer) {
-    const failedComputer = operation.candidate.configurations.find(({ name }) => name === operation.error.computer)
+    const failedComputer = operation.candidate.computers.find(({ name }) => name === operation.error.computer)
       ?? source.computers.find(({ configuration }) => configuration.name === operation.error.computer)?.configuration
     if (failedComputer) attentionByComputer.set(failedComputer.id, "error")
   }
@@ -204,7 +204,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   }
 
   function updateConfigurations(configurations: SetupComputerConfiguration[], baseline?: SetupComputerConfiguration[]) {
-    const candidate = { schemaVersion: 1 as const, configurations }
+    const candidate = { schemaVersion: 1 as const, computers: configurations }
     setComputerConfigurationOperation({
       id: "local-computer-configuration",
       status: "applying",
@@ -262,7 +262,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   useEffect(() => {
     const known = new Set<string>()
     for (const computer of source.computers) known.add(computer.configuration.id)
-    for (const configuration of computerConfigurationOperation?.candidate.configurations ?? []) known.add(configuration.id)
+    for (const configuration of computerConfigurationOperation?.candidate.computers ?? []) known.add(configuration.id)
     forgetComputers((computer) => known.has(computer))
   }, [source.computers, computerConfigurationOperation, forgetComputers])
 

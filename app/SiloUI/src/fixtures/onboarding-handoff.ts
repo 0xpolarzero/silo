@@ -8,7 +8,7 @@ export function applicationPreviewAfterSetup(request: OnboardingCompletionReques
   const base = applicationSourceForScenario("complete", request.github.connectionState)
   return {
     ...base,
-    computers: request.computerConfiguration.configurations.map((configuration) => ({
+    computers: request.computerConfiguration.computers.map((configuration) => ({
       configuration: { ...configuration },
       purpose: "Local computer",
       state: "stopped",

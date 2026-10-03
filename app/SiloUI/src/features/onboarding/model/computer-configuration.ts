@@ -104,5 +104,5 @@ export function validateComputer(
 }
 
 export function configurationRequest(configurations: readonly SetupComputerConfiguration[]) {
-  return setupComputerConfigurationRequestSchema.parse({ schemaVersion: 1, configurations })
+  return setupComputerConfigurationRequestSchema.parse({ schemaVersion: 1, computers: configurations })
 }

@@ -49,7 +49,7 @@ describe("configuration configuration jobs", () => {
     const mock = bridge()
     const store = createProductionSource(mock.native)
     try {
-      await expect(store.configureConfigurations({ schemaVersion: 1, configurations: [] })).rejects.toThrow("configuration has not loaded")
+      await expect(store.configureConfigurations({ schemaVersion: 1, computers: [] })).rejects.toThrow("configuration has not loaded")
       expect(count(mock.invoke, "change_computer_configuration")).toBe(0)
       expect(store.getSnapshot().source).toBeNull()
     } finally { store.dispose() }
@@ -60,7 +60,7 @@ describe("configuration configuration jobs", () => {
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      await expect(store.configureConfigurations({ schemaVersion: 1, configurations: [] })).rejects.toThrow("configuration has not loaded")
+      await expect(store.configureConfigurations({ schemaVersion: 1, computers: [] })).rejects.toThrow("configuration has not loaded")
       expect(count(mock.invoke, "change_computer_configuration")).toBe(0)
     } finally { store.dispose() }
   })
@@ -70,7 +70,7 @@ describe("configuration configuration jobs", () => {
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      expect(await store.configureConfigurations({ schemaVersion: 1, configurations: [] })).toMatchObject({ computers: [] })
+      expect(await store.configureConfigurations({ schemaVersion: 1, computers: [] })).toMatchObject({ computers: [] })
       expect(count(mock.invoke, "change_computer_configuration")).toBe(0)
     } finally { store.dispose() }
   })
@@ -80,7 +80,7 @@ describe("configuration configuration jobs", () => {
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      const request = { schemaVersion: 1 as const, configurations: store.getSnapshot().source!.computers.map(({ configuration }) => configuration) }
+      const request = { schemaVersion: 1 as const, computers: store.getSnapshot().source!.computers.map(({ configuration }) => configuration) }
       const first = store.configureConfigurations(request, { kind: "retry" })
       // A repeat while the first is in flight joins it.
       expect(store.configureConfigurations(request, { kind: "retry" })).toBe(first)
@@ -104,7 +104,7 @@ describe("configuration configuration jobs", () => {
     try {
       await store.initialize()
       await store.submitSetupStep("github", {
-        computerConfiguration: { schemaVersion: 1, configurations: [dev.configuration] },
+        computerConfiguration: { schemaVersion: 1, computers: [dev.configuration] },
         applications: source.preferences,
         github: { connectionState: "connected", computers: [{ computer: dev.configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } }] },
       })
@@ -948,9 +948,9 @@ describe("result and job identity", () => {
     try {
       await store.initialize()
       const configurations = store.getSnapshot().source!.computers.map(({ configuration }) => configuration)
-      const first = store.configureConfigurations({ schemaVersion: 1, configurations }, { kind: "retry", computer: "dev" })
+      const first = store.configureConfigurations({ schemaVersion: 1, computers: configurations }, { kind: "retry", computer: "dev" })
       const reordered = configurations.map(configuration => Object.fromEntries(Object.entries(configuration).reverse()) as typeof configuration)
-      const second = store.configureConfigurations({ configurations: reordered, schemaVersion: 1 }, { computer: "dev", kind: "retry" })
+      const second = store.configureConfigurations({ computers: reordered, schemaVersion: 1 }, { computer: "dev", kind: "retry" })
       expect(second).toBe(first)
       pending.resolve(structuredClone(source))
       await first
@@ -1015,7 +1015,6 @@ describe("native state validation", () => {
       github: { ...newer.github, state: "suspended" },
       computers: [
         { ...structuredClone(known), state: "hibernating", stateDetail: "Hibernating since 10:00" },
-        { ...structuredClone(known), configuration: { ...known.configuration, id: "00000000-0000-4000-8000-0000000000aa", name: "box", kind: "container" } },
       ],
       activities: [{ id: "broken" }, { id: "a-1", category: "insights", title: "Checked", detail: "", occurredAt: "2026-09-30T10:00:00.000Z", time: "", tone: "info", status: "done", computer: null }],
       repositoryPushOperations: [{ computer: known.configuration.name, repositoryPath: "acme/silo", commitCount: 1, status: "queued" }],

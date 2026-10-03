@@ -69,8 +69,8 @@ describe("optional Linux desktop", () => {
     expect(save).not.toHaveBeenCalled()
   })
   it("keeps legacy configurations desktop-free and retains an explicit startup policy", () => {
-    expect(setupComputerConfigurationRequestSchema.parse({ schemaVersion: 1, configurations: [configuration] }).configurations[0]).not.toHaveProperty("desktop")
-    expect(setupComputerConfigurationRequestSchema.parse({ schemaVersion: 1, configurations: [{ ...configuration, desktop: { startWithComputer: false } }] }).configurations[0]).toMatchObject({ desktop: { startWithComputer: false } })
+    expect(setupComputerConfigurationRequestSchema.parse({ schemaVersion: 1, computers: [configuration] }).computers[0]).not.toHaveProperty("desktop")
+    expect(setupComputerConfigurationRequestSchema.parse({ schemaVersion: 1, computers: [{ ...configuration, desktop: { startWithComputer: false } }] }).computers[0]).toMatchObject({ desktop: { startWithComputer: false } })
   })
   it("opts in during creation with automatic startup", async () => {
     const user = userEvent.setup()

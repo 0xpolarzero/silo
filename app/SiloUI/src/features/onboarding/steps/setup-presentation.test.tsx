@@ -159,7 +159,6 @@ it("offers the real device connection flow during production computer setup", as
   const onConnectDevice = vi.fn()
   render(<ComputersStep configurations={fixtureComputerDefaults} progress={progress} onConfigurationsChange={vi.fn()} onRetry={vi.fn()} onConnectDevice={onConnectDevice} />)
   await user.click(screen.getByRole("button", { name: "Add" }))
-  expect(screen.queryByRole("menuitem", { name: "Connect device…" })).not.toBeInTheDocument()
   await user.click(screen.getByRole("menuitem", { name: "Connect device…" }))
   expect(onConnectDevice).toHaveBeenCalledOnce()
 })

@@ -33,7 +33,7 @@ function event(step: string, fraction?: number): SiloProgressEvent {
 
 function operation(events: SiloProgressEvent[], status: "applying" = "applying"): ComputerConfigurationOperation {
   const configurations = [...existing.map(computer => computer.configuration), created().configuration]
-  return { id: "request", status, candidate: { schemaVersion: 1, configurations } as never, progressEvents: events, result: null, error: null }
+  return { id: "request", status, candidate: { schemaVersion: 1, computers: configurations } as never, progressEvents: events, result: null, error: null }
 }
 
 const committed = new Map(existing.map(computer => [computer.configuration.id, computer.configuration.name]))
@@ -125,7 +125,7 @@ describe("ComputerConfigurationToast", () => {
   it("offers no switch for a computer without built-in computer use", async () => {
     const plain = created()
     plain.configuration = { ...plain.configuration, desktop: undefined } as ApplicationComputer["configuration"]
-    const request = { ...operation([]), candidate: { schemaVersion: 1, configurations: [...existing.map(computer => computer.configuration), plain.configuration] } as never }
+    const request = { ...operation([]), candidate: { schemaVersion: 1, computers: [...existing.map(computer => computer.configuration), plain.configuration] } as never }
     const view = render(<Harness current={request} computers={existing} />)
     expect(await screen.findByText("Creating fresh")).toBeVisible()
     view.rerender(<Harness current={null} computers={[...existing, plain]} />)

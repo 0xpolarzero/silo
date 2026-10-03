@@ -19,7 +19,7 @@ async function addComputer(user: ReturnType<typeof userEvent.setup>) {
 function failedOperation(source: ApplicationSource, message: string): ComputerConfigurationOperation {
   return {
     id: "other-change", status: "failed", result: null, progressEvents: [],
-    candidate: { schemaVersion: 1, configurations: source.computers.map(({ configuration }) => configuration) },
+    candidate: { schemaVersion: 1, computers: source.computers.map(({ configuration }) => configuration) },
     error: { code: "native_bridge_failed", computer: null, message, recovery: null, retryable: true },
   }
 }

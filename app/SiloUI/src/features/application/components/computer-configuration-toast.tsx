@@ -46,7 +46,7 @@ export function ComputerConfigurationToast({ operation, computers, onOpen }: {
       tracked.current.pending = computerUsePending(operation)
       // The backend adds the built-in desktop to a new computer on a v4 image, so neither the request nor a lagging
       // snapshot may carry it. The request and the setup steps it reports are what is known while it is created.
-      tracked.current.desktop ||= description.creating.length === 1 && (operation.candidate.configurations.some(configuration => configuration.name === description.creating[0] && Boolean(configuration.desktop))
+      tracked.current.desktop ||= description.creating.length === 1 && (operation.candidate.computers.some(configuration => configuration.name === description.creating[0] && Boolean(configuration.desktop))
         || operation.progressEvents.some(event => event.step === "desktop-installation" || event.step?.startsWith("chatgpt-app-") || event.step === "computer-use-setup" || event.step === "computer-use-pending"))
       if (!show) return
       tracked.current.shown = true

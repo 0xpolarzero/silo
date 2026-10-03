@@ -232,7 +232,7 @@ function configurationOperationForFixture(
   const configurations = computers.map(({ configuration }) => configuration)
   const candidate = {
     schemaVersion: 1 as const,
-    configurations: mode === "remove-pending"
+    computers: mode === "remove-pending"
       ? configurations.filter(({ name }) => name !== "playgrounds")
       : [...configurations, scratchComputer],
   }

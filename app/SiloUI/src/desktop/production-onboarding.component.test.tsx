@@ -21,10 +21,10 @@ function deferred() {
   return { promise, resolve, reject }
 }
 const application = applicationSourceForScenario("running")
-const requestA: SetupComputerConfigurationRequest = { schemaVersion: 1, configurations: application.computers.map(({ configuration }) => configuration) }
-const requestB: SetupComputerConfigurationRequest = { ...requestA, configurations: [requestA.configurations[0]] }
+const requestA: SetupComputerConfigurationRequest = { schemaVersion: 1, computers: application.computers.map(({ configuration }) => configuration) }
+const requestB: SetupComputerConfigurationRequest = { ...requestA, computers: [requestA.computers[0]] }
 // requestB drops the other VMs: the list's own Delete confirmation confirmed that.
-const dropped = { confirmedDeletions: requestA.configurations.slice(1).map(({ id }) => id) }
+const dropped = { confirmedDeletions: requestA.computers.slice(1).map(({ id }) => id) }
 const dependencies = { checks: [], retry: vi.fn() }
 
 describe("production onboarding submission errors", () => {
@@ -38,22 +38,22 @@ describe("production onboarding submission errors", () => {
   })
 
   it("passes an intentionally empty restored draft to identity verification", () => {
-    const store = createMemorySettingsStore({}, { currentStep: "review", configurations: [], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
+    const store = createMemorySettingsStore({}, { currentStep: "review", computers: [], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
     const verifySetupIdentities = vi.fn().mockResolvedValue(undefined)
     const source = { verifySetupIdentities, applicationActions: {} } as unknown as ProductionSource
     render(<SettingsProvider store={store}><ProductionOnboarding application={application} dependencies={dependencies} source={source} /></SettingsProvider>)
-    expect(verifySetupIdentities).toHaveBeenCalledWith({ computerConfiguration: { schemaVersion: 1, configurations: [] }, github: { connectionState: application.github.state, computers: [] } })
+    expect(verifySetupIdentities).toHaveBeenCalledWith({ computerConfiguration: { schemaVersion: 1, computers: [] }, github: { connectionState: application.github.state, computers: [] } })
   })
 
   it("verifies an omitted identity for a recovered computer named constructor as unapplied", () => {
-    const configuration = { ...requestB.configurations[0], name: "constructor" }
-    const store = createMemorySettingsStore({}, { currentStep: "review", configurations: [configuration], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
+    const configuration = { ...requestB.computers[0], name: "constructor" }
+    const store = createMemorySettingsStore({}, { currentStep: "review", computers: [configuration], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
     const verifySetupIdentities = vi.fn().mockResolvedValue(undefined)
     const source = { verifySetupIdentities, applicationActions: {} } as unknown as ProductionSource
     render(<SettingsProvider store={store}><ProductionOnboarding application={application} dependencies={dependencies} source={source} /></SettingsProvider>)
 
     expect(verifySetupIdentities).toHaveBeenCalledWith({
-      computerConfiguration: { schemaVersion: 1, configurations: [configuration] },
+      computerConfiguration: { schemaVersion: 1, computers: [configuration] },
       github: { connectionState: application.github.state, computers: [{ computer: "constructor", repositories: [], identity: { name: "", email: "", apply: false } }] },
     })
   })
@@ -75,14 +75,14 @@ describe("production onboarding submission errors", () => {
   it("keeps the failed VM identity when the local promise also rejects", async () => {
     const failed = deferred()
     const source = { configureConfigurations: vi.fn(() => failed.promise), applicationActions: {} } as unknown as ProductionSource
-    const error = { code: "native_bridge_failed", message: "Creation failed", recovery: "Retry", computer: requestB.configurations[0].name, retryable: true }
+    const error = { code: "native_bridge_failed", message: "Creation failed", recovery: "Retry", computer: requestB.computers[0].name, retryable: true }
     const current = { ...application, computerConfigurationOperation: { id: "failed", status: "failed", candidate: requestB, progressEvents: [], result: null, error } } as typeof application
     render(<ProductionOnboarding application={current} dependencies={dependencies} source={source} />)
     act(() => captured.props!.actions.saveComputerConfiguration(requestB, dropped))
     await act(async () => { failed.reject(new Error("Creation failed")); await failed.promise.catch(() => {}) })
-    expect(captured.props!.source.error?.computer).toBe(requestB.configurations[0].name)
-    const progress = projectOnboarding({ ...captured.props!.source, progressEvents: [{ ...onboardingScenarios.running.progressEvents[0], computer: requestB.configurations[0].name, step: "computer-configuration", fraction: 0 }] }, "disconnected").computerProgress
-    expect(progress.computers[0]).toMatchObject({ name: requestB.configurations[0].name, status: "failed", detail: "Creation failed" })
+    expect(captured.props!.source.error?.computer).toBe(requestB.computers[0].name)
+    const progress = projectOnboarding({ ...captured.props!.source, progressEvents: [{ ...onboardingScenarios.running.progressEvents[0], computer: requestB.computers[0].name, step: "computer-configuration", fraction: 0 }] }, "disconnected").computerProgress
+    expect(progress.computers[0]).toMatchObject({ name: requestB.computers[0].name, status: "failed", detail: "Creation failed" })
     expect(progress.workingCount).toBe(0)
   })
 
@@ -152,7 +152,7 @@ describe("production onboarding submission errors", () => {
   })
 
   it("retries a failed step with the current draft instead of the failed request", async () => {
-    const failed: OnboardingCompletionRequest = { computerConfiguration: requestA, applications: application.preferences, github: { connectionState: "disconnected", computers: [{ computer: requestA.configurations[0].name, repositories: [], identity: { name: "Old", email: "old@example.invalid", apply: true } }] } }
+    const failed: OnboardingCompletionRequest = { computerConfiguration: requestA, applications: application.preferences, github: { connectionState: "disconnected", computers: [{ computer: requestA.computers[0].name, repositories: [], identity: { name: "Old", email: "old@example.invalid", apply: true } }] } }
     const edited: OnboardingCompletionRequest = { ...failed, github: { ...failed.github, computers: [{ ...failed.github.computers[0], identity: { name: "New", email: "new@example.invalid", apply: true } }] } }
     const submitSetupStep = vi.fn().mockRejectedValueOnce(new Error("Identity verification failed")).mockResolvedValue(undefined)
     const source = { submitSetupStep, applicationActions: {} } as unknown as ProductionSource
@@ -169,9 +169,9 @@ describe("production onboarding submission errors", () => {
   })
 
   it("verifies the saved draft identity when onboarding is restored", async () => {
-    const configuration = requestB.configurations[0]
+    const configuration = requestB.computers[0]
     const identity = { name: "Saved author", email: "saved@example.invalid", apply: true }
-    const draft = { currentStep: "review" as const, configurations: requestB.configurations, unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: { [configuration.name]: identity } }
+    const draft = { currentStep: "review" as const, computers: requestB.computers, unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: { [configuration.name]: identity } }
     const store = createMemorySettingsStore({}, draft)
     const verifySetupIdentities = vi.fn().mockResolvedValue(undefined)
     const source = { verifySetupIdentities, applicationActions: {} } as unknown as ProductionSource

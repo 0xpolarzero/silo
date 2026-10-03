@@ -99,7 +99,7 @@ it.each(["add-configuring", "remove-pending"] as const)("ignores property order 
   }))
   renderApplication("running", source)
   const overview = within(appPanel("Computers"))
-  for (const computer of source.computers.filter(({ configuration }) => source.computerConfigurationOperation?.candidate.configurations.some(({ id }) => id === configuration.id))) {
+  for (const computer of source.computers.filter(({ configuration }) => source.computerConfigurationOperation?.candidate.computers.some(({ id }) => id === configuration.id))) {
     const row = overview.getByText(computer.configuration.name).closest("li") as HTMLElement
     expect(row).not.toHaveAttribute("aria-busy")
     expect(within(row).queryByText("Preparing computer configuration.")).not.toBeInTheDocument()

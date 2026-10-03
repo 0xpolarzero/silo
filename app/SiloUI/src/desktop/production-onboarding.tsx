@@ -65,8 +65,8 @@ export function productionOnboardingSource(application: ApplicationSource | null
   // or defaults are a placeholder seed that is replaced once the real state loads.
   const configurationsAuthoritative = application !== null && !setup?.localUpdating && !(setup?.error && existingConfigurations.length === 0)
   const fallback = !configurationsAuthoritative && setup?.savedConfigurations?.length ? setup.savedConfigurations : productionComputerDefaults
-  const configurations = setup?.setupCandidate?.configurations ?? operation?.candidate.configurations ?? (existingConfigurations.length ? existingConfigurations : fallback)
-  const emptyConfigurationVerified = setup?.setupCandidate?.configurations.length === 0
+  const configurations = setup?.setupCandidate?.computers ?? operation?.candidate.computers ?? (existingConfigurations.length ? existingConfigurations : fallback)
+  const emptyConfigurationVerified = setup?.setupCandidate?.computers.length === 0
     && ["computerRun", "computerVerify"].every((id) => setup.setupQueue.some((item) => item.id === id && item.status === "succeeded"))
   const configured = !!application && (application.computers.length > 0 || emptyConfigurationVerified) && application.computers.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
   const completedPhases = configured ? ["preflight", "toolchain", "deviceIntegration", "computers"] as const : []
@@ -149,10 +149,10 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
   useEffect(() => {
     if (!onboardingDraft || completed) return
     void source.verifySetupIdentities({
-      computerConfiguration: { schemaVersion: 1, configurations: onboardingDraft.configurations },
+      computerConfiguration: { schemaVersion: 1, computers: onboardingDraft.computers },
       github: {
         connectionState: application?.github.state ?? "disconnected",
-        computers: onboardingDraft.configurations.map(({ name }) => ({
+        computers: onboardingDraft.computers.map(({ name }) => ({
           computer: name,
           repositories: [],
           identity: Object.hasOwn(onboardingDraft.computerIdentities, name)
@@ -168,7 +168,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     isFinishing: false,
     run: (current, confirmed = options) => {
       const configuration = current?.computerConfiguration ?? request
-      assertConfirmedDeletions(committed(), configuration.configurations, confirmed)
+      assertConfirmedDeletions(committed(), configuration.computers, confirmed)
       return source.configureConfigurations(configuration)
     },
   })
@@ -220,7 +220,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     actions={{
       submitStep: (step, request, options) => {
         submit({ isFinishing: false, run: (current = request, confirmed = options) => {
-          assertConfirmedDeletions(committed(), current.computerConfiguration.configurations, confirmed)
+          assertConfirmedDeletions(committed(), current.computerConfiguration.computers, confirmed)
           return source.submitSetupStep(step, current)
         } })
       },
@@ -243,7 +243,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
       finishSetup: (request, options) => {
         if (finishing) return
         submit({ isFinishing: true, run: async (current = request, confirmed = options) => {
-          assertConfirmedDeletions(committed(), current.computerConfiguration.configurations, confirmed)
+          assertConfirmedDeletions(committed(), current.computerConfiguration.computers, confirmed)
           await source.finishSetup(current, async () => {
             await updateSettings({ ...current.applications, onboardingComplete: true })
             const error = store.getSnapshot().saveError

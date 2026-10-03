@@ -5,7 +5,7 @@ import { fixtureComputerDefaults } from "@/fixtures/computer-configurations"
 import type { OnboardingCompletionRequest } from "@/features/onboarding/model/onboarding-source"
 
 const request: OnboardingCompletionRequest = {
-  computerConfiguration: { schemaVersion: 1, configurations: [
+  computerConfiguration: { schemaVersion: 1, computers: [
     { ...fixtureComputerDefaults[0], name: "build" },
     { ...fixtureComputerDefaults[1], name: "remote" },
   ] },
@@ -19,7 +19,7 @@ const request: OnboardingCompletionRequest = {
 describe("setup preview handoff", () => {
   it("opens the configured configurations, application choices and exact repository policy", () => {
     const app = applicationPreviewAfterSetup(request)
-    expect(app.computers.map(({ configuration }) => configuration)).toEqual(request.computerConfiguration.configurations)
+    expect(app.computers.map(({ configuration }) => configuration)).toEqual(request.computerConfiguration.computers)
     expect(app.preferences).toMatchObject(request.applications)
     expect(app.github.computers).toEqual(request.github.computers)
     expect(app.computers[0].githubRepositories).toEqual(["acme/design-system"])

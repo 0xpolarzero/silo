@@ -76,20 +76,20 @@ describe("Silo contract fixtures", () => {
   it("keeps the computer request ordered and strict", () => {
     const request = setupComputerConfigurationRequestSchema.parse({
       schemaVersion: 1,
-      configurations: [fixtureComputerDefaults[1], fixtureComputerDefaults[0]],
+      computers: [fixtureComputerDefaults[1], fixtureComputerDefaults[0]],
     })
-    expect(request.configurations.map(({ name }) => name)).toEqual(["playgrounds", "dev"])
+    expect(request.computers.map(({ name }) => name)).toEqual(["playgrounds", "dev"])
     expect(() => setupComputerConfigurationRequestSchema.parse({
       ...request,
-      configurations: [{ ...request.configurations[1], ignoredCredential: "secret" }],
+      computers: [{ ...request.computers[1], ignoredCredential: "secret" }],
     })).toThrow()
     expect(() => setupComputerConfigurationRequestSchema.parse({
       ...request,
-      configurations: [request.configurations[0], { ...request.configurations[1], name: "PLAYGROUNDS" }],
+      computers: [request.computers[0], { ...request.computers[1], name: "PLAYGROUNDS" }],
     })).toThrow()
     expect(() => setupComputerConfigurationRequestSchema.parse({
       ...request,
-      configurations: [request.configurations[0], { ...request.configurations[1], id: request.configurations[0].id }],
+      computers: [request.computers[0], { ...request.computers[1], id: request.computers[0].id }],
     })).toThrow("Computer IDs must be unique.")
   })
 })
@@ -97,31 +97,31 @@ describe("Silo contract fixtures", () => {
 describe("custom VM memory", () => {
   it.each([1, 2, 4, 8, 12, 24, 64])("accepts %i GiB through the saved configuration contract", (memory) => {
     const configuration = { ...fixtureComputerDefaults[0], memoryGiB: memory, maxMemoryGiB: memory }
-    expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, configurations: [configuration] }).success).toBe(true)
+    expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, computers: [configuration] }).success).toBe(true)
   })
   it.each([0, -1, 1.5, 4294967296])("rejects invalid memory %s", (memory) => {
     const configuration = { ...fixtureComputerDefaults[0], memoryGiB: memory, maxMemoryGiB: memory }
-    expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, configurations: [configuration] }).success).toBe(false)
+    expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, computers: [configuration] }).success).toBe(false)
   })
 })
 
 it("preserves temporarily invalid custom memory only in an unfinished editor", () => {
   const draft = { ...fixtureComputerDefaults[0], memoryGiB: 0, maxMemoryGiB: 12 }
   expect(computerEditorDraftSchema.safeParse({ draft, insertAt: 0 }).success).toBe(true)
-  expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, configurations: [draft] }).success).toBe(false)
+  expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, computers: [draft] }).success).toBe(false)
 })
 
 it("accepts the native CPU maximum and keeps larger counts only in unfinished input", () => {
   const configuration = { ...fixtureComputerDefaults[0], cpus: 255, maxCPUs: 255 }
-  expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, configurations: [configuration] }).success).toBe(true)
+  expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, computers: [configuration] }).success).toBe(true)
   const unfinished = { ...configuration, cpus: 256, maxCPUs: 256 }
   expect(computerEditorDraftSchema.safeParse({ draft: unfinished, insertAt: 0 }).success).toBe(true)
-  expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, configurations: [unfinished] }).success).toBe(false)
+  expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, computers: [unfinished] }).success).toBe(false)
 })
 
 it("accepts custom CPUs and disks and rejects storage overflow", () => {
   const configuration = { ...fixtureComputerDefaults[0], cpus: 3, maxCPUs: 5, memoryGiB: 12, maxMemoryGiB: 12, workspaceStorageGiB: 35, runtimeStorageGiB: 25 }
-  const parse = (changes: object) => setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, configurations: [{ ...configuration, ...changes }] }).success
+  const parse = (changes: object) => setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, computers: [{ ...configuration, ...changes }] }).success
   expect(parse({})).toBe(true)
   for (const changes of [{ cpus: 0 }, { cpus: 1.5 }, { cpus: 6 }, { maxCPUs: 4294967296 }, { workspaceStorageGiB: 0 }, { runtimeStorageGiB: 1.5 }, { workspaceStorageGiB: 4194300, runtimeStorageGiB: 4 }]) {
     expect(parse(changes)).toBe(false)

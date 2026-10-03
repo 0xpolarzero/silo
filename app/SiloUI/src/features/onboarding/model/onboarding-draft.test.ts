@@ -5,7 +5,7 @@ import { onboardingDraftSchema } from "@/features/onboarding/model/onboarding-dr
 
 const draft = {
   currentStep: "computers",
-  configurations: fixtureComputerDefaults,
+  computers: fixtureComputerDefaults,
   unfinishedComputerEditor: null,
   computerSelections: { dev: [{ repository: "acme/silo", allowPushes: false }] },
   computerIdentities: { dev: { name: "", email: "unfinished@", apply: false } },
@@ -30,7 +30,7 @@ describe("onboarding recovery validation", () => {
       insertAt: 3,
     } }
     expect(onboardingDraftSchema.parse(input)).toEqual(input)
-    expect(onboardingDraftSchema.safeParse({ ...draft, configurations: [input.unfinishedComputerEditor.draft] }).success).toBe(false)
+    expect(onboardingDraftSchema.safeParse({ ...draft, computers: [input.unfinishedComputerEditor.draft] }).success).toBe(false)
   })
 
   it("keeps temporarily invalid VM resource combinations for correction after restart", () => {
@@ -49,7 +49,7 @@ describe("onboarding recovery validation", () => {
   })
 
   it("rejects duplicate saved configuration IDs and preserves empty choices and explicit false", () => {
-    expect(onboardingDraftSchema.safeParse({ ...draft, configurations: [fixtureComputerDefaults[0], fixtureComputerDefaults[0]] }).success).toBe(false)
+    expect(onboardingDraftSchema.safeParse({ ...draft, computers: [fixtureComputerDefaults[0], fixtureComputerDefaults[0]] }).success).toBe(false)
     const input = { ...draft, computerSelections: { dev: [] } }
     expect(onboardingDraftSchema.parse(input)).toEqual(input)
   })

@@ -33,7 +33,7 @@ describe("configuration capacity", () => {
       id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
       name: `computer-${index + 1}`,
     }))
-    expect(configurationRequest(configurations.slice(0, 64)).configurations).toHaveLength(64)
+    expect(configurationRequest(configurations.slice(0, 64)).computers).toHaveLength(64)
     expect(() => configurationRequest(configurations)).toThrow()
   })
 })

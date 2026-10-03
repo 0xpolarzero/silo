@@ -29,7 +29,7 @@ it("summarizes a long computer setup failure in the configuration alert", async 
   const source = structuredClone(applicationSourceForScenario("running"))
   source.computerConfigurationOperation = {
     id: "setup", status: "failed", result: null, progressEvents: [],
-    candidate: { schemaVersion: 1, configurations: source.computers.map(({ configuration }) => configuration) },
+    candidate: { schemaVersion: 1, computers: source.computers.map(({ configuration }) => configuration) },
     error: { code: "native_bridge_failed", computer: null, message: `Computer setup failed (exit code 3): ${output}`, recovery: null, retryable: true },
   }
   render(page(source, { dismissComputerConfigurationError: vi.fn() } as unknown as ApplicationActions))

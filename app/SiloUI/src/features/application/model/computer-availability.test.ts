@@ -41,7 +41,7 @@ it.each([
   ["its device is offline", (computer: ApplicationComputer) => { computer.device = { id: "office", computerId: "vm", name: "Office", address: "office.test", connected: false }; computer.freshness = "stale" }, "Office is offline. Reconnect it to manage this computer."],
   ["its status is stale", (computer: ApplicationComputer) => { computer.freshness = "stale" }, "Silo could not refresh this computer’s status."],
   ["the runtime needs repair", (_: ApplicationComputer, source: ApplicationSource) => { source.runtimeRepair = { status: "unavailable", checking: false, reason: "Missing", recovery: "" } }, "Resolve the system issue first."],
-  ["computer changes apply", (_: ApplicationComputer, source: ApplicationSource) => { source.computerConfigurationOperation = { id: "x", status: "applying", candidate: { schemaVersion: 1, configurations: [] }, progressEvents: [], result: null, error: null } }, "Wait for computer changes to finish."],
+  ["computer changes apply", (_: ApplicationComputer, source: ApplicationSource) => { source.computerConfigurationOperation = { id: "x", status: "applying", candidate: { schemaVersion: 1, computers: [] }, progressEvents: [], result: null, error: null } }, "Wait for computer changes to finish."],
 ] as const)("disables every control with one reason while %s", (_, change, reason) => {
   const availability = scenario(change)
   expect(availability).toMatchObject({ canOpen: false, canStart: false, canStop: false, canRestart: false })
