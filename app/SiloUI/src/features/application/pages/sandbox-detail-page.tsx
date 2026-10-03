@@ -1,4 +1,4 @@
-import { ChevronRight, Code, Cpu, GitBranch, Globe, KeyRound, Play, Plus, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronRight, Code, Cpu, GitBranch, Globe, KeyRound, Monitor, Play, Plus, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useId, type MouseEvent, type ReactNode } from "react"
 
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
@@ -70,6 +70,8 @@ export interface SandboxDetailControls {
   popovers?: MenuPopovers
   onTerminal: () => void
   onEditor: () => void
+  /** Opens the Linux desktop; absent when the sandbox has none. */
+  desktop?: { disabled: boolean; onClick: () => void }
   /** Start and Stop go through the shared lifecycle guard; its prompts open next to the button. */
   lifecycleGuard: LifecycleGuard
   /** In-place Edit/Delete of this sandbox. Absent in read-only or standalone renders. */
@@ -425,6 +427,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         actions={<div className="flex shrink-0 items-center gap-1">
           <DisabledReason reason={controls.canOpen ? undefined : reasons.open}><Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={!controls.canOpen} onClick={controls.onTerminal}><Terminal aria-hidden="true" data-icon="inline-start" />Terminal</Button></DisabledReason>
           <DisabledReason reason={controls.canOpen ? undefined : reasons.open}><Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!controls.canOpen} onClick={controls.onEditor}><Code aria-hidden="true" data-icon="inline-start" />Editor</Button></DisabledReason>
+          {controls.desktop && <Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} desktop`} disabled={controls.desktop.disabled} onClick={controls.desktop.onClick}><Monitor aria-hidden="true" data-icon="inline-start" />Desktop</Button>}
           {canStop
             ? <LifecycleControl guard={controls.lifecycleGuard} workspace={workspace} action="stop" disabled={!controls.canStop} reason={reasons.stop}>
               {({ onClick, disabled }) => <Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={disabled} onClick={onClick}><Square aria-hidden="true" data-icon="inline-start" />{!disabled && controls.lifecycleGuard.check(workspace, "stop").kind === "confirm" ? "Stop…" : "Stop"}</Button>}

@@ -461,11 +461,19 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     }
   }
 
+  /** The Open Linux desktop icon of a sandbox's list row and page, absent without a desktop. */
+  function desktopAction(workspace: ApplicationWorkspace): { disabled: boolean; onClick: () => void } | undefined {
+    const { machine } = workspace
+    if (machine.kind !== "vm" || !machine.desktop || !actions.openDesktop) return undefined
+    const target = workspaceTarget(workspace)
+    const availability = workspaceAvailability(workspace, source)
+    return { disabled: configurationLocked || availability.busy || Boolean(workspace.computer && workspace.freshness === "stale"), onClick: () => { void actions.openDesktop!(target) } }
+  }
+
   /** A sandbox's ⋯ menu actions and popovers, built once for its list row and its page. The
    * page and the list append their own Edit, Duplicate, Add Linux desktop and Delete items. */
   function sandboxMenu(workspace: ApplicationWorkspace): { items: MenuAction[]; popovers?: MenuPopovers } {
     const { machine } = workspace
-    const target = workspaceTarget(workspace)
     const availability = workspaceAvailability(workspace, source)
     const stale = workspace.freshness === "stale"
     const vm = machine.kind === "vm"
@@ -473,7 +481,6 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     const restartCheck = guard.check(workspace, "restart")
     const restartPrompt = restartCheck.kind === "confirm" && availability.canRestart && !readOnly ? restartCheck.prompt : undefined
     const items: MenuAction[] = [
-      ...(vm && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || availability.busy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
       restartPrompt
         ? { label: "Restart…", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, popover: "restart" }
         : { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guard.request(workspace, "restart") },
@@ -613,6 +620,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
       popovers: menu.popovers,
       onTerminal: () => actions.openTerminal(target),
       onEditor: () => openFolderPicker(machine.id),
+      desktop: desktopAction(workspace),
       lifecycleGuard: guard,
       onCheckpointExport: exportSandbox ? (checkpoint: WorkspaceCheckpoint) => exportSandbox(machine.name, { id: checkpoint.id, name: checkpoint.name }) : undefined,
       checkpointExportDisabled: transferBusy || backup?.state.availability === "unavailable",
@@ -732,6 +740,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
                   actions: <>
                     <DisabledReason reason={openReason}><SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={readOnly || !availability?.canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction></DisabledReason>
                     <DisabledReason reason={openReason}><SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={readOnly || !availability?.canOpen} onClick={() => openFolderPicker(machine.id)}><Code /></SandboxAction></DisabledReason>
+                    {workspace && desktopAction(workspace) && <SandboxAction label={`Open ${machine.name} desktop`} disabled={desktopAction(workspace)!.disabled} onClick={desktopAction(workspace)!.onClick}><Monitor /></SandboxAction>}
                     {workspace && availability && <WorkspaceActions workspace={workspace} availability={availability} readOnly={readOnly} guard={guard} />}
                   </>,
                 }
