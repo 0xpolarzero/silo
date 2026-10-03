@@ -77,7 +77,7 @@ describe("optional Linux desktop", () => {
     const save = editor(machine, false)
     expect(screen.getByRole("checkbox", { name: "Linux desktop" })).not.toBeChecked()
     await user.click(screen.getByRole("checkbox", { name: "Linux desktop" }))
-    await user.click(screen.getByRole("button", { name: "Save" }))
+    await user.click(screen.getByRole("button", { name: "Create" }))
     expect(save).toHaveBeenCalledWith([expect.objectContaining({ desktop: { startWithSandbox: true } })])
   })
   it("adds a desktop to a running sandbox without asking to stop it", async () => {

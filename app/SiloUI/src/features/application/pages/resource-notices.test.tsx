@@ -36,7 +36,7 @@ describe("operation-owned resource notices", () => {
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
     fireEvent.change(screen.getByRole("textbox", { name: "Sandbox name" }), { target: { value: "sandbox" } })
-    fireEvent.click(screen.getByRole("button", { name: "Save" }))
+    fireEvent.click(screen.getByRole("button", { name: "Create" }))
 
     expect((await screen.findAllByText(/Not enough storage to create sandbox.*18 GiB is needed.*11 GiB is available/)).length).toBeGreaterThan(0)
   })

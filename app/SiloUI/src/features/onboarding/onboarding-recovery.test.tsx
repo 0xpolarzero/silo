@@ -164,7 +164,7 @@ describe("onboarding restart recovery", () => {
     expect(screen.getByRole("textbox", { name: "SSH user" })).toHaveValue("")
     expect(screen.getByRole("spinbutton", { name: "SSH port" })).toHaveValue(0)
     expect(handlers.saveMachineConfiguration).not.toHaveBeenCalled()
-    await user.click(screen.getByRole("button", { name: "Save" }))
+    await user.click(screen.getByRole("button", { name: "Create" }))
     expect(screen.getByText("Enter an SSH user.")).toBeVisible()
     expect(handlers.saveMachineConfiguration).not.toHaveBeenCalled()
     await user.click(screen.getByRole("button", { name: "Cancel" }))

@@ -348,7 +348,7 @@ describe("sandbox settings for v3 and v4", () => {
     expect(screen.queryByRole("checkbox", { name: "Linux desktop" })).not.toBeInTheDocument()
     expect(screen.queryByRole("group", { name: "Download ChatGPT for Linux?" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Accept|Not now/ })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+    expect(screen.getByRole("button", { name: "Create" })).toBeEnabled()
   })
   it("keeps the desktop checkbox without computer use support", () => {
     editor(machine, false, false)
@@ -387,7 +387,7 @@ describe("creating a sandbox on the selected computer", () => {
   it("starts the desktop of a new built-in sandbox even when duplicated settings chose to start it by hand", async () => {
     const onMachinesChange = creating({ state: "ready" }, { ...machine, desktop: { startWithSandbox: false } })
     const user = userEvent.setup()
-    await user.click(screen.getByRole("button", { name: "Save" }))
+    await user.click(screen.getByRole("button", { name: "Create" }))
     await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
     expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ desktop: { startWithSandbox: true } })])
   })

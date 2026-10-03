@@ -78,7 +78,7 @@ it("adds, cancels, and saves a virtual machine through the typed configuration a
   await user.clear(machineEditor().getByRole("textbox", { name: "Sandbox name" }))
   await user.type(machineEditor().getByRole("textbox", { name: "Sandbox name" }), "build")
   await user.selectOptions(machineEditor().getByRole("combobox", { name: "CPUs" }), "4")
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
 
   expect(saveMachineConfiguration).toHaveBeenCalledOnce()
   expect(saveMachineConfiguration.mock.lastCall?.[0]).toMatchObject({
@@ -101,7 +101,7 @@ it("adds, validates, cancels, and saves an SSH machine without claiming a connec
   await user.click(within(screen.getByRole("menu", { name: "Add sandbox" })).getByRole("menuitem", { name: "Connect an SSH host…" }))
   expect(machineEditor().getByRole("textbox", { name: "SSH host name" })).toHaveValue("remote-1")
   expect(machineEditor().getByRole("spinbutton", { name: "SSH port" })).toHaveValue(22)
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
   expect(screen.getByText("Enter an SSH host.")).toBeVisible()
   expect(screen.getByText("Enter an SSH user.")).toBeVisible()
   expect(saveMachineConfiguration).not.toHaveBeenCalled()
@@ -116,7 +116,7 @@ it("adds, validates, cancels, and saves an SSH machine without claiming a connec
   await user.type(machineEditor().getByRole("textbox", { name: "SSH user" }), "deploy")
   await user.clear(machineEditor().getByRole("spinbutton", { name: "SSH port" }))
   await user.type(machineEditor().getByRole("spinbutton", { name: "SSH port" }), "2222")
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
 
   expect(saveMachineConfiguration.mock.lastCall?.[0].machines.at(-1)).toMatchObject({
     kind: "ssh",
@@ -220,12 +220,12 @@ it("duplicates after the source, cancels drafts, and generates collision-free co
   expect(saveMachineConfiguration).not.toHaveBeenCalled()
 
   await user.click(configuredSandboxes().getByRole("button", { name: "Duplicate settings for dev" }))
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
   expect(saveMachineConfiguration.mock.lastCall?.[0].machines.map(({ name }: { name: string }) => name)).toEqual(["dev", "dev-copy", "playgrounds", "personal"])
 
   await user.click(configuredSandboxes().getByRole("button", { name: "Duplicate settings for dev" }))
   expect(machineEditor().getByRole("textbox", { name: "Sandbox name" })).toHaveValue("dev-copy-2")
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
   expect(saveMachineConfiguration.mock.lastCall?.[0].machines.map(({ name }: { name: string }) => name)).toEqual(["dev", "dev-copy-2", "dev-copy", "playgrounds", "personal"])
 })
 
@@ -236,7 +236,7 @@ it("places a replacement duplicate after its source when another draft is open",
   await user.click(configuredSandboxes().getByRole("button", { name: "Duplicate settings for dev" }))
   await user.click(configuredSandboxes().getByRole("button", { name: "Duplicate settings for playgrounds" }))
   expect(machineEditor().getByRole("textbox", { name: "Sandbox name" })).toHaveValue("playgrounds-copy")
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
 
   expect(saveMachineConfiguration.mock.lastCall?.[0].machines.map(({ name }: { name: string }) => name)).toEqual([
     "dev", "playgrounds", "playgrounds-copy", "personal",
@@ -296,7 +296,7 @@ it("saves smaller memory presets and custom whole GiB values", async () => {
   await user.click(configuredSandboxes().getByRole("button", { name: "Duplicate settings for dev" }))
   await user.selectOptions(machineEditor().getByRole("combobox", { name: "Memory" }), "12")
   await user.selectOptions(machineEditor().getByRole("combobox", { name: "Memory ceiling" }), "12")
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
   expect(saveMachineConfiguration.mock.lastCall?.[0].machines).toEqual(expect.arrayContaining([
     expect.objectContaining({ name: "dev-copy", memoryGiB: 12, maxMemoryGiB: 12 }),
   ]))
@@ -336,7 +336,7 @@ it("saves custom CPU and disk values and reopens them", async () => {
     await user.clear(input)
     await user.type(input, value)
   }
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
   expect(saveMachineConfiguration.mock.lastCall?.[0].machines).toEqual(expect.arrayContaining([
     expect.objectContaining({ name: "dev-copy", cpus: 3, maxCPUs: 5, workspaceStorageGiB: 35, runtimeStorageGiB: 25 }),
   ]))
@@ -353,7 +353,7 @@ it("blocks duplicate names and invalid VM resource ranges", async () => {
   await user.type(machineEditor().getByRole("textbox", { name: "Sandbox name" }), "personal")
   await user.selectOptions(machineEditor().getByRole("combobox", { name: "CPUs" }), "12")
   await user.selectOptions(machineEditor().getByRole("combobox", { name: "CPUs ceiling" }), "4")
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
 
   expect(screen.getByText("Sandbox names must be unique.")).toBeVisible()
   expect(screen.getByText("CPU limit cannot exceed its ceiling.")).toBeVisible()
@@ -375,7 +375,7 @@ it("reports the machine capacity in the draft instead of throwing across the act
   await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
   await user.click(machinePanel().getByRole("button", { name: "Add" }))
   await user.click(within(screen.getByRole("menu", { name: "Add sandbox" })).getByRole("menuitem", { name: "New sandbox" }))
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
 
   expect(machineEditor().getByRole("alert")).toHaveTextContent("Configure no more than 64 sandboxes.")
   expect(machineConfiguration.machineCapacityError).toHaveBeenCalledExactlyOnceWith(3, undefined)
@@ -390,7 +390,7 @@ it("mirrors final machine order and kind in Review while preserving activity col
   await user.type(machineEditor().getByRole("textbox", { name: "SSH host name" }), "remote")
   await user.type(machineEditor().getByRole("textbox", { name: "SSH host" }), "remote.example.com")
   await user.type(machineEditor().getByRole("textbox", { name: "SSH user" }), "ops")
-  await user.click(machineEditor().getByRole("button", { name: "Save" }))
+  await user.click(machineEditor().getByRole("button", { name: "Create" }))
   await user.click(configuredSandboxes().getByRole("button", { name: "Reorder remote" }))
   await user.keyboard("{ArrowUp}{ArrowUp}{ArrowUp}")
 
