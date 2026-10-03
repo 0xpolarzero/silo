@@ -40,6 +40,10 @@ above for current behavior and build commands.
 
 ### Review remediation
 
+- [Second code review pass, 2026-10-02](SiloUI-CODE-REVIEW-PASS-2-2026-10-02.md): 11 additional findings at `a1197ae` from three specialist subagents and integration review, covering log redaction, GitHub policy preservation, checkpoint restore contracts, and native routing/repair; verifies the earlier approval-race fix and separately records a compilation failure on an intermediate revision.
+- [Comprehensive code review, 2026-10-02](SiloUI-CODE-REVIEW-2026-10-02.md): consolidates 26 findings and 11 improvement opportunities, including four additional settings, migration, remote-checkpoint, and status-subscription defects; separates fresh verification from prior evidence and defines regression and live-qualification criteria.
+- [Independent current-checkout review, 2026-10-02](research/codebase-review-current-2026-10-02.md): 22 findings and 10 improvement opportunities, including six additional defects and a follow-up on the concurrent computer-use merge, independently checked reproductions, verification results, and explicit qualification gaps.
+- [Code review, 2026-10-02](research/codebase-review-2026-10-02.md): 16 current findings and 9 improvement opportunities, with deterministic reproductions, prioritized fixes, local check results, and live-verification limits.
 - [Release dry run, 2026-09-30](research/release-dry-run-2026-09-30.md): non-publishing all-target release verification for A-01, A-04, A-08 and A-09.
 - [Review remediation plan](SiloUI-REVIEW-REMEDIATION-PLAN.md): full ledger of all 397 review findings with fixes and verification, work packages, phases, merge-queue orchestration and live verification sessions.
 - [Review remediation design notes](SiloUI-REVIEW-DESIGN-NOTES.md): Phase 0 decision records (options checked against upstream tools, recommended decision, implementation outline, owner questions) for the review items marked design.
