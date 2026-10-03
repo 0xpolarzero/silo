@@ -49,7 +49,7 @@ Scope: `app/SiloUI/src/lib/` and `app/SiloUI/src/hooks/`. Follow-up to the untra
 
 - Priority: P3.
 - File: `app/SiloUI/src/lib/operation-toast.ts`, `resultCallbacks`.
-- Trigger: Click an imported sandbox result's Open action or an export result's reveal action. Transfer results supply `onDismiss` to acknowledge the stored result (`features/application/components/sandbox-transfer.tsx:140–161`). Sonner removes the toast after an action without invoking `onDismiss`; the library wrapper previously only removed ownership.
+- Trigger: Click an imported sandbox result's Open action or an export result's reveal action. Transfer results supply `onDismiss` to acknowledge the stored result (`features/application/components/computer-transfer.tsx:140–161`). Sonner removes the toast after an action without invoking `onDismiss`; the library wrapper previously only removed ownership.
 - Consequence: The toast disappears without acknowledging the transfer result, so an unseen result can reappear on the next launch. The rendered regression clicked Open and observed zero dismissal-callback calls.
 - Fix: Invoke the dismissal callback when an action permits automatic closure, and guard it against duplicate closure callbacks. Actions that prevent dismissal, including Retry, retain the result until a real closure or replacement.
 - Test: Click a result action and assert its handler and dismissal callback each run once, including when the dismissal callback explicitly dismisses the toast. Verify Retry does not acknowledge a still-visible result.

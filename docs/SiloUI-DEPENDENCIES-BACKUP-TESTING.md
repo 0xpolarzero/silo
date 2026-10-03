@@ -136,7 +136,7 @@ progress and results appear as a background notification.
 ## Automated live regression
 
 The ignored Rust test
-`real_backup_restore_preserves_root_and_workspace_without_original_cache` uses
+`real_backup_restore_preserves_root_and_computer_without_original_cache` uses
 production create, identity, export and import functions with disposable paths.
 `real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk` covers
 checkpoint export the same way.
@@ -151,7 +151,7 @@ SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures \
 SILO_TEST_MSB="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app/Contents/MacOS/msb" \
 SILO_TEST_LIBKRUNFW="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app/Contents/Frameworks/libkrunfw.5.dylib" \
 cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked \
-  real_backup_restore_preserves_root_and_workspace_without_original_cache \
+  real_backup_restore_preserves_root_and_computer_without_original_cache \
   -- --ignored --nocapture
 ```
 

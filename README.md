@@ -47,7 +47,7 @@ Stopping a computer ends its running programs and preserves its files. Names and
 
 Install the same version of Silo on both devices; a device with an older version must update before they connect. You can connect during setup without creating a local computer.
 
-1. On the device that will run the computers, enable SSH access (**Remote Login** on macOS). In **Settings → Connections**, enable **Allow connections** and copy the address.
+1. On the device that will run the computers, enable SSH access (**Remote Login** on macOS). In **Settings → Connections**, enable **Allow connections from other devices** and copy the address.
 2. On your device, choose **Add → Connect device…**, paste the address, and follow the SSH setup prompts.
 3. Use its computers alongside your local ones. Choose **Run on** when creating a computer to select its device.
 

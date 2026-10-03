@@ -316,8 +316,8 @@ extension does not change the previously live-tested MicroSandbox runtime.
 The compact layout passed typecheck, lint, and 19 focused SSH/copy-button tests.
 The macOS debug bundle was rebuilt, its signature verified, and the exact app at
 `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app` reopened. Native UI
-inspection confirmed the disabled sandbox's expanded row shows only its named
+inspection confirmed the disabled computer's expanded row shows only its named
 SSH toggle and collapsed Keys/Advanced sections. No access settings were changed.
-The local sandbox was stopped before restart; the remote Linux sandbox remained
+The local computer was stopped before restart; the remote Linux computer remained
 running. Linux's updated frontend also built, but its final native build still
 requires authorization to transfer the private GitHub build configuration.

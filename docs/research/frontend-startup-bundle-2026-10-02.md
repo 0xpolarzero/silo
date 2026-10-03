@@ -45,7 +45,7 @@ Largest individual modules: React DOM client (453,173),
 `desktop/production-source.ts` (99,110), Tailwind Merge (56,010), Sonner
 (53,335), Radix Select (43,061), Zod core schemas (42,108),
 `features/application/pages/overview-page.tsx` (39,988), and
-`sandbox-detail-page.tsx` (32,752). No `src/fixtures/` modules were emitted.
+`computer-detail-page.tsx` (32,752). No `src/fixtures/` modules were emitted.
 
 Reproduce the module inspection after the ordinary build, from `app/SiloUI`
 with Node 24. This uses the repository's unchanged Vite production config and

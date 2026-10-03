@@ -4,7 +4,7 @@ Connections link devices, so Silo on one device can manage the computers of anot
 
 ## User behavior
 
-1. On the owning device, open Settings → Connections and enable **Allow connections**. The OS must also accept SSH connections (Remote Login on macOS). Copy the displayed address.
+1. On the owning device, open Settings → Connections and enable **Allow connections from other devices**. The OS must also accept SSH connections (Remote Login on macOS). Copy the displayed address.
 2. On the controlling device, choose **Connect device…** and paste the address. Existing OpenSSH configuration, aliases, keys, and agents are reused. SSH URIs support custom ports and IPv6.
 3. If SSH has not been authorized, use the explicit Terminal authorization action to verify the fingerprint/unlock an existing key. If key access is absent, **Set up Silo SSH key…** adds this device's public key to the remote account after SSH's normal trust/password prompts. No private key is copied.
 4. Remote computers appear in the existing flat list. Their small blue device badge includes a network icon; hover or keyboard focus reveals the device, address, and availability. Display names can match local computer names.
@@ -99,7 +99,7 @@ connects inside the guest. Silo retains host-key pinning, private guest keys, an
 normal bridge admission. OpenSSH remains the supported, BSD-licensed OS transport;
 no custom TCP relay or owner sshd Match configuration is required.
 
-The bridge protocol version must match exactly (version 4), so both devices must run the same Silo version. A device with an older Silo fails the version check before key migration and the message names the device that needs the update. The matching handshake rewrites Silo's exact
+The bridge protocol version must match exactly (version 4), so both devices must run the same Silo version. A mismatch fails the version check before key migration. The requesting device names the device to update: "Studio runs an older version of Silo. Update Silo on Studio." or "Studio runs a newer version of Silo. Update Silo on this device." (an address that is not saved yet stands in for the name). The refusal has the error code `incompatible_version` and closes every connection to that device. A device older than version 4 answers "Silo versions are incompatible. Update Silo on both computers." with the code `internal`, which Silo reads as an older version. Version 4 devices start their refusal with "Silo versions are incompatible." and say which side runs the newer version, so a version 3 requester still treats it as a refusal. The matching handshake rewrites Silo's exact
 old unrestricted or forwarding-enabled lines; personal/custom key lines remain
 untouched. A failed or externally managed upgrade returns a repair error.
 Restrictions affect new authentications; already authenticated SSH sessions must

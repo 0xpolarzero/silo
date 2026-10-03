@@ -11,7 +11,7 @@ Scope: `app/SiloUI/src/features/sandboxes/`. Verification uses deterministic fro
 - Coverage: ArrowDown opens and navigates, Home/End move to the first/last item, Escape restores Add focus, and Enter opens the editor with focus on Sandbox name.
 - Primary source: [Radix Dropdown Menu keyboard interactions and focus management](https://www.radix-ui.com/primitives/docs/components/dropdown-menu#keyboard-interactions).
 
-The native import picker can return no archive (`sandbox-transfer.tsx`); that path opens no review. The cancellation regression caught focus remaining on the body after an Import menu selection. Suppress the menu's normal focus return only for inline editors. External actions retain Add as the return target, while their form popovers manage subsequent field focus.
+The native import picker can return no archive (`computer-transfer.tsx`); that path opens no review. The cancellation regression caught focus remaining on the body after an Import menu selection. Suppress the menu's normal focus return only for inline editors. External actions retain Add as the return target, while their form popovers manage subsequent field focus.
 
 ## Closing an inline editor loses focus
 

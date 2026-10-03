@@ -25,7 +25,7 @@ Read-only source review. Checked the first review, second review, and all `docs/
 ## FE-COMPONENTS-3 — P3 — Operation step status is available only visually
 
 - **File:line:** `app/SiloUI/src/components/operation-toast-body.tsx:44–48` and `87–90`.
-- **Trigger:** Inspect the step list in a running checkpoint restore or sandbox transfer with a screen reader. Production callers supply per-step states at `features/application/model/checkpoint-operation-toast.ts:46–60` and `features/application/components/sandbox-transfer.tsx:130`.
+- **Trigger:** Inspect the step list in a running checkpoint restore or sandbox transfer with a screen reader. Production callers supply per-step states at `features/application/model/checkpoint-operation-toast.ts:46–60` and `features/application/components/computer-transfer.tsx:130`.
 - **Evidence:** Every status icon is `aria-hidden`. Each list item exposes only its label; state is stored in `data-state` and represented through the icon and colors. There is no accessible state text or `aria-current`. The existing toast test checks the list item count, not its exposed states.
 - **Consequence:** Completed, current, pending, and failed steps cannot be distinguished through the step list's accessible content. The separate current-step line does not convey each preceding or pending step's status.
 - **Suggested fix:** Include visually hidden status text for every step and mark the current step with `aria-current="step"`.

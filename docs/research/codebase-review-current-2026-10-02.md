@@ -258,7 +258,7 @@ This is a supported upstream failure state: the pinned [MicroSandbox executor](h
 
 ### R-15. Hidden computer-use views continue native polling
 
-**Location:** [computer-use-panel.tsx](../../app/SiloUI/src/desktop/computer-use-panel.tsx), lines 196–211; [sandbox-detail-page.tsx](../../app/SiloUI/src/features/application/pages/sandbox-detail-page.tsx), line 481; [application-app.tsx](../../app/SiloUI/src/features/application/application-app.tsx), lines 351–365.
+**Location:** [computer-use-panel.tsx](../../app/SiloUI/src/desktop/computer-use-panel.tsx), lines 196–211; [computer-detail-page.tsx](../../app/SiloUI/src/features/application/pages/computer-detail-page.tsx), line 481; [application-app.tsx](../../app/SiloUI/src/features/application/application-app.tsx), lines 351–365.
 
 **Trigger:** open a desktop sandbox, then navigate away or hide the document. Sections remain mounted and this interval receives no active-page/visibility condition. The fixture observed the initial read plus three further reads over 15 seconds while hidden.
 

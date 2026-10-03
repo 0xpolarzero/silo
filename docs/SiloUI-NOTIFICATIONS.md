@@ -31,8 +31,8 @@ inline by the editor and never notifies.
 - Delivery ordering: OS calls for the same key share a gate. Queued requests carry
   revisions assigned before background dispatch; superseded requests are skipped.
   Different keys have independent gates.
-- Replacement: the `key` is the notification identity (`vm:{id}:lifecycle`,
-  `vm:{id}:transfer`, ...). A newer notice with the same key replaces the older one: on
+- Replacement: the `key` is the notification identity (`computer:{id}:lifecycle`,
+  `computer:{id}:transfer`, ...). A newer notice with the same key replaces the older one: on
   macOS as the request identifier, on Linux through `replaces_id`.
 - Titles name the computer ("Couldn’t start dev", "dev is running"); bodies are one line,
   at most 200 characters.

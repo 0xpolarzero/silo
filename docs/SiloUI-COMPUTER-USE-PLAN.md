@@ -415,11 +415,11 @@ replaced by a model in which the host drives the guest and the guest cannot veto
   desired mode exists yet, and otherwise the last attempt's outcome. A failed or partial
   attempt stays visible until a later one applies completely, even when the user chooses
   the previously applied mode again.
-- **Panel.** The switch shows the desired mode. `pending` shows "Applying…" (for a stopped
-  computer, "Applied when the computer starts." when a different mode was applied before). After
-  choosing ask the panel warns "Some agents in this computer may still act without asking"
-  when the previous applied mode was `auto`, the result is `partial`, or the apply `failed`
-  and nothing says ask is in place; a failed or partial result also gives the host's
+- **Panel.** The switch shows the desired mode. `pending` shows "Applying…" while the
+  computer runs. After choosing ask the panel warns "Agents may still act without asking
+  until this is applied." while the apply is pending, and "Not applied to every agent. Some
+  may still act without asking." once it `failed` or was `partial`, when the previous applied
+  mode was `auto` or nothing says ask is in place; a failed or partial result also gives the host's
   reason. After a command error the panel reads the state again instead of restoring the
   snapshot from before the change, because the command may have stored the choice or even
   applied it before the answer was lost.

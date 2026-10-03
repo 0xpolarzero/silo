@@ -194,7 +194,7 @@ keeps the folder `chatgpt_app::tests::live_download_of_the_pinned_arm64_package`
 | `live_lcu_drives_the_desktop_without_a_model` | Create to ready, `lcu status`/`doctor`, read-only mount, a bare MCP client with no `_meta` reaches X11 through the `js` tool (LCU 0.8.2), LCU's own MCP client drives GNOME Text Editor (typeText, paste, Save As, then window-targeted ctrl+a/BackSpace/per-key typing and ctrl+s, LCU 0.8.3) and a terminal (per-key), with the files verified from outside; also records memory, disk and times |
 | `live_approval_switch_edits_only_the_installed_harnesses` | `auto` adds and `ask` removes exactly LCU's approval entries in Codex and Claude Code (installed from npm; `SILO_LIVE_SKIP_HARNESS_INSTALL=1` skips that phase) |
 | `live_built_in_lifecycle_keeps_the_desktop_and_computer_use` | Restart, stop/start, checkpoint of the running computer, fork and in-place restore each end with the session running, computer use ready, the folder read-only and `lcu doctor` passing |
-| `live_pre_v4_vm_gets_no_mount_no_desktop_and_keeps_its_flows` | A computer from the v3 image (`SILO_TEST_V3_GUEST_IMAGE`) has no mount, no desktop and no helper, and its lifecycle flows work |
+| `live_pre_v4_computer_gets_no_mount_no_desktop_and_keeps_its_flows` | A computer from the v3 image (`SILO_TEST_V3_GUEST_IMAGE`) has no mount, no desktop and no helper, and its lifecycle flows work |
 | `live_built_in_computer_use_sets_up_and_survives_export_and_import` | Export and import into a second home with its own folder; the imported computer takes the destination's `ask` |
 | `live_built_in_desktop_boots_repeatedly` | `SILO_BOOT_LOOP_ROUNDS` (default 3) restarts and imports with no desktop failure |
 

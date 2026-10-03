@@ -74,11 +74,11 @@ in the shipping configuration.
 
 - A bad update signature produced a recoverable error and left the executable
   unchanged. A correctly signed retry reached the explicit install confirmation.
-- Cancel kept the running `dev` sandbox and downloaded update available.
+- Cancel kept the running `dev` computer and downloaded update available.
 - A malformed archive failed installation without replacing the app; the stopped
-  sandbox resumed and its recovery journal cleared.
+  computer resumed and its recovery journal cleared.
 - The corrected archive upgraded the app from 0.1.0 to 0.1.1. The running `dev`
-  sandbox restarted, its guest boot identifier changed, and its workspace test
+  computer restarted, its guest boot identifier changed, and its workspace test
   file survived. The completed recovery journal was removed.
 - The first archive exposed BSD tar's AppleDouble metadata as a second top-level
   entry. Release archives must contain only the `Silo.app` root.

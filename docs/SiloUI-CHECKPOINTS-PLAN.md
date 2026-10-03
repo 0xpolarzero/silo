@@ -178,7 +178,7 @@ monitor also uses that lock, so the sentinel does not establish that computer se
 are changing. The controller preserves the previous snapshot and marks that
 device's rows stale until a successful refresh; its ten-second polling interval
 can turn a brief collision into a much longer visible busy state. See
-[`refreshComputers`](../app/SiloUI/src/desktop/production-source.ts) and
+[`refreshDevices`](../app/SiloUI/src/desktop/production-source.ts) and
 [`read_application_snapshot`](../app/SiloUI/src-tauri/src/runtime.rs).
 
 The owner now retries one complete read after 100 ms for transient lock or

@@ -290,7 +290,7 @@ Verification used live preferences only for read-only diagnosis. The running
 executable was `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app/Contents/MacOS/silo-ui`
 under the repository root. This investigation did not rebuild or relaunch that
 bundle or exercise startup against live VMs. Behavioral checks used temporary
-machine configuration files, a stub start callback, and in-memory frontend
+computer configuration files, a stub start callback, and in-memory frontend
 settings backends:
 
 - `npm --prefix app/SiloUI test -- src/features/application/pages/general-page.test.tsx src/features/onboarding/components/setup-complete.test.tsx`: all 9 component tests passed after both new default-selection cases failed before the fix.
@@ -402,11 +402,11 @@ below were removed. They record the original run and are not current launch
 instructions. The current setup adapter waits for real computer and GitHub
 acknowledgements; see [setup verification](SiloUI-DEPENDENCIES-BACKUP-TESTING.md#continue-and-the-setup-queue).
 
-On a normal launch, onboarding uses completed sandbox fixture progress, so
+On a normal launch, onboarding uses completed computer fixture progress, so
 Review → Finish opens the permission switches without an environment override.
 Explicit loading and failure scenarios remain selectable for UI checks. This
 default changes only onboarding progress; native settings and OS permissions
-remain real. Sandbox readiness is still scaffold data, not live verification.
+remain real. Computer readiness is still scaffold data, not live verification.
 
 A debug-only presentation switch opens the real signed bundle directly on the
 completed onboarding panel while retaining real settings and system-integration
@@ -469,7 +469,7 @@ git diff --check -- app/SiloUI/src-tauri
 ```
 
 All passed on macOS: 37 Rust tests. Settings coverage includes every field, false/empty selections,
-legacy import, unknown fields, invalid saved machines, corrupt/future documents,
+legacy import, unknown fields, invalid saved computers, corrupt/future documents,
 failed-write retry, incomplete temporary files, concurrent patches, onboarding
 recovery, fixture isolation, status initialization ordering, and both Quit
 acknowledgment paths. Focused integration coverage includes verified on/off,
@@ -504,7 +504,7 @@ General, Notifications, and onboarding browser screenshots at 1160×820 were
 compared with committed HEAD: zero changed pixels on all three surfaces. Tests
 also exercise all 12 preferences, retained values after source replacement and
 remount, native event ordering, missed-event refresh, Quit queue draining,
-unfinished machine input, Git input, and completion/Cancel behavior.
+unfinished computer input, Git input, and completion/Cancel behavior.
 
 The macOS bundle used for native checks was
 `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Preview.app`. It ran with
@@ -531,7 +531,7 @@ The signed bundle was opened with `SILO_NATIVE_ONBOARDING_COMPLETE=1`, using the
 normal persisted settings and real OS adapters. Native accessibility checks
 observed both parent switches off on entry. Enabling `Launch Silo at login`
 returned a checked switch and revealed `Startup preferences`, the saved
-`Start sandboxes at launch` choice, and the saved sandbox selection. Disabling
+`Start computers at launch` choice, and the saved computer selection. Disabling
 login registration returned an unchecked switch and hid those children. The
 original off state was restored; child preferences were not edited.
 
@@ -539,14 +539,14 @@ Clicking `Enable notifications` entered the pending state: unchecked and disable
 with notification categories hidden. Grant/denial verification is still manual:
 computer-use access to Apple's `UserNotificationCenter` authorization-dialog app
 is blocked. The app was left open for the user to answer the OS request. No
-logout/login test was performed. The completed sandbox presentation remains a
-scaffold; these checks do not prove sandbox startup or live VM state.
+logout/login test was performed. The completed computer presentation remains a
+scaffold; these checks do not prove computer startup or live VM state.
 
 The complete native checklist below is **not** claimed as passed. Accessing the
 macOS status item through SystemUIServer timed out in automation; native panel
 appearance, folder picker, focus, Escape, and outside-click dismissal remain
-unverified for this change. The then-default running setup fixture blocked machine
-editing, so native persistence checks used editable Git inputs; machine-editor
+unverified for this change. The then-default running setup fixture blocked computer
+editing, so native persistence checks used editable Git inputs; computer-editor
 recovery is covered by component and native storage tests.
 
 For repeatable manual checks, build first, then launch from the repository root:
@@ -562,7 +562,7 @@ open -n 'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Preview.app' \
 2. In General change Theme, both startup switches, startup selection, Terminal,
    Code editor, Browser, and Reduce motion. In Notifications change the master
    switch and each category. Navigate away and back; verify each value.
-3. Clear Startup sandboxes, disable/re-enable Start sandboxes at launch, and
+3. Clear Startup computers, disable/re-enable Start computers at launch, and
    confirm the empty selection survives. Disable/re-enable notifications and
    confirm category choices survive.
 4. Open the native panel. Verify matching appearance, motion, and application
@@ -572,7 +572,7 @@ open -n 'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Preview.app' \
    Leave repository selections, push choices, and Git identity input. Quit without
    Finish, relaunch with the same test directory, and verify recovery. Separately,
    in the complete browser fixture (`?view=onboarding&scenario=complete`), exercise
-   machine editing, Cancel, and Finish. Do not treat a fixture reload as a disk
+   computer editing, Cancel, and Finish. Do not treat a fixture reload as a disk
    recovery check: explicit fixtures deliberately use memory.
 6. Use Quit Silo immediately after another edit, confirm process exit, relaunch
    with the same directory, and verify all preference values. Repeat System,

@@ -204,7 +204,7 @@ These checks use frontend fixtures and do not establish installed-app or live VM
 performance.
 
 Computer badge follow-up on 2026-09-22 removes the Computer column and reuses
-`ConnectionIcon`'s remote-VM server silhouette inside `WorkspaceBadge`, retaining
+`ConnectionIcon`'s remote-VM server silhouette inside `ComputerBadge`, retaining
 the state dot. The shared badge exposes the owning computer in its accessible
 name and in a tooltip on hover or focus. A same-named local/remote fixture verified
 the distinction visually and confirmed the "Office Mac" tooltip. Skeleton and

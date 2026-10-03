@@ -197,7 +197,7 @@ accepted as a bug to fix without changing intended behaviour.
 ## 3. Data loss and destructive actions
 
 - **Delete copy contradicts behaviour** ✓ —
-  `app/SiloUI/src/features/application/pages/sandbox-detail-page.tsx:498`,
+  `app/SiloUI/src/features/application/pages/computer-detail-page.tsx:498`,
   `overview-page.tsx:126` vs `runtime.rs:3284-3285`.
 - **Remote sandboxes addressed by bare name** ✓ — command palette
   (`application-commands.ts:55-67`) and tray menu (`native-workspace-menu.tsx:25-36`)

@@ -59,7 +59,7 @@ the text default. The image describes itself in
 
 - **Host.** A new computer saved without a desktop setting gets one with
   `Start desktop with computer` on when the bundled image is v4 or later
-  (`desktop::default_new_vm_desktops`, applied when the configuration is saved),
+  (`desktop::default_new_computer_desktops`, applied when the configuration is saved),
   and `desktop.builtIn: true`. Creation then runs the same install action as the
   explicit flow, so no user step is needed. A new built-in computer always starts its
   desktop with the computer, including when duplicated settings requested manual
@@ -186,7 +186,7 @@ error. They use temporary paths without running a computer.
   a security boundary inside the computer: agents there have root. A fork starts with its
   source's mode; an import starts with `ask`.
 - **Desktop state.** `read_desktop_state` adds `computerUse` for built-in computers,
-  also while stopped (`state: "vm-stopped"` keeps the approval and the last
+  also while stopped (`state: "computer-stopped"` keeps the approval and the last
   versions seen): `state` (`unavailable`, `preparing`,
   `installing`, `ready`, `failed`), `reason`, `compatibility` (`tested`,
   `untested`, `unknown`), `warning`, `approval`, `appliedApproval`, `approvalApply`,

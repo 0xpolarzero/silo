@@ -16,7 +16,7 @@ were inspected, and no runtime behavior was changed.
   characters. Binary records become a placeholder. Marker-based redaction runs
   here, after runtime persistence. Read failures become ordinary-looking log
   records with the current time.
-- [Logs UI](../app/SiloUI/src/features/application/pages/workspaces-page.tsx):
+- [Logs UI](../app/SiloUI/src/features/application/pages/computers-page.tsx):
   selected sandboxes, newest first, local time, message, sandbox badge, text
   search and per-record/bulk copy. Search covers the loaded slice only. Copy
   exports message text without structured timestamps or sandbox identity.

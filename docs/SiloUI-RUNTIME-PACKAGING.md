@@ -147,7 +147,7 @@ The profile said `false`, so the export check (an exact comparison with the prof
 | Created by 0.7.2 (also after its `adopt-disk` by 0.7.4) | `false` | 0.7.2 saved its then-default; `adopt-disk` re-saves the typed configuration unchanged. |
 | Created by 0.6.17 and migrated (`adopt-disk`) | `true` | The saved configuration has no value; 0.7.4 reads it as `true`, and `adopt-disk` writes `true`. Before `adopt-disk` the value is absent. |
 
-Decisions. The profile and every sandbox Silo creates use `true`, set explicitly (`--net-strict=true` in `runtime::create_machine`, with a test tying it to the profile). Silo does not rewrite sandboxes that carry `false`: the bundled `msb modify` has no network-strict option, so that would need a new runtime patch to change something nothing can observe. Instead the export and import comparisons (`backup::with_profile_strict`, used for the profile, the deny-all import network and the exported copy) treat a boolean or missing `strict` as the profile's value whenever the policy has no hostname rule, and an export carries the profile's value. That keeps archives made while the default was `false` (0.7.2 era exports record the profile with `false`) importable, and still refuses a non-boolean value or `strict: false` beside a hostname allow rule. The option stays out of the UI. Live check on 2026-10-01, with the bundled 0.7.4 and `strict` `true` and `false` (same guest image, Silo's network profile): `git ls-remote https://github.com/git/git HEAD`, `ssh -T git@github.com` (answering `Permission denied (publickey)`), HTTPS to `example.com` and `pypi.org`, and plain HTTP all behaved identically.
+Decisions. The profile and every sandbox Silo creates use `true`, set explicitly (`--net-strict=true` in `runtime::create_computer`, with a test tying it to the profile). Silo does not rewrite sandboxes that carry `false`: the bundled `msb modify` has no network-strict option, so that would need a new runtime patch to change something nothing can observe. Instead the export and import comparisons (`backup::with_profile_strict`, used for the profile, the deny-all import network and the exported copy) treat a boolean or missing `strict` as the profile's value whenever the policy has no hostname rule, and an export carries the profile's value. That keeps archives made while the default was `false` (0.7.2 era exports record the profile with `false`) importable, and still refuses a non-boolean value or `strict: false` beside a hostname allow rule. The option stays out of the UI. Live check on 2026-10-01, with the bundled 0.7.4 and `strict` `true` and `false` (same guest image, Silo's network profile): `git ls-remote https://github.com/git/git HEAD`, `ssh -T git@github.com` (answering `Permission denied (publickey)`), HTTPS to `example.com` and `pypi.org`, and plain HTTP all behaved identically.
 
 ### Verification and pins not updated
 
@@ -164,7 +164,7 @@ sandbox has runtime status `Created` until its first boot. Unpatched MicroSandbo
 could not remove one: `msb remove <name>` exits 1 with `error: sandbox still running:
 cannot remove sandbox "<name>": status is Created`; `--force` fails the same way and
 `msb stop` leaves the status at `Created`. Silo's delete (`preflight_removal` and
-`remove_machine_runtime` in `runtime.rs`) treats `Created` as stopped and runs `msb remove
+`remove_computer_runtime` in `runtime.rs`) treats `Created` as stopped and runs `msb remove
 --quiet <name>`, so deleting any never-started sandbox failed. The cause is
 `remove_local_persisted_sandbox` (`sdk/rust/lib/sandbox/mod.rs`, v0.7.4 lines 1739 and
 1783): both its status check and the recheck under the lifecycle locks accept only
@@ -208,7 +208,7 @@ remove sandbox \"never-started\": status is Created")` and passes with it.
 `backup.rs` and the pinned start and restore source; not every path was run, because the
 runtime cannot boot a guest here.
 
-- Creating a sandbox. `create_machine_with_progress` runs the only production `msb create`, with
+- Creating a sandbox. `create_computer_with_progress` runs the only production `msb create`, with
   `--no-start`. The sandbox stays `Created` until `verify_guest_tools` boots it once through
   `msb exec`, and Silo accepts `Created` or `Stopped` after that check. A failure before the
   first boot completes (the create itself, the status check, a first boot that fails its start

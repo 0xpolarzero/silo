@@ -35,10 +35,10 @@ predefined items. About reports the built app version.
   leaves the local app at 0.1.0 for the owner's update test. Production updater
   endpoint/key remain unchanged.
 - Actual macOS menu clicks: Settings opened General; Check for Updates displayed
-  progress then version 0.1.1 available; Create Backup opened sandbox selection;
+  progress then version 0.1.1 available; Create Backup opened computer selection;
   Restore Backup opened the archive picker, which was cancelled without restoring.
   Those two items belonged to the since-removed Backup page. File → Import
-  Sandbox… replaced Restore Backup and Export… moved to each sandbox's menu;
+  Computer… replaced Restore Backup and Export… moved to each computer's menu;
   this record does not cover them.
 - Command-N opened the existing VM form, cancelled without creating a VM.
   Command-K opened and closed one palette. Hide Sidebar collapsed the existing

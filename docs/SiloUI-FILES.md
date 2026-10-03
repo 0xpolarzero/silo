@@ -75,7 +75,7 @@ onboarding tests were updated to exercise supported CPU edits instead of renamin
 
 Final normal macOS bundle was rebuilt and reopened at
 `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`. The runtime warning was
-absent. Sandboxes > Files showed `dev` with “Start this VM to browse its files.”
+absent. Computers > Files showed `dev` with “Start this computer to browse its files.”
 The VM remained stopped, and Silo was left open on Files for user testing.
 
 The directory command is declared in [`src-tauri/build.rs`](../app/SiloUI/src-tauri/build.rs)

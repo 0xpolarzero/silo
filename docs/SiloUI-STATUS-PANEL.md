@@ -37,6 +37,6 @@ Polling stops on window blur, hidden document, leaving the picker, or unavailabl
 computer state. Listing never boots a stopped computer. Preview/test trees are supplied only
 through the fixture loader, with no production fallback to `computer.files`.
 
-Manual check: start dev, open Silo’s status item, choose dev’s Open in editor action,
+Manual check: start dev, open Silo’s status item, choose the Open in <editor>… action of dev,
 then browse silo-files-test-express/lib. Breadcrumbs must return to real cached
 folders, filtering must narrow the list, and Open must use the chosen guest path.

@@ -257,7 +257,7 @@ refusal with a second Silo process, version verification, cleanup, and downgrade
 refusal. The process fixtures use a copied sleep executable, not live VMs. The
 GUI authentication prompt and a live desktop VM restart were not exercised.
 
-## Stopping sandboxes only for installation, 29 September 2026
+## Stopping computers only for installation, 29 September 2026
 
 Review finding F-04: the in-app update stopped every local VM before system
 authentication, the source check, the APT refresh and the download, and waited
@@ -271,10 +271,10 @@ The helper now prints `ready` after the download and waits up to 30 minutes for
 answers only after flushing settings, recording the running set and stopping it;
 any other answer, end of input or the timeout installs nothing. An already
 installed target version uses the same handshake before Silo restarts. Silo waits
-up to 30 minutes for `ready` while sandboxes keep running and new operations are
+up to 30 minutes for `ready` while computers keep running and new operations are
 refused; the VM operation gate is taken only for the install stage, so Quit is
 not queued behind authentication. On timeout Silo closes the helper's input, stops
-the prompt if authentication has not completed, and reports that no sandbox was
+the prompt if authentication has not completed, and reports that no computer was
 stopped. A failure after `install` restores the recorded running set. APT's
 existing 60-second lock timeout bounds the install stage. Unit tests use shell
 fixtures for the handshake and Python tests for the helper; the packaged pkexec
@@ -287,7 +287,7 @@ After a successful Debian installation, Silo keeps its installation and VM
 operation guards, closes helpers, releases its single-instance claim and executes
 the updated binary. If replacement fails, it exits with status 1. Reopen Silo
 to acquire the claim and restore the saved running set from the update journal.
-The old process never cancels shutdown or resumes sandbox recovery after releasing
+The old process never cancels shutdown or resumes computer recovery after releasing
 its claim. Settings were flushed before installation, so this exit intentionally
 skips the ordinary exit handler and its additional state writes.
 

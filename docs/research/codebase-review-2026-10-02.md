@@ -259,7 +259,7 @@ Unable to find an accessible element with the role "button" and name "SSH contro
 
 ### R-15. Hidden computer-use views still poll native and remote state
 
-**High confidence; fixture reproduced.** [Computer-use section](../../app/SiloUI/src/desktop/computer-use-panel.tsx), lines 185–200, has an unconditional interval. [Detail-page call site](../../app/SiloUI/src/features/application/pages/sandbox-detail-page.tsx), line 481, supplies no activity flag; [application sections](../../app/SiloUI/src/features/application/application-app.tsx), lines 351–365, remain mounted while hidden.
+**High confidence; fixture reproduced.** [Computer-use section](../../app/SiloUI/src/desktop/computer-use-panel.tsx), lines 185–200, has an unconditional interval. [Detail-page call site](../../app/SiloUI/src/features/application/pages/computer-detail-page.tsx), line 481, supplies no activity flag; [application sections](../../app/SiloUI/src/features/application/application-app.tsx), lines 351–365, remain mounted while hidden.
 
 **Trigger:** inspect a desktop sandbox, navigate to Settings/GitHub, or hide the main document. A hidden-section/hidden-document fixture observed the initial request plus three more reads over 15 seconds. [Native desktop state](../../app/SiloUI/src-tauri/src/desktop.rs), lines 325–326 and 365–393, inspects runtime state and executes guest commands. Related app-status/viewer timers need the same ownership check.
 

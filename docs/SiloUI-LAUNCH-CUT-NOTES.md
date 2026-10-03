@@ -8,7 +8,7 @@ is the independent [54-second launch cut](../artifacts/silo-launch-cut/README.md
 | Film claim | Primary product source | Scope preserved in the film |
 | --- | --- | --- |
 | Linux sandboxes on your computers | [README](../README.md) | Virtual machines, not containers; macOS and Linux hosts |
-| Local and remote sandboxes in one app | [Remote computer model](../app/SiloUI/src/features/application/model/remote-computers.ts) and README | Remote connection uses SSH; no claim that remote credentials are centrally managed |
+| Local and remote sandboxes in one app | [Connections model](../app/SiloUI/src/features/application/model/connections.ts) and README | Remote connection uses SSH; no claim that remote credentials are centrally managed |
 | Familiar editors, terminals, local ports | [Overview](../app/SiloUI/src/features/application/pages/overview-page.tsx), [Network](../app/SiloUI/src/features/application/pages/network-page.tsx), README | Uses existing editor and terminal integrations and local port connections |
 | An agent can use a Linux desktop | [Luda integration](SiloUI-LUDA.md) (since removed; LCU replaces it) | Optional desktop; supported agents must be installed and signed in by the user; example is labeled an illustration |
 | Selected repositories, read-only by default | README and [GitHub access editor](../app/SiloUI/src/features/github/components/github-access-editor.tsx) | Shows OAuth policies; does not generalize this restriction to full-permission personal tokens |
