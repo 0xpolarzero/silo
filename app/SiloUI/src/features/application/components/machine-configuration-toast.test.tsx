@@ -57,6 +57,22 @@ describe("describeConfiguration", () => {
     expect(values).toEqual([...values].sort((a, b) => a - b))
     expect(at("desktop-installation").step).toBe("Setting up the desktop")
   })
+
+  it("names what creation waits for and finishes with computer use setup, with progress where known", () => {
+    const step = (...events: SiloProgressEvent[]) => describeConfiguration(operation(events), committed)
+    expect(step(event("workspace-image-wait"))).toMatchObject({ step: "Waiting for the VM image", progress: null })
+    expect(step(event("chatgpt-app-wait"))).toMatchObject({ step: "Waiting for ChatGPT for Linux", progress: null })
+    const download = { ...event("chatgpt-app-download"), downloadedBytes: 620, totalBytes: 1000 }
+    expect(step(download)).toMatchObject({ step: "Downloading ChatGPT for Linux · 62%", progress: 0.62 })
+    expect(step({ ...event("chatgpt-app-download"), downloadedBytes: 5 })).toMatchObject({ step: "Downloading ChatGPT for Linux" })
+    expect(step(event("computer-use-setup", 0)).step).toBe("Setting up the desktop and computer use")
+    const failed = { ...event("chatgpt-app-failed"), message: "No network" }
+    expect(step(failed).step).toBe("ChatGPT for Linux failed: No network")
+    // The bar still advances monotonically with the added stages.
+    const values = ["workspace-image-wait", "workspace-runtime-preparation", "desktop-installation", "computer-use-setup", "workspace-verification"].map(name => step(event(name, 0)).progress!)
+    expect(values).toEqual([...values].sort((a, b) => a - b))
+    expect(new Set(values).size).toBe(values.length)
+  })
 })
 
 function Harness({ current, workspaces, onOpen }: { current: SandboxConfigurationOperation | null; workspaces: ApplicationWorkspace[]; onOpen?: (id: string) => void }) {
@@ -88,6 +104,22 @@ describe("MachineConfigurationToast", () => {
     await waitFor(() => expect(approval).toBeChecked())
     await user.click(screen.getByRole("button", { name: "Open" }))
     expect(onOpen).toHaveBeenCalledWith("vm-new")
+  })
+
+  it("lets the user finish without computer use while ChatGPT for Linux fails, and warns when setup is left for the first start", async () => {
+    const failed = { ...event("chatgpt-app-failed"), message: "No network" }
+    const view = render(<Harness current={operation([failed])} workspaces={existing} />)
+    expect(await screen.findByText("ChatGPT for Linux failed: No network")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Retry" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Finish without computer use" })).toBeVisible()
+
+    view.rerender(<Harness current={operation([event("computer-use-setup", 0), event("computer-use-pending", 0)])} workspaces={existing} />)
+    expect(await screen.findByText("Setting up the desktop and computer use")).toBeVisible()
+    expect(screen.queryByRole("button", { name: "Finish without computer use" })).not.toBeInTheDocument()
+
+    view.rerender(<Harness current={null} workspaces={[...existing, created()]} />)
+    expect(await screen.findByText("Created fresh")).toBeVisible()
+    expect(screen.getByText("Computer use will finish setting up at first start.")).toBeVisible()
   })
 
   it("offers no switch for a sandbox without built-in computer use", async () => {

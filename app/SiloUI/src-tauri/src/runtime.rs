@@ -3435,6 +3435,11 @@ fn machine_progress(
     let message = match (step, fraction) {
         ("workspace-configuration", 0) => format!("Configuring {workspace}…"),
         ("desktop-installation", _) => "Installing the Linux desktop.".into(),
+        ("computer-use-setup", _) => "Setting up the desktop and computer use.".into(),
+        ("computer-use-pending", _) => "Computer use will finish setting up at first start.".into(),
+        ("workspace-image-wait", _) => "Waiting for the VM image…".into(),
+        ("chatgpt-app-wait", _) => "Waiting for ChatGPT for Linux…".into(),
+        ("chatgpt-app-download", _) => "Downloading ChatGPT for Linux…".into(),
         ("workspace-configuration", _) => format!("{workspace} configured."),
         ("workspace-verification", 0) => format!("Verifying {workspace}…"),
         ("workspace-verification", _) => format!("{workspace} verified."),
@@ -3485,6 +3490,61 @@ fn machine_progress(
         diagnostic: None,
         partial: false,
     }
+}
+
+/// Shows what a creation is waiting for before it takes the operation gate. These events
+/// are for the creation toast only; they are not part of the setup journal.
+pub(crate) fn publish_creation_wait(
+    app: &AppHandle,
+    request_id: &str,
+    step: &crate::creation_inputs::Step,
+) {
+    use crate::creation_inputs::{ChatGpt, Step};
+    let event = match step {
+        Step::Image => machine_progress(request_id, "workspace-image-wait", "", 0),
+        Step::ChatGpt(ChatGpt::Downloading { received, total }) => {
+            let mut event = machine_progress(request_id, "chatgpt-app-download", "", 0);
+            event.downloaded_bytes = Some(*received);
+            event.total_bytes = Some(*total).filter(|total| *total > 0);
+            event
+        }
+        Step::ChatGpt(ChatGpt::Failed { reason }) => {
+            let mut event = machine_progress(request_id, "chatgpt-app-failed", "", 0);
+            event.level = "warning".into();
+            event.message = reason.chars().take(300).collect();
+            event
+        }
+        Step::ChatGpt(_) => machine_progress(request_id, "chatgpt-app-wait", "", 0),
+    };
+    let _ = app.emit_to("main", "silo://machine-configuration-progress", &event);
+}
+
+/// The VMs a change would create, for what creation has to wait for before the gate.
+fn creation_needs(
+    paths: &RuntimePaths,
+    mut request: MachineConfigurationRequest,
+) -> crate::creation_inputs::Needs {
+    let Ok(previous) = read_metadata(&paths.metadata) else {
+        return Default::default();
+    };
+    apply_desktop_defaults(paths, &previous, &mut request);
+    let mut needs = crate::creation_inputs::Needs::default();
+    for machine in request.machines.iter().filter(|machine| machine.is_vm()) {
+        if previous.machines.iter().any(|old| old.id() == machine.id()) {
+            continue;
+        }
+        needs.machines.push(machine.id().to_owned());
+        if crate::computer_use::is_built_in(machine) {
+            needs.computer_use.push(machine.id().to_owned());
+        }
+    }
+    needs
+}
+
+/// "Finish without computer use" from the creation toast while it waits for ChatGPT for Linux.
+#[tauri::command]
+pub fn skip_computer_use_wait(request_id: String) {
+    crate::creation_inputs::skip(&request_id);
 }
 
 fn activity_timestamp() -> u64 {
@@ -3897,7 +3957,7 @@ fn read_activity(
     }
     for event in &mut events {
         event.message = match event.step.as_str() {
-            "desktop-installation" | "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-image-preparation" | "workspace-image-import" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
+            "desktop-installation" | "computer-use-setup" | "computer-use-pending" | "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-image-preparation" | "workspace-image-import" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
             "image-resolving" => format!("{}: Resolving the VM image…", event.workspace),
             "image-resolved" => format!("{}: VM image resolved; preparing the download…", event.workspace),
             "image-download" => format!("{}: Downloading the VM image…", event.workspace),
@@ -4130,6 +4190,14 @@ pub async fn retry_machine_configuration(
     );
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
+        // Waited for before the gate, as in `change_machine_configuration`.
+        let needs = configuration_recovery::pending_request(&paths)
+            .ok()
+            .flatten()
+            .or_else(|| read_metadata(&paths.metadata).ok())
+            .map(|request| creation_needs(&paths, request))
+            .unwrap_or_default();
+        crate::creation_inputs::wait_before_gate(&app, &paths, &request_id, &needs)?;
         // Changes the shared VM inventory/metadata; computer-wide.
         let _guard = OPERATIONS
             .kind(operation_gate::OperationKind::MachineConfiguration)
@@ -4184,6 +4252,16 @@ pub async fn change_machine_configuration(
     let deleted = change.deleted_ids();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
+        // The image import and the ChatGPT download are waited for before the gate: holding
+        // the computer-wide gate for minutes would stall every lifecycle operation and Quit.
+        let needs = read_metadata(&paths.metadata)
+            .ok()
+            .and_then(|mut request| {
+                change.apply(&mut request.machines).ok()?;
+                Some(creation_needs(&paths, request))
+            })
+            .unwrap_or_default();
+        crate::creation_inputs::wait_before_gate(&app, &paths, &request_id, &needs)?;
         // Changes the shared VM inventory/metadata; computer-wide.
         let _guard = OPERATIONS
             .removing(&change.deleted_ids(), &change.label())
@@ -5562,6 +5640,21 @@ fn create_machine_with_progress(
         progress("desktop-installation", name, 1);
     }
     crate::computer_use::start_with(paths, id, crate::computer_use::initial_approval());
+    // A skipped setup is consumed even for a VM without computer use.
+    let without_computer_use = crate::creation_inputs::take_without_computer_use(id);
+    if crate::computer_use::is_built_in(machine) {
+        progress("computer-use-setup", name, 0);
+        let finished = !without_computer_use
+            && crate::computer_use::finish_in_creation(runner, paths, id, name)
+                .map_err(|reason| {
+                    eprintln!("Computer use was not set up while creating {name}: {reason}")
+                })
+                .is_ok();
+        // The first start applies it, as it does for any apply that did not finish.
+        if !finished {
+            progress("computer-use-pending", name, 0);
+        }
+    }
     Ok(())
 }
 
@@ -10408,6 +10501,11 @@ exit 9
         }
     }
 
+    /// What the guest helper answers when it applied computer use.
+    fn applied_report() -> Value {
+        json!({"state": "ready", "apply": {"approval": "ask", "outcome": "applied", "reason": null}})
+    }
+
     fn built_in_vm() -> MachineConfiguration {
         let mut machine = vm();
         if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
@@ -10441,6 +10539,7 @@ exit 9
             json!(1),
             json!(null),
             inspect(&paths, "Stopped"),
+            applied_report(),
         ]);
         create_machine(&runner, &paths, &built_in_vm()).unwrap();
         crate::computer_use::set_test_published_dir(None);
@@ -10479,6 +10578,7 @@ exit 9
                 json!(1),
                 json!(null),
                 inspect(&paths, "Stopped"),
+                applied_report(),
             ]);
             let machine = built_in_vm();
             crate::computer_use::with_initial_approval(mode, || {
@@ -10487,8 +10587,89 @@ exit 9
             crate::computer_use::set_test_published_dir(None);
             let settings = crate::computer_use::settings(&paths, machine.id());
             assert_eq!(settings.approval, mode);
-            assert_eq!((settings.applied, settings.last), (None, None));
+            // Creation applies the mode itself, in the one boot that has the desktop up.
+            let apply = runner.calls.lock().unwrap().last().cloned().unwrap();
+            assert!(apply
+                .last()
+                .unwrap()
+                .contains(&format!("apply --approval {} --boot", mode.as_str())));
+            assert_eq!(
+                settings.last.map(|attempt| attempt.outcome),
+                Some(crate::computer_use::Outcome::Applied)
+            );
         }
+    }
+
+    #[test]
+    fn creation_without_the_computer_use_apply_finishes_with_a_warning_and_no_boot() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let published = directory.path().join("published");
+        fs::create_dir(&published).unwrap();
+        crate::computer_use::set_test_published_dir(Some(published));
+        let runner = StubRunner::successful_json(vec![
+            json!([]),
+            json!(1),
+            json!(1),
+            json!(null),
+            inspect(&paths, "Created"),
+            json!(null),
+            inspect(&paths, "Stopped"),
+            inspect(&paths, "Stopped"),
+            json!(1),
+            json!(null),
+            inspect(&paths, "Stopped"),
+        ]);
+        let machine = built_in_vm();
+        crate::creation_inputs::exclude_computer_use(&[machine.id().to_owned()]);
+        let events = Mutex::new(Vec::new());
+        create_machine_with_progress(&runner, &paths, &machine, &|step, _, _| {
+            events.lock().unwrap().push(step.to_owned())
+        })
+        .unwrap();
+        crate::computer_use::set_test_published_dir(None);
+        let calls = runner.calls.lock().unwrap();
+        assert!(!calls
+            .last()
+            .unwrap()
+            .iter()
+            .any(|arg| arg.contains("silo-computer-use")));
+        assert_eq!(
+            events.lock().unwrap().last().map(String::as_str),
+            Some("computer-use-pending")
+        );
+        assert!(!crate::creation_inputs::take_without_computer_use(
+            machine.id()
+        ));
+    }
+
+    #[test]
+    fn creating_a_vm_needs_the_image_and_the_app_only_when_it_is_new_and_built_in() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut plain = vm();
+        if let MachineConfiguration::Vm { desktop, .. } = &mut plain {
+            *desktop = None;
+        }
+        let request = |machines: Vec<MachineConfiguration>| MachineConfigurationRequest {
+            schema_version: 1,
+            machines,
+        };
+        write_metadata(&paths.metadata, &request(Vec::new())).unwrap();
+        // A v3 image has no built-in desktop: the image is needed, the app is not.
+        let needs = creation_needs(&paths, request(vec![plain.clone()]));
+        assert_eq!(needs.machines, [plain.id().to_owned()]);
+        assert!(needs.computer_use.is_empty());
+        {
+            let _v4 = guest_image::pin_test_version("ubuntu-24.04-v4");
+            let needs = creation_needs(&paths, request(vec![plain.clone()]));
+            assert_eq!(needs.computer_use, [plain.id().to_owned()]);
+        }
+        // An existing sandbox is never waited for.
+        write_metadata(&paths.metadata, &request(vec![plain.clone()])).unwrap();
+        assert!(creation_needs(&paths, request(vec![plain])).is_empty());
     }
 
     #[test]

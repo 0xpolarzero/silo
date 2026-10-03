@@ -27,6 +27,8 @@ export interface OperationProgressOptions {
   /** Epoch ms the operation began; drives the elapsed timer. Defaults to when the toast first rendered. */
   startedAt?: number
   cancel?: OperationCancel
+  /** A button beside Cancel for a choice the step offers, such as Retry. */
+  action?: { label: string; onClick: () => void }
   /** Sandbox this notification is about (see `dismissSandboxToasts`). */
   sandbox?: string | string[]
 }
@@ -69,7 +71,7 @@ function isRedundantStep(title: string | undefined, step: string | undefined): b
   return normalizedStep.length === 0 || normalize(title).startsWith(normalizedStep)
 }
 
-export function OperationToastBody({ title, step, steps, progress, startedAt, cancel }: Omit<OperationProgressOptions, "title"> & { title?: string }) {
+export function OperationToastBody({ title, step, steps, progress, startedAt, cancel, action }: Omit<OperationProgressOptions, "title"> & { title?: string }) {
   const elapsed = useElapsed(startedAt)
   const [confirming, setConfirming] = useState(false)
   const cancelButton = useRef<HTMLButtonElement>(null)
@@ -108,6 +110,9 @@ export function OperationToastBody({ title, step, steps, progress, startedAt, ca
         {stepIcon[entry.state]}<span className="min-w-0 truncate" title={entry.label}>{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
       </li>)}
     </ul>}
-    {cancel && <div className="flex justify-end"><Button ref={cancelButton} type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}
+    {(cancel || action) && <div className="flex justify-end gap-2">
+      {action && <Button type="button" variant="outline" size="xs" onClick={action.onClick}>{action.label}</Button>}
+      {cancel && <Button ref={cancelButton} type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button>}
+    </div>}
   </div>
 }

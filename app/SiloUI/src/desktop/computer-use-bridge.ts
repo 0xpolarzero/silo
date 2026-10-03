@@ -28,6 +28,11 @@ export const nativeComputerUseBackend: ComputerUseBackend = {
   listenStatus: handler => listen("chatgpt-app-status", event => handler(event.payload)),
 }
 
+/** Finishes the creation with this request ID without waiting for ChatGPT for Linux; computer use then sets up at first start. */
+export async function skipComputerUseWait(requestId: string): Promise<void> {
+  try { await invoke("skip_computer_use_wait", { requestId }) } catch { /* nothing waits when this is not the desktop app */ }
+}
+
 export interface ChatGptAppSnapshot {
   status: ChatGptAppStatus | null
   /** Set while a retry request is in flight. */

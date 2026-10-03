@@ -31,6 +31,8 @@ use tauri::{AppHandle, Emitter};
 
 /// Where the guest sees the computer's published ChatGPT app folder.
 pub(crate) const GUEST_MOUNT: &str = "/opt/silo/chatgpt";
+/// Where the guest finds the host's verified LCU archive, read-only.
+pub(crate) const LCU_GUEST_MOUNT: &str = "/opt/silo/lcu";
 const HELPER: &str = include_str!("../guest/silo-computer-use.py");
 const LCU_LOCK: &str = include_str!("../guest/lcu-lock.json");
 const GUEST_HELPER: &str = "/usr/local/libexec/silo-computer-use";
@@ -667,6 +669,16 @@ fn mount_spec(dir: &Path) -> String {
 /// Silo has none (the VM would never get computer use). MicroSandbox refuses a
 /// symlinked mount root, so the path is canonical.
 pub(crate) fn mount_args(machine: &MachineConfiguration) -> Result<Vec<String>, RuntimeError> {
+    mount_args_with(machine, crate::preparation::lcu_folder())
+}
+
+/// `mount_args` with the host folder of the verified LCU archive, when Silo has one. It
+/// is lent read-only beside the app folder to new VMs so the guest installs LCU without
+/// downloading it; a VM without it falls back to the download.
+fn mount_args_with(
+    machine: &MachineConfiguration,
+    lcu: Option<PathBuf>,
+) -> Result<Vec<String>, RuntimeError> {
     if !is_built_in(machine) {
         return Ok(Vec::new());
     }
@@ -682,7 +694,20 @@ pub(crate) fn mount_args(machine: &MachineConfiguration) -> Result<Vec<String>, 
         .filter(|dir| dir.is_dir())
         .or_else(register_published_now)
         .ok_or_else(unavailable)?;
-    Ok(vec!["-v".into(), mount_spec(&dir)])
+    let mut args = vec!["-v".into(), mount_spec(&dir)];
+    // MicroSandbox refuses a symlinked mount root, so the folder is canonical; one that
+    // vanished is not worth failing a creation for.
+    if let Some(lcu) = lcu
+        .and_then(|dir| dir.canonicalize().ok())
+        .filter(|dir| dir.is_dir())
+    {
+        args.push("-v".into());
+        args.push(format!(
+            "{}:{LCU_GUEST_MOUNT}:ro,uid=0,gid=0",
+            lcu.display()
+        ));
+    }
+    Ok(args)
 }
 
 /// Whether a sandbox's inspected configuration has the read-only computer-use mount
@@ -829,6 +854,20 @@ fn run_helper(
     force: bool,
     boot: bool,
 ) -> Run {
+    run_helper_with(runner, paths, name, mode, force, boot, false)
+}
+
+/// `run_helper`; `allow_boot` lets the run boot a stopped VM for the call and stop it again
+/// (creation, which has no running guest to apply in).
+fn run_helper_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    name: &str,
+    mode: Approval,
+    force: bool,
+    boot: bool,
+    allow_boot: bool,
+) -> Run {
     let pinned = pinned(DebArch::host().map_err(|e| RuntimeError::Unavailable(e.message))?)
         .map_err(RuntimeError::Unavailable)?;
     let output = desktop::guest_within(
@@ -838,7 +877,7 @@ fn run_helper(
         &guest_script(&pinned, &apply_command(mode, force, boot)),
         APPLY_TIMEOUT,
         APPLY_GRACE,
-        false,
+        allow_boot,
     )
     .map_err(timeout_as_timed_out)?;
     let malformed = || RuntimeError::Malformed("Computer use returned an invalid status.".into());
@@ -891,6 +930,20 @@ fn run_attempt(
     force: bool,
     boot: bool,
 ) -> Run {
+    run_attempt_with(runner, paths, id, name, mode, force, boot, false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_attempt_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    id: &str,
+    name: &str,
+    mode: Approval,
+    force: bool,
+    boot: bool,
+    allow_boot: bool,
+) -> Run {
     let previous = match begin_attempt(paths, id, mode) {
         Ok(previous) => previous,
         Err(error) => {
@@ -909,12 +962,31 @@ fn run_attempt(
             return Err(error);
         }
     };
-    let run = run_helper(runner, paths, name, mode, force, boot);
+    let run = run_helper_with(runner, paths, name, mode, force, boot, allow_boot);
     match attempt_of(mode, &run) {
         Some(attempt) => record_attempt(paths, id, attempt),
         None => restore_unfinished(paths, id, previous),
     }
     run
+}
+
+/// Sets computer use up as the last step of creating a built-in VM: one deliberate boot with
+/// the desktop session up, the guest helper's apply in the VM's approval mode, and the
+/// stop that ends every temporary boot. The attempt is recorded like any other, so a
+/// failure is retried by the first start. `Err` is a short reason for the caller to show.
+pub(crate) fn finish_in_creation(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    id: &str,
+    name: &str,
+) -> Result<(), String> {
+    let mode = policy_for_apply(paths, id).approval;
+    match run_attempt_with(runner, paths, id, name, mode, false, true, true) {
+        Ok((_, Report::Done(Outcome::Applied, _))) => Ok(()),
+        Ok((_, Report::Done(_, reason))) => Err(reason.unwrap_or_else(|| "not-applied".into())),
+        Ok((_, Report::NotReady)) => Err("app-missing".into()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 // ---------------------------------------------------------------- hooks
