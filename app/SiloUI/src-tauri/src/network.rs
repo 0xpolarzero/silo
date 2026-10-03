@@ -947,6 +947,8 @@ pub(crate) async fn remove_network_port(
             }
             write_config(&paths, &config)?;
         }
+        // Other computers forward the port through guest streams, not this listener.
+        crate::remote::revoke_port_streams(&vm_id, port);
         apply_saved(&app, &paths, &workspace)
     })
     .await

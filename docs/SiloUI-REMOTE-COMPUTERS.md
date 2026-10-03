@@ -106,6 +106,14 @@ untouched. A failed or externally managed upgrade returns a repair error.
 Restrictions affect new authentications; already authenticated SSH sessions must
 end before their old authority is gone.
 
+A published-port forward opens its `guest.ssh` stream with `"purpose":"port"` and
+the guest `"port"` beside `vmId`; desktop and editor streams send neither. The
+owner rejects any other purpose, and a port outside 1..=65535, before spawning
+the guest session. It keeps the open port streams by VM id and declared port, and
+unpublishing that port, from the owner or any controller, ends the matching
+streams at once instead of waiting for the controller's next poll. The label is
+metadata from Silo's own controller, not a boundary inside the SSH session.
+
 Published-port and desktop forwards share `owned_tunnel.rs`. Its watchdog shell
 leads a dedicated process group and watches a pipe held by the controller. EOF
 on controller crash or exit terminates the group, including ordinary

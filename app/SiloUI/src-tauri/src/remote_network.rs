@@ -510,7 +510,7 @@ fn open_guest_tunnel(
     owner_endpoint: u16,
 ) -> Result<Tunnel, String> {
     let (alias, config, address) =
-        crate::editor::prepare_remote_network_private(app, &key.0, &key.1)?;
+        crate::editor::prepare_remote_network_private(app, &key.0, &key.1, key.2)?;
     open_tunnel(
         |local, socket| {
             remote::guest_tunnel_commands(&config, &alias, local, address, key.2, socket)
