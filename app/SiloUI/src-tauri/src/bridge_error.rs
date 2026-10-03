@@ -10,6 +10,7 @@ pub enum ErrorCode {
     AlreadyQueued,
     Busy,
     NotFound,
+    IncompatibleVersion,
     Internal,
 }
 
@@ -17,13 +18,28 @@ pub enum ErrorCode {
 pub struct BridgeError {
     pub code: ErrorCode,
     pub message: String,
+    /// The remote protocol version the other device reported; never serialized to the UI.
+    #[serde(skip)]
+    pub peer_version: Option<u32>,
 }
+
+/// The message an unreleased-protocol (version 3) device sends for any version mismatch.
+pub const LEGACY_INCOMPATIBLE: &str =
+    "Silo versions are incompatible. Update Silo on both computers.";
 
 impl BridgeError {
     pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
+            peer_version: None,
+        }
+    }
+
+    pub fn incompatible_version(message: impl Into<String>, peer_version: Option<u32>) -> Self {
+        Self {
+            peer_version,
+            ..Self::new(ErrorCode::IncompatibleVersion, message)
         }
     }
 
@@ -49,6 +65,10 @@ impl BridgeError {
             .get("message")
             .and_then(serde_json::Value::as_str)
             .unwrap_or(legacy);
+        let peer_version = reply
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|version| u32::try_from(version).ok());
         let code = match reply.get("code") {
             Some(code) => serde_json::from_value(code.clone()).unwrap_or(ErrorCode::Internal),
             None => match legacy {
@@ -57,10 +77,15 @@ impl BridgeError {
                 | "This Silo version does not support that remote operation." => {
                     ErrorCode::UnsupportedRemoteOperation
                 }
+                LEGACY_INCOMPATIBLE => ErrorCode::IncompatibleVersion,
                 _ => ErrorCode::Internal,
             },
         };
-        Some(Self::new(code, message))
+        let mut error = Self::new(code, message);
+        if code == ErrorCode::IncompatibleVersion {
+            error.peer_version = peer_version;
+        }
+        Some(error)
     }
 }
 
@@ -119,6 +144,7 @@ mod tests {
             ErrorCode::AlreadyQueued,
             ErrorCode::Busy,
             ErrorCode::NotFound,
+            ErrorCode::IncompatibleVersion,
             ErrorCode::Internal,
         ];
         let errors: Vec<_> = codes

@@ -2,7 +2,7 @@ import { z } from "zod"
 
 /** Closed native bridge contract, checked against Rust serialization in bridge-errors.json. */
 export const bridgeErrorCodes = [
-  "update_in_progress", "unsupported_remote_operation", "cancelled", "already_queued", "busy", "not_found", "internal",
+  "update_in_progress", "unsupported_remote_operation", "cancelled", "already_queued", "busy", "not_found", "incompatible_version", "internal",
 ] as const
 type BridgeErrorCode = (typeof bridgeErrorCodes)[number]
 export const bridgeErrorSchema = z.object({ code: z.enum(bridgeErrorCodes), message: z.string() })
