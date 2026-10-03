@@ -58,3 +58,7 @@ tauri = { version = "2.11.3", features = ["test"] }
 
 [patch.crates-io]
 tauri-plugin-updater = { path = "vendor/tauri-plugin-updater" }
+
+# Debug builds hash the 400 MB bundled VM image; unoptimized SHA-256 is far slower.
+[profile.dev.package.sha2]
+opt-level = 3
