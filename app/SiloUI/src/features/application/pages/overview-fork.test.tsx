@@ -66,10 +66,10 @@ it("allows current-state Fork for a pending restored computer without starting i
 it("shows persisted checkpoint progress and locks the computer row after remount", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const computer = source.computers[0]!
-  computer.checkpointOperation = { kind: "capture", status: "running", stage: "Capturing VM state" }
+  computer.checkpointOperation = { kind: "capture", status: "running", stage: "Capturing computer state" }
   render(<OverviewPage source={source} actions={{ forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onConfigurationsChange={vi.fn()} />)
 
-  expect(screen.getByRole("status")).toHaveTextContent("Capturing VM state")
+  expect(screen.getByRole("status")).toHaveTextContent("Capturing computer state")
   expect(screen.getByRole("progressbar", { name: "Checkpoint operation progress" })).toBeVisible()
   expect(document.querySelector(`[data-computer-id="${computer.configuration.id}"]`)).toHaveAttribute("aria-busy", "true")
   // The menu stays available for navigation; the items that change the computer are locked.

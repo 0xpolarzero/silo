@@ -34,7 +34,7 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
     && (state.updateRequired === true || state.backend === "kasm")
   // v4 computers report computer use as a unit; older ones report the legacy LCU fields.
   const computerUse = state?.computerUse
-  // A failed ChatGPT download is the host's, and setting up the computer cannot fix it.
+  // A failed ChatGPT download is the device's, and setting up the computer cannot fix it.
   const downloadFailed = computerUse?.state === "failed" && computerUse.cause === "app-download"
   const lcuStatus = computerUse ? null : state?.lcuState === "needs-runtime" ? "LCU requires the official ChatGPT app in this computer"
     : state?.lcuState === "not-installed" ? "LCU is not set up"

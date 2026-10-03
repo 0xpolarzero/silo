@@ -12,7 +12,7 @@ export interface ComputerEditMenuOptions {
   busyReason?: string
   /** The computer exists in the runtime, so a Linux desktop can be added to it. */
   created: boolean
-  /** A running VM must be stopped before it can be deleted. */
+  /** A running computer must be stopped before it can be deleted. */
   running: boolean
   separatorBefore: boolean
   onEdit: () => void

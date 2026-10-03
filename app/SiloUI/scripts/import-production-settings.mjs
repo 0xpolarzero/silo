@@ -57,7 +57,7 @@ you manage will see ${DEVELOPMENT.productName} as a separate device. The copied 
 reaches the production Silo on each connected device, because that is what its
 authorized_keys entry runs there.
 
-Never copied: computers, VMs, checkpoints, disks, backups and their history, the
+Never copied: computers, checkpoints, disks, backups and their history, the
 MicroSandbox home and runtime, per-computer network and SSH settings, launch-at-login
 and startup-computer choices, update preferences, and anything under ~/.ssh.
 

@@ -35,7 +35,7 @@ it("keeps a deleted computer's activity when no computer filter is selected", ()
 it.each([false, true])("keeps a failed activity's runtime output behind Details (separate diagnostic: %s)", async (separate) => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const diagnostic = `${Array.from({ length: 20 }, (_, index) => `stderr line ${index}`).join("\n")}\n[Diagnostic truncated]`
-  const failed = { ...activity("failed", computerTarget(source.computers[0])), title: "Start failed", detail: separate ? "The VM did not boot." : `The VM did not boot.\n${diagnostic}`, diagnostic: separate ? diagnostic : undefined }
+  const failed = { ...activity("failed", computerTarget(source.computers[0])), title: "Start failed", detail: separate ? "The computer did not boot." : `The computer did not boot.\n${diagnostic}`, diagnostic: separate ? diagnostic : undefined }
   render(<ComputersPage
     source={source} section="activity" computers={source.computers} activities={[failed]} selectedComputerIds={new Set()}
     networkActions={{} as ApplicationActions} onSectionChange={vi.fn()} editor="Editor" onOpenEditor={vi.fn()}
@@ -43,7 +43,7 @@ it.each([false, true])("keeps a failed activity's runtime output behind Details 
     onComputerFilterChange={vi.fn()} onLogQueryChange={vi.fn()} onPushRepository={vi.fn()} onDismissRepositoryPush={vi.fn()}
   />)
   const list = within(screen.getByRole("list", { name: "Recent activity" }))
-  expect(list.getByText("The VM did not boot.")).toBeVisible()
+  expect(list.getByText("The computer did not boot.")).toBeVisible()
   expect(list.queryByText(/stderr line 19/)).not.toBeInTheDocument()
   expect(list.getByRole("button", { name: "Show details" })).toBeVisible()
   await userEvent.setup().click(list.getByRole("button", { name: "Show details" }))

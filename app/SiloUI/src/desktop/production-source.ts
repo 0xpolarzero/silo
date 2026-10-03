@@ -748,7 +748,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     } }
   }
 
-  // Mutation responses carry the configuration and VM state but not the enrichment of
+  // Mutation responses carry the configuration and computer state but not the enrichment of
   // a full read (D-08): no log output, no repositories, no push operations, and a
   // placeholder GitHub state. Keep those from the state they replace until the full
   // refresh that follows every mutation; the merge stays as a guard once D-08 lands.
@@ -1082,7 +1082,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         ["silo://operation-queue-changed", () => { void refreshOperationQueue() }],
         ["silo://application-state-changed", refreshFromEvent],
         ["desktop:status-opened", refreshFromEvent],
-        // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
+        // A cancelled Quit (computers would not stop, settings failed to save) keeps Silo open,
         // so setup and computer configuration must be accepted again.
         ["silo://shutdown-state-changed", (event) => {
           if (event?.payload !== false) return
@@ -1122,7 +1122,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     document.addEventListener("visibilitychange", onVisibilityChange)
     // Polling starts before the first loads finish, so a slow device cannot hold it back.
     remoteTimer ??= setInterval(() => {
-      // Repository changes inside a VM do not emit application events. A hidden
+      // Repository changes inside a computer do not emit application events. A hidden
       // window (the closed main window, the unopened status panel) does no polling,
       // including remote SSH snapshots; slow reads finish before another poll, and
       // each refresh reads remote devices once when it completes.
@@ -1238,7 +1238,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       .catch((cause) => {
         if (!stillExists()) return
         if (!remote) { setComputerFailure(action, computerId, cause); return }
-        // One VM's failure (e.g. insufficient memory) belongs on that VM's row. Whether
+        // One computer's failure (e.g. insufficient memory) belongs on that computer's row. Whether
         // the device itself is reachable is decided by the next transport check.
         if (lifecycle) { setComputerFailure(action, computerId, cause); void refreshDevices(); return }
         reportActionFailure(key, `Could not ${action.replace(/-/g, " ")}`, errorMessage(cause))
@@ -1299,7 +1299,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return promise
   }
 
-  // The committed local VM inventory the user is editing from. Targeted changes carry
+  // The committed local computer inventory the user is editing from. Targeted changes carry
   // this as their `expected` baseline so a queued edit applies to fresh state.
   function committedConfigurations(): SetupComputerConfiguration[] {
     return (snapshot.source?.computers ?? [])
@@ -1349,7 +1349,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       } catch (cause) {
         failed = true
         // A stale-baseline rejection is not a setup failure: the edit never applied
-        // because the VM changed underneath it. Surface it inline in the editor that
+        // because the computer changed underneath it. Surface it inline in the editor that
         // raised it (which keeps the user's edits) instead of the configuration-failed
         // banner, and let the caller reject so that editor can react.
         stale = isStaleConfigurationError(cause)
@@ -1374,7 +1374,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       }
     })
     // Only an in-flight job is shared: a later identical request (Continue on a
-    // starting VM, Retry after a failure) must reach the backend again.
+    // starting computer, Retry after a failure) must reach the backend again.
     lastComputerJob = { key, promise }
     const settled = () => { if (lastComputerJob?.promise === promise) lastComputerJob = undefined }
     void promise.then(settled, settled)
@@ -1515,7 +1515,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     // Send the specific create/edit/delete/reorder against the baseline the user started
     // editing from — the committed configuration as it was when the editor opened — so a
     // queued edit applies to the latest settings, and is rejected instead of silently
-    // overwriting concurrent work, when the VM changed while the edit waited. When no
+    // overwriting concurrent work, when the computer changed while the edit waited. When no
     // baseline is supplied (e.g. onboarding drafts) the current committed list is used.
     // Several simultaneous changes travel as one atomic batch; a no-op does nothing.
     const changes = deriveComputerChanges(baseline ?? committedConfigurations(), request.computers)

@@ -59,7 +59,7 @@ type OperationAction = { label: string; onClick: (event: MouseEvent<HTMLButtonEl
 
 /**
  * Notifications about a specific computer, so they can be dismissed when it is deleted (their
- * actions would point at a computer that no longer exists). Current computer targets by toast ID. Remote targets include their device and VM IDs.
+ * actions would point at a computer that no longer exists). Current computer targets by toast ID. Remote targets include their device and computer IDs.
  */
 const toastComputers = new Map<string, { targets: Set<string>; computerId?: string }>()
 
@@ -117,7 +117,7 @@ const progressStarts = new Map<string, number>()
 interface OperationResultOptions {
   description?: ReactNode
   action?: OperationAction
-  /** Computer(es) this notification is about; see `dismissComputerToasts`. */
+  /** Computer this notification is about; see `dismissComputerToasts`. */
   computer?: string | string[]
   /** Called when the user closes the notification or it closes by itself. */
   onDismiss?: () => void

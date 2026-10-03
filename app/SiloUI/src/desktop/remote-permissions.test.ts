@@ -22,7 +22,7 @@ it("exposes remote device and shutdown commands through the desktop permission b
   }
 })
 
-it("allows status remote VM actions without granting device management", () => {
+it("allows status remote computer actions without granting device management", () => {
   for (const command of shared) expect(permissions("status"), command).toContain(permission(command))
   for (const command of management) expect(permissions("status"), command).not.toContain(permission(command))
 })

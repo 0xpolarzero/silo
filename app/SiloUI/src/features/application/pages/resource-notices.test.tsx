@@ -14,7 +14,7 @@ describe("operation-owned resource notices", () => {
     expect(screen.queryByText(/available.*GB/i)).not.toBeInTheDocument()
   })
 
-  it("advises for the selected VM and keeps Start anyway", async () => {
+  it("advises for the selected computer and keeps Start anyway", async () => {
     const startComputer = vi.fn()
     render(<ApplicationPreview source={withResourceFixture(applicationSourceForScenario("running", undefined, "stopped"), "start-memory")} actions={{ startComputer }} />)
     fireEvent.click(screen.getByRole("button", { name: "Start playgrounds" }))
@@ -28,7 +28,7 @@ describe("operation-owned resource notices", () => {
     await waitFor(() => expect(startComputer).toHaveBeenCalledWith("dev"))
   })
 
-  it("blocks Create only after the user saves the affected VM", async () => {
+  it("blocks Create only after the user saves the affected computer", async () => {
     const user = userEvent.setup()
     render(<><Toaster /><ApplicationPreview source={withResourceFixture(applicationSourceForScenario("running"), "create-storage")} /></>)
     expect(screen.queryByText(/Not enough storage/i)).not.toBeInTheDocument()
@@ -41,7 +41,7 @@ describe("operation-owned resource notices", () => {
     expect((await screen.findAllByText(/Not enough storage to create computer.*18 GiB is needed.*11 GiB is available/)).length).toBeGreaterThan(0)
   })
 
-  it("reports unavailable native VM actions without changing fixture state", async () => {
+  it("reports unavailable native computer actions without changing fixture state", async () => {
     const startComputer = vi.fn()
     render(<><Toaster /><ApplicationPreview source={applicationSourceForScenario("running", undefined, "stopped")} nativeOperations actions={{ startComputer }} /></>)
 

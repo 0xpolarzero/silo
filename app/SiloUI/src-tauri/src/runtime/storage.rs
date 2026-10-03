@@ -392,7 +392,7 @@ fn state(
                 state.workspace_capacity_bytes = Some(capacity);
             }
             Err(_) => {
-                state.last_error.get_or_insert_with(|| "Guest storage usage is unavailable. Refresh after the computer finishes starting.".into());
+                state.last_error.get_or_insert_with(|| "Storage usage inside the computer is unavailable. Refresh after the computer finishes starting.".into());
             }
         }
     }

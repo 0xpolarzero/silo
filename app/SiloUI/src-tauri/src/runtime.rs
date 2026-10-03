@@ -559,13 +559,13 @@ pub struct ApplicationSource {
     repository_push_operations: Vec<Value>,
     github: Value,
     secrets: Vec<Value>,
-    /// This device's limits for computer resource ceilings. Absent when the host could not
+    /// This device's limits for computer resource ceilings. Absent when the device could not
     /// be measured (every computer change is then rejected by `validate_device_ceiling`).
     #[serde(skip_serializing_if = "Option::is_none")]
     device_capacity: Option<DeviceCapacity>,
 }
 
-/// The host limits `validate_device_ceiling` enforces, so editors can clamp defaults and
+/// The device limits `validate_device_ceiling` enforces, so editors can clamp defaults and
 /// presets instead of offering ceilings Silo will reject.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1937,7 +1937,7 @@ fn validate_device_ceiling(
 ) -> Result<(), RuntimeError> {
     if max_cpus == 0 || max_memory_gib == 0 || device.logical_cpus == 0 {
         return Err(RuntimeError::Unavailable(
-            "Silo could not verify valid host and computer resource limits.".into(),
+            "Silo could not verify valid device and computer resource limits.".into(),
         ));
     }
     let physical = device
@@ -1950,7 +1950,7 @@ fn validate_device_ceiling(
         })?;
     if usize::from(max_cpus) > device.logical_cpus {
         return Err(RuntimeError::Invalid(format!(
-            "Computer '{name}' has a {max_cpus} CPU ceiling, but this host reports {} logical CPUs. No computer was started or changed.",
+            "Computer '{name}' has a {max_cpus} CPU ceiling, but this device reports {} logical CPUs. No computer was started or changed.",
             device.logical_cpus
         )));
     }
@@ -1961,7 +1961,7 @@ fn validate_device_ceiling(
         })?;
     if requested_memory > physical {
         return Err(RuntimeError::Invalid(format!(
-            "Computer '{name}' has a {max_memory_gib} GiB memory ceiling, but this host reports {} GiB of physical memory. No computer was started or changed.",
+            "Computer '{name}' has a {max_memory_gib} GiB memory ceiling, but this device reports {} GiB of physical memory. No computer was started or changed.",
             physical / (1024 * 1024 * 1024)
         )));
     }
@@ -3203,7 +3203,7 @@ pub async fn computer_action(
         // Setup failures before the operation runs are genuine faults worth notifying about.
         let paths = runtime_paths(&app).map_err(|error| (None, LifecycleFailure::Failed, error.into()))?;
         // Start/stop/restart change only this computer's runtime; resource admission is
-        // against host totals, not other computers, so per-computer ordering is sufficient. The
+        // against device totals, not other computers, so per-computer ordering is sufficient. The
         // key collapses double-clicked lifecycle requests into one queued action.
         // Resolve the stable id before acquiring so ordering survives a rename.
         let computer_id = resolve_computer_id(&paths, &name).map_err(|error| (None, LifecycleFailure::Failed, error.into()))?;

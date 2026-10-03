@@ -90,7 +90,7 @@ export function fitComputerToCapacity(configuration: SetupComputerConfiguration,
 }
 
 /**
- * Readable range checks for a VM's resource fields. They replace the contract schema's
+ * Readable range checks for a computer's resource fields. They replace the contract schema's
  * messages ("Too small: expected number to be >=1") for these fields and, when the
  * device's capacity is known, reject ceilings the runtime would refuse.
  */

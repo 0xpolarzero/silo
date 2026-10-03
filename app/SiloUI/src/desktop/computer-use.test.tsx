@@ -25,11 +25,11 @@ const wrap = (bridgeBackend: ComputerUseBackend, children: React.ReactNode) =>
 
 describe("computer use schemas", () => {
   const desktop = { installed: true, autoStart: true, state: "running" }
-  it("parses the computerUse object of a v4 VM", () => {
+  it("parses the computerUse object of a v4 computer", () => {
     const parsed = parseLinuxDesktopState({ ...desktop, computerUse: { ...ready, agents: ["Codex"] } })
     expect(parsed.computerUse).toMatchObject({ state: "ready", approval: "ask", compatibility: "tested", appVersion: "26.928.31416", agents: ["Codex"] })
   })
-  it("leaves older VMs without computerUse", () => {
+  it("leaves older computers without computerUse", () => {
     expect(parseLinuxDesktopState({ ...desktop, lcuState: "ready" }).computerUse).toBeUndefined()
   })
   it("tolerates unknown or malformed diagnostics without losing the desktop state", () => {

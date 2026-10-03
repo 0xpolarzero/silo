@@ -22,7 +22,7 @@ function setup(connected = true) {
   return { source, remote, actions, onConfigurationsChange, view, user: userEvent.setup() }
 }
 
-it("keeps the existing VM list and shows remote ownership through a focusable badge", async () => {
+it("keeps the existing computer list and shows remote ownership through a focusable badge", async () => {
   const { remote, actions, user, source, view, onConfigurationsChange } = setup()
   const badge = screen.getByLabelText(/Computer on Office Mac/)
   expect(badge).toHaveAttribute("tabindex", "0")
@@ -55,7 +55,7 @@ it("disables remote lifecycle operations while preserving last-known rows when t
   expect(row.queryByRole("button", { name: `Delete ${remote.configuration.name} on Office Mac` })).not.toBeInTheDocument()
 })
 
-it("creates a VM on the selected device without rewriting the local inventory", async () => {
+it("creates a computer on the selected device without rewriting the local inventory", async () => {
   const { actions, onConfigurationsChange, user } = setup()
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New computer" }))
@@ -65,7 +65,7 @@ it("creates a VM on the selected device without rewriting the local inventory", 
   expect(onConfigurationsChange).not.toHaveBeenCalled()
 })
 
-it("edits a remote VM with the same name as a local VM using its original configuration", async () => {
+it("edits a remote computer with the same name as a local computer using its original configuration", async () => {
   const { actions, remote, user } = setup()
   const row = within(screen.getByLabelText(/Computer on Office Mac/).closest("li")!)
   await user.click(row.getByRole("button", { name: `More actions for ${remote.configuration.name}` }))
@@ -76,7 +76,7 @@ it("edits a remote VM with the same name as a local VM using its original config
   expect(actions.saveRemoteComputer).toHaveBeenCalledWith("office", remote.configuration, remote.configuration)
 })
 
-it("removes the last VM from a remote device and can create from an empty list", async () => {
+it("removes the last computer from a remote device and can create from an empty list", async () => {
   const source = applicationSourceForScenario("running")
   const original = source.computers[0]
   original.state = "stopped"
@@ -101,7 +101,7 @@ it("removes the last VM from a remote device and can create from an empty list",
   expect(actions.saveRemoteComputer).toHaveBeenCalledWith("office", expect.objectContaining({ name: expect.any(String) }), undefined)
 })
 
-it("permits removing the last local VM without affecting connected devices", async () => {
+it("permits removing the last local computer without affecting connected devices", async () => {
   const source = applicationSourceForScenario("running")
   source.computers = [source.computers[0]]
   source.computers[0].state = "stopped"

@@ -34,7 +34,7 @@ export const siloBootstrapConfigurationSchema = z.object({
 
 const desktopConfigurationSchema = z.object({
   startWithComputer: z.boolean(),
-  // Reported for VMs whose desktop is built into the image (v4). Read-only: the desktop always starts.
+  // Reported for computers whose desktop is built into the image (v4). Read-only: the desktop always starts.
   builtIn: z.boolean().optional(),
 }).strict()
 

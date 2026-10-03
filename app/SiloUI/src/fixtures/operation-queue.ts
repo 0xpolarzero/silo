@@ -17,7 +17,7 @@ export function fixtureOperationQueue(now = Date.now()): OperationQueue {
   }
 }
 
-/** A single long-running per-VM operation used to preview the "taking longer than expected" state. */
+/** A single long-running per-computer operation used to preview the "taking longer than expected" state. */
 export function stuckOperationQueue(now = Date.now()): OperationQueue {
   return {
     running: [

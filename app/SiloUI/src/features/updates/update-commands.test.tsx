@@ -46,7 +46,7 @@ it("checks for updates from Ctrl+K and offers downloading only once a release is
   expect(await screen.findByRole("button", { name: "Restart and update" })).toBeEnabled()
 })
 
-it("requires the existing VM-stop confirmation for a palette install and allows cancellation", async () => {
+it("requires the existing computer-stop confirmation for a palette install and allows cancellation", async () => {
   const user = userEvent.setup()
   const { backend } = mount({ phase: "ready", availableVersion: "0.3.4", runningComputers: ["dev", "build"] })
   await screen.findByRole("button", { name: "Restart and update" })
@@ -60,7 +60,7 @@ it("requires the existing VM-stop confirmation for a palette install and allows 
   expect(backend.install).toHaveBeenCalledExactlyOnceWith(true)
 })
 
-it("installs directly when no VMs are running and suppresses duplicate actions while pending", async () => {
+it("installs directly when no computers are running and suppresses duplicate actions while pending", async () => {
   const user = userEvent.setup()
   const { backend } = mount({ phase: "ready", availableVersion: "0.3.4" })
   vi.mocked(backend.install).mockReturnValue(new Promise(() => {}))

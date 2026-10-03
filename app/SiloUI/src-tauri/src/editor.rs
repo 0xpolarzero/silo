@@ -169,13 +169,13 @@ fn validate_path(path: &str) -> Result<(), String> {
 /// the extensions that can reach the computer never mix with the user's own
 /// profile (decision 5, G-19). VS Code creates it empty on first use and
 /// offers to install Remote - SSH into it.
-/// Carried by a Silo-owned computer file on the host. Computer settings
+/// Carried by a Silo-owned workspace file on the device. Workspace settings
 /// apply from the first window, whether or not the profile exists yet, and
 /// outrank the "Remote" settings a computer can write for itself.
 const VSCODE_SETTINGS: [(&str, bool); 4] = [
-    // Git in the computer cannot borrow the host VS Code's GitHub session.
+    // Git in the computer cannot borrow the GitHub session of VS Code on this device.
     ("github.gitAuthentication", false),
-    // Computer terminals get no askpass handle back to the host VS Code.
+    // Computer terminals get no askpass handle back to VS Code on this device.
     ("git.terminalAuthentication", false),
     // Computer ports reach this device only through Silo's port publishing.
     ("remote.autoForwardPorts", false),
@@ -183,7 +183,7 @@ const VSCODE_SETTINGS: [(&str, bool); 4] = [
 ];
 
 /// The editor command for a computer folder: Zed receives its SSH URI; VS Code
-/// opens the Silo profile with the folder's Silo computer file.
+/// opens the Silo profile with the folder's Silo workspace file.
 fn editor_launch(
     command: &applications::launch::EditorCommand,
     alias: &str,
@@ -207,7 +207,7 @@ fn editor_launch(
 }
 
 /// Writes `<channel home>/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
-/// any other computer settings the user added and restoring Silo's own.
+/// any other workspace settings the user added and restoring Silo's own.
 fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
     validate_path(path)?;
@@ -251,7 +251,7 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
     let old = read_regular(&file)?;
     let invalid = || {
         format!(
-            "Silo cannot update the editor computer {} as a JSON object. The file was left unchanged. Remove comments or repair its JSON, then retry.",
+            "Silo cannot update the editor workspace {} as a JSON object. The file was left unchanged. Remove comments or repair its JSON, then retry.",
             file.display()
         )
     };
@@ -1599,7 +1599,7 @@ mod tests {
         assert_eq!(
             args.len(),
             3,
-            "no --folder-uri: the computer file names the folder"
+            "no --folder-uri: the workspace file names the folder"
         );
         let file = PathBuf::from(&args[2]);
         assert!(file.starts_with(home.path().join(".silo/editor/silo-abc-dev")));
@@ -1632,7 +1632,7 @@ mod tests {
                 "remote.forwardOnOpen": false,
             })
         );
-        // Another folder of the same computer gets its own computer file.
+        // Another folder of the same computer gets its own workspace file.
         let other = editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap();
         assert_ne!(launch_args(&other)[2], args[2]);
         assert!(launch_args(&other)[2].ends_with("/workspace.code-workspace"));
@@ -1666,7 +1666,7 @@ mod tests {
         let root = crate::channel::current().state_dir(home.path());
         let file = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap();
         for contents in [
-            "{\n// keep my computer settings\n\"settings\": {\"editor.fontSize\": 15}}",
+            "{\n// keep my workspace settings\n\"settings\": {\"editor.fontSize\": 15}}",
             "{\"settings\":",
             "[]",
             "",

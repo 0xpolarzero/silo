@@ -15,7 +15,7 @@ is included.
   loaded pages succeed. First loads and pagination use skeleton rows. Failures
   show compact safe messages and Retry; pagination failures preserve current rows.
 - Expanded folders refresh every ten seconds while Files is visible, and on window
-  focus or visibility restoration. Collapsed/hidden folders do not poll. computer state
+  focus or visibility restoration. Collapsed/hidden folders do not poll. Computer state
   or freshness changes invalidate cached data and discard obsolete responses.
 - The frontend retains at most 128 inactive directory records. Native listings have
   a 20,000-entry, 1 MiB output and 2 MiB estimated allocation limit. Its cache holds

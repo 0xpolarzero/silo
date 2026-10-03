@@ -45,7 +45,7 @@ it("returns to the command list when the palette's question is cancelled", async
   expect(startComputer).not.toHaveBeenCalled()
 })
 
-it("reports unavailable VM operations from the palette instead of calling the runtime", async () => {
+it("reports unavailable computer operations from the palette instead of calling the runtime", async () => {
   const user = userEvent.setup()
   const startComputer = vi.fn()
   render(<ApplicationPreview source={applicationSourceForScenario("running", undefined, "stopped")} nativeOperations actions={{ startComputer }} />)

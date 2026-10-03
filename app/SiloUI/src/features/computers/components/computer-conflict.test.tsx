@@ -67,7 +67,7 @@ it("discards edits and closes the editor from the conflict prompt", async () => 
   expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument()
 })
 
-it("notices when the VM is changed elsewhere while the editor is open", async () => {
+it("notices when the computer is changed elsewhere while the editor is open", async () => {
   const { view } = await openEditor([configuration])
   view.rerender(<TooltipProvider><ComputerConfigurationList configurations={[{ ...configuration, maxCPUs: 4 }]} onConfigurationsChange={vi.fn()}
     isComputerCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
@@ -140,7 +140,7 @@ it("reports a stale rejection after the editor closed on a local save", async ()
   expect(screen.getByText(staleError.message)).toBeVisible()
 })
 
-it("blocks saving when the VM was deleted elsewhere while the editor is open", async () => {
+it("blocks saving when the computer was deleted elsewhere while the editor is open", async () => {
   const { view } = await openEditor([configuration])
   view.rerender(<TooltipProvider><ComputerConfigurationList configurations={[]} onConfigurationsChange={vi.fn()}
     isComputerCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)

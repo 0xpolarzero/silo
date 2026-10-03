@@ -157,7 +157,7 @@ describe("status panel while application state loads", () => {
 })
 
 describe("production dependency recovery", () => {
-  const failure = { id: "runtime-microsandbox", title: "MicroSandbox runtime", status: "unavailable", detail: "Bundled runtime is missing.", remediation: "Reinstall Silo. Keep your VMs and settings." }
+  const failure = { id: "runtime-microsandbox", title: "MicroSandbox runtime", status: "unavailable", detail: "Bundled runtime is missing.", remediation: "Reinstall Silo. Keep your computers and settings." }
   it("shows recovery even when runtime failure prevents reading application state", () => {
     state.source = null
     state.checks = [failure]

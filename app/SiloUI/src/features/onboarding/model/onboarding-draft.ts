@@ -7,7 +7,7 @@ import {
 import { onboardingSteps } from "@/features/onboarding/model/onboarding-state"
 
 // Recovery stores unfinished input. Existing Save validation still decides
-// whether these values can become a configuration configuration.
+// whether these values can become a computer configuration.
 const unfinishedComputerSchema = z.object({
   ...setupComputerConfigurationSchema.shape,
   name: z.string(),

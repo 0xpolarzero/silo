@@ -88,7 +88,7 @@ describe("optional Linux desktop", () => {
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(save).toHaveBeenCalledWith([expect.objectContaining({ desktop: { startWithComputer: true } })])
   })
-  it("changes startup policy without offering desktop removal or stopping the VM", async () => {
+  it("changes startup policy without offering desktop removal or stopping the computer", async () => {
     const user = userEvent.setup()
     const save = editor({ ...configuration, desktop: { startWithComputer: true } }, true)
     expect(screen.queryByRole("button", { name: "Add Linux desktop" })).not.toBeInTheDocument()
@@ -97,7 +97,7 @@ describe("optional Linux desktop", () => {
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(save).toHaveBeenCalledWith([expect.objectContaining({ desktop: { startWithComputer: false } })])
   })
-  it("still explains the VM stop required by a resource change", async () => {
+  it("still explains the computer stop required by a resource change", async () => {
     const user = userEvent.setup()
     editor({ ...configuration, desktop: { startWithComputer: true } }, true)
     await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")

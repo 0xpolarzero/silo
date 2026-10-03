@@ -278,7 +278,7 @@ it("keeps committed detail pages stable while an edit is being applied", async (
 })
 
 
-it("disables deletion of a running VM with a stop-first explanation but keeps editing available", async () => {
+it("disables deletion of a running computer with a stop-first explanation but keeps editing available", async () => {
   const { user, actions } = renderApplication()
   await user.click(screen.getByRole("button", { name: "More actions for dev" }))
   const remove = screen.getByRole("menuitem", { name: "Delete dev" })
@@ -323,7 +323,7 @@ it("keeps a removed computer as a progress tombstone until the native snapshot c
 })
 
 
-it("shows pending secret changes on the affected VM until the source confirms they are active", async () => {
+it("shows pending secret changes on the affected computer until the source confirms they are active", async () => {
   const source = applicationSourceForScenario("running")
   source.secrets.push({ id: "service-token", name: "SERVICE_TOKEN", computers: ["dev"], allowedDomains: [], state: "restart-required" })
   const { user, actions, rerender } = renderApplication("running", source)
@@ -346,7 +346,7 @@ it("shows pending secret changes on the affected VM until the source confirms th
 })
 
 
-it("explains pending secrets on keyboard focus and uses next-start wording for a stopped VM", async () => {
+it("explains pending secrets on keyboard focus and uses next-start wording for a stopped computer", async () => {
   const source = applicationSourceForScenario("running", undefined, "stopped")
   renderApplication("running", source)
   const overview = within(appPanel("Computers"))

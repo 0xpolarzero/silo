@@ -55,7 +55,7 @@ function queueStep(queue: OperationQueue, now: number, full: OperationQueue = qu
 }
 
 /**
- * Drives a single Sonner toast reflecting the VM-changing operation queue. Renders nothing
+ * Drives a single Sonner toast reflecting the computer-changing operation queue. Renders nothing
  * itself. Export and import already have their own transfer toast, so their entries are
  * excluded here. The toast is debounced so operations that finish within {@link
  * TOAST_DEBOUNCE_MS} never flash, and it is dismissed as soon as the queue empties.
@@ -116,8 +116,8 @@ export function OperationQueueToast({ queue, onCancel }: { queue?: OperationQueu
 }
 
 /**
- * Inline per-VM waiting status shown near a computer's activity indicator when an
- * operation for that VM is waiting its turn behind other running work.
+ * Inline per-computer waiting status shown near a computer's activity indicator when an
+ * operation for that computer is waiting its turn behind other running work.
  */
 export function ComputerWaitingStatus({ queue, computerId, onCancel }: { queue?: OperationQueue; computerId: string; onCancel?: (id: number) => void }) {
   if (!queue) return null

@@ -135,8 +135,7 @@ export function createDirectoryStore(loader?: DirectoryLoader) {
         entries = [...new Map(entries.map(entry => [entry.path, entry])).values()]
         update(record, { entries, nextOffset, snapshotId, loading: false, loadingMore: false, error: null, errorOperation: null })
       } catch (error) {
-        const nativeMessage = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-        const message = nativeMessage === 'Start this VM to browse its files.' ? 'Start this computer to browse its files.' : nativeMessage
+        const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
         const retryOperation = message === 'Folder listing expired. Refresh this folder.' || message === 'Folder changed. Reload to continue.' ? 'refresh' : operation
         if (current()) update(record, { ...previous, loading: false, loadingMore: false, errorOperation: retryOperation, error: safeErrors.has(message) ? message : loader ? 'Could not load this folder.' : 'Files are unavailable.' })
       } finally {

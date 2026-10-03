@@ -287,7 +287,7 @@ both platform manifests. Each platform's config digest matches the corresponding
 published archive manifest and the checked-in lock. Compressed archive sizes are
 67,674,633 bytes (ARM64) and 69,442,016 bytes (x86-64).
 
-Local verification used Apple Silicon and disposable MicroSandbox homes/VMs:
+Local verification used Apple Silicon and disposable MicroSandbox homes/computers:
 
 - Published archives passed checksum/size verification, and the packaged app
   resource matched the ARM64 lock.
@@ -302,13 +302,13 @@ Local verification used Apple Silicon and disposable MicroSandbox homes/VMs:
   passed using the new image. These tests require HTTPS test endpoints; they are
   separate from the offline image test. No real account credentials were used.
 - The real app created `image-check`, displayed “Preparing the bundled VM image…”
-  in the existing progress row, and settled at Stopped. The disposable VM was
-  removed and the pre-existing `dev` VM stayed Stopped. No onboarding reset or
+  in the existing progress row, and settled at Stopped. The disposable computer was
+  removed and the pre-existing `dev` computer stayed Stopped. No onboarding reset or
   user secret change was performed. Native accessibility observations were used;
   the screenshot provider was unavailable.
 
 Backup verification exposed two existing compatibility gaps relevant to freshly
-created Silo VMs. Backup now accepts and restores only the exact credential-free
+created Silo computers. Backup now accepts and restores only the exact credential-free
 GitHub bootstrap network preset; custom policies, host secret references and
 nonempty secret values remain rejected. The pinned MicroSandbox patch compares
 cache metadata JSON structurally when serialized map ordering differs, while
@@ -323,7 +323,7 @@ The debug app was rebuilt with `npm --prefix app/SiloUI run desktop:build:debug`
 its bundled image matched the lock and `codesign --verify --deep --strict` passed.
 The rebuilt production-mode app was reopened at
 `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app` and showed only the
-preserved `dev` VM, Stopped. It remains open for testing. This is a local debug
+preserved `dev` computer, Stopped. It remains open for testing. This is a local debug
 build, not a notarized release.
 
 Linux hardware/KVM and a Linux desktop bundle have not been exercised locally.
@@ -332,8 +332,8 @@ Ubuntu downloads or selection UI is implemented in this slice.
 
 ## Guest image v2 verification on 2026-09-14
 
-Version 2 adds curl to new VMs. Existing VM disks and restored backups retain
-their packages; install curl inside those VMs with
+Version 2 adds curl to new computers. Existing computer disks and restored backups retain
+their packages; install curl inside those computers with
 `apt-get update && apt-get install -y curl` (as root).
 
 [Image publication](https://github.com/0xpolarzero/silo/actions/runs/34837327776)
@@ -345,13 +345,13 @@ Both downloaded archives passed compressed SHA-256, compressed size, uncompresse
 size and Docker configuration digest checks before updating the application lock.
 The six guest-image staging tests, 16 release-tooling tests, type checking and
 lint passed locally. These checks establish image contents and packaging inputs;
-they do not establish live VM networking or installation/upgrade acceptance.
+they do not establish live computer networking or installation/upgrade acceptance.
 
-A disposable ARM64 MicroSandbox VM also booted from the verified downloaded v2
+A disposable ARM64 MicroSandbox computer also booted from the verified downloaded v2
 archive with `--pull never`. `curl --version` and
 `curl -fsS --max-time 20 https://example.com -o /dev/null` both exited successfully.
 The test used a separate `/private/tmp/silo-curl-vm-check` home and the existing
 `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app/Contents/MacOS/msb` helper
-with its bundled `Contents/Frameworks/libkrunfw.5.dylib`. The disposable VM was
+with its bundled `Contents/Frameworks/libkrunfw.5.dylib`. The disposable computer was
 stopped afterward. This checks the new image on the existing VM engine, not a
-rebuilt or installed 0.4.2 app. No user VM was modified.
+rebuilt or installed 0.4.2 app. No user computer was modified.

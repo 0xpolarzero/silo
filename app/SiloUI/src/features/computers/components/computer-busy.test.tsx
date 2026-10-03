@@ -11,7 +11,7 @@ const configuration = productionComputerDefaults[0]!
 const starting = `Wait until ${configuration.name} finishes starting.`
 
 describe("computers that are starting or stopping", () => {
-  it("explains why a starting, stopping or restarting VM cannot be changed", () => {
+  it("explains why a starting, stopping or restarting computer cannot be changed", () => {
     const computer = { ...applicationSourceForScenario("complete").computers[0]!, configuration }
     expect(computerBusyReason({ ...computer, state: "starting" })).toBe(starting)
     expect(computerBusyReason({ ...computer, state: "running", lifecycleAction: "stop" })).toBe(`Wait until ${configuration.name} finishes stopping.`)
@@ -20,7 +20,7 @@ describe("computers that are starting or stopping", () => {
     expect(computerBusyReason({ ...computer, state: "failed", lifecycleAction: undefined })).toBeUndefined()
   })
 
-  it("does not offer Edit, Add Linux desktop or Delete for a starting VM", async () => {
+  it("does not offer Edit, Add Linux desktop or Delete for a starting computer", async () => {
     render(<TooltipProvider><ComputerConfigurationList configurations={[configuration]} onConfigurationsChange={vi.fn()} isComputerCreated={() => true}
       isComputerRunning={() => false} getConfigurationBusyReason={() => starting} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
     await userEvent.setup().click(screen.getByRole("button", { name: `More actions for ${configuration.name}` }))
@@ -32,7 +32,7 @@ describe("computers that are starting or stopping", () => {
     expect(screen.getByRole("menuitem", { name: `Duplicate settings for ${configuration.name}` })).not.toHaveAttribute("aria-disabled")
   })
 
-  it("blocks Save with the reason when an open editor's VM starts", () => {
+  it("blocks Save with the reason when an open editor's computer starts", () => {
     const view = (busy?: string) => <TooltipProvider><ComputerConfigurationList configurations={[configuration]} onConfigurationsChange={vi.fn()} isComputerCreated={() => true}
       isComputerRunning={() => false} getConfigurationBusyReason={() => busy}
       initialEditorDraft={{ draft: configuration, originalID: configuration.id, insertAt: 0 }} /></TooltipProvider>

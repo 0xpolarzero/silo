@@ -275,7 +275,7 @@ export interface ApplicationSource {
   network?: NetworkState
   networkError?: string | null
   runtimeRepair: RuntimeRepairPresentation | null
-  /** Ordered admission queue for VM-changing operations on this device. */
+  /** Ordered admission queue for computer-changing operations on this device. */
   operationQueue?: OperationQueue
   computers: ApplicationComputer[]
   activities: ApplicationActivity[]

@@ -8,10 +8,10 @@ export function computerIconState(computer?: ApplicationComputer): ComputerIconS
 
 /**
  * Why a computer cannot be edited or deleted right now. The runtime edits only running,
- * stopped or created VMs and deletes only stopped, created or crashed ones, so a VM that is
+ * stopped or created computers and deletes only stopped, created or crashed ones, so a computer that is
  * starting, stopping or restarting would be offered the action and then rejected.
  * A checkpoint also owns the computer until its operation finishes. Stale status cannot
- * establish whether a resource edit needs confirmation to stop the VM.
+ * establish whether a resource edit needs confirmation to stop the computer.
  */
 export function computerBusyReason(computer?: ApplicationComputer): string | undefined {
   if (!computer) return undefined

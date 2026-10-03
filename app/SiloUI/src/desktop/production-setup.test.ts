@@ -170,7 +170,7 @@ describe("production setup queue", () => {
     const job = store.submitSetupStep("computers", request)
     await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
     const requestId = invoke.mock.calls.find(([command]) => command === "change_computer_configuration")?.[1]?.requestId
-    const event = { schemaVersion: 1, type: "progress", requestId, phase: "verification", step: "computer-verification", computer: request.computerConfiguration.computers[0].name, revision: "a".repeat(64), fraction: 0.5, message: "Checking VM", safeForDisplay: true }
+    const event = { schemaVersion: 1, type: "progress", requestId, phase: "verification", step: "computer-verification", computer: request.computerConfiguration.computers[0].name, revision: "a".repeat(64), fraction: 0.5, message: "Checking computer", safeForDisplay: true }
     emit({ ...event, requestId: "old-request" })
     expect(store.getSnapshot().setupEvents).toEqual([])
     emit(event)
@@ -183,7 +183,7 @@ describe("production setup queue", () => {
     store.dispose()
   })
 
-  it("marks completion only after identity succeeds and retries failed identity without recreating VMs", async () => {
+  it("marks completion only after identity succeeds and retries failed identity without recreating computers", async () => {
     const { store, configurations, identities } = await setup()
     configurations.mockResolvedValue(applied)
     const pending = deferred<unknown>()

@@ -100,9 +100,9 @@ it("toasts a restored checkpoint with a Start action that runs the guarded start
   expect(startComputer).toHaveBeenCalledWith(computer.configuration.name)
 })
 
-it("routes the restored-toast Start through the guard, so an unavailable VM operation is blocked", async () => {
+it("routes the restored-toast Start through the guard, so an unavailable computer operation is blocked", async () => {
   const { source, computer } = withCheckpoint()
-  source.computerOperationsUnavailable = "Local VMs are unavailable while the runtime is repairing."
+  source.computerOperationsUnavailable = "Local computers are unavailable while the runtime is repairing."
   const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
   const startComputer = vi.fn()
   const actions = { restoreCheckpoint, forkCheckpoint: vi.fn(), startComputer, openTerminal: vi.fn() } as unknown as ApplicationActions

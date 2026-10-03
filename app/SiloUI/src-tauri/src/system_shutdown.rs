@@ -5,7 +5,7 @@
 //! - A user Quit (Dock Quit, `osascript quit`) enters the confirm-capable Quit
 //!   path (`settings::request_quit`).
 //! - Logout, restart, shutdown and SIGTERM never prompt: Silo stops its local
-//!   Computers within a bound and then exits, even if a stop fails.
+//!   computers within a bound and then exits, even if a stop fails.
 //!
 //! On macOS AppKit asks `applicationShouldTerminate:`; Silo replies later, once
 //! the Quit path has finished or was cancelled. On Linux a logind delay

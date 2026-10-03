@@ -119,9 +119,9 @@ export function ComputerEditor({ saving, blockedReason, editorHeader, editor, fo
   deviceId?: string
   /** The device the computer will run on; empty or omitted is this one. */
   configurations: readonly SetupComputerConfiguration[]
-  /** The VM's saved configuration when this editor opened, for divergence detection. */
+  /** The computer's saved configuration when this editor opened, for divergence detection. */
   baselineComputer?: SetupComputerConfiguration
-  /** A save was rejected because the VM changed while the edit waited. */
+  /** A save was rejected because the computer changed while the edit waited. */
   conflict?: boolean
   /** After "Review changes": the draft was rebased onto the latest settings, with these differences. */
   review?: ComputerReview | null
@@ -139,13 +139,13 @@ export function ComputerEditor({ saving, blockedReason, editorHeader, editor, fo
   // Bumped by each failed Save so focus moves to the first invalid field once it renders.
   const [failedValidation, setFailedValidation] = useState(0)
   const original = configurations.find(configuration => configuration.id === editor.originalID)
-  // Detect that the committed VM changed under the open editor. `baselineComputer` is only
+  // Detect that the committed computer changed under the open editor. `baselineComputer` is only
   // supplied for edits backed by a live source (not onboarding drafts), so these notices
   // stay quiet there. A missing live configuration for an edit means it was deleted elsewhere.
   const deletedElsewhere = Boolean(editor.originalID) && baselineComputer !== undefined && !original
   const divergent = Boolean(baselineComputer && original && !sameComputerConfiguration(baselineComputer, original))
   const changedFields = divergent && baselineComputer && original ? divergentComputerFields(baselineComputer, original) : []
-  // A VM whose desktop is built into its image always starts it; only older VMs are configured here.
+  // A computer whose desktop is built into its image always starts it; only older computers are configured here.
   const builtInDesktop = created && original?.desktop?.builtIn === true
   const computerUse = useComputerUseBridge()
   // A new computer gets the built-in desktop only if the device it runs on can provide it.

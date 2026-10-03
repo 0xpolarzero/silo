@@ -11,7 +11,7 @@ export function fixtureDirectoryLoader(computers: ApplicationComputer[]): Direct
     if (new TextEncoder().encode(path).length > 4096 || path.includes("\0") || (path !== "/workspace" && (!path.startsWith("/workspace/") || parts.some(part => !part || part === "." || part === ".."))) || !Number.isInteger(offset) || offset < 0 || offset > 20_000 || offset % 200 !== 0) throw "Invalid folder request."
     const owner = computers.find(item => computerTarget(item) === computer)
     if (!owner) throw "Computer no longer exists."
-    if (owner.state !== "running") throw "Start this VM to browse its files."
+    if (owner.state !== "running") throw "Start this computer to browse its files."
     let snapshot = snapshotId ? snapshots.get(snapshotId) : undefined
     if (offset) {
       if (!snapshot || snapshot.computer !== computer || snapshot.path !== path || Date.now() - snapshot.created >= 120_000 || offset > snapshot.entries.length) throw "Folder listing expired. Refresh this folder."

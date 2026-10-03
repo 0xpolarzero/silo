@@ -35,7 +35,7 @@ it("keeps Stop available for a running computer with an error notice", () => {
 
 it.each([
   ["a lifecycle action runs", (computer: ApplicationComputer) => { computer.lifecycleAction = "stop" }, "dev is stopping."],
-  ["the VM is starting", (computer: ApplicationComputer) => { computer.state = "starting" }, "Wait for dev to finish starting."],
+  ["the computer is starting", (computer: ApplicationComputer) => { computer.state = "starting" }, "Wait for dev to finish starting."],
   ["a checkpoint operation runs", (computer: ApplicationComputer) => { computer.checkpointOperation = { kind: "capture", status: "running", stage: "Saving" } }, "Wait for the checkpoint to finish."],
   ["its device refreshes", (computer: ApplicationComputer) => { computer.device = { id: "office", computerId: "vm", name: "Office", address: "office.test", connected: true, busy: true } }, "Office is updating. Wait before changing this computer."],
   ["its device is offline", (computer: ApplicationComputer) => { computer.device = { id: "office", computerId: "vm", name: "Office", address: "office.test", connected: false }; computer.freshness = "stale" }, "Office is offline. Reconnect it to manage this computer."],

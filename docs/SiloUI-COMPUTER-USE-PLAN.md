@@ -209,8 +209,8 @@ need.
 
 ### 8. Verification
 
-In the packaged Dev app with throwaway `e2e-*` VMs on macOS arm64 and the
-Linux x86-64 test computer: fresh VM with no prompts and ready `doctor`;
+In the packaged Dev app with throwaway `e2e-*` computers on macOS arm64 and the
+Linux x86-64 test device: fresh computer with no prompts and ready `doctor`;
 Claude Code and Codex desktop tasks with independent file checks, approvals
 on and off; export/import keeps the mount; GTK, Qt, Firefox, Chrome and
 Electron expose trees; poller CPU cost; `df` on a cold cache; pinned-version
@@ -225,7 +225,7 @@ Real code paths through the opt-in live tests listed in
 [Rust test support](SiloUI-RUST-TEST-SUPPORT.md#live-tests-and-temporary-directories); fixture
 homes under `/tmp`, `e2e-*` sandboxes, live data, no packaged app. The Linux x86-64 computer was not used.
 
-- Fresh VM: built in, desktop session running at start, computer use `installing`, then `ready`
+- Fresh computer: built in, desktop session running at start, computer use `installing`, then `ready`
   (about 25 s after Start); `lcu status --json` reports `tested`, `lcu doctor` passes (window list and
   screenshot), the folder is mounted `ro` and writes fail with EROFS. Accessibility: system default
   `toolkit-accessibility=true` and the poller run; no browser ships in the image, so Firefox,
@@ -238,14 +238,14 @@ homes under `/tmp`, `e2e-*` sandboxes, live data, no packaged app. The Linux x86
   `ask` removes exactly those and nothing else. With nothing installed LCU's installer still creates `~/.codex`,
   so Codex is always registered and gets the approval line; Claude Code gets nothing until it is installed.
 - Lifecycle (every step ends with the session running, computer use ready, the folder read-only and `lcu doctor`
-  passing): restart, stop and start, checkpoint of the running VM, fork, in-place restore; export, import into a
-  second home with its own folder (the imported VM takes the destination's `ask`).
-- Boot loop (stale PulseAudio): 31 boots (one fresh VM, 10 restarts, 10 imports and 10 restarts of the imports, run twice) with 0 desktop failures: every one ended with the session running and computer use ready.
-- Pre-v4: a VM from the v3 image has no mount, no desktop session, no helper and no computer-use state, and its
+  passing): restart, stop and start, checkpoint of the running computer, fork, in-place restore; export, import into a
+  second home with its own folder (the imported computer takes the destination's `ask`).
+- Boot loop (stale PulseAudio): 31 boots (one fresh computer, 10 restarts, 10 imports and 10 restarts of the imports, run twice) with 0 desktop failures: every one ended with the session running and computer use ready.
+- Pre-v4: a computer from the v3 image has no mount, no desktop session, no helper and no computer-use state, and its
   restart, stop/start, checkpoint, fork and restore work.
-- Numbers (cold home, one VM): the v4 image is a 396 MB archive and 1.30 GB in MicroSandbox's cache; a created VM
+- Numbers (cold home, one computer): the v4 image is a 396 MB archive and 1.30 GB in MicroSandbox's cache; a created computer
   takes about 33 MiB on the host at ready and 89 MiB after the desktop drive; the guest uses about 300 MiB of
-  3.9 GiB with the desktop running (about 520 MiB after driving apps); creating the VM (image import) took 50 to 61 s
+  3.9 GiB with the desktop running (about 520 MiB after driving apps); creating the computer (image import) took 50 to 61 s
   and create to ready 61 to 76 s. The ChatGPT app download, verification and extraction took 120 s in the debug
   test profile.
 
@@ -254,7 +254,7 @@ Fixed by this verification (each with a test):
 - Computer use never installed on a real runtime. The post-boot sync requires a runtime instance id, which
   MicroSandbox 0.7.6's `inspect` did not report (Silo's 0.7.6 patch set had dropped it), so the identity check always
   failed. `microsandbox-runtime-instance-id` restores the field; Silo reports a runtime without it instead of skipping.
-- Capturing a checkpoint of a running built-in VM failed with `checkpoint object exceeds 1048576 bytes`:
+- Capturing a checkpoint of a running built-in computer failed with `checkpoint object exceeds 1048576 bytes`:
   MicroSandbox's integrity check admits 1 MiB for any device state while its restore admits 8 MiB for virtio-fs, and
   the folder's passthrough table was 1.18 MiB. `microsandbox-checkpoint-fs-state` applies the restore's limit.
 - After a RAM restore (checkpoint fork or restore) the guest saw the host uid on the folder, LCU refused to start
@@ -448,7 +448,7 @@ mismatch, download, install and upgrade of an existing install.
 
 Live check (macOS arm64, Silo main plus this pin, MicroSandbox 0.7.6 `msb` ad-hoc signed with
 `Entitlements.plist`, published v4 image `ubuntu-24.04-v4-arm64`, ChatGPT 26.928.31416; fixture home
-under `/tmp`, `e2e-lcu` sandbox, no packaged app). A new built-in VM, created and started through
+under `/tmp`, `e2e-lcu` computer, no packaged app). A new built-in computer, created and started through
 Silo's own paths, found a staged archive that does not match the lock, downloaded the locked 0.8.2
 URL, verified it and installed it: `lcu status --json` reported `lcu_version` 0.8.2 and compatibility
 `tested`, `lcu doctor` reported ready, and a bare MCP client with no `_meta` at all listed windows and
@@ -581,8 +581,8 @@ What agents get on the Linux desktop with 0.8.3:
 
 Live check (macOS arm64, Silo main plus this pin, MicroSandbox 0.7.6 `msb` ad-hoc signed with
 `Entitlements.plist`, published v4 image `ubuntu-24.04-v4-arm64` staging LCU 0.8.1, ChatGPT 26.928.31416
-published by Silo's own downloader; fixture home under `/private/tmp`, `e2e-lcu` sandbox, no packaged
-app). The VM downloaded and verified the locked 0.8.3 archive and installed it over the staged
+published by Silo's own downloader; fixture home under `/private/tmp`, `e2e-lcu` computer, no packaged
+app). The computer downloaded and verified the locked 0.8.3 archive and installed it over the staged
 0.8.1: `lcu status --json` reported `lcu_version` 0.8.3 and compatibility `tested`, `lcu doctor
 --require-ready` reported ready, and `live_lcu_drives_the_desktop_without_a_model` passed
 (bare MCP client with no `_meta`, the default-sandbox drive, Save As, per-key terminal). The drive now

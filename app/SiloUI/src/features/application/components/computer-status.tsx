@@ -21,7 +21,7 @@ export const StatusSeparator = () => <span aria-hidden="true" className="mx-1">Â
  */
 export function ComputerStatus({ computer, source, readOnly, onCancel }: { computer: ApplicationComputer; source: ApplicationSource; readOnly: boolean; onCancel?: ApplicationActions["cancelOperation"] }) {
   const lifecycle = computer.lifecycleAction
-  // The operation gate keys local per-VM entries by the stable VM id. A remote device's VMs
+  // The operation gate keys local per-computer entries by the stable computer id. A remote device's computers
   // run on that device's own gate, so a remote computer never matches a local entry.
   const queueVmId = computer.device ? null : computer.configuration.id
   const waitingForVm = queueVmId !== null ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, queueVmId) : undefined

@@ -87,7 +87,7 @@ describe("live file tree", () => {
     expect(screen.queryByRole("status", { name: "Loading folder" })).not.toBeInTheDocument()
   })
 
-  it("does not request files for stopped, stale or hidden VMs", () => {
+  it("does not request files for stopped, stale or hidden computers", () => {
     const loader = vi.fn()
     const store = createDirectoryStore(loader)
     const { rerender } = render(<ComputerFileTree editor="Cursor" computer={{ ...computer, state: "stopped" }} store={store} active />)

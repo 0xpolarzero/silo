@@ -20,12 +20,12 @@ function initializationHandlers() {
 }
 
 describe("remote device ownership", () => {
-  it("keeps same-name VMs distinct and directs a remote lifecycle action to its owner", async () => {
+  it("keeps same-name computers distinct and directs a remote lifecycle action to its owner", async () => {
     const local = applicationSourceForScenario("running")
     const remote = structuredClone(local)
     remote.computers = [remote.computers[0]]
-    local.computers[0].logs = [{ line: "Local VM log", occurredAt: "now" }]
-    remote.computers[0].logs = [{ line: "Remote VM log", occurredAt: "now" }]
+    local.computers[0].logs = [{ line: "Local computer log", occurredAt: "now" }]
+    remote.computers[0].logs = [{ line: "Remote computer log", occurredAt: "now" }]
     const device = { id: "office", name: "Office Mac", address: "developer@office" }
     const invoke = nativeBridgeMock({
       ...initializationHandlers(),
@@ -50,7 +50,7 @@ describe("remote device ownership", () => {
       await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("remote_computer_action", { deviceId: "office", computerId: remote.computers[0].configuration.id, action: "stop", name: remote.computers[0].configuration.name }))
       expect(invoke).not.toHaveBeenCalledWith("computer_action", expect.anything())
       await vi.waitFor(() => expect(store.getSnapshot().source?.computers).toHaveLength(local.computers.length + 1))
-      expect(observedRemoteLogs).not.toContain("Local VM log")
+      expect(observedRemoteLogs).not.toContain("Local computer log")
       unsubscribe()
     } finally { store.dispose() }
   })
@@ -146,7 +146,7 @@ it("uses qualified remote port mappings and isolates reachability after a failed
   } finally { store.dispose() }
 })
 
-it("keeps a reachable device connected while its VM configuration is busy", async () => {
+it("keeps a reachable device connected while its computer configuration is busy", async () => {
   const local = applicationSourceForScenario("running")
   let busy = false
   const invoke = nativeBridgeMock({
@@ -175,7 +175,7 @@ it("keeps a reachable device connected while its VM configuration is busy", asyn
   } finally { store.dispose() }
 })
 
-it("preserves connected remote VMs when later local state reads fail", async () => {
+it("preserves connected remote computers when later local state reads fail", async () => {
   const local = applicationSourceForScenario("running")
   let failLocal = false
   const invoke = nativeBridgeMock({
@@ -204,7 +204,7 @@ it("preserves connected remote VMs when later local state reads fail", async () 
   } finally { store.dispose() }
 })
 
-it("uses native local metadata to display verified remote VMs when local runtime fails at startup", async () => {
+it("uses native local metadata to display verified remote computers when local runtime fails at startup", async () => {
   const remote = applicationSourceForScenario("running")
   const shell = { ...remote, computers: [], runtimeRepair: { status: "unavailable", reason: "Local runtime unavailable" } }
   const invoke = nativeBridgeMock({

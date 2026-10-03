@@ -116,7 +116,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
         }
       } finally { reading = false }
     }
-    // VM activity changes the installation gate independently of update progress.
+    // computer activity changes the installation gate independently of update progress.
     const polling = snapshot?.phase === "ready" || snapshot?.retryAction === "install" || (snapshot?.packageKind === "debian" && snapshot?.phase === "available")
     let timer: number | undefined
     const onFocus = () => {

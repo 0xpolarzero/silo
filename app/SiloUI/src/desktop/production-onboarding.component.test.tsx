@@ -23,7 +23,7 @@ function deferred() {
 const application = applicationSourceForScenario("running")
 const requestA: SetupComputerConfigurationRequest = { schemaVersion: 1, computers: application.computers.map(({ configuration }) => configuration) }
 const requestB: SetupComputerConfigurationRequest = { ...requestA, computers: [requestA.computers[0]] }
-// requestB drops the other VMs: the list's own Delete confirmation confirmed that.
+// requestB drops the other computers: the list's own Delete confirmation confirmed that.
 const dropped = { confirmedDeletions: requestA.computers.slice(1).map(({ id }) => id) }
 const dependencies = { checks: [], retry: vi.fn() }
 
@@ -72,7 +72,7 @@ describe("production onboarding submission errors", () => {
     expect(screen.getByText("No error")).toBeVisible()
   })
 
-  it("keeps the failed VM identity when the local promise also rejects", async () => {
+  it("keeps the failed computer identity when the local promise also rejects", async () => {
     const failed = deferred()
     const source = { configureConfigurations: vi.fn(() => failed.promise), applicationActions: {} } as unknown as ProductionSource
     const error = { code: "native_bridge_failed", message: "Creation failed", recovery: "Retry", computer: requestB.computers[0].name, retryable: true }
@@ -131,7 +131,7 @@ describe("production onboarding submission errors", () => {
   })
 
 
-  it("never sends a delete for an existing VM the user did not confirm deleting", async () => {
+  it("never sends a delete for an existing computer the user did not confirm deleting", async () => {
     const configureConfigurations = vi.fn().mockResolvedValue(application)
     const submitSetupStep = vi.fn().mockResolvedValue(undefined)
     const finishSetup = vi.fn().mockResolvedValue(undefined)
@@ -185,7 +185,7 @@ describe("production onboarding submission errors", () => {
 })
 
 describe("remote device onboarding", () => {
-  it("connects and completes onboarding without submitting local VM configuration", async () => {
+  it("connects and completes onboarding without submitting local computer configuration", async () => {
     const connectDevice = vi.fn().mockResolvedValue(undefined)
     const configureConfigurations = vi.fn()
     const onOpenApp = vi.fn()

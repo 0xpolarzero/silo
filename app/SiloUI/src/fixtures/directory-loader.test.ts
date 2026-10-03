@@ -13,7 +13,7 @@ describe("native directory fixture behavior", () => {
   it.each(["stopped", "starting", "failed"] as const)("rejects files from a %s computer with the native string error", async state => {
     const { computer, loader } = fixture()
     computer.state = state
-    await expect(loader(computer.configuration.name, "/workspace", 0)).rejects.toBe("Start this VM to browse its files.")
+    await expect(loader(computer.configuration.name, "/workspace", 0)).rejects.toBe("Start this computer to browse its files.")
   })
 
   it("preserves the start instruction when a native read races with stopping", async () => {

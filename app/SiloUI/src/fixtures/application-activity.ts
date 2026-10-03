@@ -78,7 +78,7 @@ export const activityCatalog: ApplicationActivity[] = [
   completed(17, { id: "catalog-network-failed", category: "computer", title: "Networking failed", detail: "Candidate forwarding did not become ready.", computer: "playgrounds", tone: "danger" }),
   completed(18, { id: "catalog-verification-passed", category: "computer", title: "Verification passed", detail: "The computer passed deep verification.", computer: "dev", tone: "success" }),
   completed(19, { id: "catalog-verification-failed", category: "computer", title: "Verification failed", detail: "The computer failed its storage check.", computer: "playgrounds", tone: "danger" }),
-  completed(20, { id: "catalog-host-approval", category: "computer", title: "Host approval required", detail: "Approve the Silo host helper before setup can continue.", tone: "warning" }),
+  completed(20, { id: "catalog-host-approval", category: "computer", title: "Device approval required", detail: "Approve the Silo helper before setup can continue.", tone: "warning" }),
   completed(21, { id: "catalog-setup-complete", category: "computer", title: "Setup completed", detail: "Configuration was committed after deep verification.", tone: "success" }),
   completed(22, { id: "catalog-setup-failed", category: "computer", title: "Setup failed", detail: "The staged configuration was discarded safely.", tone: "danger" }),
 

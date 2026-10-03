@@ -17,7 +17,7 @@ use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Scope {
-    /// Changes shared state: computer inventory, host networking, runtime generation, updates.
+    /// Changes shared state: computer inventory, device networking, runtime generation, updates.
     Device,
     /// Changes one computer's runtime or guest state only. Keyed by the stable computer id so a
     /// rename never lets two operations on the same computer run concurrently, and so
@@ -70,7 +70,7 @@ impl std::error::Error for GateError {}
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum OperationKind {
-    /// Start, stop, restart, or dismiss-error on one computer, or a host-wide start.
+    /// Start, stop, restart, or dismiss-error on one computer, or a device-wide start.
     Lifecycle,
     CheckpointCapture,
     CheckpointRestore,

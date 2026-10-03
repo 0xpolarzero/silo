@@ -49,7 +49,7 @@ it("cancelling the popover deletes nothing", async () => {
   expect(screen.queryByText(`Delete ${configuration.name} permanently?`)).not.toBeInTheDocument()
 })
 
-it("blocks a deletion if the VM starts before confirmation", async () => {
+it("blocks a deletion if the computer starts before confirmation", async () => {
   const configuration = productionComputerDefaults[0]
   const save = vi.fn()
   const view = (running: boolean) => <TooltipProvider><ComputerConfigurationList configurations={[configuration]} onConfigurationsChange={save} isComputerRunning={() => running} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>

@@ -501,7 +501,7 @@ fn github_authenticated_guest_workflow() {
         computer_action_with(
             &runner,
             &paths,
-            &device_resources().map_err(|_| "Cannot measure host resources.")?,
+            &device_resources().map_err(|_| "Cannot measure device resources.")?,
             "start",
             name,
         )

@@ -93,7 +93,7 @@ it("adds, cancels, and saves a virtual configuration through the typed configura
   expect(screen.getByRole("list", { name: "Configured computers" })).toHaveTextContent("build")
 })
 
-it("restores an existing VM exactly on Cancel and persists a valid edit on Save", async () => {
+it("restores an existing computer exactly on Cancel and persists a valid edit on Save", async () => {
   const { user, saveComputerConfiguration } = await renderComputerScenario()
 
   await user.click(configuredComputers().getByRole("button", { name: "Edit dev" }))
@@ -155,7 +155,7 @@ it("keeps configuration actions on one custom tooltip and the drag handle toolti
 })
 
 
-it("preserves GitHub policy and identity settings when VM resources change", async () => {
+it("preserves GitHub policy and identity settings when computer resources change", async () => {
   const user = userEvent.setup()
   renderScenario("running", "connected")
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
@@ -309,7 +309,7 @@ it("saves custom CPU and disk values and reopens them", async () => {
 })
 
 
-it("blocks duplicate names and invalid VM resource ranges", async () => {
+it("blocks duplicate names and invalid computer resource ranges", async () => {
   const { user, saveComputerConfiguration } = await renderComputerScenario()
   await user.click(configuredComputers().getByRole("button", { name: "Duplicate settings for dev" }))
   await user.clear(computerEditor().getByRole("textbox", { name: "Computer name" }))

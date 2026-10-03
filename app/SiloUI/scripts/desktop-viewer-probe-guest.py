@@ -66,7 +66,7 @@ def preflight(marker_path, require_stopped=False):
     if account.pw_uid == 0 or account.pw_dir != "/home/silo" or not Path(account.pw_dir).is_dir():
         fail("existing silo account must be non-root with home /home/silo")
     if require_stopped and marker["baselineStopped"] is not True:
-        fail("computer owner must stop the baseline desktop and set baselineStopped=true in the scratch marker")
+        fail("The computer owner must stop the baseline desktop and set baselineStopped=true in the scratch marker")
     return marker, account
 
 def boot_id():
@@ -363,7 +363,7 @@ def make_shim(marker_path):
     marker_path = str(Path(marker_path).resolve())
     source = (
         "#!/usr/bin/env python3\n"
-        "# SCRATCH-ONLY helper. computer owner may install it after preserving the baseline helper.\n"
+        "# SCRATCH-ONLY helper. The computer owner may install it after preserving the baseline helper.\n"
         "import runpy, sys\n"
         f"script = {script_path!r}\n"
         f"marker = {marker_path!r}\n"

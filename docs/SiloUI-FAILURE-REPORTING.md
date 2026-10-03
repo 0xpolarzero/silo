@@ -45,4 +45,4 @@ Overview, application integration, and Logs. Typecheck and lint passed. The
 runtime suite passed 153 tests inside the tool sandbox; its Unix-socket path
 test was blocked by that sandbox and passed when rerun outside it. Seven
 opt-in tests remained ignored. Native unit tests used explicit synthetic
-GitHub configuration. No application bundle or live VM was changed.
+GitHub configuration. No application bundle or live computer was changed.

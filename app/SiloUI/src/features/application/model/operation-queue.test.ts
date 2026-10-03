@@ -23,7 +23,7 @@ function entry(overrides: Partial<OperationEntry> & Pick<OperationEntry, "id">):
 }
 
 describe("blockingOperations", () => {
-  it("blocks a VM operation on device-wide work and same-VM work only", () => {
+  it("blocks a computer operation on device-wide work and same-computer work only", () => {
     const queue: OperationQueue = {
       running: [
         entry({ id: 1, label: "Backing up computers", computerId: null }),
@@ -86,7 +86,7 @@ describe("waitingStatusText", () => {
   })
 })
 
-describe("VM matching", () => {
+describe("computer matching", () => {
   const queue: OperationQueue = {
     running: [entry({ id: 1, computerId: "id-dev", computerName: "dev" })],
     waiting: [
@@ -94,19 +94,19 @@ describe("VM matching", () => {
       entry({ id: 3, computerId: "id-other", computerName: "other" }),
     ],
   }
-  it("matches an entry by stable VM id, not by display name", () => {
+  it("matches an entry by stable computer id, not by display name", () => {
     expect(operationMatchesVm(queue.waiting[0], "id-dev")).toBe(true)
-    // A renamed VM keeps its id, so the entry (name "dev") still matches by id.
+    // A renamed computer keeps its id, so the entry (name "dev") still matches by id.
     expect(operationMatchesVm(entry({ id: 8, computerId: "id-dev", computerName: "renamed" }), "id-dev")).toBe(true)
-    // A different VM that transiently shares the name does not match.
+    // A different computer that transiently shares the name does not match.
     expect(operationMatchesVm(entry({ id: 9, computerId: "id-clone", computerName: "dev" }), "id-dev")).toBe(false)
     expect(operationMatchesVm(entry({ id: 10, computerId: null }), "id-dev")).toBe(false)
   })
-  it("finds the waiting operation for a VM", () => {
+  it("finds the waiting operation for a computer", () => {
     expect(waitingOperationForVm(queue, "id-dev")?.label).toBe("Restarting dev")
     expect(waitingOperationForVm(queue, "id-missing")).toBeUndefined()
   })
-  it("detects a pending (running or waiting) operation for a VM", () => {
+  it("detects a pending (running or waiting) operation for a computer", () => {
     expect(hasPendingOperationForVm(queue, "id-dev")).toBe(true)
     expect(hasPendingOperationForVm(queue, "id-missing")).toBe(false)
   })

@@ -2,7 +2,7 @@ import { z } from "zod"
 
 const desktopSessionStateSchema = z.enum(["stopped", "starting", "running", "failed"])
 
-// Built-in computer use (v4 VMs). Every field tolerates a newer or malformed value,
+// Built-in computer use (v4 computers). Every field tolerates a newer or malformed value,
 // so a diagnostic detail can never make the desktop state unreadable.
 export const computerUseStates = ["unavailable", "preparing", "installing", "ready", "failed"] as const
 export const computerUseSchema = z.object({
@@ -71,7 +71,7 @@ export const linuxDesktopStateSchema = z.object({
   lcuRuntimeVersion: z.string().nullish().catch(null),
   lcuAgents: z.array(z.string()).nullish().catch(null),
   // Diagnostic fields must never make the whole desktop state unreadable.
-  // Present only on v4 VMs, where the desktop is built in. Older VMs report the lcu* fields.
+  // Present only on v4 computers, where the desktop is built in. Older computers report the lcu* fields.
   computerUse: computerUseSchema.nullish().catch(null),
   lcuReadiness: z.enum(["ready", "unverified", "failed"]).nullish().catch(null),
   port: z.number().nullish().catch(null),

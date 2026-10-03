@@ -71,7 +71,7 @@ The app calls it at start, so the folder exists before the download finishes.
 
 ## Filesystem safety
 
-Another process, a previous run or a hostile computer share could leave links or
+Another process, a previous run or a hostile computer's shared folder could leave links or
 folders in the storage directory, so nothing is trusted by path:
 
 - The storage root must be a real directory (never a symlink) owned by the

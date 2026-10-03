@@ -79,7 +79,7 @@ export function ShutdownBoundary({ children, compact = false, pendingWork }: { c
     return () => { disposed = true; unsubscribe?.(); setQueue(emptyOperationQueue) }
   }, [quitting])
   const waitingLabel = shutdownWaitingLabel(queue)
-  // The native shutdown entry names the VM it is stopping ("Stopping dev (1 of 2)").
+  // The native shutdown entry names the computer it is stopping ("Stopping dev (1 of 2)").
   const stopping = queue.running.find(entry => entry.kind === "shutdown")?.label
   const cancellable = cancellableRunning(queue)
   const cancelAndQuit = () => { for (const entry of cancellable) void invoke("cancel_operation", { id: entry.id }).catch(error => console.error("Silo cancel operation:", error)) }

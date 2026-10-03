@@ -44,7 +44,7 @@ function bridge(handler: Handler = () => undefined) {
 
 const count = (invoke: ReturnType<typeof vi.fn>, name: string) => invoke.mock.calls.filter(([command]) => command === name).length
 
-describe("configuration configuration jobs", () => {
+describe("computer configuration jobs", () => {
   it("does not report an empty configuration as saved before computer state loads", async () => {
     const mock = bridge()
     const store = createProductionSource(mock.native)

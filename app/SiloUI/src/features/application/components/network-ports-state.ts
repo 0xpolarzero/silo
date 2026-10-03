@@ -18,7 +18,7 @@ export function networkLoopbackAddress(port: NetworkPort) {
   return networkAddress(port, null)
 }
 
-/** The human-readable state of a port, accounting for VM lifecycle and stale/failed discovery. */
+/** The human-readable state of a port, accounting for computer lifecycle and stale/failed discovery. */
 export function networkPortState(computer: ApplicationComputer, port: NetworkPort, error?: string | null) {
   if (computer.freshness === "stale") return "Unknown"
   if (computer.state === "starting") return computer.stateDetail === "Stopping" ? "Computer stopping" : "Computer starting"

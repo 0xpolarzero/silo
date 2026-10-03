@@ -99,10 +99,10 @@ it.each([
 ] as const)("communicates remote=%s with SSH scope=%s", (remote, scope) => {
   const host = remote ? "Office Mac" : "This device"
   const { container } = render(<>
-    <ConnectionIcon kind="vm" network={remote} label={remote ? "Remote VM" : "Local VM"} />
+    <ConnectionIcon kind="vm" network={remote} label={remote ? "Remote computer" : "Local computer"} />
     <SshAccessBadges access={{ computer: "dev", enabled: scope !== "off", port: 2222, bindAddress: scope === "network" ? "192.168.1.42" : "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, deviceName: host, addresses: [] }} />
   </>)
-  expect(screen.getByRole("img", { name: remote ? "Remote VM" : "Local VM" })).toBeVisible()
+  expect(screen.getByRole("img", { name: remote ? "Remote computer" : "Local computer" })).toBeVisible()
   expect(container.querySelector(remote ? ".lucide-server" : ".lucide-monitor")).toBeInTheDocument()
   if (scope === "off") expect(screen.queryByText("SSH")).not.toBeInTheDocument()
   else {

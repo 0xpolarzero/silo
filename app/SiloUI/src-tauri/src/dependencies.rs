@@ -779,7 +779,7 @@ fn kvm_api_query_failure(error: io::Error) -> DependencyCheck {
 }
 
 #[cfg(any(target_os = "linux", test))]
-const KVM_FIRMWARE_GUIDANCE: &str = "Turn on hardware virtualization (Intel VT-x or AMD-V/SVM) in your device’s firmware (BIOS/UEFI) settings, then restart. inside a VM, enable nested virtualization on its host. Then retry checks.";
+const KVM_FIRMWARE_GUIDANCE: &str = "Turn on hardware virtualization (Intel VT-x or AMD-V/SVM) in your device’s firmware (BIOS/UEFI) settings, then restart. Inside a VM, enable nested virtualization on its host. Then retry checks.";
 
 /// ENODEV/ENXIO: the KVM module is loaded but the CPU's virtualization support
 /// is disabled in firmware or unavailable.
@@ -825,7 +825,7 @@ fn kvm_open_failure(error: io::Error) -> DependencyCheck {
             KVM_FIRMWARE_GUIDANCE),
         io::ErrorKind::NotFound => (CheckStatus::Unavailable,
             "/dev/kvm is unavailable on this device.".to_owned(),
-            "Enable hardware virtualization in your device settings and enable KVM using your Linux distribution’s instructions. inside a VM, enable nested virtualization on its host. Then retry checks."),
+            "Enable hardware virtualization in your device settings and enable KVM using your Linux distribution’s instructions. Inside a VM, enable nested virtualization on its host. Then retry checks."),
         io::ErrorKind::PermissionDenied => (CheckStatus::Failed,
             "Silo cannot open /dev/kvm for this user.".to_owned(),
             "Ask your administrator to grant your user read and write access to /dev/kvm, usually through the kvm group. Sign out and back in, then retry checks."),

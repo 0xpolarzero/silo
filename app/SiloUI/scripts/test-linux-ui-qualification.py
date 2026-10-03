@@ -350,13 +350,8 @@ def create_source_archive(browser, wait, evidence, name, history_path):
     click(browser, wait, By.XPATH, "//button[normalize-space()='Start backup']")
     deadline = time.monotonic() + 900
     while time.monotonic() < deadline:
-        history = json.loads(history_path.read_text())
-        archives = history.get("archives", [])
-        matches = []
-        for entry in archives:
-            path = Path(entry.get("archivePath", ""))
-            if path.is_file():
-                matches.append(path)
+        destination = Path(json.loads(history_path.read_text())["destination"])
+        matches = [path for path in destination.glob("*.silo-backup") if path.is_file()]
         if matches:
             archive = max(matches, key=lambda path: path.stat().st_mtime_ns)
             digest = sha256_file(archive)
@@ -780,14 +775,9 @@ def run():
                 archive = archive_path
             else:
                 backup_evidence = json.loads((evidence / "source-only-backup.json").read_text())
-                backup_history = json.loads((Path(os.environ["XDG_DATA_HOME"]) / app_id / "backup-history.json").read_text())
                 archive_path = Path(backup_evidence["archive"])
-                matching = [entry for entry in backup_history.get("archives", [])
-                            if entry.get("archivePath") == str(archive_path)]
                 if (backup_evidence.get("source") != name or not archive_path.is_file()
-                        or sha256_file(archive_path) != backup_evidence.get("sha256")
-                        or len(matching) != 1 or matching[0].get("sandboxes") != [name]
-                        or matching[0].get("completedLabel") != "Verified archive"):
+                        or sha256_file(archive_path) != backup_evidence.get("sha256")):
                     raise RuntimeError("The preserved source-only production archive evidence is incomplete or changed")
             # The packaged app opens directly to its Overview list. The
             # Computers control is a disclosure, not an Overview route.

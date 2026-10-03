@@ -362,7 +362,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         onComputerRequest: requestOnComputerPage,
       }), ...updateCommands(updates, () => navigation.selectSettingsSection("general"))]} />}
     >
-      {/* One toast reflects VM-changing operations wherever the user is, so progress and
+      {/* One toast reflects computer-changing operations wherever the user is, so progress and
           Cancel never vanish while the work continues. It renders nothing inline. */}
       <OperationQueueToast queue={source.operationQueue} onCancel={actions.cancelOperation} />
       <ComputerConfigurationToast operation={source.computerConfigurationOperation} computers={source.computers} onOpen={(id) => navigation.openComputer(id)} />

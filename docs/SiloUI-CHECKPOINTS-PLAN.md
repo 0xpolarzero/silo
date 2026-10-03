@@ -132,7 +132,7 @@ these require explicit pending-restore guards.
 | Fork current state | Capture a live source or reuse a pending immutable reference, choose a new name, and create a stopped sibling computer. No child guest execution until Start. |
 | Fork checkpoint | Same stopped-sibling flow using the selected point. Copy current source assignments, never historical grants. |
 | Start pending fork | Resolve current policy, validate compatibility, restore the selected state and open the normal computer. Reconnect desktop/terminal/LCU sessions as available. |
-| Restore checkpoint | Secure the current state as recovery, then atomically select the target immutable reference. Keep the computer stopped; explicit Start performs full-memory restore or disk boot under current host policy. |
+| Restore checkpoint | Secure the current state as recovery, then atomically select the target immutable reference. Keep the computer stopped; explicit Start performs full-memory restore or disk boot under current device policy. |
 | Export/import | Keep a portable recovery path and existing archive import. Clearly distinguish disk recovery from memory continuation. Use upstream archive mechanisms wherever compatible. |
 | Delete checkpoint/fork | Explain retained dependencies and actual reclaimable space when known. Preserve artifacts still required by other computers. |
 
@@ -199,7 +199,7 @@ durable recovery, and unretried runtime errors. The broader runtime suite passed
 The final `desktop:build` passed signing and bundle verification at
 `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. This bundle was not
 launched; the running app in the separate `checkpoint-state-build-fu327l8s`
-directory and its VMs were left untouched.
+directory and its computers were left untouched.
 
 After Restore, the old runtime instance is absent and the selected snapshot
 reference becomes the computer's authoritative stopped state. Restore can be
@@ -235,7 +235,7 @@ with `desktop:build` under the separate absolute `CARGO_TARGET_DIR`
 `app/SiloUI/src-tauri/target/checkpoint-state-build-fu327l8s` in this checkout.
 The resulting `release/bundle/macos/Silo.app` passed the build wrapper's signing
 and bundle verification. It was not launched; the existing running release
-bundle and user VMs were left untouched. Tests establish deterministic behavior
+bundle and user computers were left untouched. Tests establish deterministic behavior
 and packaging, not live session continuity or remote-device deployment.
 
 For v1, retain checkpoints until explicit deletion; show measured usage and fail
@@ -271,7 +271,7 @@ The 2026-10-02 regression run compared the complete survey with usage reads for
 1, 10, and 100 listed runtime sandboxes. These are single samples from an
 in-process `RuntimeRunner` fixture, including JSON parsing and temporary-file
 reads, with one managed record and an unrelated native member. They measure
-fixture execution, not native process startup or live VM latency. Call counts
+fixture execution, not native process startup or live computer latency. Call counts
 are assertions; elapsed times are diagnostic output, not timing thresholds.
 
 | Sandboxes | Full survey calls | Empty history calls | Empty time: survey → usage (µs) | Missing-member calls | Missing time: survey → usage (µs) |
@@ -493,7 +493,7 @@ selection, failed and ambiguous lookup, and unsent request buffering. The full
 network library suite first reported 549 passes and 25 failures because the
 sandbox denied local socket binding with `Operation not permitted`. A rerun
 with local socket access passed all 574 tests. These were synthetic tests: no
-live GitHub token, repository, VM, or guest traffic was exercised. CLI
+live GitHub token, repository, computer, or guest traffic was exercised. CLI
 compilation must be rerun on the combined source. The SSH feature test did not
 run because the isolated build exhausted local disk space.
 
@@ -535,12 +535,12 @@ four focused lock tests, the history regression, and the final full native run.
 
 The isolated optimized macOS package was rebuilt after the migration and GitHub
 restore-policy fixes. The migration journal now persists `complete` on the first
-verified selected-generation startup. A later fork may change the VM count
+verified selected-generation startup. A later fork may change the computer count
 without being mistaken for a failed conversion; an uncompleted conversion still
 has to match the original migrated count. The focused migration module passed
 7/7, including converted-fork and clean-generation-after-create restart cases.
 
-Packaged macOS UI and guest checks passed with a disposable, one-VM legacy
+Packaged macOS UI and guest checks passed with a disposable, one-computer legacy
 fixture. Retry converted 1/1 after the copied fixture's mount path was corrected
 to its isolated app-data directory; the original fixture workspace hash remained
 unchanged. The normal overview showed the migrated source Stopped. We explicitly
@@ -573,10 +573,10 @@ The ordinary AppImage smoke passed 10/10. A genuine predecessor fixture was
 created with installed Silo 0.6.3 / MicroSandbox 0.6.17 and the Ubuntu 24.04 v2
 guest, then provisioned using the HEAD-patched 0.6.17 account migration utility.
 The guest migration passed: UID 1001 `silo`, required SFTP server, preserved
-workspace marker and ownership, and the stopped VM's verified working-account
+workspace marker and ownership, and the stopped computer's verified working-account
 label were checked. Its root snapshot backup remains verified. The first
 attempt's apt failure was caused by the fixture's disabled network; only the
-disposable VM was recreated from its verified snapshot with the supported
+disposable computer was recreated from its verified snapshot with the supported
 `public` network profile before retry. Packaged Silo conversion passed 1/1. The
 production UI showed the source stopped; explicit Start, full checkpoint,
 stopped fork, RAM-marker and guest-process survival, independent source/fork
@@ -589,9 +589,9 @@ guest process. The Linux qualification also exposed and corrected backup-history
 re-quarantine after completed migration, missing 4 GiB defaults and 0.7 config
 canonicalization, temporary snapshot-ancestry retention, snapshot-index reads
 truncated above 32 KiB, archive head selection in multi-member groups, snapshot
-selectors incorrectly constrained by VM-name limits, and the disk-only start
+selectors incorrectly constrained by computer-name limits, and the disk-only start
 flag for a disk snapshot. The production UI exported a v3 archive and its
-native head/integrity checks passed; the imported VM explicitly started and
+native head/integrity checks passed; the imported computer explicitly started and
 restored workspace bytes. An earlier repeat export failed because Silo did not
 persist a stable snapshot group. Silo now persists lineage groups across
 source, import, fork, backup, restore, and relaunch. Focused regressions and
@@ -618,7 +618,7 @@ v3 guest passed account, workspace, descriptor-discovery and snapshot
 verification checks; interrupted `--resume` is covered by the focused 11-test
 utility suite, not a live interrupted run. Compact evidence is
 `app/SiloUI/src-tauri/target/verification/linux-account-migration-072-20260925.txt` (untracked local evidence).
-The separate earlier 0.7.2 VM staged under the old runtime directory was
+The separate earlier 0.7.2 computer staged under the old runtime directory was
 synthetic and is not evidence of legacy migration compatibility. A later
 Ubuntu 24.04.4 ARM64 Lima VM on Apple Silicon passed nested-KVM API and
 VM-creation checks. Its stopped Ubuntu 24.04 v2 guest was created by
@@ -634,7 +634,7 @@ before Start. The final ARM AppImage passed native WebKit smoke with its live
 APPDIR resolving the packaged tools and all three dependency rows checked. Its
 six managed ELF payloads matched their prepared SHA-256 values. The final
 lineage matrix passed one same-home archive import, explicit Start, fork and
-relaunch, followed by two valid exports each for source, imported VM, and fork.
+relaunch, followed by two valid exports each for source, imported computer, and fork.
 The source's two exports were validated before the deny-all eligibility-only
 change; the resumed run on the rebuilt DEB reused the existing import/fork and
 created no additional imports (`newImportsCreated: 0`). A separate cold-cache
@@ -649,7 +649,7 @@ the destination cache; `qemu-img` reported 10 GiB virtual root capacity.
 Evidence is in `app/SiloUI/src-tauri/target/verification/arm64-cold-cache-qualification-2026-09-26/` (untracked local evidence).
 Saved records, native inspection, and
 physical raw-image sizes agreed at 1 CPU, 1024 MiB RAM, and 4096 MiB root disk
-for all three VMs. The first matrix attempt exposed that the importer
+for all three computers. The first matrix attempt exposed that the importer
 intentionally preserves deny-all networking while backup eligibility only
 accepted the default policy. Backup validation now accepts exactly the default
 profile or its deny-all policy; custom rule sets remain rejected. Focused
@@ -666,7 +666,7 @@ distribution are publication steps outside this implementation qualification.
 
 The installed `/Applications/Silo.app` was restored and its exact executable
 was observed on the normal overview with `dev` and `hermes` stopped. No
-production VM was started. The updated sanitized staged-inspection message has
+production computer was started. The updated sanitized staged-inspection message has
 focused native coverage; the corrected message was not separately inspected in
 the UI.
 

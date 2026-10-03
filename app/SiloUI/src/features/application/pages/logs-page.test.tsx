@@ -423,7 +423,7 @@ describe("retained logs", () => {
     } finally { vi.useRealTimers() }
   })
 
-  it("addresses a same-named remote computer by owner and VM identity when filtering sources", async () => {
+  it("addresses a same-named remote computer by owner and computer identity when filtering sources", async () => {
     const { computer, actions } = fixture()
     const remote = { ...computer, configuration: { ...computer.configuration, id: "silo-remote:office:remote-computer" }, device: { id: "office", computerId: "remote-computer", name: "Office", address: "office.local", connected: true } }
     const queryLogs = vi.fn(async () => ({ entries: [], nextCursor: null, oldestAvailableTimestamp: null, newestAvailableTimestamp: null, totalMatches: 0, timestampEstimated: false }))

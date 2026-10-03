@@ -84,7 +84,7 @@ it("shows a start immediately with the real step and a bar", () => {
   const actions = createApplicationActionsMock()
   const view = renderHook(({ current }) => useLifecycleToasts(current, actions), { initialProps: { current: source } })
   const id = `lifecycle::${source.computers[0].configuration.id}`
-  expect(showOperationProgress).toHaveBeenLastCalledWith(id, expect.objectContaining({ title: "Starting dev", step: "Starting the VM", progress: expect.any(Number) }))
+  expect(showOperationProgress).toHaveBeenLastCalledWith(id, expect.objectContaining({ title: "Starting dev", step: "Starting the computer", progress: expect.any(Number) }))
   const network = pendingSource("start", "network")
   view.rerender({ current: network })
   expect(showOperationProgress).toHaveBeenLastCalledWith(id, expect.objectContaining({ step: "Connecting the network" }))

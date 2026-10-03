@@ -28,11 +28,11 @@ case "$1" in install|upgrade)
                     blocker="Silo (process $pid) is still running"
                     ;;
                 *)
-                    blocker="A local VM runtime (msb, process $pid) is still running"
+                    blocker="A local computer runtime (msb, process $pid) is still running"
                     ;;
                 esac
                 rm -f /var/lib/silo/package-update-in-progress
-                echo "Quit Silo on this computer, then retry the update. $blocker. Running local VMs must stop before Silo can be replaced." >&2
+                echo "Quit Silo on this device, then retry the update. $blocker. Running local computers must stop before Silo can be replaced." >&2
                 exit 1
                 ;;
         esac

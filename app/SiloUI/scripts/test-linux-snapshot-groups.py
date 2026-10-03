@@ -285,6 +285,14 @@ def start_stop(browser, name):
     return state[name]
 
 
+def require_backup_destination():
+    # The chosen export folder is persisted in backup-history.json, not reported by read_backup_state.
+    history = Path(os.environ["XDG_DATA_HOME"]) / APPLICATION_ID / "backup-history.json"
+    destination = json.loads(history.read_text()).get("destination") if history.is_file() else None
+    if Path(destination or "").resolve() != ARCHIVE_DESTINATION.resolve():
+        raise AssertionError(f"The production Backup page destination is not selected: {destination!r}")
+
+
 def export_twice(browser, name, expected_group, evidence):
     for attempt in (1, 2):
         record_path, record, group = snapshot_record(records_for_state(read_state(browser))[name])
@@ -292,8 +300,7 @@ def export_twice(browser, name, expected_group, evidence):
             raise AssertionError(f"{name} group changed before export {attempt}: {group} != {expected_group}")
         previous = set(ARCHIVE_DESTINATION.glob("*.silo-backup"))
         state = invoke(browser, "read_backup_state")
-        if Path(state.get("destination") or "").resolve() != ARCHIVE_DESTINATION.resolve():
-            raise AssertionError(f"The production Backup page destination is not selected: {state}")
+        require_backup_destination()
         operation_id = state.get("operationId")
         invoke(browser, "start_backup", {
             "destination": str(ARCHIVE_DESTINATION), "computers": [name],
@@ -318,8 +325,7 @@ def export_twice(browser, name, expected_group, evidence):
 
 def export_seed(browser, name):
     state = invoke(browser, "read_backup_state")
-    if Path(state.get("destination") or "").resolve() != ARCHIVE_DESTINATION.resolve():
-        raise AssertionError(f"The production Backup page destination is not selected: {state}")
+    require_backup_destination()
     previous = set(ARCHIVE_DESTINATION.glob("*.silo-backup"))
     previous_operation_id = state.get("operationId")
     invoke(browser, "start_backup", {

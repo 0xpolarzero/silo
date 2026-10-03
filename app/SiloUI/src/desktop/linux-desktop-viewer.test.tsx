@@ -12,7 +12,7 @@ function viewer(state: LinuxDesktopState, error: string | null = null, busy = fa
 }
 
 describe("desktop viewer lifecycle", () => {
-  it.each([true, false])("requires an explicit action to start a stopped VM (automatic=%s)", async autoStart => {
+  it.each([true, false])("requires an explicit action to start a stopped computer (automatic=%s)", async autoStart => {
     const user = userEvent.setup()
     const { onAction } = viewer({ installed: true, autoStart, state: "vm-stopped" })
     expect(onAction).not.toHaveBeenCalled()

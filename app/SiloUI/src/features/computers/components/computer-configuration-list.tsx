@@ -287,7 +287,7 @@ export function ComputerConfigurationList({ devices, getDeviceId, onCommitComput
             {displayConfigurations.map((configuration) => {
               const isEditing = editor?.draft.id === configuration.id
               const runningVM = Boolean(isComputerRunning?.(configuration))
-              // Starting or stopping VMs can be neither edited nor deleted until they settle.
+              // Starting or stopping computers can be neither edited nor deleted until they settle.
               const busyReason = getConfigurationBusyReason?.(configuration)
               const deleteTooltip = runningVM ? "Stop the computer before deleting it." : busyReason
               const presentation = getRowPresentation?.(configuration)

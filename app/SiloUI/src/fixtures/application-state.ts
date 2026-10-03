@@ -63,7 +63,7 @@ export function useApplicationFixture(source: ApplicationSource) {
       return code < 32 || (code >= 127 && code <= 159)
     })) throw "Checkpoint name must contain 1 to 80 printable characters."
     const selected = computers.find((computer) => computerTarget(computer) === target)
-    if (!selected) throw "This computer is not a local VM."
+    if (!selected) throw "This computer is not on this device."
     const point = fixtureCheckpoint(selected, label, "manual")
     if (selected.pendingCheckpointRestore) checkpointMembers.current.set(point.id, selected.pendingCheckpointRestore.checkpointId)
     setComputers((current) => current.map((computer) => computerTarget(computer) === target
@@ -72,7 +72,7 @@ export function useApplicationFixture(source: ApplicationSource) {
   }, [computers])
   const forkCheckpoint = useCallback(async (target: string, checkpointId: string | null, newName: string) => {
     const selected = computers.find((computer) => computerTarget(computer) === target)
-    if (!selected) throw "The source computer is not a local VM."
+    if (!selected) throw "The source computer is not on this device."
     if (computers.some((computer) => computer.device?.id === selected.device?.id && computer.configuration.name === newName)) throw "The fork name is already in use or the computer limit was reached."
     const pending = checkpointId === null ? selected.pendingCheckpointRestore : undefined
     const captured = checkpointId === null && !pending ? fixtureCheckpoint(selected, "Fork point", "manual") : undefined
@@ -91,7 +91,7 @@ export function useApplicationFixture(source: ApplicationSource) {
   }, [computers])
   const restoreCheckpoint = useCallback(async (target: string, checkpointId: string) => {
     const selected = computers.find((computer) => computerTarget(computer) === target)
-    if (!selected) throw "This computer is not a local VM."
+    if (!selected) throw "This computer is not on this device."
     const point = selected.checkpoints?.find((checkpoint) => checkpoint.id === checkpointId)
     if (!point) throw "The selected checkpoint no longer exists."
     const recovery = fixtureCheckpoint(selected, "Before restore", "before-restore")

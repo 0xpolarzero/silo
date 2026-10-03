@@ -728,7 +728,7 @@ fn reconcile_computers(config: &Configuration) -> BTreeSet<String> {
 }
 /// Reconcile the affected computer's forwards on a background thread, skipping it when
 /// that computer is busy, so a read can return immediately while repair converges. Each
-/// Computer is repaired under its own gate guard.
+/// computer is repaired under its own gate guard.
 fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
     let computers = reconcile_computers(config);
     if computers.is_empty() {

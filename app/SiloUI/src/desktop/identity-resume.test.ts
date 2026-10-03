@@ -28,7 +28,7 @@ describe("identity completion after relaunch", () => {
     expect(statuses(store)).toEqual(verified ? ["succeeded", "succeeded"] : ["idle", "idle"])
     store.dispose()
   })
-  it("restores completion only from a successful native read, without changing a VM", async () => {
+  it("restores completion only from a successful native read, without changing a computer", async () => {
     const { store, invoke } = setup()
     expect(statuses(store)).toEqual(["idle", "idle"])
     await store.verifySetupIdentities(request)

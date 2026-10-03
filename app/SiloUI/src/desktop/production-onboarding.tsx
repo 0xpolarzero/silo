@@ -56,7 +56,7 @@ function assertConfirmedDeletions(committed: ApplicationSource | null, configura
 
 // oxlint-disable-next-line react/only-export-components
 export function productionOnboardingSource(application: ApplicationSource | null, dependencies: DependencyRuntime, applicationPreferences: OnboardingSource["applicationPreferences"], setup?: ProductionSnapshot): OnboardingSource {
-  // Setup on this device must never adopt another device's VM identities.
+  // Setup on this device must never adopt another device's computer identities.
   if (application) application = { ...application, computers: application.computers.filter(computer => !computer.device) }
   const operation = application?.computerConfigurationOperation
   const existingConfigurations = existingLocalConfigurations(application)

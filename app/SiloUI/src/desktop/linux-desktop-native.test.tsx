@@ -19,7 +19,7 @@ beforeEach(() => {
 })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-it("opens a stopped VM viewer without starting the VM and only starts after the user's action", async () => {
+it("opens a stopped computer viewer without starting the computer and only starts after the user's action", async () => {
   invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: false, state: "vm-stopped" }
     : command === "desktop_action" ? { installed: true, autoStart: false, state: "running" } : undefined)
   const user = userEvent.setup()

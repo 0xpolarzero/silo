@@ -14,7 +14,7 @@ pub(crate) struct EditorCommand {
     pub program: PathBuf,
     /// Arguments before Silo's own (for example `run <app id>` for Flatpak).
     pub args: Vec<OsString>,
-    /// Zed takes an `ssh://` URI; Visual Studio Code takes a computer file.
+    /// Zed takes an `ssh://` URI; Visual Studio Code takes a workspace file.
     pub zed: bool,
 }
 

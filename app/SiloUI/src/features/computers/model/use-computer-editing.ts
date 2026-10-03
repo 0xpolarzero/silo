@@ -87,7 +87,7 @@ export function useComputerEditing({
   // save/delete/reorder carries it as the change's `expected` baseline, so a queued edit
   // applies to fresh state — or is rejected — instead of overwriting concurrent work.
   const baselineRef = useRef<SetupComputerConfiguration[] | null>(stored?.baseline ?? null)
-  // The edited VM's baseline, plus editor conflict state, drive the in-editor notices.
+  // The edited computer's baseline, plus editor conflict state, drive the in-editor notices.
   const [editorBaseline, setEditorBaseline] = useState<SetupComputerConfiguration | null>(stored?.editorBaseline ?? null)
   const [editorConflict, setEditorConflict] = useState(stored?.editorConflict ?? false)
   const [editorReview, setEditorReview] = useState<ComputerReview | null>(stored?.editorReview ?? null)
@@ -299,7 +299,7 @@ export function useComputerEditing({
 
   /** Confirmed deletion (from the shared delete popover): deletes, then reports the outcome in a notification. */
   async function deleteWithNotice(configuration: SetupComputerConfiguration): Promise<boolean> {
-    // The popover may have been opened while the computer was stopped; never delete a running VM.
+    // The popover may have been opened while the computer was stopped; never delete a running computer.
     if (isComputerRunning?.(configuration)) {
       showActionFailure(`Could not delete ${configuration.name}`, "Stop the computer before deleting it.", undefined, { native: false })
       return false

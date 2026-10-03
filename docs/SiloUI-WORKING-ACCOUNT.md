@@ -87,7 +87,7 @@ Root sessions retain the legacy implementation. Named SSH sessions also set
 The runtime advertises `--silo-working-account-protocol` version 1. Build
 validation, new-computer creation and unified-account SSH preparation require that
 capability; an incompatible runtime cannot retain or bind a managed listener
-for a unified computer. This change stays in
+for a computer with the unified account. This change stays in
 the existing vendor patch and retains the other bundled runtime integrations.
 
 ## Desktop and preservation evidence
@@ -98,7 +98,7 @@ were unchanged afterwards. Xvnc, Xfce and the window manager ran as `silo`;
 no `silo-desktop` account was created. Desktop shutdown preserved an unrelated
 job owned by the same UID. Reinstallation preserved VNC configuration and
 password hashes. Existing conflicting configuration is rejected before package
-installation on unified computers.
+installation on computers with the unified account.
 
 A headed ARM64 Chromium 153 test rendered a page without `--no-sandbox`.
 `chrome://sandbox` reported PID/network namespaces and seccomp-BPF/TSYNC

@@ -9,26 +9,26 @@ It is preserved on the `archive/media-and-experiments` branch and in
 checksums remain here.
 
 This version follows one project through a continuous workspace. Configure its
-repository and credential access on the hosting computer, start its VM from a
+repository and credential access on the office device, start its computer from a
 laptop, connect an editor and terminal, forward its development server, then let
-an agent test the same application inside the VM's Linux desktop. The office
-computer remains the visible execution host throughout the workflow.
+an agent test the same application inside the computer's Linux desktop. The office
+device remains the visible place where the computer runs throughout the workflow.
 
 ## Edit
 
 | Time | Story |
 | --- | --- |
-| 0–3.75 | Computers for your agents. Linux VMs locally or remotely. |
-| 3.75–7.5 | Repository and credential scopes attach to `your-app` on its host. |
-| 7.5–11.25 | Start the remote VM from your laptop; show stop and restart controls. |
+| 0–3.75 | Computers for your agents. Linux computers locally or remotely. |
+| 3.75–7.5 | Repository and credential scopes attach to `your-app` on its device. |
+| 7.5–11.25 | Start the remote computer from your laptop; show stop and restart controls. |
 | 11.25–15 | Move into the workspace; open the editor and terminal over SSH. |
-| 15–17.875 | Connect the development server on VM port 3000. |
+| 15–17.875 | Connect the development server on computer port 3000. |
 | 17.875–20.625 | Open the app at the laptop address, localhost:51432. |
-| 20.625–28.125 | Keep the app visible inside the VM desktop while an agent tests checkout. |
+| 20.625–28.125 | Keep the app visible inside the computer's desktop while an agent tests checkout. |
 | 28.125–30 | Less setup. More building. |
 | 30–33.75 | Computers for your agents. Download Silo. |
 
-The permission cards become attributes of the host VM before the laptop enters.
+The permission cards become attributes of the office computer before the laptop enters.
 The laptop screen then grows into the working view. Editor, network, and agent
 panes share one coordinate system; the browser remains visible through the
 handoff to the agent. Cursor gestures lead the main operations, with short click responses. The terminal's
@@ -37,28 +37,28 @@ are distinct and explicitly labeled.
 
 The computer, workspace, terminal, browser, and permission views are illustrated
 motion graphics, not live recordings or exact replicas of the production UI.
-The checkout, VM name, and port addresses are fictional examples. The computers
+The checkout, computer name, and port addresses are fictional examples. The devices
 are assumed to be connected already, and a Linux desktop and agent are installed
-inside the VM. No live credentials or VM data appear. The music and effects are
+inside the computer. No live credentials or computer data appear. The music and effects are
 synthesized from scratch and synchronized to the edit at 128 BPM. No `demo/`
 files or existing website tour implementation were read.
 
 ## Evidence
 
-- [Product README](../../README.md): Linux VMs, local and remote management,
+- [Product README](../../README.md): Linux computers, local and remote management,
   familiar editors and terminals, development-server access, desktops for
   agents, repository access, and credential scope.
-- [Remote computers](../../docs/SiloUI-CONNECTIONS.md): terminals and
-  editors launch on the controlling computer and connect to the guest through
+- [Connections](../../docs/SiloUI-CONNECTIONS.md): terminals and
+  editors launch on the controlling device and connect to the guest through
   its owner; network access uses controller-side loopback SSH tunnels. The
-  diagram distinguishes the laptop, hosting computer, VM port, and local
-  forwarded address. It assumes the computers have already been connected.
+  diagram distinguishes the laptop, hosting device, computer port, and local
+  forwarded address. It assumes the devices have already been connected.
 - [Bundled help](../../app/SiloUI/docs/silo-help.html): start/stop/restart,
   editor and terminal actions, Network ports, and the optional Linux desktop.
 - [Desktop agent tools](../../docs/SiloUI-LUDA.md): computer use in the guest;
-  agents must be installed and authenticated inside the VM.
+  agents must be installed and authenticated inside the computer.
 - [Secrets](../../docs/SiloUI-SECRETS.md): credentials remain on the hosting
-  computer and are scoped by sandbox and HTTPS domain. GitHub read-only access
+  device and are scoped by computer and HTTPS domain. GitHub read-only access
   is explicitly presented as the OAuth default, not personal-token behavior.
 - [Website product copy](../../website/index.html): the main headline,
   “Start it here. Run it there,” “From server to browser,” and

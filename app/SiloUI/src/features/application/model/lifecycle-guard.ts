@@ -27,8 +27,8 @@ function computerName(computer: ApplicationComputer) {
 
 /**
  * The guards every surface applies to a lifecycle request (list row, computer page, command
- * palette, toasts, and the status panel): local VM operations can be unavailable in this
- * build, starting a VM under memory pressure asks first, and stopping or restarting a
+ * palette, toasts, and the status panel): local computer operations can be unavailable in this
+ * build, starting a computer under memory pressure asks first, and stopping or restarting a
  * running computer always asks first (decision 8). Start and Open never ask otherwise.
  */
 export function lifecycleCheck(source: ApplicationSource, computer: ApplicationComputer, action: LifecycleAction): LifecycleCheck {

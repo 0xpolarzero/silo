@@ -334,7 +334,7 @@ export function ComputerDetailPage({ computer, source, actions, controls }: {
   const target = computerTarget(computer)
   const state = computer.state
   const canStop = state === "running" || state === "starting"
-  // A starting or stopping VM can be neither edited nor deleted until it settles.
+  // A starting or stopping computer can be neither edited nor deleted until it settles.
   const busyReason = computerBusyReason(computer)
 
   // The detail page edits and deletes this computer in place using the same flow as the list.

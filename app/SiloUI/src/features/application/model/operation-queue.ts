@@ -24,15 +24,15 @@ export const operationKinds = [
 ] as const
 export type OperationKind = (typeof operationKinds)[number]
 
-/** A single VM-changing operation reported by the runtime operation gate. */
+/** A single computer-changing operation reported by the runtime operation gate. */
 export interface OperationEntry {
   id: number
   label: string
   /** What the operation is; see {@link OperationKind}. Unknown or missing reads as `other`. */
   kind: OperationKind
-  /** Stable VM id this operation is scoped to; `null` for device-wide operations. */
+  /** Stable computer id this operation is scoped to; `null` for device-wide operations. */
   computerId: string | null
-  /** VM display name captured when the operation was admitted; `null` for
+  /** Computer display name captured when the operation was admitted; `null` for
    * device-wide operations. For display only — matching keys on `computerId`. */
   computerName: string | null
   /** Unix epoch milliseconds when the operation started running or began waiting. */
@@ -105,8 +105,8 @@ export function toastableQueue(queue: OperationQueue): OperationQueue {
 }
 
 /**
- * The runtime gate lets a VM-scoped operation run when nothing device-wide and
- * nothing for the same VM is ahead of it. A device-wide operation conflicts with
+ * The runtime gate lets a computer-scoped operation run when nothing device-wide and
+ * nothing for the same computer is ahead of it. A device-wide operation conflicts with
  * everything. This mirrors the backend `Scope::conflicts` rule.
  */
 function operationsConflict(a: OperationEntry, b: OperationEntry): boolean {
@@ -125,9 +125,9 @@ export function blockingOperations(queue: OperationQueue, entry: OperationEntry)
 }
 
 /**
- * True when `entry`'s scope is the VM with stable id `computerId`. The runtime gate keys
- * per-VM entries by the stable id, so matching is by id alone and survives a rename.
- * Callers must not pass a remote device's VM here: those operations run on that
+ * True when `entry`'s scope is the computer with stable id `computerId`. The runtime gate keys
+ * per-computer entries by the stable id, so matching is by id alone and survives a rename.
+ * Callers must not pass a remote device's computer here: those operations run on that
  * device's own gate and never appear in this local queue.
  */
 export function operationMatchesVm(entry: OperationEntry, computerId: string): boolean {
@@ -135,7 +135,7 @@ export function operationMatchesVm(entry: OperationEntry, computerId: string): b
 }
 
 /**
- * The waiting operation that a VM row should surface: the earliest waiter whose
+ * The waiting operation that a computer row should surface: the earliest waiter whose
  * scope is this computer. Device-wide waiters are reported by the global indicator.
  */
 export function waitingOperationForVm(queue: OperationQueue, computerId: string): OperationEntry | undefined {

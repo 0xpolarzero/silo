@@ -130,7 +130,7 @@ describe("production application bridge", () => {
     expect(parsed.computers[0].checkpoints?.[0].createdAt).toBe(new Date(createdAt).toISOString())
   })
 
-  it("sends checkpoint commands with the VM ID and publishes the returned checkpoint history", async () => {
+  it("sends checkpoint commands with the computer ID and publishes the returned checkpoint history", async () => {
     const mock = native()
     const updated = structuredClone(source)
     updated.computers[0].checkpoints = [{ id: "point-1", name: "Before refactor", createdAt: "2026-09-25T10:00:00Z", scope: "full", reason: "manual" }]
@@ -160,7 +160,7 @@ describe("production application bridge", () => {
     const failedSource = structuredClone(source)
     failedSource.computers[0].checkpointOperation = { kind: "capture", status: "failed", stage: "Checkpoint failed", error: "Another computer operation is still running." }
     const runningSource = structuredClone(source)
-    runningSource.computers[0].checkpointOperation = { kind: "capture", status: "running", stage: "Capturing VM state" }
+    runningSource.computers[0].checkpointOperation = { kind: "capture", status: "running", stage: "Capturing computer state" }
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
       if (command === "create_checkpoint") {
         if (failNext) { failNext = false; throw new Error("Another computer operation is still running.") }
@@ -177,7 +177,7 @@ describe("production application bridge", () => {
       const retry = store.applicationActions.createCheckpoint!("dev", "Before refactor")
       expect(store.getSnapshot().source?.computers[0].checkpointOperation).toMatchObject({ kind: "capture", status: "running", stage: "Creating checkpoint…" })
       await store.refresh()
-      expect(store.getSnapshot().source?.computers[0].checkpointOperation).toMatchObject({ kind: "capture", status: "running", stage: "Capturing VM state" })
+      expect(store.getSnapshot().source?.computers[0].checkpointOperation).toMatchObject({ kind: "capture", status: "running", stage: "Capturing computer state" })
       await expect(store.applicationActions.createCheckpoint!("dev", "Duplicate")).rejects.toThrow("A checkpoint operation is already running")
       expect(invoke.mock.calls.filter(([command]) => command === "create_checkpoint")).toHaveLength(2)
       const updated = structuredClone(source)
@@ -187,7 +187,7 @@ describe("production application bridge", () => {
       expect(store.getSnapshot().source?.computers[0].checkpoints?.[0].id).toBe("point-1")
       expect(store.getSnapshot().source?.computers[0].checkpointOperation ?? null).toBeNull()
       await store.refresh()
-      expect(store.getSnapshot().source?.computers[0].checkpointOperation).toMatchObject({ status: "running", stage: "Capturing VM state" })
+      expect(store.getSnapshot().source?.computers[0].checkpointOperation).toMatchObject({ status: "running", stage: "Capturing computer state" })
       runningSource.computers[0].checkpointOperation = { kind: "capture", status: "failed", stage: "Verification failed", error: "Checkpoint could not be verified." }
       await store.refresh()
       expect(store.getSnapshot().source?.computers[0].checkpointOperation).toMatchObject({ status: "failed", error: "Checkpoint could not be verified." })
@@ -219,7 +219,7 @@ describe("production application bridge", () => {
     } finally { store.dispose() }
   })
 
-  it("retains the last remote VM snapshot as stale while its owner refreshes and preserves lifecycle state", async () => {
+  it("retains the last remote computer snapshot as stale while its owner refreshes and preserves lifecycle state", async () => {
     const mock = native()
     let snapshotReads = 0
     let finishAction!: () => void
@@ -275,7 +275,7 @@ describe("production application bridge", () => {
     } finally { store.dispose() }
   })
 
-  it("records a failed remote lifecycle action on the VM without marking its device offline", async () => {
+  it("records a failed remote lifecycle action on the computer without marking its device offline", async () => {
     const mock = native()
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
       if (command === "device_list") return [{ id: "office", name: "Office Mac", address: "user@office" }]
@@ -307,7 +307,7 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("deletes a local checkpoint by VM ID, reads checkpoint usage, and refuses remote deletes", async () => {
+  it("deletes a local checkpoint by computer ID, reads checkpoint usage, and refuses remote deletes", async () => {
     const mock = native()
     const usage = { totalBytes: 4096, checkpoints: [{ id: "point-1", sizeBytes: 4096, usedBy: ["experiment"], deleteBlocker: "Used by experiment." }] }
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
@@ -339,7 +339,7 @@ describe("production application bridge", () => {
     expect(computer.settling).toBe(true)
   })
 
-  it("keeps an unfinished Restore in the computer view and abandons it by VM ID", async () => {
+  it("keeps an unfinished Restore in the computer view and abandons it by computer ID", async () => {
     const response = structuredClone(source) as unknown as Record<string, unknown>
     const computers = response.computers as Array<Record<string, unknown>>
     computers[0].unfinishedRestore = { checkpointId: "point-1", checkpointName: "Before refactor", phase: "capturing" }
@@ -1097,7 +1097,7 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("keeps detected identity across VM results that omit it, then accepts a fresh missing identity", async () => {
+  it("keeps detected identity across computer results that omit it, then accepts a fresh missing identity", async () => {
     const deviceIdentity = { name: "Host Author", email: "host@example.test" }
     let currentIdentity: typeof deviceIdentity | undefined = deviceIdentity
     const computerResult = structuredClone(source)
@@ -1124,7 +1124,7 @@ describe("production application bridge", () => {
 
   it("keeps captured logs during configuration and reloads them after it finishes", async () => {
     const initial = structuredClone(source)
-    const oldLog = { line: "VM booted", occurredAt: "2026-09-10T09:00:00Z" }
+    const oldLog = { line: "computer booted", occurredAt: "2026-09-10T09:00:00Z" }
     const newLog = { line: "Computer stopped", occurredAt: "2026-09-10T09:01:00Z" }
     initial.computers[0].logs = [oldLog]
     const mutation = structuredClone(initial)
@@ -1527,7 +1527,7 @@ describe("remote SSH access", () => {
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
     return { store, invoke, failOffice: (message: unknown = new Error("private remote details")) => { failOffice = message }, failLocal: () => { failLocal = true }, delayOffice: (promise: Promise<unknown>) => { officeRead = promise }, delaySave: (promise: Promise<unknown>) => { officeSave = promise } }
   }
-  it("routes same-name remote computers by immutable owner and VM IDs and retains other owners", async () => {
+  it("routes same-name remote computers by immutable owner and computer IDs and retains other owners", async () => {
     const { store, invoke } = fixture()
     try {
       await store.initialize(); await store.applicationActions.refreshSshAccess!()
@@ -1695,7 +1695,7 @@ it.each(["failure", "success"] as const)("ignores a previous computer's late lif
     const publishedIds: string[] = []
     store.subscribe(() => { publishedIds.push(store.getSnapshot().source!.computers[0].configuration.id) })
     if (outcome === "success") finish(structuredClone(source))
-    else reject(new Error("old VM failed"))
+    else reject(new Error("old computer failed"))
     await vi.waitFor(() => expect(store.getSnapshot().source?.computers[0].lifecycleAction).toBeUndefined())
     expect(store.getSnapshot().source?.computers[0].configuration.id).toBe(current.computers[0].configuration.id)
     expect(store.getSnapshot().source?.computers[0].lifecycleFailure).toBeUndefined()

@@ -32,7 +32,7 @@ describe("production onboarding", () => {
     expect(source.readyToFinish).toBe(true)
   })
 
-  it("never adopts remote VMs into local setup or counts them as configured", () => {
+  it("never adopts remote computers into local setup or counts them as configured", () => {
     const remote = { ...application.computers[0], device: { id: "office", computerId: "remote-computer", name: "Office", address: "owner@office", connected: true }, configuration: { ...application.computers[0].configuration, id: "silo-remote:office:remote-computer", name: "remote-build" } }
     const source = productionOnboardingSource({ ...application, computers: [remote] }, { checks: [], retry: vi.fn() }, application.preferences)
     expect(source.computerConfigurations).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "remote-build" })]))
@@ -49,7 +49,7 @@ describe("production onboarding", () => {
     expect(source.progressEvents).toEqual([])
   })
 
-  it("enables Finish after a real VM is configured without inventing progress events", () => {
+  it("enables Finish after a real computer is configured without inventing progress events", () => {
     const native = { ...application, computers: [application.computers[0]] }
     const dependencies = { checks: onboardingScenarios.complete.preflightChecks, retry: vi.fn() }
     const current = productionOnboardingSource(native, dependencies, application.preferences)

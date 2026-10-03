@@ -286,9 +286,9 @@ Desktop shutdown uses process groups, so independent terminal-job survival
 does not intrinsically require a second UID.
 
 Engineering recommendation: retain the non-root desktop for existing root-based
-VMs; do not replace it with an all-root desktop as a simplification. For a
+computers; do not replace it with an all-root desktop as a simplification. For a
 unified workflow, use one normal working account for terminal, SSH and desktop,
-with root for administration. Existing VMs need an explicit migration of the
+with root for administration. Existing computers need an explicit migration of the
 working environment, separate from installing desktop packages; do not silently
 change ownership or move credentials during desktop installation.
 
@@ -324,16 +324,16 @@ and retry. Existing installed desktops are not silently upgraded on boot.
 
 ## Verification, 2026-09-18
 
-A disposable ARM64 VM on macOS, using the bundled MicroSandbox engine in an
+A disposable ARM64 computer on macOS, using the bundled MicroSandbox engine in an
 isolated runtime home, successfully installed Xfce and KasmVNC, rendered the
 1440×900 desktop, launched Mousepad, typed into it through independently
 installed xdotool, and exposed X.Org display `:1`.
 Unauthenticated HTTP returned 401; authenticated HTTP returned 200.
 Manual/automatic preference changes and start/stop passed, including an
 independent terminal job surviving desktop shutdown. A partial installation
-retry succeeded without replacing the desktop account. A second pristine VM
+retry succeeded without replacing the desktop account. A second pristine computer
 installed the complete corrected recipe without manual fixes. With the patched
-bundled runtime, automatic startup ran after VM boot, explicit stop reset on
+bundled runtime, automatic startup ran after computer boot, explicit stop reset on
 automatic reboot, and manual mode remained stopped after reboot.
 
 The rebuilt isolated macOS bundle at
@@ -343,7 +343,7 @@ Native input displayed ASCII text and `café` in Mousepad. Independent guest
 XInput observation confirmed pointer button and keyboard events from KasmVNC.
 Closing and reopening the viewer preserved Mousepad in the same desktop session.
 The application's guarded Quit exited successfully, and subsequent read-only
-runtime checks confirmed both disposable proof VMs were stopped.
+runtime checks confirmed both disposable proof computers were stopped.
 
 The CUA typing tool did not emit the requested CJK text, so that attempt does
 not establish either working or broken CJK guest input. Full international
@@ -371,7 +371,7 @@ not an installed distribution or release readiness.
 ### Final application checks
 
 The final isolated macOS ARM64 bundle passed windowed/fullscreen layout, toolbar
-visibility, desktop stop confirmation, stop/start without stopping the VM, and
+visibility, desktop stop confirmation, stop/start without stopping the computer, and
 returning from fullscreen. Native layout uses the measured difference between
 WKWebView's native frame and its CSS viewport; local scaling keeps the guest
 at 1440×900. Temporary diagnostic logging was removed before the final build.
@@ -392,7 +392,7 @@ Commands and results:
 - `npm --prefix app/SiloUI run desktop:build:debug -- --config
   '{"identifier":"org.silo.desktop-verification","productName":"Silo Desktop Verification"}'`:
   built successfully. This separate application identity used only disposable
-  VM data; the user's normal Silo application data was not used.
+  computer data; the user's normal Silo application data was not used.
 
 These results do not establish live Linux/KVM, AMD64, remote-owner, browser
 workload or complete IME compatibility. The remote implementation and AMD64
@@ -442,7 +442,7 @@ The matching upstream report is [KasmVNC #219](https://github.com/kasmtech/KasmV
 ordinary left and right clicks open a menu containing only Paste; dismissing it
 helps until the pointer leaves and re-enters the viewer. In the linked fix,
 the maintainer explicitly identifies clipboard reads during clicks as the trigger.
-This is an input correctness defect, not evidence of insufficient VM resources
+This is an input correctness defect, not evidence of insufficient computer resources
 or a frame-rate tuning problem.
 
 Other upstream macOS input reports have different triggers:

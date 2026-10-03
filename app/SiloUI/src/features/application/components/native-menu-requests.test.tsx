@@ -9,7 +9,7 @@ import type { ApplicationActions } from "../model/application-source"
 const source = applicationSourceForScenario("running")
 const actions = {} as ApplicationActions
 
-it("opens the real VM form once per native request without discarding its edited draft on refresh", () => {
+it("opens the real computer form once per native request without discarding its edited draft on refresh", () => {
   const changed = vi.fn()
   const view = render(<OverviewPage source={source} actions={actions} onConfigurationsChange={changed} newComputerRequest={1} />)
   const input = screen.getByRole("textbox", { name: "Computer name" })
@@ -48,7 +48,7 @@ it("toggles the actual sidebar once per request and preserves its disabled gate"
   view.rerender(<ApplicationShell {...props} toggleSidebarRequest={2}>Content</ApplicationShell>)
   expect(screen.getByRole("button", { name: "Expand sidebar" })).toBeVisible()
 })
-it("acknowledges a VM request so its owner can clear it before an Overview remount", () => {
+it("acknowledges a computer request so its owner can clear it before an Overview remount", () => {
   const handled = vi.fn()
   const view = render(<OverviewPage source={source} actions={actions} onConfigurationsChange={vi.fn()} newComputerRequest={7} onNewComputerRequestHandled={handled} />)
   expect(handled).toHaveBeenCalledExactlyOnceWith(7)
@@ -64,7 +64,7 @@ it("does not open Commands over a focused unrelated dialog", () => {
   view.rerender(<><div role="dialog" aria-label="Other dialog"><input aria-label="Other field" /></div><ApplicationCommandMenu commands={[]} nativeShortcuts openRequest={1} /></>)
   expect(screen.queryByRole("dialog", { name: "Commands" })).not.toBeInTheDocument()
 })
-it("preserves and focuses an existing VM draft on another new-computer request", () => {
+it("preserves and focuses an existing computer draft on another new-computer request", () => {
   const handled = vi.fn()
   const view = render(<OverviewPage source={source} actions={actions} onConfigurationsChange={vi.fn()} newComputerRequest={1} onNewComputerRequestHandled={handled} />)
   const name = screen.getByRole("textbox", { name: "Computer name" })

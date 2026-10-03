@@ -94,7 +94,7 @@ describe("Silo contract fixtures", () => {
   })
 })
 
-describe("custom VM memory", () => {
+describe("custom computer memory", () => {
   it.each([1, 2, 4, 8, 12, 24, 64])("accepts %i GiB through the saved configuration contract", (memory) => {
     const configuration = { ...fixtureComputerDefaults[0], memoryGiB: memory, maxMemoryGiB: memory }
     expect(setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, computers: [configuration] }).success).toBe(true)

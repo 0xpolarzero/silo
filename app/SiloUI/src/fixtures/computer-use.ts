@@ -73,7 +73,7 @@ export function withDevicesFixture(source: ApplicationSource): ApplicationSource
   }
 }
 
-/** Marks the first VM as having a built-in desktop (or an older optional one). */
+/** Marks the first computer as having a built-in desktop (or an older optional one). */
 export function withComputerUseFixture(source: ApplicationSource, name: ComputerUseFixtureName): ApplicationSource {
   return {
     ...source,

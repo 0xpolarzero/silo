@@ -43,14 +43,14 @@ describe("GitHub setup feedback", () => {
     ]} activityEvents={[
       { schemaVersion: 1, type: "progress", requestId: "github", phase: "github", step: "verify", message: "Waiting for computer confirmation.", safeForDisplay: true },
       { schemaVersion: 1, type: "progress", requestId: "github", phase: "github", step: "verify", message: "private token", safeForDisplay: false },
-      { schemaVersion: 1, type: "progress", requestId: "vm", phase: "computers", step: "create", message: "Unrelated VM activity", safeForDisplay: true },
+      { schemaVersion: 1, type: "progress", requestId: "vm", phase: "computers", step: "create", message: "Unrelated computer activity", safeForDisplay: true },
     ]} />)
     expect(screen.getByRole("heading", { name: "Connected to GitHub" })).toBeVisible()
     expect(screen.getByRole("progressbar", { name: "GitHub setup progress" })).toHaveAttribute("aria-valuenow", "75")
     expect(screen.getByText("3 of 4 operations complete")).toBeVisible()
     await user.click(screen.getByRole("button", { name: "Expand activity" }))
     expect(screen.getByLabelText("Computer activity")).toHaveTextContent("Waiting for computer confirmation.")
-    expect(screen.queryByText(/private token|Unrelated VM activity/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/private token|Unrelated computer activity/)).not.toBeInTheDocument()
   })
 
   it("does not reveal half-complete progress from background identity verification", () => {

@@ -365,7 +365,7 @@ it("confirms before removing a port from the Overview tab", async () => {
 
 it("confirms a delete in a popover on the detail page and returns to the list", async () => {
   const source = localVmSource()
-  // A stopped VM so Delete is allowed.
+  // A stopped computer so Delete is allowed.
   const computer = source.computers.find(item => item.state !== "running")
     ?? source.computers[0]!
   computer.state = "stopped"

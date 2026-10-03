@@ -16,7 +16,7 @@ export function computerCapacityError(configurationCount: number, originalID?: s
   }
 }
 
-// Fresh onboarding offers one dev VM; creation waits for Continue.
+// Fresh onboarding offers one dev computer; creation waits for Continue.
 export const productionComputerDefaults: readonly SetupComputerConfiguration[] = [
   {
     id: "00000000-0000-4000-8000-000000000001",

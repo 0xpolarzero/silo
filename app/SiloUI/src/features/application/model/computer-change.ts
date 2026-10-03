@@ -1,10 +1,10 @@
 import type { SetupComputerConfiguration } from "@/contracts/silo"
 
 /**
- * One targeted change to the local VM inventory, matching the backend
+ * One targeted change to the local computer inventory, matching the backend
  * `change_computer_configuration` command. `expected` (and `expectedOrder`) carry the
  * configuration the edit started from so the backend can apply the change to fresh
- * state — or reject it if the VM changed while the request waited its turn — instead
+ * state — or reject it if the computer changed while the request waited its turn — instead
  * of overwriting concurrent work with a stale whole-list snapshot.
  */
 export type ComputerConfigurationChange =
@@ -13,7 +13,7 @@ export type ComputerConfigurationChange =
   | { kind: "reorder"; order: string[]; expectedOrder: string[] }
   | { kind: "batch"; changes: ComputerConfigurationChange[] }
 
-/** Field-order-independent structural comparison of two configuration configurations. */
+/** Field-order-independent structural comparison of two computer configurations. */
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null"
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`
@@ -28,7 +28,7 @@ function sameComputer(a: SetupComputerConfiguration, b: SetupComputerConfigurati
 }
 
 /**
- * Field-order-independent equality of two configuration configurations. Used by the editor
+ * Field-order-independent equality of two computer configurations. Used by the editor
  * to notice, while a form is open, that the committed configuration diverged from the
  * baseline the user started editing from.
  */
@@ -40,7 +40,7 @@ export function sameComputerConfiguration(
   return stableStringify(a) === stableStringify(b)
 }
 
-/** The keys whose values differ between two configuration configurations. */
+/** The keys whose values differ between two computer configurations. */
 export function divergentComputerFields(
   a: SetupComputerConfiguration,
   b: SetupComputerConfiguration,
@@ -57,8 +57,8 @@ export function divergentComputerFields(
 
 /**
  * Recognize the backend's optimistic-concurrency rejection, raised when a targeted
- * change's `expected` no longer matches the VM's saved configuration because it changed
- * while the user's edit waited. The backend phrases both the per-VM and reorder variants
+ * change's `expected` no longer matches the computer's saved configuration because it changed
+ * while the user's edit waited. The backend phrases both the per-computer and reorder variants
  * with this stem, so match on it rather than on the whole sentence.
  */
 export function isStaleConfigurationError(error: unknown): boolean {
@@ -67,7 +67,7 @@ export function isStaleConfigurationError(error: unknown): boolean {
 }
 
 /**
- * Reduce an edited local VM list to the targeted changes needed to turn the committed
+ * Reduce an edited local computer list to the targeted changes needed to turn the committed
  * configuration `previous` into `next`, each carrying the state it started from so the
  * backend applies it to fresh state (or rejects it) instead of overwriting concurrent
  * work with a stale whole-list snapshot.

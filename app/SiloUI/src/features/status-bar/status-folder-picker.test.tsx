@@ -83,7 +83,7 @@ describe("status folder picker live directories", () => {
     await user.click(screen.getByRole("button", { name: "Open in Cursor" }))
     expect(onOpen).toHaveBeenCalledExactlyOnceWith(`/workspace/${spoofed}`)
   })
-  it.each(["stopped", "stale"])("does not load or open a %s VM", (state) => {
+  it.each(["stopped", "stale"])("does not load or open a %s computer", (state) => {
     const loader = vi.fn()
     render(<StatusFolderPicker computer={{ ...computer, ...(state === "stopped" ? { state: "stopped" } : { freshness: "stale" }) }} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} />)
     expect(screen.getByText(state === "stopped" ? "Start this computer to browse its files." : "Reconnect to browse files.")).toBeVisible()

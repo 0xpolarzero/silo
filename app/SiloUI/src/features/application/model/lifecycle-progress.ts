@@ -4,7 +4,7 @@ export type LifecycleStep = "boot" | "network" | "account"
 export const lifecycleSteps: readonly LifecycleStep[] = ["boot", "network", "account"]
 
 const stepText: Record<LifecycleStep, string> = {
-  boot: "Starting the VM",
+  boot: "Starting the computer",
   network: "Connecting the network",
   account: "Checking the computer account",
 }

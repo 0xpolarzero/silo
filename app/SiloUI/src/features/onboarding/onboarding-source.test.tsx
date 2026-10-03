@@ -11,7 +11,7 @@ import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrati
 afterEach(() => vi.useRealTimers())
 
 describe("onboarding source boundary", () => {
-  it("counts restored draft VMs before the real setup queue starts", async () => {
+  it("counts restored draft computers before the real setup queue starts", async () => {
     const settings = createMemorySettingsStore()
     const configurations = onboardingScenarios.complete.computerConfigurations
     await settings.updateOnboardingDraft({ currentStep: "computers", computers: configurations, unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })

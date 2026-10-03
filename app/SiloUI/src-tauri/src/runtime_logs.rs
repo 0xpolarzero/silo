@@ -46,14 +46,14 @@ pub(crate) struct Page {
     pub newest_available_timestamp: Option<String>,
     pub total_matches: usize,
     pub timestamp_estimated: bool,
-    /// The owning device runs a Silo that cannot serve logs. Older hosts never send this.
+    /// The owning device runs a Silo that cannot serve logs. Older devices never send this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unsupported: bool,
     /// Some records were malformed or over the size limit and are shown as placeholders
-    /// or truncated. Older hosts never send this.
+    /// or truncated. Older devices never send this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unreadable_records: bool,
-    /// Snapshot this page came from, for the next Follow refresh. Older hosts never send this.
+    /// Snapshot this page came from, for the next Follow refresh. Older devices never send this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot: Option<String>,
 }

@@ -110,7 +110,7 @@ Focused tests: `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml edito
 
 ## Live macOS verification (2026-09-10)
 
-The focused live test passed against the running `dev` VM with the patched bundled CLI: SSH `pwd` equals `$HOME`; a shell-created relative directory receives an SCP/SFTP marker; the transfer exits zero; SSH reads identical marker bytes; the test deletes its marker and directory. Real Zed then completed server installation, opened `silo-files-test-express`, and displayed the repository's `Readme.md` from `/workspace/silo-files-test-express/Readme.md`. No repository file was edited.
+The focused live test passed against the running `dev` computer with the patched bundled CLI: SSH `pwd` equals `$HOME`; a shell-created relative directory receives an SCP/SFTP marker; the transfer exits zero; SSH reads identical marker bytes; the test deletes its marker and directory. Real Zed then completed server installation, opened `silo-files-test-express`, and displayed the repository's `Readme.md` from `/workspace/silo-files-test-express/Readme.md`. No repository file was edited.
 
 This exposed and fixed two runtime bugs, covered by the live transfer regression: SSH/SFTP previously used `/` instead of the login home, and SFTP channel completion omitted SSH exit status (OpenSSH SCP returned failure despite successfully transferring bytes). The patch sets a shared login-home cwd and sends subsystem completion status on client EOF. Neither fix uses Zed-specific paths.
 

@@ -486,7 +486,7 @@ it.each([
   ["starting", "Starting", "starting", "bg-amber-500"],
   ["stopped", "Stopped", "stopped", "bg-muted-foreground/55"],
   ["error", "Failed", "failed", "bg-destructive"],
-] as const)("colors repository VM badges for the %s fixture", async (mode, label, state, className) => {
+] as const)("colors repository computer badges for the %s fixture", async (mode, label, state, className) => {
   const application = renderApplication("running", applicationSourceForScenario("running", undefined, mode satisfies ComputerFixtureMode))
   const navigation = within(appNavigation())
   const computerSections = within(navigation.getByRole("group", { name: "Computer sections" }))

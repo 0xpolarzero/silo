@@ -13,7 +13,7 @@ function checkpointSource() {
 }
 
 describe("native checkpoint fixture outcomes", () => {
-  it.each([false, true])("forks the selected owner's configuration into a pending VM (remote: %s)", async (remote) => {
+  it.each([false, true])("forks the selected owner's configuration into a pending computer (remote: %s)", async (remote) => {
     const source = checkpointSource()
     const selected = source.computers[1]
     if (remote) selected.device = { id: "office", computerId: "second-vm", name: "Office", address: "office.test", connected: true }
@@ -30,7 +30,7 @@ describe("native checkpoint fixture outcomes", () => {
     }
   })
 
-  it.each(["running", "stopped"] as const)("restores a %s VM with a recovery point and pending reference", async (state) => {
+  it.each(["running", "stopped"] as const)("restores a %s computer with a recovery point and pending reference", async (state) => {
     const source = checkpointSource()
     const selected = source.computers[1]
     selected.state = state
@@ -90,7 +90,7 @@ describe("native checkpoint fixture outcomes", () => {
     expect(result.current.source.computers).toEqual(source.computers)
   })
 
-  it("captures a named checkpoint on the selected remote VM, newest first", async () => {
+  it("captures a named checkpoint on the selected remote computer, newest first", async () => {
     const source = checkpointSource()
     const selected = source.computers[1]
     selected.device = { id: "office", computerId: "second-vm", name: "Office", address: "office.test", connected: true }

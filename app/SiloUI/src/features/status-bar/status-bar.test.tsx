@@ -38,7 +38,7 @@ describe("status bar", () => {
     expect(actions.startComputer).toHaveBeenCalledExactlyOnceWith("dev")
   })
 
-  it("reports unavailable VM operations at the tray control (I-04)", async () => {
+  it("reports unavailable computer operations at the tray control (I-04)", async () => {
     const base = applicationSourceForScenario("complete")
     const { user, actions } = setup({
       computers: base.computers.map(computer => ({ ...computer, state: "stopped" })),
@@ -65,11 +65,11 @@ describe("status bar", () => {
     const { user, actions, source, rerender } = setup()
     await user.click(screen.getByRole("button", { name: "Actions for dev" }))
     await user.click(screen.getByRole("menuitem", { name: `${action}…` }))
-    rerender(<StatusBar source={{ ...source, computerOperationsUnavailable: "Local VMs unavailable." }} actions={actions} defaultOpen />)
+    rerender(<StatusBar source={{ ...source, computerOperationsUnavailable: "Local computers unavailable." }} actions={actions} defaultOpen />)
     await user.click(screen.getByRole("button", { name: action }))
     expect(actions.stopComputer).not.toHaveBeenCalled()
     expect(actions.restartComputer).not.toHaveBeenCalled()
-    expect(screen.getByRole("alert", { name: "Computer operation unavailable" })).toHaveTextContent("Local VMs unavailable.")
+    expect(screen.getByRole("alert", { name: "Computer operation unavailable" })).toHaveTextContent("Local computers unavailable.")
   })
 
   it("keeps a remote Start independent of same-named local guards (I-04)", async () => {
@@ -77,7 +77,7 @@ describe("status bar", () => {
     const device = { id: "office", name: "office-mac", address: "office.local", connected: true, computerId: "vm-1" }
     const { user, actions } = setup({
       computers: [{ ...base.computers[0]!, device, state: "stopped" }],
-      computerOperationsUnavailable: "Local VMs unavailable.",
+      computerOperationsUnavailable: "Local computers unavailable.",
       resourceNotice: { kind: "start-memory", computer: "dev", memoryGiB: 32 },
     })
     await user.click(screen.getByRole("button", { name: "Start dev" }))

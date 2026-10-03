@@ -33,7 +33,7 @@ describe("onboarding recovery validation", () => {
     expect(onboardingDraftSchema.safeParse({ ...draft, computers: [input.unfinishedComputerEditor.draft] }).success).toBe(false)
   })
 
-  it("keeps temporarily invalid VM resource combinations for correction after restart", () => {
+  it("keeps temporarily invalid computer resource combinations for correction after restart", () => {
     const input = { ...draft, unfinishedComputerEditor: {
       draft: { ...fixtureComputerDefaults[0], name: "", cpus: 12, maxCPUs: 4 },
       originalID: fixtureComputerDefaults[0].id,

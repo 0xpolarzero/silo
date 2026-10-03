@@ -846,7 +846,7 @@ fn workspace_dir(paths: &RuntimePaths, name: &str) -> PathBuf {
 #[test]
 fn restored_layered_computer_is_measured_and_a_missing_disk_is_unknown() {
     let _test_state = crate::test_support::global_state();
-    // A computer restored from a checkpoint keeps its computer as sealed layers plus a
+    // A computer restored from a checkpoint keeps its workspace disk as sealed layers plus a
     // writable qcow2 head; there is no disk.raw.
     let (_dir, paths, configuration, mut observed) = fixture();
     let directory = workspace_dir(&paths, "dev");

@@ -29,8 +29,8 @@ describe("splitErrorDetails", () => {
   })
 
   it("summarizes long output by its first line and keeps all of it in the details", () => {
-    const message = `Start failed: the VM did not boot\n${stderr}\n[Diagnostic truncated]`
-    expect(splitErrorDetails(message)).toEqual({ summary: "Start failed: the VM did not boot", details: message })
+    const message = `Start failed: the computer did not boot\n${stderr}\n[Diagnostic truncated]`
+    expect(splitErrorDetails(message)).toEqual({ summary: "Start failed: the computer did not boot", details: message })
   })
 
   it("shortens a single very long line at a sentence or word boundary", () => {
@@ -57,9 +57,9 @@ describe("ErrorDetails", () => {
   it("shows a one-line summary with the full output behind Details and Copy", async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)
-    const message = `Start failed: the VM did not boot\n${stderr}`
+    const message = `Start failed: the computer did not boot\n${stderr}`
     render(<ErrorDetails message={message} />)
-    expect(screen.getByText("Start failed: the VM did not boot")).toBeVisible()
+    expect(screen.getByText("Start failed: the computer did not boot")).toBeVisible()
     expect(screen.queryByText(/krun: step 39/)).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Show details" }))
     expect(screen.getByText(/krun: step 39/)).toBeVisible()
