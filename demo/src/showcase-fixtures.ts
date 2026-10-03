@@ -10,7 +10,7 @@ export const showcaseSource: ApplicationSource = {
   ...base,
   devices: [studio],
   secrets: base.secrets.map(secret => ({ ...secret, state: 'active' })),
-  preferences: { ...base.preferences, editor: 'Zed', terminal: 'Ghostty', reduceMotion: true },
+  preferences: { ...base.preferences, editor: 'Zed', terminal: 'Ghostty', reduceMotion: true, alphaNoticeDismissed: true },
   computers: base.computers.map((computer, index) => {
     const remote = index === 2
     const name = ['web', 'services', 'lab'][index]
