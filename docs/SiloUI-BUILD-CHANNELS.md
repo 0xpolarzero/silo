@@ -97,6 +97,13 @@ Silo Dev is running, lists what it will copy, and asks before replacing anything
 Dev already has (previous files are kept as `*.bak-<time>`). Re-running is safe.
 Values are never printed.
 
+Production data may use the saved-data names from before the computer vocabulary
+or the current ones; the importer reads both and always writes the current names.
+It also removes Dev's `vocabulary-migration.json` record, so the one-time saved-data
+conversion (see the documentation of `runtime_migration/vocabulary.rs`) runs again
+at Dev's next launch. The conversion does nothing to data that already uses the
+current names.
+
 The importer rejects symlinks at Dev channel roots and within destination paths,
 including dangling links, before applying any file or Keychain copy. It repeats
 the check after confirmation. [Node's `lstatSync`](https://nodejs.org/docs/latest-v24.x/api/fs.html#fslstatsyncpath-options)

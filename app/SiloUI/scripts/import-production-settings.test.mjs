@@ -216,7 +216,9 @@ test("copies the intended configuration into dev and nothing about sandboxes", a
 
   const secrets = JSON.parse(fs.readFileSync(path.join(target.data, "secrets.json"), "utf8"))
   assert.equal(secrets.secrets.length, 1)
-  assert.deepEqual(secrets.secrets[0].workspaces, [])
+  assert.deepEqual(secrets.secrets[0].computers, [])
+  assert.deepEqual(secrets.secrets[0].pendingComputers, [])
+  assert.equal("workspaces" in secrets.secrets[0] || "pendingWorkspaces" in secrets.secrets[0], false)
   assert.deepEqual(secrets.secrets[0].affected, [])
   assert.deepEqual(secrets.secrets[0].errors, {})
   assert.deepEqual(secrets.pendingRevocations, [])
@@ -226,10 +228,11 @@ test("copies the intended configuration into dev and nothing about sandboxes", a
   assert.equal(keychain.read(DEVELOPMENT.keychain.github, "runtime-grants"), null)
 
   const remote = JSON.parse(fs.readFileSync(path.join(target.state, "desktop-remote", "config.json"), "utf8"))
-  assert.equal(remote.hostId, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "dev gets its own identity")
-  assert.notEqual(remote.hostId, "99999999-9999-4999-8999-999999999999")
+  assert.equal(remote.deviceId, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "dev gets its own identity")
+  assert.notEqual(remote.deviceId, "99999999-9999-4999-8999-999999999999")
   assert.equal(remote.enabled, false)
-  assert.deepEqual(remote.hosts, HOSTS)
+  assert.deepEqual(remote.devices, HOSTS)
+  assert.deepEqual(Object.keys(remote).sort(), ["deviceId", "devices", "enabled"])
   assert.equal(fs.readFileSync(path.join(target.state, "desktop-remote", "id_ed25519"), "utf8"), "PRIVATE KEY")
   assert.equal(fs.statSync(path.join(target.state, "desktop-remote", "id_ed25519")).mode & 0o777, 0o600)
 
@@ -295,29 +298,111 @@ test("dry run changes nothing and prints no secret values", async () => {
   for (const secret of ["s3cret-one", "s3cret-two", "ghp_abc", "PRIVATE KEY", "refreshToken"]) assert.ok(!output.includes(secret), secret)
 })
 
-test("existing dev configuration needs confirmation, is backed up, and keeps its host identity", async () => {
+test("existing dev configuration needs confirmation, is backed up, and keeps its device identity", async () => {
   const { home, target } = fixtureHome()
   const keychain = productionKeychain()
   await run(home, keychain)
   const remoteConfig = path.join(target.state, "desktop-remote", "config.json")
-  const own = { hostId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", enabled: true, hosts: [] }
+  const own = { deviceId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", enabled: true, devices: [] }
   fs.writeFileSync(remoteConfig, JSON.stringify(own))
   fs.writeFileSync(path.join(target.config, "settings.json"), JSON.stringify({ schemaVersion: 1, settings: { theme: "light" }, onboardingDraft: null }))
   const writes = keychain.writes.length
 
   const declined = await run(home, keychain, { confirm: async () => false })
   assert.equal(declined.performed, false)
-  assert.equal(JSON.parse(fs.readFileSync(remoteConfig, "utf8")).hosts.length, 0)
+  assert.equal(JSON.parse(fs.readFileSync(remoteConfig, "utf8")).devices.length, 0)
   assert.equal(keychain.writes.length, writes)
 
   const accepted = await run(home, keychain, { confirm: async () => true, now: () => new Date("2026-01-02T03:04:05.000Z") })
   assert.equal(accepted.performed, true)
   const merged = JSON.parse(fs.readFileSync(remoteConfig, "utf8"))
-  assert.equal(merged.hostId, own.hostId)
+  assert.equal(merged.deviceId, own.deviceId)
   assert.equal(merged.enabled, true)
-  assert.deepEqual(merged.hosts, HOSTS)
+  assert.deepEqual(merged.devices, HOSTS)
   assert.ok(fs.readdirSync(target.config).some(name => name.startsWith("settings.json.bak-")))
   assert.equal(JSON.parse(fs.readFileSync(path.join(target.config, "settings.json"), "utf8")).settings.theme, "dark")
+})
+
+test("a device id Dev saved before the rename is kept under its new name", async () => {
+  const { home, target } = fixtureHome()
+  const keychain = productionKeychain()
+  const remoteConfig = path.join(target.state, "desktop-remote", "config.json")
+  fs.mkdirSync(path.dirname(remoteConfig), { recursive: true })
+  fs.writeFileSync(remoteConfig, JSON.stringify({ hostId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", enabled: false, hosts: [] }))
+  await run(home, keychain, { yes: true })
+  const merged = JSON.parse(fs.readFileSync(remoteConfig, "utf8"))
+  assert.deepEqual(merged, { deviceId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", enabled: false, devices: HOSTS })
+})
+
+test("when Dev holds both the earlier and the current device id the earlier one wins", async () => {
+  const { home, target } = fixtureHome()
+  const remoteConfig = path.join(target.state, "desktop-remote", "config.json")
+  fs.mkdirSync(path.dirname(remoteConfig), { recursive: true })
+  fs.writeFileSync(remoteConfig, JSON.stringify({
+    hostId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", deviceId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", enabled: false, hosts: [], devices: [],
+  }))
+  await run(home, productionKeychain(), { yes: true })
+  assert.equal(JSON.parse(fs.readFileSync(remoteConfig, "utf8")).deviceId, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+})
+
+test("when production holds both the earlier and the current device list the earlier one is imported", async () => {
+  const { home, source, target } = fixtureHome()
+  fs.writeFileSync(path.join(source.state, "desktop-remote", "config.json"), JSON.stringify({
+    hostId: "99999999-9999-4999-8999-999999999999", enabled: true, hosts: HOSTS,
+    devices: [{ id: "stale", name: "stale", address: "10.0.0.9" }],
+  }))
+  await run(home, productionKeychain(), { yes: true })
+  const merged = JSON.parse(fs.readFileSync(path.join(target.state, "desktop-remote", "config.json"), "utf8"))
+  assert.deepEqual(merged.devices, HOSTS)
+})
+
+test("production data already in the current names imports the same as the earlier names", async () => {
+  const earlier = fixtureHome()
+  const current = fixtureHome()
+  fs.writeFileSync(path.join(current.source.state, "desktop-remote", "config.json"),
+    JSON.stringify({ deviceId: "99999999-9999-4999-8999-999999999999", enabled: true, devices: HOSTS }))
+  fs.writeFileSync(path.join(current.source.data, "secrets.json"), JSON.stringify({
+    pendingRevocations: [],
+    secrets: [{ id: "a", name: "API_KEY", valueId: "value-1", computers: ["dev"], allowedDomains: ["example.com"], affected: [], pendingComputers: [], errors: {}, removing: false }],
+    activities: [],
+  }))
+  await run(earlier.home, productionKeychain())
+  await run(current.home, productionKeychain())
+  for (const [folder, name] of [["state", "desktop-remote/config.json"], ["data", "secrets.json"], ["config", "settings.json"]]) {
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(current.target[folder], name), "utf8")),
+      JSON.parse(fs.readFileSync(path.join(earlier.target[folder], name), "utf8")),
+      name,
+    )
+  }
+})
+
+test("the Dev saved-data conversion record is cleared so the conversion runs again", async () => {
+  const { home, target } = fixtureHome()
+  const record = path.join(target.data, "vocabulary-migration.json")
+  fs.mkdirSync(target.data, { recursive: true })
+  fs.writeFileSync(record, '{"version": 1}\n')
+
+  const dry = await run(home, productionKeychain(), { dryRun: true })
+  assert.equal(dry.performed, false)
+  assert.ok(fs.existsSync(record), "a dry run changes nothing")
+
+  const result = await run(home, productionKeychain())
+  assert.equal(result.performed, true)
+  assert.equal(fs.existsSync(record), false)
+  assert.ok(result.copied.some(label => /conversion/.test(label)))
+  assert.ok(!list(target.data).some(name => name.startsWith("vocabulary-migration.json")), "no backup of the record is kept")
+})
+
+test("the record is left alone when nothing is imported", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "silo-import-"))
+  const target = channelPaths(DEVELOPMENT, { home, platform: "darwin" })
+  const record = path.join(target.data, "vocabulary-migration.json")
+  fs.mkdirSync(target.data, { recursive: true })
+  fs.writeFileSync(record, '{"version": 1}\n')
+  const result = await run(home, memoryKeychain())
+  assert.equal(result.performed, false)
+  assert.ok(fs.existsSync(record))
 })
 
 test("running twice with --yes is idempotent", async () => {
@@ -376,7 +461,10 @@ test("keychain writes outside the dev services are refused by the guard", async 
 test("sanitizers keep only intended fields", () => {
   assert.deepEqual(Object.keys(sanitizeSettings({ settings: { theme: "dark", launchAtLogin: true, startupWorkspaceIds: [] } }).settings), ["theme"])
   for (const key of ["launchAtLogin", "startWorkspacesAtLaunch", "startupWorkspaceIds"]) assert.ok(!COPIED_SETTINGS.includes(key))
-  assert.deepEqual(sanitizeSecrets({ secrets: [{ id: "a", name: "N", valueId: "v", workspaces: ["x"], allowedDomains: [] }] }).secrets[0].workspaces, [])
+  const definition = sanitizeSecrets({ secrets: [{ id: "a", name: "N", valueId: "v", workspaces: ["x"], computers: ["y"], allowedDomains: [] }] }).secrets[0]
+  assert.deepEqual(definition.computers, [])
+  assert.deepEqual(definition.pendingComputers, [])
+  assert.equal("workspaces" in definition, false)
 })
 
 test("Linux layout uses the XDG directories and the same state directory names", () => {

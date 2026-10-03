@@ -253,6 +253,7 @@ fn main() {
         .setup(|app| {
             // Tauri panics on a setup error. Explain the failure and exit instead.
             let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                runtime_migration::vocabulary::run(app.handle())?;
                 settings::install(app.handle());
                 system_shutdown::install(app.handle());
                 let queue_app = app.handle().clone();
