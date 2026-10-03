@@ -14,7 +14,7 @@ it("routes native navigation and uses the real update controller only on request
   const state: UpdateSnapshot = { phase: "idle", currentVersion: "0.1.0", lastChecked: null,
     retryAction: null, availableVersion: null, releaseNotes: null, downloadedBytes: 0, totalBytes: null,
     automaticChecks: true, packageKind: "macos", releaseUrl: "https://github.com/0xpolarzero/silo/releases",
-    error: null, errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true }
+    error: null, errorDetails: null, installBlockReason: null, runningComputers: [], canInstall: true }
   const backend: UpdateBackend = { read: async () => state, subscribe: async () => () => {},
     check: vi.fn(async () => ({ ...state, phase: "error" as const, error: "The update service is unavailable. Try again later." })),
     download: vi.fn(), install: vi.fn(), setAutomaticChecks: vi.fn(), openRelease: vi.fn() }

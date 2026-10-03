@@ -13,26 +13,26 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { CopyButton } from "@/components/copy-button"
 import { cn } from "@/lib/utils"
 import { showActionFailure } from "@/lib/operation-toast"
-import { WorkspaceBadge } from "@/features/application/components/application-ui"
-import { workspaceTarget } from "../model/connections"
-import type { ApplicationActions, ApplicationWorkspace, SshAccessRequest, SshAccessState, SshAccessWorkspace } from "../model/application-source"
+import { ComputerBadge } from "@/features/application/components/application-ui"
+import { computerTarget } from "../model/connections"
+import type { ApplicationActions, ApplicationComputer, SshAccessRequest, SshAccessState, SshAccessComputer } from "../model/application-source"
 
 const statuses = { disabled: "SSH off", waiting: "SSH waiting", listening: "SSH listening", error: "SSH error" }
 const sshEndpoint = (user: string, host: string, port: number) => `ssh -p ${port} ${user}@${host}`
 /** Which switch is asking before SSH becomes reachable from other devices. */
 type NetworkWarning = "network" | "enable"
 
-export function SshAccessPanel({ workspaces, state, error, actions, active }: { workspaces: ApplicationWorkspace[]; state?: SshAccessState; error?: string | null; actions: ApplicationActions; active: boolean }) {
+export function SshAccessPanel({ computers, state, error, actions, active }: { computers: ApplicationComputer[]; state?: SshAccessState; error?: string | null; actions: ApplicationActions; active: boolean }) {
   useSshAccessRefresh(actions.refreshSshAccess, active)
   if (!state && !actions.refreshSshAccess) return null
   return <TooltipProvider delayDuration={150}><section aria-label="SSH access" className="space-y-2 text-xs">
     <h3 className="font-medium">SSH access</h3>
     {error && <div role="alert" className="text-destructive">{error}<Button variant="ghost" size="xs" onClick={() => void actions.refreshSshAccess?.()}>Retry SSH status</Button></div>}
-    {workspaces.map(workspace => <SshAccessRow key={JSON.stringify([workspace.device?.id, workspace.machine.id])} workspace={workspace} access={state?.workspaces.find(s => s.workspace === workspaceTarget(workspace))} save={actions.saveSshAccess} connection={actions.sshConnection} stale={Boolean((error && !workspace.device) || workspace.device?.connected === false || workspace.freshness === "stale")} />)}
+    {computers.map(computer => <SshAccessRow key={JSON.stringify([computer.device?.id, computer.configuration.id])} computer={computer} access={state?.computers.find(s => s.computer === computerTarget(computer))} save={actions.saveSshAccess} connection={actions.sshConnection} stale={Boolean((error && !computer.device) || computer.device?.connected === false || computer.freshness === "stale")} />)}
   </section></TooltipProvider>
 }
 
-export function SshAccessRow({ workspace, access, save, connection, stale, embedded = false, readOnly = false }: { workspace: ApplicationWorkspace; access?: SshAccessWorkspace; save?: ApplicationActions["saveSshAccess"]; connection?: ApplicationActions["sshConnection"]; stale: boolean; embedded?: boolean; readOnly?: boolean }) {
+export function SshAccessRow({ computer, access, save, connection, stale, embedded = false, readOnly = false }: { computer: ApplicationComputer; access?: SshAccessComputer; save?: ApplicationActions["saveSshAccess"]; connection?: ApplicationActions["sshConnection"]; stale: boolean; embedded?: boolean; readOnly?: boolean }) {
   stale = stale || Boolean(access?.unavailable)
   const id = useId()
   const [busy, setBusy] = useState(false)
@@ -59,7 +59,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
     pending.current = true
     setBusy(true); setError(null); setCopied(null)
     try {
-      await save({ workspace: access.workspace, enabled: access.enabled, port: access.port, bindAddress: access.bindAddress, ...patch })
+      await save({ computer: access.computer, enabled: access.enabled, port: access.port, bindAddress: access.bindAddress, ...patch })
       return request === sequence.current
     } catch (cause) {
       if (request === sequence.current) showActionFailure("SSH settings not saved", cause, () => { if (request === sequence.current) void handlers.current?.change(patch) }, { native: false })
@@ -72,7 +72,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
     pending.current = true
     setBusy(true); setError(null); setCopied(null)
     try {
-      const command = await connection(access.workspace, download, network)
+      const command = await connection(access.computer, download, network)
       if (request !== sequence.current) return
       if (!download && command) {
         await navigator.clipboard.writeText(command)
@@ -85,9 +85,9 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
   const networkAddresses = access?.addresses.filter(value => value !== "127.0.0.1") ?? []
   const badge = stale ? "SSH status unavailable" : access ? statuses[access.state] : "SSH unavailable"
   const header = <div className="flex items-center gap-3 px-3 py-2">
-      <WorkspaceBadge name={workspace.machine.name} state={workspace.state} device={workspace.device} />
+      <ComputerBadge name={computer.configuration.name} state={computer.state} device={computer.device} />
       <span className={cn("rounded border px-1.5 py-0.5", !stale && access?.state === "error" ? "border-destructive/20 text-destructive" : "border-border text-muted-foreground")}>{badge}{access?.enabled && external ? " · Network" : ""}</span>
-      <Tooltip><TooltipTrigger asChild><CollapsibleTrigger asChild><Button variant="ghost" size="icon-xs" className="group ml-auto w-auto gap-0.5 px-1.5 text-[11px]" aria-label={`SSH access controls for ${workspace.machine.name}`}>SSH access<ChevronDown className="size-2.5 transition-transform group-aria-expanded:rotate-180" /></Button></CollapsibleTrigger></TooltipTrigger><TooltipContent>SSH access controls</TooltipContent></Tooltip>
+      <Tooltip><TooltipTrigger asChild><CollapsibleTrigger asChild><Button variant="ghost" size="icon-xs" className="group ml-auto w-auto gap-0.5 px-1.5 text-[11px]" aria-label={`SSH access controls for ${computer.configuration.name}`}>SSH access<ChevronDown className="size-2.5 transition-transform group-aria-expanded:rotate-180" /></Button></CollapsibleTrigger></TooltipTrigger><TooltipContent>SSH access controls</TooltipContent></Tooltip>
     </div>
 
   const editor = access && ((port !== null || address !== null) && <form noValidate className="flex flex-wrap items-end gap-2" onSubmit={event => {
@@ -107,14 +107,14 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
 
   const content = <>
     <fieldset disabled={readOnly} className={cn("min-w-0 space-y-3 text-xs", embedded ? "p-0" : "border-0 border-t border-border p-3")}>
-      {!access ? <p className="text-muted-foreground">{workspace.device ? `Waiting for SSH configuration from ${workspace.device.name}.` : "Waiting for SSH configuration."}</p> : <>
+      {!access ? <p className="text-muted-foreground">{computer.device ? `Waiting for SSH configuration from ${computer.device.name}.` : "Waiting for SSH configuration."}</p> : <>
         {(stale || access.state === "error") && <p role="status" className="text-muted-foreground">{access.unavailable || (stale ? "SSH status is unavailable. Reconnect and refresh before changing access." : access.message || "SSH could not start.")}</p>}
         {[false, true].map(network => {
           const host = network ? access.bindAddress : "127.0.0.1"
           const scope = network ? "network" : "local"
           const label = network ? "Allow SSH from other devices" : `Allow SSH from ${access.deviceName}`
           // The owner's loopback address is meaningless on another device.
-          const ownerOnly = !network && Boolean(workspace.device)
+          const ownerOnly = !network && Boolean(computer.device)
           const endpoint = sshEndpoint(access.user ?? "silo", host, access.port)
           // Exposing SSH beyond the owner device always asks first: turning on network
           // access, or turning SSH back on while it is still set to allow other devices.
@@ -134,8 +134,8 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
               anchor={toggle} open={pendingWarning === warning} onOpenChange={open => { if (!open) setWarning(null) }} align="end"
               title={warning === "enable" ? "Allow SSH from other devices too?" : "Allow SSH from other devices?"}
               description={<>{exposedAddress
-                ? `Devices that can reach ${access.deviceName} at ${exposedAddress} can connect to ${workspace.machine.name} on port ${access.port}.`
-                : `Devices on the network you choose can connect to ${workspace.machine.name} on port ${access.port}.`} Only authorized keys can sign in.{warning === "enable" ? ` To allow only ${access.deviceName}, turn off SSH from other devices first.` : ""}</>}
+                ? `Devices that can reach ${access.deviceName} at ${exposedAddress} can connect to ${computer.configuration.name} on port ${access.port}.`
+                : `Devices on the network you choose can connect to ${computer.configuration.name} on port ${access.port}.`} Only authorized keys can sign in.{warning === "enable" ? ` To allow only ${access.deviceName}, turn off SSH from other devices first.` : ""}</>}
               confirmLabel="Allow"
               onConfirm={() => {
                 if (warning === "enable") void change({ enabled: true })
@@ -149,7 +149,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
               {ownerOnly ? <span /> : <Tooltip><TooltipTrigger asChild><CopyButton variant="ghost" size="icon-xs" value={endpoint} labels={{ idle: network ? "Copy network SSH address" : "Copy SSH address", copied: "SSH address copied", failed: "Copy failed" }} /></TooltipTrigger><TooltipContent>Copy address</TooltipContent></Tooltip>}
               <ActionsMenu label={`More ${scope} SSH actions`} items={[
                 { icon: Pencil, label: network ? "Edit address and port" : "Edit port", accessibleLabel: network ? "Edit network connection" : "Edit connection", disabled: blocked, onSelect: () => { setPort(String(access.port)); setAddress(network ? access.bindAddress : null) } },
-                { icon: copied === scope ? Check : Terminal, label: copied === scope ? "Command copied" : "Copy terminal command", accessibleLabel: `Copy ${scope} SSH command`, disabled: blocked || !connection || (!network && Boolean(workspace.device)), onSelect: () => { void connect(false, network) } },
+                { icon: copied === scope ? Check : Terminal, label: copied === scope ? "Command copied" : "Copy terminal command", accessibleLabel: `Copy ${scope} SSH command`, disabled: blocked || !connection || (!network && Boolean(computer.device)), onSelect: () => { void connect(false, network) } },
                 { label: "Save key file", icon: Download, accessibleLabel: `Save ${scope} SSH key file`, disabled: blocked || !connection, onSelect: () => { void connect(true, network) } },
               ]} />
             </div>}
@@ -165,14 +165,14 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
 }
 
 
-/** The SSH status badge. With `onOpen` it is a button that opens the sandbox's SSH tab. */
-export function SshAccessBadges({ access, stale = false, onOpen }: { access?: SshAccessWorkspace; stale?: boolean; onOpen?: () => void }) {
+/** The SSH status badge. With `onOpen` it is a button that opens the computer's SSH tab. */
+export function SshAccessBadges({ access, stale = false, onOpen }: { access?: SshAccessComputer; stale?: boolean; onOpen?: () => void }) {
   if (!access?.enabled) return null
   const network = access.bindAddress !== "127.0.0.1"
   const label = `SSH from ${access.deviceName}${network ? " and other devices" : " only"}`
   const unknown = stale || Boolean(access.unavailable)
   const failed = !unknown && access.state === "error"
-  const status = unknown ? "Status unavailable" : access.state === "listening" ? "Listening" : access.state === "waiting" ? "Waiting for sandbox" : access.message || "Unavailable"
+  const status = unknown ? "Status unavailable" : access.state === "listening" ? "Listening" : access.state === "waiting" ? "Waiting for computer" : access.message || "Unavailable"
   // Problems show on the badge itself (icon, colour and, for errors, text), not only in its tooltip.
   const tone = failed ? "border-destructive/20 bg-destructive/10 text-destructive"
     : unknown ? "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400"

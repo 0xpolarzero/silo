@@ -5,7 +5,7 @@ import { ConfirmPopover } from "@/components/confirm-popover"
 import { StatusBadge } from "@/components/status-badge"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
-import { WorkspaceBadge } from "@/features/application/components/application-ui"
+import { ComputerBadge } from "@/features/application/components/application-ui"
 import { SecretEditor } from "@/features/application/components/secret-editor"
 import type { ApplicationSecret } from "@/features/application/model/application-source"
 import type { SecretsManager } from "@/features/application/components/secrets-manager"
@@ -16,7 +16,7 @@ export function AddSecretEditor({ manager }: { manager: SecretsManager }) {
   return <SecretEditor
     key="add"
     source={manager.source}
-    initialWorkspaces={manager.editor.initialWorkspaces}
+    initialComputers={manager.editor.initialComputers}
     onSave={manager.saveSecret}
     onCancel={manager.closeEditor}
     saving={manager.saving}
@@ -42,18 +42,18 @@ export function SecretRow({ secret, manager }: { secret: ApplicationSecret; mana
           {secret.state === "applying" && <span role="status" className="text-[10px] text-muted-foreground">{secret.removing ? "Removing…" : "Applying…"}</span>}
           {secret.state === "restart-required" && (
             <span className="inline-flex items-center gap-1 text-[10px] text-amber-700 dark:text-amber-400">
-              <RotateCw className="size-3" aria-hidden="true" />Restart to apply{secret.pendingWorkspaces?.length ? `: ${secret.pendingWorkspaces.join(", ")}` : ""}
+              <RotateCw className="size-3" aria-hidden="true" />Restart to apply{secret.pendingComputers?.length ? `: ${secret.pendingComputers.join(", ")}` : ""}
             </span>
           )}
           {secret.removing && secret.state !== "applying" && <span className="text-[10px] text-muted-foreground">Removal pending</span>}
         </div>}
         detailClassName="whitespace-normal"
         detail={<div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
-          <div className="flex min-w-0 flex-wrap gap-1" role="group" aria-label={`Sandboxes for ${secret.name}`}>
-            {secret.workspaces.map((name) => {
-              const workspace = source.workspaces.find(({ machine, device }) => !device && machine.name === name)
-              return workspace
-                ? <WorkspaceBadge key={name} name={name} state={workspace.state} device={workspace.device} />
+          <div className="flex min-w-0 flex-wrap gap-1" role="group" aria-label={`Computers for ${secret.name}`}>
+            {secret.computers.map((name) => {
+              const computer = source.computers.find(({ configuration, device }) => !device && configuration.name === name)
+              return computer
+                ? <ComputerBadge key={name} name={name} state={computer.state} device={computer.device} />
                 : <StatusBadge key={name} indicator={<Box className="size-2" />}>{name}</StatusBadge>
             })}
           </div>
@@ -71,7 +71,7 @@ export function SecretRow({ secret, manager }: { secret: ApplicationSecret; mana
             </TooltipTrigger>
             <TooltipContent>{`Edit ${secret.name}`}</TooltipContent>
           </Tooltip>
-          <ConfirmPopover align="end" tone="destructive" title={`Remove ${secret.name}?`} description="Silo deletes the stored value immediately. Sandboxes that cannot revoke access may keep it until they restart." confirmLabel="Remove" tooltip={`Remove ${secret.name}`} onConfirm={() => manager.removeSecret(secret.id)}>
+          <ConfirmPopover align="end" tone="destructive" title={`Remove ${secret.name}?`} description="Silo deletes the stored value immediately. Computers that cannot revoke access may keep it until they restart." confirmLabel="Remove" tooltip={`Remove ${secret.name}`} onConfirm={() => manager.removeSecret(secret.id)}>
             <Button type="button" variant="ghost" size="icon-xs" aria-label={`Remove ${secret.name}`} disabled={disabled}>
               {working ? <LoaderCircle className="animate-spin" aria-hidden="true" /> : <Trash2 aria-hidden="true" />}
             </Button>

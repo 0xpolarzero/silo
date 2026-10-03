@@ -8,8 +8,8 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { DesktopActionsMenu, NativeDesktopActionsMenu, type DesktopMenuProps } from "./linux-desktop-menu"
 
 // Guest pages draw inside Silo's window, so anything inside the frame,
-// including dialogs that look like Silo's, comes from the sandbox (G-20).
-const GUEST_CONTENT_NOTICE = "Everything inside the amber frame comes from the sandbox. Silo's own controls are only in this bar."
+// including dialogs that look like Silo's, comes from the computer (G-20).
+const GUEST_CONTENT_NOTICE = "Everything inside the amber frame comes from the computer. Silo's own controls are only in this bar."
 
 export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry, onFullscreen, screenRef, lcuUpdated = false, MenuComponent = DesktopActionsMenu }: {
   name: string
@@ -32,23 +32,23 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
   const updateRequired = state?.state === "stopped" && state.updateRequired === true
   const updateAvailable = state?.installed && state.state === "stopped"
     && (state.updateRequired === true || state.backend === "kasm")
-  // v4 sandboxes report computer use as a unit; older ones report the legacy LCU fields.
+  // v4 computers report computer use as a unit; older ones report the legacy LCU fields.
   const computerUse = state?.computerUse
-  // A failed ChatGPT download is the host's, and setting up the sandbox cannot fix it.
+  // A failed ChatGPT download is the host's, and setting up the computer cannot fix it.
   const downloadFailed = computerUse?.state === "failed" && computerUse.cause === "app-download"
-  const lcuStatus = computerUse ? null : state?.lcuState === "needs-runtime" ? "LCU requires the official ChatGPT app in this sandbox"
+  const lcuStatus = computerUse ? null : state?.lcuState === "needs-runtime" ? "LCU requires the official ChatGPT app in this computer"
     : state?.lcuState === "not-installed" ? "LCU is not set up"
       : state?.lcuState === "installing" ? "Setting up LCU…"
         : state?.lcuState === "repair-required" || state?.lcuState === "failed" ? "LCU setup needs attention"
           : state?.lcuState === "ready" ? `LCU ready${state.lcuAgents?.length ? ` · ${state.lcuAgents.join(", ")}` : ""}`
             : null
   const problem = error ?? menuError
-  const actionLabel = updateRequired ? "Update desktop" : state?.state === "vm-stopped" ? state.autoStart ? "Start sandbox" : "Start sandbox and desktop" : state?.state === "failed" ? "Restart desktop" : "Start desktop"
+  const actionLabel = updateRequired ? "Update desktop" : state?.state === "vm-stopped" ? state.autoStart ? "Start computer" : "Start computer and desktop" : state?.state === "failed" ? "Restart desktop" : "Start desktop"
   const primaryAction: DesktopAction = updateRequired ? "update-streamer" : state?.state === "failed" ? "restart" : "start"
   return <TooltipProvider><main className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
       <Monitor aria-hidden="true" className="size-4" /><h1 className="min-w-0 flex-1 truncate text-xs font-medium">{name}</h1>
-      {running && <span className="shrink-0 rounded-sm border border-amber-500 px-1.5 text-xs text-amber-700 dark:text-amber-400" title={GUEST_CONTENT_NOTICE}>Sandbox content</span>}
+      {running && <span className="shrink-0 rounded-sm border border-amber-500 px-1.5 text-xs text-amber-700 dark:text-amber-400" title={GUEST_CONTENT_NOTICE}>Computer content</span>}
       {confirm ? <div role="alert" className="flex min-w-0 items-center gap-2 text-xs">
         <p className="truncate" title="This closes the desktop's graphical applications.">{confirm === "stop" ? "Stopping" : "Restarting"} the desktop closes its graphical applications.</p>
         <Button size="xs" variant="ghost" onClick={() => setConfirm(null)}>Cancel</Button>
@@ -64,7 +64,7 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
         </div>}
         {state?.installed && state.state !== "vm-stopped" && computerUse?.state === "failed" && <div role="alert" className="flex min-w-0 items-center gap-1 text-xs text-destructive">
           <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" />
-          <span className="truncate" title={computerUse.reason ?? undefined}>{downloadFailed ? "ChatGPT download failed. Retry from the sandbox's page." : "Computer use setup failed"}</span>
+          <span className="truncate" title={computerUse.reason ?? undefined}>{downloadFailed ? "ChatGPT download failed. Retry from the computer's page." : "Computer use setup failed"}</span>
           {running && !downloadFailed && <Button size="xs" variant="ghost" disabled={busy} onClick={() => onAction("setup-computer-use")}>Try again</Button>}
         </div>}
         {streamNeedsRecovery && <div role="alert" className="flex min-w-0 items-center gap-1 text-xs text-destructive">
@@ -77,22 +77,22 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
       <Button variant="ghost" size="icon-xs" aria-label="Toggle fullscreen" onClick={onFullscreen}><Maximize /></Button>
       {running && <MenuComponent busy={busy} onSelect={action => { setMenuError(null); setConfirm(action) }} onError={setMenuError} />}
     </header>
-    {running ? <section aria-label="Sandbox display" aria-description={GUEST_CONTENT_NOTICE} className="flex min-h-0 flex-1 bg-amber-500 p-1">
+    {running ? <section aria-label="Computer display" aria-description={GUEST_CONTENT_NOTICE} className="flex min-h-0 flex-1 bg-amber-500 p-1">
       {/* The guest webview covers only this element; the frame around it stays Silo's. */}
       <div ref={screenRef} className="min-h-0 flex-1 bg-background" aria-label="Linux desktop display" />
     </section> : <div className="grid min-h-0 flex-1 place-items-center p-6 text-center" aria-busy={busy}>
       <div className="grid max-w-sm justify-items-center gap-3">
         <Monitor aria-hidden="true" className="size-8 text-muted-foreground" />
-        <p className="text-sm">{busy || state?.state === "starting" ? "Connecting to desktop…" : !state ? "Desktop unavailable" : state.state === "uninstalled" ? computerUse ? "Desktop unavailable" : "Desktop is not installed" : state.state === "failed" ? "Desktop needs attention" : state.state === "vm-stopped" ? "Sandbox is stopped" : "Desktop is stopped"}</p>
+        <p className="text-sm">{busy || state?.state === "starting" ? "Connecting to desktop…" : !state ? "Desktop unavailable" : state.state === "uninstalled" ? computerUse ? "Desktop unavailable" : "Desktop is not installed" : state.state === "failed" ? "Desktop needs attention" : state.state === "vm-stopped" ? "Computer is stopped" : "Desktop is stopped"}</p>
         {state && state.state !== "uninstalled" && state.state !== "starting" && <Button disabled={busy} size="sm" onClick={() => onAction(primaryAction)}>{actionLabel}</Button>}
         {updateAvailable && !updateRequired && <Button disabled={busy} size="sm" variant="ghost" onClick={() => onAction("update-streamer")}>Update desktop</Button>}
-        {state?.state === "uninstalled" && !computerUse && <p className="text-xs text-muted-foreground">Choose Add Linux desktop in the sandbox’s actions menu.</p>}
+        {state?.state === "uninstalled" && !computerUse && <p className="text-xs text-muted-foreground">Choose Add Linux desktop in the computer’s actions menu.</p>}
       </div>
     </div>}
   </main></TooltipProvider>
 }
 
-export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: string; name: string }) {
+export function NativeLinuxDesktopViewer({ computer, name }: { computer: string; name: string }) {
   const [state, setState] = useState<LinuxDesktopState | null>(null)
   const [busy, setBusy] = useState(true)
   const [lcuUpdated, setLcuUpdated] = useState(false)
@@ -116,7 +116,7 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     polling.current = true
     const currentRevision = revision.current
     try {
-      const result = parseLinuxDesktopState(await invoke("read_desktop_state", { workspace }))
+      const result = parseLinuxDesktopState(await invoke("read_desktop_state", { computer }))
       if (currentRevision === revision.current) {
         failureDelay.current = 0
         setState(result)
@@ -131,7 +131,7 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
       }
     }
     finally { polling.current = false; if (currentRevision === revision.current) setBusy(false) }
-  }, [workspace])
+  }, [computer])
   useEffect(() => {
     let disposed = false
     let timer: number | undefined
@@ -166,7 +166,7 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
       const viewportHeight = window.innerHeight
       if (width <= 0 || height <= 0) return
       pending = true
-      try { await transport(async () => { if (!disposed) await invoke("desktop_viewer_attach", { workspace, x, y, width, height, viewportHeight }) }); if (!disposed) setConnectionError(null) }
+      try { await transport(async () => { if (!disposed) await invoke("desktop_viewer_attach", { computer, x, y, width, height, viewportHeight }) }); if (!disposed) setConnectionError(null) }
       catch (cause) { if (!disposed) setConnectionError(String(cause)) }
       finally { pending = false; if (dirty) { dirty = false; void attach() } }
     }
@@ -177,7 +177,7 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     window.addEventListener("resize", updateBounds)
     void attach()
     return () => { disposed = true; refreshAttachment.current = null; observer.disconnect(); window.removeEventListener("resize", updateBounds); void transport(() => invoke("desktop_viewer_detach")).catch(() => {}) }
-  }, [workspace, streamReady, connection, transport])
+  }, [computer, streamReady, connection, transport])
   async function handleAction(action: DesktopAction) {
     if (operation.current) return
     operation.current = true
@@ -188,7 +188,7 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     if (action === "setup-computer-use") { setLcuUpdated(false); setState(current => current?.computerUse ? { ...current, computerUse: { ...current.computerUse, state: "installing", reason: null } } : current) }
     setError(null)
     try {
-      const result = parseLinuxDesktopState(await invoke("desktop_action", { workspace, action }))
+      const result = parseLinuxDesktopState(await invoke("desktop_action", { computer, action }))
       setState(result)
         if (action === "setup-lcu") setLcuUpdated(result.lcuState === "ready")
       if (action === "setup-computer-use") setLcuUpdated(result.computerUse?.state === "ready")

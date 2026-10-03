@@ -19,7 +19,7 @@ beforeEach(() => {
 
 function setup(store?: SettingsStore, reactStrictMode = false) {
   const actions: StatusBarActions = {
-    openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(), openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
+    openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), startComputer: vi.fn(), stopComputer: vi.fn(), restartComputer: vi.fn(), openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
   }
   const panel = <StatusPanel source={applicationSourceForScenario("running")} actions={actions} />
   const view = render(store ? <SettingsProvider store={store}>{panel}</SettingsProvider> : panel, { reactStrictMode })
@@ -83,7 +83,7 @@ it("propagates resolved apps to shortcuts, native menus, and an already-open fol
 
 it("uses the real quit command and keeps the existing status content", async () => {
   const { user, actions } = setup()
-  expect(screen.getByRole("list", { name: "Sandboxes" })).toBeVisible()
+  expect(screen.getByRole("list", { name: "Computers" })).toBeVisible()
   expect(screen.queryByRole("button", { name: "Silo status bar" })).not.toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Quit Silo" }))
   expect(native.invoke).not.toHaveBeenCalledWith("quit_app")
@@ -92,9 +92,9 @@ it("uses the real quit command and keeps the existing status content", async () 
   expect(actions.quit).not.toHaveBeenCalled()
 })
 
-it("updates the native tray when sandbox health changes and skips unchanged health", async () => {
+it("updates the native tray when computer health changes and skips unchanged health", async () => {
   const actions: StatusBarActions = {
-    openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(), openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
+    openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), startComputer: vi.fn(), stopComputer: vi.fn(), restartComputer: vi.fn(), openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
   }
   const source = applicationSourceForScenario("running")
   const { rerender } = render(<StatusPanel source={source} actions={actions} />)
@@ -104,9 +104,9 @@ it("updates the native tray when sandbox health changes and skips unchanged heal
   rerender(<StatusPanel source={structuredClone(source)} actions={actions} />)
   expect(trayCalls()).toHaveLength(1)
   const failed = structuredClone(source)
-  failed.workspaces[0].state = "failed"
+  failed.computers[0].state = "failed"
   rerender(<StatusPanel source={failed} actions={actions} />)
-  expect(native.invoke).toHaveBeenCalledWith("update_tray", { tone: "error", label: "Sandbox error" })
+  expect(native.invoke).toHaveBeenCalledWith("update_tray", { tone: "error", label: "Computer error" })
   expect(trayCalls()).toHaveLength(2)
 })
 
@@ -117,9 +117,9 @@ it("uses an OS popup and retains stop confirmation in the panel", async () => {
   expect(screen.queryByRole("menu")).not.toBeInTheDocument()
   const items = native.menu.mock.calls[0][0].items
   act(() => items.find((item: { text: string }) => item.text === "Stop…").action())
-  expect(actions.stopWorkspace).not.toHaveBeenCalled()
+  expect(actions.stopComputer).not.toHaveBeenCalled()
   await user.click(screen.getByRole("button", { name: "Stop" }))
-  expect(actions.stopWorkspace).toHaveBeenCalledWith("dev")
+  expect(actions.stopComputer).toHaveBeenCalledWith("dev")
   expect(native.close).toHaveBeenCalledOnce()
 })
 
@@ -140,7 +140,7 @@ it("reports native menu failure and allows retry", async () => {
   native.popup.mockRejectedValueOnce(new Error("Popup failed"))
   const { user } = setup()
   await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-  expect(await screen.findByText("Could not open sandbox actions")).toBeInTheDocument()
+  expect(await screen.findByText("Could not open computer actions")).toBeInTheDocument()
   expect(screen.getByText("Popup failed")).toBeInTheDocument()
   expect(native.close).toHaveBeenCalledOnce()
   await user.click(screen.getByRole("button", { name: "Retry" }))
@@ -167,7 +167,7 @@ it("dismisses with Escape after native menu tracking ends", async () => {
   expect(native.invoke).toHaveBeenCalledWith("hide_status")
 })
 
-it("returns to sandbox rows when the status item is opened again", async () => {
+it("returns to computer rows when the status item is opened again", async () => {
   const { user } = setup()
   await user.click(screen.getByRole("button", { name: "Open dev in Visual Studio Code" }))
   expect(screen.queryByRole("button", { name: "Quit Silo" })).not.toBeInTheDocument()
@@ -180,11 +180,11 @@ it.each([false, true])("keeps focus and natural page sizing through folder navig
   const panel = screen.getByRole("dialog", { name: "Silo" })
   await user.click(screen.getByRole("button", { name: "Open dev in Visual Studio Code" }))
   expect(panel.querySelector<HTMLDivElement>(".status-page")!.style.height).toBe("")
-  expect(screen.getByRole("button", { name: "Back to sandboxes" })).toHaveFocus()
+  expect(screen.getByRole("button", { name: "Back to computers" })).toHaveFocus()
   expect(panel).toHaveAttribute("data-reduce-motion", String(reduceMotion))
   await user.type(screen.getByRole("textbox", { name: "Filter folders" }), "no-matching-folder")
   expect(panel.querySelector<HTMLDivElement>(".status-page")!.style.height).toBe("")
-  await user.click(screen.getByRole("button", { name: "Back to sandboxes" }))
+  await user.click(screen.getByRole("button", { name: "Back to computers" }))
   expect(panel.querySelector<HTMLDivElement>(".status-page")!.style.height).toBe("")
   expect(panel).toHaveFocus()
   expect(screen.getByRole("button", { name: "Quit Silo" })).toBeVisible()

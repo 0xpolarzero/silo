@@ -4,7 +4,7 @@ import reservedSecretNames from "./reserved-secret-names.json"
 export interface SecretDraft {
   name: string
   value: string
-  workspaces: string[]
+  computers: string[]
   domains: string
   allowAnyDomain: boolean
 }
@@ -28,7 +28,7 @@ function validDomain(domain: string) {
     /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
 }
 
-export function secretConfiguration(draft: SecretDraft, secrets: readonly ApplicationSecret[], availableWorkspaces: readonly string[], original?: ApplicationSecret):
+export function secretConfiguration(draft: SecretDraft, secrets: readonly ApplicationSecret[], availableComputers: readonly string[], original?: ApplicationSecret):
   { request: SecretConfigurationRequest; errors?: never } | { errors: SecretValidationErrors; request?: never } {
   const errors: SecretValidationErrors = {}
   const name = original?.name ?? draft.name.trim()
@@ -44,16 +44,16 @@ export function secretConfiguration(draft: SecretDraft, secrets: readonly Applic
   if (!original && !draft.value) errors.value = "Enter a value."
   else if (draft.value.includes("\0")) errors.value = "Secret values cannot contain null characters."
   else if (new TextEncoder().encode(draft.value).byteLength > 65536) errors.value = "Use a secret value of at most 64 KiB."
-  if (draft.workspaces.length === 0) errors.workspaces = "Select at least one sandbox."
-  else if (draft.workspaces.length > 100) errors.workspaces = "Select no more than 100 sandboxes."
-  else if (draft.workspaces.some((name) => !availableWorkspaces.includes(name))) errors.workspaces = "Select an available sandbox."
+  if (draft.computers.length === 0) errors.computers = "Select at least one computer."
+  else if (draft.computers.length > 100) errors.computers = "Select no more than 100 computers."
+  else if (draft.computers.some((name) => !availableComputers.includes(name))) errors.computers = "Select an available computer."
   if (allowedDomains.length === 0) errors.domains = "Enter at least one allowed domain."
   else if (allowedDomains.length > 100) errors.domains = "Use no more than 100 allowed domains."
   else if (!allowedDomains.every(validDomain)) errors.domains = "Use hosts such as api.example.com or *.example.com, without a scheme, port, or path."
   if (allowedDomains.includes("*") && !draft.allowAnyDomain) errors.allowAnyDomain = "Confirm access to any HTTPS destination."
   if (Object.keys(errors).length > 0) return { errors }
 
-  const metadata = { name, workspaces: [...draft.workspaces], allowedDomains }
+  const metadata = { name, computers: [...draft.computers], allowedDomains }
   return { request: original
     ? { ...metadata, operation: "edit", id: original.id, ...(draft.value ? { value: draft.value } : {}) }
     : { ...metadata, operation: "add", value: draft.value } }

@@ -46,12 +46,12 @@ export function OnboardingPreview({ source: initialSource, actions, initialGitHu
         actions?.cancelGitHubConnection?.()
       },
       reopenGitHubAuthorization: () => actions?.reopenGitHubAuthorization?.(),
-      saveMachineConfiguration: (request) => {
-        actions?.saveMachineConfiguration?.(request)
-        setSource((current) => ({ ...current, machineConfigurations: request.machines }))
+      saveComputerConfiguration: (request) => {
+        actions?.saveComputerConfiguration?.(request)
+        setSource((current) => ({ ...current, computerConfigurations: request.configurations }))
       },
-      retryWorkspaceSetup: () => {
-        actions?.retryWorkspaceSetup?.()
+      retryComputerSetup: () => {
+        actions?.retryComputerSetup?.()
         setSource((current) => ({
           ...onboardingScenarios.running,
           preflightChecks: current.preflightChecks,

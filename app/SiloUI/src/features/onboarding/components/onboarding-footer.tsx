@@ -22,11 +22,11 @@ export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, co
   const failed = viewModel.dependencyStatus === "failed" || !!failedItem || !!viewModel.error
   const complete = completed || (viewModel.dependencyStatus === "succeeded" && viewModel.queueItems.length > 0 && viewModel.queueItems.every(({ status }) => status === "succeeded"))
   const completedStepMessage = viewModel.stepStatus[activeStep] === "succeeded"
-    ? activeStep === "workspaces" ? "Complete · Sandboxes are ready"
+    ? activeStep === "computers" ? "Complete · Computers are ready"
       : activeStep === "github" ? "Complete · Git identity setup is complete" : null
     : null
   const stepComplete = !!completedStepMessage && !checkingDependencies && !failed && !runningItem && !queued
-  // A sandbox that failed, is starting, or is unconfirmed keeps Finish unavailable.
+  // A computer that failed, is starting, or is unconfirmed keeps Finish unavailable.
   const blocker = isReview && !viewModel.finishEnabled && !failed && !runningItem && !queued ? viewModel.finishBlocker : null
   const statusText = completed
     ? "Complete · Silo is ready"
@@ -45,7 +45,7 @@ export function OnboardingFooter({ activeStep, viewModel, onBack, onContinue, co
             : queued ? "Waiting · Setup tasks are queued"
               : completedStepMessage ? completedStepMessage
               : isReview && viewModel.finishEnabled ? "Ready · Finish setup"
-              : activeStep === "dependencies" && viewModel.dependencyStatus === "succeeded" ? "Ready · Continue to configure sandboxes"
+              : activeStep === "dependencies" && viewModel.dependencyStatus === "succeeded" ? "Ready · Continue to configure computers"
                 : "Not started · Continue to start this step"
 
   return (

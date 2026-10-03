@@ -5,14 +5,14 @@ import { describe, expect, it, vi } from "vitest"
 
 import { FilterCombobox } from "./filter-combobox"
 
-const options = Array.from({ length: 30 }, (_, index) => ({ value: `sandbox-${index}`, label: `Sandbox ${index}` }))
+const options = Array.from({ length: 30 }, (_, index) => ({ value: `computer-${index}`, label: `Computer ${index}` }))
 
 function Filter({ available = options }: { available?: typeof options }) {
   const [selectedValues, onChange] = useState(new Set<string>())
   return <FilterCombobox
     options={available} selectedValues={selectedValues} onChange={onChange}
-    label="Sandbox filters" inputLabel="Add sandbox" placeholder="Choose a sandbox"
-    listLabel="Available sandboxes" selectedLabel="Selected sandboxes" emptyMessage="No matches"
+    label="Computer filters" inputLabel="Add computer" placeholder="Choose a computer"
+    listLabel="Available computers" selectedLabel="Selected computers" emptyMessage="No matches"
   />
 }
 
@@ -28,14 +28,14 @@ describe("FilterCombobox keyboard navigation", () => {
     expect(event.defaultPrevented).toBe(key === "Escape")
     expect(input).toHaveAttribute("aria-activedescendant", active)
     expect(screen.getByRole("listbox")).toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /Remove Sandbox/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Remove Computer/ })).not.toBeInTheDocument()
     await user.keyboard("{ArrowDown}{Enter}")
-    expect(screen.getByRole("button", { name: "Remove Sandbox 1" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Remove Computer 1" })).toBeInTheDocument()
   })
 
   it("reveals a selected option's full label after the chip truncates it", async () => {
     const user = userEvent.setup()
-    const label = "sandbox-with-a-long-name-".repeat(15)
+    const label = "computer-with-a-long-name-".repeat(15)
     render(<Filter available={[{ value: "long-name", label }]} />)
     await user.click(screen.getByRole("combobox"))
     await user.keyboard("{Enter}")
@@ -56,21 +56,21 @@ describe("FilterCombobox keyboard navigation", () => {
     const user = userEvent.setup()
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
     render(<Filter />)
-    const input = screen.getByRole("combobox", { name: "Add sandbox" })
+    const input = screen.getByRole("combobox", { name: "Add computer" })
     await user.click(input)
     await user.keyboard("{ArrowDown>20/}")
-    const active = screen.getByRole("option", { name: "Sandbox 20", selected: true })
+    const active = screen.getByRole("option", { name: "Computer 20", selected: true })
     expect(input).toHaveAttribute("aria-activedescendant", active.id)
     expect(input).toHaveFocus()
     expect(scroll.mock.contexts.at(-1)).toBe(active)
     expect(scroll).toHaveBeenLastCalledWith({ block: "nearest", inline: "nearest" })
 
     await user.keyboard("{ArrowUp>15/}")
-    const previous = screen.getByRole("option", { name: "Sandbox 5", selected: true })
+    const previous = screen.getByRole("option", { name: "Computer 5", selected: true })
     expect(scroll.mock.contexts.at(-1)).toBe(previous)
     expect(input).toHaveFocus()
     await user.keyboard("{Enter}")
-    expect(screen.getByRole("button", { name: "Remove Sandbox 5" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Remove Computer 5" })).toBeInTheDocument()
     expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
     expect(input).toHaveFocus()
   })
@@ -81,21 +81,21 @@ describe("FilterCombobox keyboard navigation", () => {
     render(<Filter />)
     await user.click(screen.getByRole("combobox"))
     await user.keyboard("{ArrowDown>20/}")
-    await user.type(screen.getByRole("combobox"), "Sandbox 29")
-    const match = screen.getByRole("option", { name: "Sandbox 29", selected: true })
+    await user.type(screen.getByRole("combobox"), "Computer 29")
+    const match = screen.getByRole("option", { name: "Computer 29", selected: true })
     expect(scroll.mock.contexts.at(-1)).toBe(match)
   })
 
-  it("keeps a valid active option when the available sandbox list shrinks", async () => {
+  it("keeps a valid active option when the available computer list shrinks", async () => {
     const user = userEvent.setup()
     const view = render(<Filter />)
     const input = screen.getByRole("combobox")
     await user.click(input)
     await user.keyboard("{ArrowDown>20/}")
     view.rerender(<Filter available={options.slice(0, 3)} />)
-    const active = screen.getByRole("option", { name: "Sandbox 2", selected: true })
+    const active = screen.getByRole("option", { name: "Computer 2", selected: true })
     expect(input).toHaveAttribute("aria-activedescendant", active.id)
     await user.keyboard("{Enter}")
-    expect(screen.getByRole("button", { name: "Remove Sandbox 2" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Remove Computer 2" })).toBeInTheDocument()
   })
 })

@@ -3,7 +3,7 @@ import { desktopShortcutCommand, shortcutFor } from "./shortcuts"
 
 describe("desktop shortcuts", () => {
   it.each([
-    ["1", "go-sandboxes"], ["2", "go-files"], ["3", "go-logs"], ["4", "go-network"],
+    ["1", "go-computers"], ["2", "go-files"], ["3", "go-logs"], ["4", "go-network"],
     ["5", "go-activity"], ["6", "go-github"], ["7", "go-secrets"],
   ])("routes Control-%s to %s", (key, command) => {
     expect(desktopShortcutCommand(new KeyboardEvent("keydown", { key, ctrlKey: true }))).toBe(command)
@@ -15,7 +15,7 @@ describe("desktop shortcuts", () => {
     }
   })
   it("accepts Shift needed to type digits on French layouts", () => {
-    expect(desktopShortcutCommand(new KeyboardEvent("keydown", { key: "1", ctrlKey: true, shiftKey: true }))).toBe("go-sandboxes")
+    expect(desktopShortcutCommand(new KeyboardEvent("keydown", { key: "1", ctrlKey: true, shiftKey: true }))).toBe("go-computers")
   })
   it("shows only configured shortcuts with platform-appropriate labels", () => {
     expect(shortcutFor("go-files", "MacIntel")).toEqual({ keys: ["⌘", "2"], aria: "Meta+2" })

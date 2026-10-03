@@ -32,7 +32,7 @@ function bridge(handler: Handler = () => undefined) {
     if (command === "read_application_state") return structuredClone(source)
     if (command === "read_backup_state") return structuredClone(backup)
     if (command === "read_setup_activity") return []
-    if (command === "read_network_state") return { workspaces: [] }
+    if (command === "read_network_state") return { computers: [] }
     if (command === "read_operation_queue") return { running: [], waiting: [] }
     if (command === "device_list") return []
     if (command === "connections_status") return { enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }
@@ -44,13 +44,13 @@ function bridge(handler: Handler = () => undefined) {
 
 const count = (invoke: ReturnType<typeof vi.fn>, name: string) => invoke.mock.calls.filter(([command]) => command === name).length
 
-describe("machine configuration jobs", () => {
-  it("does not report an empty configuration as saved before sandbox state loads", async () => {
+describe("configuration configuration jobs", () => {
+  it("does not report an empty configuration as saved before computer state loads", async () => {
     const mock = bridge()
     const store = createProductionSource(mock.native)
     try {
-      await expect(store.configureMachines({ schemaVersion: 1, machines: [] })).rejects.toThrow("configuration has not loaded")
-      expect(count(mock.invoke, "change_machine_configuration")).toBe(0)
+      await expect(store.configureConfigurations({ schemaVersion: 1, configurations: [] })).rejects.toThrow("configuration has not loaded")
+      expect(count(mock.invoke, "change_computer_configuration")).toBe(0)
       expect(store.getSnapshot().source).toBeNull()
     } finally { store.dispose() }
   })
@@ -60,53 +60,53 @@ describe("machine configuration jobs", () => {
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      await expect(store.configureMachines({ schemaVersion: 1, machines: [] })).rejects.toThrow("configuration has not loaded")
-      expect(count(mock.invoke, "change_machine_configuration")).toBe(0)
+      await expect(store.configureConfigurations({ schemaVersion: 1, configurations: [] })).rejects.toThrow("configuration has not loaded")
+      expect(count(mock.invoke, "change_computer_configuration")).toBe(0)
     } finally { store.dispose() }
   })
 
   it("resolves a loaded empty configuration without submitting native changes", async () => {
-    const mock = bridge(command => command === "read_application_state" ? { ...source, workspaces: [] } : undefined)
+    const mock = bridge(command => command === "read_application_state" ? { ...source, computers: [] } : undefined)
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      expect(await store.configureMachines({ schemaVersion: 1, machines: [] })).toMatchObject({ workspaces: [] })
-      expect(count(mock.invoke, "change_machine_configuration")).toBe(0)
+      expect(await store.configureConfigurations({ schemaVersion: 1, configurations: [] })).toMatchObject({ computers: [] })
+      expect(count(mock.invoke, "change_computer_configuration")).toBe(0)
     } finally { store.dispose() }
   })
 
   it("runs an identical retry again once the earlier one has finished (H-12)", async () => {
-    const mock = bridge(command => command === "retry_machine_configuration" ? structuredClone(source) : undefined)
+    const mock = bridge(command => command === "retry_computer_configuration" ? structuredClone(source) : undefined)
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      const request = { schemaVersion: 1 as const, machines: store.getSnapshot().source!.workspaces.map(({ machine }) => machine) }
-      const first = store.configureMachines(request, { kind: "retry" })
+      const request = { schemaVersion: 1 as const, configurations: store.getSnapshot().source!.computers.map(({ configuration }) => configuration) }
+      const first = store.configureConfigurations(request, { kind: "retry" })
       // A repeat while the first is in flight joins it.
-      expect(store.configureMachines(request, { kind: "retry" })).toBe(first)
+      expect(store.configureConfigurations(request, { kind: "retry" })).toBe(first)
       await first
-      expect(count(mock.invoke, "retry_machine_configuration")).toBe(1)
-      await store.configureMachines(request, { kind: "retry" })
-      expect(count(mock.invoke, "retry_machine_configuration")).toBe(2)
+      expect(count(mock.invoke, "retry_computer_configuration")).toBe(1)
+      await store.configureConfigurations(request, { kind: "retry" })
+      expect(count(mock.invoke, "retry_computer_configuration")).toBe(2)
     } finally { store.dispose() }
   })
 
   it("keeps an explicit Disable access when setup saves GitHub settings (H-39)", async () => {
-    const dev = source.workspaces[0]
-    const disabled = { ...source, workspaces: [dev], github: { ...source.github, state: "connected" as const, account: "octo", policyRevision: 3, accessEnabled: false } }
-    const saved = { ...disabled.github, policyRevision: 4, workspaceOperations: [{ workspace: dev.machine.name, status: "succeeded", message: "Applied" }] }
+    const dev = source.computers[0]
+    const disabled = { ...source, computers: [dev], github: { ...source.github, state: "connected" as const, account: "octo", policyRevision: 3, accessEnabled: false } }
+    const saved = { ...disabled.github, policyRevision: 4, computerOperations: [{ computer: dev.configuration.name, status: "succeeded", message: "Applied" }] }
     const mock = bridge(command => {
       if (command === "read_application_state") return structuredClone(disabled)
-      if (command === "configure_workspace_identities") return null
+      if (command === "configure_computer_identities") return null
       if (command === "save_github_configuration") return structuredClone(saved)
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
       await store.submitSetupStep("github", {
-        machineConfiguration: { schemaVersion: 1, machines: [dev.machine] },
+        computerConfiguration: { schemaVersion: 1, configurations: [dev.configuration] },
         applications: source.preferences,
-        github: { connectionState: "connected", workspaces: [{ workspace: dev.machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } }] },
+        github: { connectionState: "connected", computers: [{ computer: dev.configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } }] },
       })
       // Setup never sends an access switch (the backend ignores one); it saves against the revision it saw.
       const save = mock.invoke.mock.calls.find(([command]) => command === "save_github_configuration")
@@ -119,10 +119,10 @@ describe("machine configuration jobs", () => {
 const pushTarget = { repository: "octo/repo", branch: "main", commit: "0123456789abcdef0123456789abcdef01234567" }
 const office = { id: "office", name: "Office Mac", address: "user@office" }
 const studio = { id: "studio", name: "Studio", address: "user@studio" }
-const remoteTarget = (deviceId: string) => `silo-remote:${deviceId}:${source.workspaces[0].machine.id}`
-function remoteSource(patch: Partial<(typeof source)["workspaces"][number]> = {}) {
+const remoteTarget = (deviceId: string) => `silo-remote:${deviceId}:${source.computers[0].configuration.id}`
+function remoteSource(patch: Partial<(typeof source)["computers"][number]> = {}) {
   const remote = structuredClone(source)
-  remote.workspaces = [{ ...remote.workspaces[0], ...patch }]
+  remote.computers = [{ ...remote.computers[0], ...patch }]
   return remote
 }
 function deferred<T>() {
@@ -140,7 +140,7 @@ describe("remote device refresh", () => {
       if (command === "device_snapshot") return args?.deviceId === "office" ? new Promise(() => {}) : remoteSource({ state: studioState })
     })
     const store = createProductionSource(mock.native)
-    const row = (deviceId: string) => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget(deviceId))
+    const row = (deviceId: string) => store.getSnapshot().source?.computers.find(computer => computer.configuration.id === remoteTarget(deviceId))
     try {
       let initialized = false
       const started = store.initialize().then(() => { initialized = true })
@@ -172,7 +172,7 @@ describe("remote device refresh", () => {
       if (command === "device_snapshot") return ++reads === 1 ? remoteSource() : answer.promise
     })
     const store = createProductionSource(mock.native)
-    const row = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))
+    const row = () => store.getSnapshot().source?.computers.find(computer => computer.configuration.id === remoteTarget("office"))
     try {
       await store.initialize()
       expect(row()?.freshness).toBe("fresh")
@@ -211,16 +211,16 @@ describe("remote device refresh", () => {
     const mock = bridge(command => {
       if (command === "device_list") return [office]
       if (command === "device_snapshot") return ++reads === 1 ? remoteSource() : new Promise(() => {})
-      if (command === "remote_workspace_action") return remoteSource()
+      if (command === "remote_computer_action") return remoteSource()
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      store.applicationActions.stopWorkspace(remoteTarget("office"))
-      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))?.lifecycleAction).toBeUndefined())
+      store.applicationActions.stopComputer(remoteTarget("office"))
+      await vi.waitFor(() => expect(store.getSnapshot().source?.computers.find(computer => computer.configuration.id === remoteTarget("office"))?.lifecycleAction).toBeUndefined())
       await vi.waitFor(() => expect(reads).toBe(2))
-      store.applicationActions.stopWorkspace(remoteTarget("office"))
-      expect(count(mock.invoke, "remote_workspace_action")).toBe(2)
+      store.applicationActions.stopComputer(remoteTarget("office"))
+      expect(count(mock.invoke, "remote_computer_action")).toBe(2)
     } finally { store.dispose() }
   })
 
@@ -232,17 +232,17 @@ describe("remote device refresh", () => {
     const mock = bridge(command => {
       if (command === "device_list") return [office]
       if (command === "device_snapshot") return ++reads === 2 ? stale.promise : structuredClone(current)
-      if (command === "remote_upsert_machine") { current = remoteSource({ purpose: "Edited" }); return structuredClone(current) }
+      if (command === "remote_upsert_computer") { current = remoteSource({ purpose: "Edited" }); return structuredClone(current) }
     })
     const store = createProductionSource(mock.native)
-    const purpose = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))?.purpose
+    const purpose = () => store.getSnapshot().source?.computers.find(computer => computer.configuration.id === remoteTarget("office"))?.purpose
     try {
       await store.initialize()
       void store.refresh()
       await vi.advanceTimersByTimeAsync(0)
       expect(reads).toBe(2)
-      const machine = { ...source.workspaces[0].machine, id: remoteTarget("office") }
-      await store.applicationActions.saveRemoteMachine!("office", machine, machine)
+      const configuration = { ...source.computers[0].configuration, id: remoteTarget("office") }
+      await store.applicationActions.saveRemoteComputer!("office", configuration, configuration)
       expect(purpose()).toBe("Edited")
       const shown: Array<string | undefined> = []
       const unsubscribe = store.subscribe(() => shown.push(purpose()))
@@ -278,7 +278,7 @@ describe("remote device refresh", () => {
       await vi.advanceTimersByTimeAsync(0)
       expect(lists).toBe(3)
       expect(store.getSnapshot().source?.devices).toEqual([])
-      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.device)).toBe(false)
+      expect(store.getSnapshot().source?.computers.some(computer => computer.device)).toBe(false)
     } finally { store.dispose() }
   })
 
@@ -300,7 +300,7 @@ describe("remote device refresh", () => {
       list.resolve([])
       await connecting
       expect(store.getSnapshot().source?.devices?.map(device => device.id)).toEqual(["office"])
-      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.machine.id === remoteTarget("office"))).toBe(true)
+      expect(store.getSnapshot().source?.computers.some(computer => computer.configuration.id === remoteTarget("office"))).toBe(true)
     } finally { store.dispose() }
   })
 
@@ -374,7 +374,7 @@ describe("remote device refresh", () => {
 })
 
 describe("repository push status", () => {
-  const pushOf = (store: ReturnType<typeof createProductionSource>, workspace = "dev") => store.getSnapshot().source?.repositoryPushOperations.find(operation => operation.workspace === workspace && operation.repositoryPath === "/workspace/repo")
+  const pushOf = (store: ReturnType<typeof createProductionSource>, computer = "dev") => store.getSnapshot().source?.repositoryPushOperations.find(operation => operation.computer === computer && operation.repositoryPath === "/workspace/repo")
 
   it("backs off unanswered status checks and ends in a dismissible unknown result (H-08)", async () => {
     vi.useFakeTimers()
@@ -411,11 +411,11 @@ describe("repository push status", () => {
     }
   })
 
-  it("stops polling and drops the pending push when its sandbox is deleted (H-08)", async () => {
+  it("stops polling and drops the pending push when its computer is deleted (H-08)", async () => {
     vi.useFakeTimers()
     let deleted = false
     const mock = bridge(command => {
-      if (command === "read_application_state" && deleted) return { ...structuredClone(source), workspaces: source.workspaces.filter(workspace => workspace.machine.name !== "dev") }
+      if (command === "read_application_state" && deleted) return { ...structuredClone(source), computers: source.computers.filter(computer => computer.configuration.name !== "dev") }
       if (command === "start_repository_push" || command === "repository_push_status") return { operationId: "push-1", status: "pushing" }
     })
     const store = createProductionSource(mock.native)
@@ -464,18 +464,18 @@ describe("repository push status", () => {
 describe("derived view", () => {
   it("hides a reported failure while its retry waits, across refreshes (H-30)", async () => {
     const failed = structuredClone(source)
-    failed.workspaces[0] = { ...failed.workspaces[0], state: "stopped", lifecycleFailure: "Start failed: not enough memory" }
+    failed.computers[0] = { ...failed.computers[0], state: "stopped", lifecycleFailure: "Start failed: not enough memory" }
     const action = deferred<unknown>()
     const mock = bridge(command => {
       if (command === "read_application_state") return structuredClone(failed)
-      if (command === "workspace_action") return action.promise
+      if (command === "computer_action") return action.promise
     })
     const store = createProductionSource(mock.native)
-    const dev = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.name === "dev")
+    const dev = () => store.getSnapshot().source?.computers.find(computer => computer.configuration.name === "dev")
     try {
       await store.initialize()
       expect(dev()?.lifecycleFailure).toContain("not enough memory")
-      store.applicationActions.startWorkspace("dev")
+      store.applicationActions.startComputer("dev")
       expect(dev()).toMatchObject({ lifecycleAction: "start", lifecycleFailure: undefined })
       // The queued action has not begun, so the runtime still reports the old failure.
       await store.refresh()
@@ -494,8 +494,8 @@ describe("derived view", () => {
     try {
       await store.initialize()
       for (let index = 0; index < 3; index++) await store.refresh()
-      const remote = store.getSnapshot().source?.workspaces.filter(workspace => workspace.device) ?? []
-      expect(remote.map(workspace => workspace.machine.id)).toEqual([remoteTarget("office")])
+      const remote = store.getSnapshot().source?.computers.filter(computer => computer.device) ?? []
+      expect(remote.map(computer => computer.configuration.id)).toEqual([remoteTarget("office")])
       expect(store.getSnapshot().source?.activities.filter(activity => activity.id.startsWith("silo-remote-activity:")).length).toBe(source.activities.length)
     } finally { store.dispose() }
   })
@@ -505,22 +505,22 @@ describe("mutation responses", () => {
   it("keeps GitHub, repositories and pushes that a mutation response omits (H-36)", async () => {
     const full = structuredClone(source)
     full.github = { ...full.github, state: "connected", account: "octo", policyRevision: 5, repositoryCatalog: ["acme/silo"], repositoryCatalogStatus: { status: "available" } }
-    full.repositoryPushOperations = [{ workspace: "dev", repositoryPath: "acme/silo", commitCount: 1, status: "failed", message: "rejected" }]
+    full.repositoryPushOperations = [{ computer: "dev", repositoryPath: "acme/silo", commitCount: 1, status: "failed", message: "rejected" }]
     // The shape `read_application_state_with` returns for a mutation today.
-    const placeholder = { ...structuredClone(full), github: { state: "disconnected" }, repositoryPushOperations: [], workspaces: full.workspaces.map(workspace => ({ ...workspace, repositories: [] })) }
+    const placeholder = { ...structuredClone(full), github: { state: "disconnected" }, repositoryPushOperations: [], computers: full.computers.map(computer => ({ ...computer, repositories: [] })) }
     let reads = 0
     const mock = bridge(command => {
       if (command === "read_application_state") return ++reads === 1 ? structuredClone(full) : new Promise(() => {})
-      if (command === "workspace_action") return structuredClone(placeholder)
+      if (command === "computer_action") return structuredClone(placeholder)
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      store.applicationActions.stopWorkspace("dev")
+      store.applicationActions.stopComputer("dev")
       await vi.waitFor(() => expect(count(mock.invoke, "read_application_state")).toBe(2))
       const view = store.getSnapshot().source!
       expect(view.github).toMatchObject({ state: "connected", account: "octo", policyRevision: 5 })
-      expect(view.workspaces.find(workspace => workspace.machine.name === "dev")?.repositories).toEqual(full.workspaces[0].repositories)
+      expect(view.computers.find(computer => computer.configuration.name === "dev")?.repositories).toEqual(full.computers[0].repositories)
       expect(view.repositoryPushOperations).toEqual(full.repositoryPushOperations)
     } finally { store.dispose() }
   })
@@ -528,30 +528,30 @@ describe("mutation responses", () => {
   it("keeps a remote device's enrichment across a remote edit response (H-36)", async () => {
     const remote = remoteSource()
     remote.github = { ...remote.github, state: "connected", account: "octo", policyRevision: 2 }
-    const edited = { ...structuredClone(remote), github: { state: "disconnected" }, workspaces: remote.workspaces.map(workspace => ({ ...workspace, purpose: "Edited", repositories: [] })) }
+    const edited = { ...structuredClone(remote), github: { state: "disconnected" }, computers: remote.computers.map(computer => ({ ...computer, purpose: "Edited", repositories: [] })) }
     let reads = 0
     const mock = bridge(command => {
       if (command === "device_list") return [office]
       if (command === "device_snapshot") return ++reads === 1 ? structuredClone(remote) : new Promise(() => {})
-      if (command === "remote_upsert_machine") return structuredClone(edited)
+      if (command === "remote_upsert_computer") return structuredClone(edited)
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      const machine = { ...source.workspaces[0].machine, id: remoteTarget("office") }
-      await store.applicationActions.saveRemoteMachine!("office", machine, machine)
-      const row = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))
-      expect(row).toMatchObject({ purpose: "Edited", repositories: remote.workspaces[0].repositories })
+      const configuration = { ...source.computers[0].configuration, id: remoteTarget("office") }
+      await store.applicationActions.saveRemoteComputer!("office", configuration, configuration)
+      const row = store.getSnapshot().source?.computers.find(computer => computer.configuration.id === remoteTarget("office"))
+      expect(row).toMatchObject({ purpose: "Edited", repositories: remote.computers[0].repositories })
     } finally { store.dispose() }
   })
 })
 
 describe("overlapping lifecycle responses", () => {
-  it.each([false, true])("preserves both completions and newer same-sandbox intent (remote=%s)", async remote => {
+  it.each([false, true])("preserves both completions and newer same-computer intent (remote=%s)", async remote => {
     const initial = structuredClone(source)
-    initial.workspaces = initial.workspaces.slice(0, 2).map(row => ({ ...row, state: "running" }))
-    const [a, b] = initial.workspaces
-    const target = (row: typeof a) => remote ? `silo-remote:office:${row.machine.id}` : row.machine.name
+    initial.computers = initial.computers.slice(0, 2).map(row => ({ ...row, state: "running" }))
+    const [a, b] = initial.computers
+    const target = (row: typeof a) => remote ? `silo-remote:office:${row.configuration.id}` : row.configuration.name
     const older = deferred<unknown>()
     const newer = deferred<unknown>()
     const restarted = deferred<unknown>()
@@ -559,24 +559,24 @@ describe("overlapping lifecycle responses", () => {
     const mock = bridge((command, args) => {
       if (command === "device_list") return remote ? [office] : []
       if (command === (remote ? "device_snapshot" : "read_application_state")) return ++reads === 1 ? initial : new Promise(() => {})
-      if (command === (remote ? "remote_workspace_action" : "workspace_action")) {
+      if (command === (remote ? "remote_computer_action" : "computer_action")) {
         if (args?.action === "start") return restarted.promise
-        return (args?.name === a.machine.name ? older : newer).promise
+        return (args?.name === a.configuration.name ? older : newer).promise
       }
     })
     const store = createProductionSource(mock.native)
-    const row = (workspace: typeof a) => store.getSnapshot().source?.workspaces.find(item => item.machine.id === (remote ? target(workspace) : workspace.machine.id))
-    const result = (aState: "running" | "stopped", bState: "running" | "stopped") => ({ ...initial, workspaces: [{ ...a, state: aState }, { ...b, state: bState }] })
+    const row = (computer: typeof a) => store.getSnapshot().source?.computers.find(item => item.configuration.id === (remote ? target(computer) : computer.configuration.id))
+    const result = (aState: "running" | "stopped", bState: "running" | "stopped") => ({ ...initial, computers: [{ ...a, state: aState }, { ...b, state: bState }] })
     try {
       await store.initialize()
-      store.applicationActions.stopWorkspace(target(a))
-      store.applicationActions.stopWorkspace(target(b))
+      store.applicationActions.stopComputer(target(a))
+      store.applicationActions.stopComputer(target(b))
       newer.resolve(result("running", "stopped"))
       await vi.waitFor(() => { expect(row(b)?.state).toBe("stopped"); expect(row(b)?.lifecycleAction).toBeUndefined() })
       older.resolve(result("stopped", "running"))
       await vi.waitFor(() => { expect(row(a)?.state).toBe("stopped"); expect(row(a)?.lifecycleAction).toBeUndefined() })
       expect(row(b)?.state).toBe("stopped")
-      store.applicationActions.startWorkspace(target(b))
+      store.applicationActions.startComputer(target(b))
       restarted.resolve(result("running", "running"))
       await vi.waitFor(() => { expect(row(b)?.state).toBe("running"); expect(row(b)?.lifecycleAction).toBeUndefined() })
       expect(row(a)?.state).toBe("stopped")
@@ -616,43 +616,43 @@ describe("remote management response ordering", () => {
   })
 })
 
-describe("remote machine mutation response ordering", () => {
+describe("remote configuration mutation response ordering", () => {
   it.each(["edit", "delete", "add"] as const)("preserves a sibling's newer lifecycle result after a late remote %s", async kind => {
     const initial = structuredClone(source)
-    initial.workspaces = initial.workspaces.slice(0, 2).map(row => ({ ...row, state: "running" }))
-    const [a, b] = initial.workspaces
+    initial.computers = initial.computers.slice(0, 2).map(row => ({ ...row, state: "running" }))
+    const [a, b] = initial.computers
     const late = deferred<unknown>()
     let reads = 0
-    const newer = { ...initial, workspaces: [a, { ...b, state: "stopped" }] }
+    const newer = { ...initial, computers: [a, { ...b, state: "stopped" }] }
     const mock = bridge(command => {
       if (command === "device_list") return [office]
       if (command === "device_snapshot") return ++reads === 1 ? initial : new Promise(() => {})
-      if (command === "remote_workspace_action") return newer
-      if (command === "remote_upsert_machine" || command === "remote_delete_machine") return late.promise
+      if (command === "remote_computer_action") return newer
+      if (command === "remote_upsert_computer" || command === "remote_delete_computer") return late.promise
     })
     const store = createProductionSource(mock.native)
     const target = (id: string) => `silo-remote:office:${id}`
-    const row = (id: string) => store.getSnapshot().source?.workspaces.find(item => item.machine.id === target(id))
+    const row = (id: string) => store.getSnapshot().source?.computers.find(item => item.configuration.id === target(id))
     try {
       await store.initialize()
-      const machine = { ...a.machine, id: target(kind === "add" ? "new-remote" : a.machine.id), name: kind === "add" ? "new-remote" : a.machine.name }
-      const mutation = kind === "delete" ? store.applicationActions.deleteRemoteMachine!("office", machine)
-        : store.applicationActions.saveRemoteMachine!("office", machine, kind === "add" ? undefined : machine)
-      store.applicationActions.stopWorkspace(target(b.machine.id))
+      const configuration = { ...a.configuration, id: target(kind === "add" ? "new-remote" : a.configuration.id), name: kind === "add" ? "new-remote" : a.configuration.name }
+      const mutation = kind === "delete" ? store.applicationActions.deleteRemoteComputer!("office", configuration)
+        : store.applicationActions.saveRemoteComputer!("office", configuration, kind === "add" ? undefined : configuration)
+      store.applicationActions.stopComputer(target(b.configuration.id))
       await vi.waitFor(() => {
-        expect(row(b.machine.id)?.state).toBe("stopped")
-        expect(row(b.machine.id)?.lifecycleAction).toBeUndefined()
+        expect(row(b.configuration.id)?.state).toBe("stopped")
+        expect(row(b.configuration.id)?.lifecycleAction).toBeUndefined()
       })
       const older = structuredClone(initial)
-      if (kind === "delete") older.workspaces = [b]
-      else if (kind === "edit") older.workspaces[0].purpose = "Edited"
-      else older.workspaces.push({ ...a, machine: { ...a.machine, id: "new-remote", name: "new-remote" }, state: "stopped" })
+      if (kind === "delete") older.computers = [b]
+      else if (kind === "edit") older.computers[0].purpose = "Edited"
+      else older.computers.push({ ...a, configuration: { ...a.configuration, id: "new-remote", name: "new-remote" }, state: "stopped" })
       late.resolve(older)
       await mutation
-      expect(row(b.machine.id)?.state).toBe("stopped")
-      if (kind === "delete") expect(row(a.machine.id)).toBeUndefined()
-      else if (kind === "edit") expect(row(a.machine.id)?.purpose).toBe("Edited")
-      else expect(row("new-remote")).toMatchObject({ state: "stopped", machine: { name: "new-remote" } })
+      expect(row(b.configuration.id)?.state).toBe("stopped")
+      if (kind === "delete") expect(row(a.configuration.id)).toBeUndefined()
+      else if (kind === "edit") expect(row(a.configuration.id)?.purpose).toBe("Edited")
+      else expect(row("new-remote")).toMatchObject({ state: "stopped", configuration: { name: "new-remote" } })
     } finally { store.dispose() }
   })
 })
@@ -660,32 +660,32 @@ describe("remote machine mutation response ordering", () => {
 describe("SSH save response ordering", () => {
   it.each([false, true])("preserves independent sibling SSH saves when responses finish in reverse order (remote=%s)", async remote => {
     const initial = structuredClone(source)
-    initial.workspaces = initial.workspaces.slice(0, 2)
-    const target = (workspace: typeof initial.workspaces[number]) => remote ? `silo-remote:office:${workspace.machine.id}` : workspace.machine.name
-    const rows = initial.workspaces.map(workspace => ({ workspace: target(workspace), enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, deviceName: "Laptop", addresses: [] }))
+    initial.computers = initial.computers.slice(0, 2)
+    const target = (computer: typeof initial.computers[number]) => remote ? `silo-remote:office:${computer.configuration.id}` : computer.configuration.name
+    const rows = initial.computers.map(computer => ({ computer: target(computer), enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, deviceName: "Laptop", addresses: [] }))
     const older = deferred<unknown>()
     const newer = deferred<unknown>()
     const mock = bridge((command, args) => {
       if (command === "device_list") return remote ? [office] : []
       if (command === "device_snapshot") return initial
-      if (command === "read_ssh_access_state") return { workspaces: remote ? [] : rows }
-      if (command === "remote_ssh_access_state") return { workspaces: rows }
+      if (command === "read_ssh_access_state") return { computers: remote ? [] : rows }
+      if (command === "remote_ssh_access_state") return { computers: rows }
       if (command === "save_ssh_access" || command === "remote_save_ssh_access") return args?.port === 2223 ? older.promise : newer.promise
     })
     const store = createProductionSource(mock.native)
-    const row = (workspace: string) => store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace === workspace)
+    const row = (computer: string) => store.getSnapshot().source?.sshAccess?.computers.find(item => item.computer === computer)
     try {
       await store.initialize()
       await store.applicationActions.refreshSshAccess!()
       const request = { enabled: true, bindAddress: "127.0.0.1", keys: [] }
-      const first = store.applicationActions.saveSshAccess!({ ...request, workspace: rows[0].workspace, port: 2223 })
-      const second = store.applicationActions.saveSshAccess!({ ...request, workspace: rows[1].workspace, port: 2224 })
-      newer.resolve({ workspaces: [rows[0], { ...rows[1], port: 2224 }] })
+      const first = store.applicationActions.saveSshAccess!({ ...request, computer: rows[0].computer, port: 2223 })
+      const second = store.applicationActions.saveSshAccess!({ ...request, computer: rows[1].computer, port: 2224 })
+      newer.resolve({ computers: [rows[0], { ...rows[1], port: 2224 }] })
       await second
-      older.resolve({ workspaces: [{ ...rows[0], port: 2223 }, rows[1]] })
+      older.resolve({ computers: [{ ...rows[0], port: 2223 }, rows[1]] })
       await first
-      expect(row(rows[0].workspace)?.port).toBe(2223)
-      expect(row(rows[1].workspace)?.port).toBe(2224)
+      expect(row(rows[0].computer)?.port).toBe(2223)
+      expect(row(rows[1].computer)?.port).toBe(2224)
     } finally { store.dispose() }
   })
 })
@@ -693,42 +693,42 @@ describe("SSH save response ordering", () => {
 describe("checkpoint response ordering", () => {
   it.each(["capture", "fork"] as const)("preserves a newer sibling lifecycle result after a late %s response", async kind => {
     const initial = structuredClone(source)
-    initial.workspaces = initial.workspaces.slice(0, 2).map(row => ({ ...row, state: "running" }))
-    const [a, b] = initial.workspaces
+    initial.computers = initial.computers.slice(0, 2).map(row => ({ ...row, state: "running" }))
+    const [a, b] = initial.computers
     const pending = deferred<unknown>()
     let reads = 0
-    const newer = { ...initial, workspaces: [{ ...a }, { ...b, state: "stopped" }] }
+    const newer = { ...initial, computers: [{ ...a }, { ...b, state: "stopped" }] }
     const mock = bridge(command => {
       if (command === "read_application_state") return ++reads === 1 ? initial : new Promise(() => {})
-      if (command === "workspace_action") return newer
+      if (command === "computer_action") return newer
       if (command === "create_checkpoint" || command === "fork_checkpoint") return pending.promise
     })
     const store = createProductionSource(mock.native)
-    const row = (id: string) => store.getSnapshot().source?.workspaces.find(item => item.machine.id === id)
+    const row = (id: string) => store.getSnapshot().source?.computers.find(item => item.configuration.id === id)
     try {
       await store.initialize()
       const checkpoint = { id: "captured", name: "Saved", createdAt: "2026-10-02T12:00:00Z", scope: "full" as const, reason: "manual" as const }
-      const action = kind === "capture" ? store.applicationActions.createCheckpoint!(a.machine.name, "Saved")
-        : store.applicationActions.forkCheckpoint!(a.machine.name, "point-1", "new-fork")
-      store.applicationActions.stopWorkspace(b.machine.name)
+      const action = kind === "capture" ? store.applicationActions.createCheckpoint!(a.configuration.name, "Saved")
+        : store.applicationActions.forkCheckpoint!(a.configuration.name, "point-1", "new-fork")
+      store.applicationActions.stopComputer(b.configuration.name)
       await vi.waitFor(() => {
-        expect(row(b.machine.id)?.state).toBe("stopped")
-        expect(row(b.machine.id)?.lifecycleAction).toBeUndefined()
+        expect(row(b.configuration.id)?.state).toBe("stopped")
+        expect(row(b.configuration.id)?.lifecycleAction).toBeUndefined()
       })
       const older = structuredClone(initial)
-      older.workspaces[0].checkpoints = [checkpoint]
-      if (kind === "fork") older.workspaces.push({ ...a, machine: { ...a.machine, id: "fork-id", name: "new-fork" }, state: "stopped" })
+      older.computers[0].checkpoints = [checkpoint]
+      if (kind === "fork") older.computers.push({ ...a, configuration: { ...a.configuration, id: "fork-id", name: "new-fork" }, state: "stopped" })
       pending.resolve(older)
       await action
-      expect(row(b.machine.id)?.state).toBe("stopped")
-      expect(row(a.machine.id)?.checkpoints).toEqual([checkpoint])
-      if (kind === "fork") expect(row("fork-id")).toMatchObject({ state: "stopped", machine: { name: "new-fork" } })
+      expect(row(b.configuration.id)?.state).toBe("stopped")
+      expect(row(a.configuration.id)?.checkpoints).toEqual([checkpoint])
+      if (kind === "fork") expect(row("fork-id")).toMatchObject({ state: "stopped", configuration: { name: "new-fork" } })
     } finally { store.dispose() }
   })
 })
 
 describe("overlapping state reads", () => {
-  const withState = (state: "running" | "stopped", detail: string) => ({ ...structuredClone(source), workspaces: source.workspaces.map((workspace, index) => index === 0 ? { ...workspace, state, stateDetail: detail } : workspace) })
+  const withState = (state: "running" | "stopped", detail: string) => ({ ...structuredClone(source), computers: source.computers.map((computer, index) => index === 0 ? { ...computer, state, stateDetail: detail } : computer) })
 
   it("shows an earlier read's result when a later read only reports UPDATING (H-37)", async () => {
     const earlier = deferred<unknown>()
@@ -737,11 +737,11 @@ describe("overlapping state reads", () => {
       if (command !== "read_application_state") return undefined
       reads++
       if (reads === 2) return earlier.promise
-      if (reads === 3) throw { code: "update_in_progress", message: "Sandbox settings are changing." }
+      if (reads === 3) throw { code: "update_in_progress", message: "Computer settings are changing." }
       return withState("running", "Running")
     })
     const store = createProductionSource(mock.native)
-    const dev = () => store.getSnapshot().source?.workspaces[0]
+    const dev = () => store.getSnapshot().source?.computers[0]
     try {
       await store.initialize()
       const first = store.refresh()
@@ -761,8 +761,8 @@ describe("overlapping state reads", () => {
       if (++reads === 2) return earlier.promise
       const result = withState("running", reads === 3 ? "Old runtime reading" : "Initial")
       if (reads === 3) {
-        result.workspaces[0].settling = true
-        result.workspaces[1].stateDetail = "Newest sibling"
+        result.computers[0].settling = true
+        result.computers[1].stateDetail = "Newest sibling"
       }
       return result
     })
@@ -772,27 +772,27 @@ describe("overlapping state reads", () => {
       const first = store.refresh()
       await vi.waitFor(() => expect(reads).toBe(2))
       await store.refresh()
-      expect(store.getSnapshot().source!.workspaces[0]).toMatchObject({ stateDetail: "Initial", settling: true })
+      expect(store.getSnapshot().source!.computers[0]).toMatchObject({ stateDetail: "Initial", settling: true })
       earlier.resolve(withState("stopped", "Fresh completed read"))
       await first
-      expect(store.getSnapshot().source!.workspaces[0]).toMatchObject({ state: "stopped", stateDetail: "Fresh completed read" })
-      expect(store.getSnapshot().source!.workspaces[1].stateDetail).toBe("Newest sibling")
+      expect(store.getSnapshot().source!.computers[0]).toMatchObject({ state: "stopped", stateDetail: "Fresh completed read" })
+      expect(store.getSnapshot().source!.computers[1].stateDetail).toBe("Newest sibling")
     } finally { store.dispose() }
   })
 
   it("propagates local stale status, host capacity, and the published website host", async () => {
     const local = withState("running", "Last known status")
-    local.workspaces[0].freshness = "stale"
+    local.computers[0].freshness = "stale"
     const capacity = { logicalCpus: 8, physicalMemoryBytes: 16 * 1024 ** 3, maxMemoryGib: 16 }
     const mock = bridge(command => {
       if (command === "read_application_state") return { ...local, deviceCapacity: capacity }
-      if (command === "read_network_state") return { workspaces: [{ workspace: local.workspaces[0].machine.name, host: "dev.localhost", error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", state: "reachable", configured: true }] }] }
+      if (command === "read_network_state") return { computers: [{ computer: local.computers[0].configuration.name, host: "dev.localhost", error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", state: "reachable", configured: true }] }] }
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
       expect(store.getSnapshot().source!.deviceCapacity).toEqual(capacity)
-      expect(store.getSnapshot().source!.workspaces[0]).toMatchObject({ freshness: "stale", ports: [{ host: "dev.localhost", hostPort: 43000 }] })
+      expect(store.getSnapshot().source!.computers[0]).toMatchObject({ freshness: "stale", ports: [{ host: "dev.localhost", hostPort: 43000 }] })
     } finally { store.dispose() }
   })
 
@@ -811,10 +811,10 @@ describe("overlapping state reads", () => {
       const first = store.refresh()
       await vi.waitFor(() => expect(reads).toBe(2))
       await store.refresh()
-      expect(store.getSnapshot().source?.workspaces[0].stateDetail).toBe("Newest")
+      expect(store.getSnapshot().source?.computers[0].stateDetail).toBe("Newest")
       earlier.resolve(withState("running", "Older"))
       await first
-      expect(store.getSnapshot().source?.workspaces[0].stateDetail).toBe("Newest")
+      expect(store.getSnapshot().source?.computers[0].stateDetail).toBe("Newest")
     } finally { store.dispose() }
   })
 
@@ -823,25 +823,25 @@ describe("overlapping state reads", () => {
     let reads = 0
     const mock = bridge(command => {
       if (command === "read_application_state") { reads++; return reads === 2 ? earlier.promise : reads === 3 ? new Promise(() => {}) : withState("running", "Running") }
-      if (command === "workspace_action") return withState("stopped", "Stopped by action")
+      if (command === "computer_action") return withState("stopped", "Stopped by action")
     })
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
       const before = store.refresh()
       await vi.waitFor(() => expect(reads).toBe(2))
-      store.applicationActions.stopWorkspace("dev")
-      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].stateDetail).toBe("Stopped by action"))
+      store.applicationActions.stopComputer("dev")
+      await vi.waitFor(() => expect(store.getSnapshot().source?.computers[0].stateDetail).toBe("Stopped by action"))
       earlier.resolve(withState("running", "Before the action"))
       await before
-      expect(store.getSnapshot().source?.workspaces[0].stateDetail).toBe("Stopped by action")
+      expect(store.getSnapshot().source?.computers[0].stateDetail).toBe("Stopped by action")
     } finally { store.dispose() }
   })
 })
 
 describe("export and import state", () => {
   it("keeps a running export through a transient read failure instead of inventing a failure (H-35)", async () => {
-    const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Not completed", size: "Unknown", destination: "/tmp", sandboxes: ["dev"] }
+    const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Not completed", size: "Unknown", destination: "/tmp", computers: ["dev"] }
     const running: BackupState = { ...backup, operation: { operation: "backup", archive, runningNames: ["dev"], kind: "running", progress: 40, phases: [{ title: "Exporting dev", detail: "", tone: "running" }] } }
     let failing = false
     const mock = bridge(command => {
@@ -863,7 +863,7 @@ describe("export and import state", () => {
 })
 
 describe("result and job identity", () => {
-  const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GiB", destination: "/tmp", sandboxes: ["dev"] }
+  const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GiB", destination: "/tmp", computers: ["dev"] }
   const result = { operation: "backup" as const, archive, runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Export complete", message: "Exported dev." }
 
   it("shows a result again when the runtime refuses to dismiss it (H-33, E-49)", async () => {
@@ -943,35 +943,35 @@ describe("result and job identity", () => {
 
   it("joins an identical in-flight configuration request whatever its property order (H-33)", async () => {
     const pending = deferred<unknown>()
-    const mock = bridge(command => command === "retry_machine_configuration" ? pending.promise : undefined)
+    const mock = bridge(command => command === "retry_computer_configuration" ? pending.promise : undefined)
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      const machines = store.getSnapshot().source!.workspaces.map(({ machine }) => machine)
-      const first = store.configureMachines({ schemaVersion: 1, machines }, { kind: "retry", workspace: "dev" })
-      const reordered = machines.map(machine => Object.fromEntries(Object.entries(machine).reverse()) as typeof machine)
-      const second = store.configureMachines({ machines: reordered, schemaVersion: 1 }, { workspace: "dev", kind: "retry" })
+      const configurations = store.getSnapshot().source!.computers.map(({ configuration }) => configuration)
+      const first = store.configureConfigurations({ schemaVersion: 1, configurations }, { kind: "retry", computer: "dev" })
+      const reordered = configurations.map(configuration => Object.fromEntries(Object.entries(configuration).reverse()) as typeof configuration)
+      const second = store.configureConfigurations({ configurations: reordered, schemaVersion: 1 }, { computer: "dev", kind: "retry" })
       expect(second).toBe(first)
       pending.resolve(structuredClone(source))
       await first
-      expect(count(mock.invoke, "retry_machine_configuration")).toBe(1)
+      expect(count(mock.invoke, "retry_computer_configuration")).toBe(1)
     } finally { store.dispose() }
   })
 })
 
 describe("cancelled lifecycle actions", () => {
-  const lifecycle = (id: string, title: string, occurredAt: string, extra: Record<string, unknown> = {}) => ({ id, category: "sandbox" as const, title, detail: "", occurredAt, time: occurredAt, tone: "neutral" as const, status: "completed" as const, workspace: "dev", ...extra })
+  const lifecycle = (id: string, title: string, occurredAt: string, extra: Record<string, unknown> = {}) => ({ id, category: "computer" as const, title, detail: "", occurredAt, time: occurredAt, tone: "neutral" as const, status: "completed" as const, computer: "dev", ...extra })
 
   it("shows a cancellation the runtime recorded as neutral after a reload (H-34)", async () => {
     let activities = [lifecycle("lifecycle-1-2", "Start cancelled", "2026-09-30T10:00:00.000Z", { cancelled: true, detail: "The action was cancelled." })]
     const mock = bridge(command => command === "read_application_state" ? { ...structuredClone(source), activities } : undefined)
     const store = createProductionSource(mock.native)
-    const dev = () => store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.name === "dev")
+    const dev = () => store.getSnapshot().source?.computers.find(computer => computer.configuration.name === "dev")
     try {
       await store.initialize()
       expect(dev()).toMatchObject({ lifecycleFailureCancelled: true, lifecycleFailureAction: "start" })
       // A later start supersedes it.
-      activities = [lifecycle("lifecycle-1-3", "Sandbox started", "2026-09-30T10:05:00.000Z", { tone: "success" }), ...activities]
+      activities = [lifecycle("lifecycle-1-3", "Computer started", "2026-09-30T10:05:00.000Z", { tone: "success" }), ...activities]
       await store.refresh()
       expect(dev()?.lifecycleFailure).toBeUndefined()
       expect(dev()?.lifecycleFailureCancelled).toBeUndefined()
@@ -986,7 +986,7 @@ describe("cancelled lifecycle actions", () => {
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      const remote = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))
+      const remote = store.getSnapshot().source?.computers.find(computer => computer.configuration.id === remoteTarget("office"))
       expect(remote?.lifecycleFailure).toBe("Stop failed: stop dev was cancelled.")
       expect(remote?.lifecycleFailureCancelled).toBeUndefined()
     } finally { store.dispose() }
@@ -994,12 +994,12 @@ describe("cancelled lifecycle actions", () => {
 
   it("keeps a real reported failure red (H-34)", async () => {
     const failed = structuredClone(source)
-    failed.workspaces[0] = { ...failed.workspaces[0], lifecycleFailure: "Start failed: not enough memory" }
+    failed.computers[0] = { ...failed.computers[0], lifecycleFailure: "Start failed: not enough memory" }
     const mock = bridge(command => command === "read_application_state" ? structuredClone(failed) : undefined)
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      const dev = store.getSnapshot().source?.workspaces[0]
+      const dev = store.getSnapshot().source?.computers[0]
       expect(dev?.lifecycleFailure).toBe("Start failed: not enough memory")
       expect(dev?.lifecycleFailureCancelled).toBeUndefined()
     } finally { store.dispose() }
@@ -1009,16 +1009,16 @@ describe("cancelled lifecycle actions", () => {
 describe("native state validation", () => {
   it("keeps a newer device available when it reports values this version does not know (H-17)", async () => {
     const newer = remoteSource()
-    const known = newer.workspaces[0]
+    const known = newer.computers[0]
     const payload = {
       ...structuredClone(newer),
       github: { ...newer.github, state: "suspended" },
-      workspaces: [
+      computers: [
         { ...structuredClone(known), state: "hibernating", stateDetail: "Hibernating since 10:00" },
-        { ...structuredClone(known), machine: { ...known.machine, id: "00000000-0000-4000-8000-0000000000aa", name: "box", kind: "container" } },
+        { ...structuredClone(known), configuration: { ...known.configuration, id: "00000000-0000-4000-8000-0000000000aa", name: "box", kind: "container" } },
       ],
-      activities: [{ id: "broken" }, { id: "a-1", category: "insights", title: "Checked", detail: "", occurredAt: "2026-09-30T10:00:00.000Z", time: "", tone: "info", status: "done", workspace: null }],
-      repositoryPushOperations: [{ workspace: known.machine.name, repositoryPath: "acme/silo", commitCount: 1, status: "queued" }],
+      activities: [{ id: "broken" }, { id: "a-1", category: "insights", title: "Checked", detail: "", occurredAt: "2026-09-30T10:00:00.000Z", time: "", tone: "info", status: "done", computer: null }],
+      repositoryPushOperations: [{ computer: known.configuration.name, repositoryPath: "acme/silo", commitCount: 1, status: "queued" }],
     }
     const mock = bridge(command => {
       if (command === "device_list") return [office]
@@ -1030,23 +1030,23 @@ describe("native state validation", () => {
       const view = store.getSnapshot().source!
       expect(view.devices?.[0]).toMatchObject({ connected: true })
       expect(view.devices?.[0].error).toBeUndefined()
-      const rows = view.workspaces.filter(workspace => workspace.device)
+      const rows = view.computers.filter(computer => computer.device)
       expect(rows).toHaveLength(1)
       expect(rows[0]).toMatchObject({ state: "stopped", freshness: "stale", stateDetail: "Hibernating since 10:00", attention: { level: "warning" } })
       const activity = view.activities.find(item => item.id.endsWith(encodeURIComponent("a-1")))
-      expect(activity).toMatchObject({ category: "system", tone: "neutral", status: "completed", workspace: undefined })
+      expect(activity).toMatchObject({ category: "system", tone: "neutral", status: "completed", computer: undefined })
       expect(view.activities.some(item => item.id.endsWith("broken"))).toBe(false)
-      expect(view.repositoryPushOperations.some(push => push.workspace === remoteTarget("office"))).toBe(false)
+      expect(view.repositoryPushOperations.some(push => push.computer === remoteTarget("office"))).toBe(false)
     } finally { store.dispose() }
   })
 
   it("drops unreadable enrichment entries without rejecting local state (H-17)", () => {
     const local = structuredClone(source) as unknown as Record<string, unknown>
-    const workspaces = local.workspaces as Array<Record<string, unknown>>
-    workspaces[0].repositories = [{ path: "acme/silo", branch: "main" }, { path: "acme/ok", branch: "main", ahead: 0, behind: 0, dirty: false }]
+    const computers = local.computers as Array<Record<string, unknown>>
+    computers[0].repositories = [{ path: "acme/silo", branch: "main" }, { path: "acme/ok", branch: "main", ahead: 0, behind: 0, dirty: false }]
     local.activities = [{ id: "no-title" }, ...(local.activities as unknown[])]
     const parsed = parseApplicationSource(local)
-    expect(parsed.workspaces[0].repositories).toEqual([{ path: "acme/ok", branch: "main", ahead: 0, behind: 0, dirty: false }])
+    expect(parsed.computers[0].repositories).toEqual([{ path: "acme/ok", branch: "main", ahead: 0, behind: 0, dirty: false }])
     expect(parsed.activities).toHaveLength(source.activities.length)
   })
 
@@ -1056,22 +1056,22 @@ describe("native state validation", () => {
     delete local.backup
     const parsed = parseApplicationSource(local)
     expect(parsed.preferences.terminal).toBe("Terminal")
-    expect(parsed.preferences.startupWorkspaceIds).toBeUndefined()
+    expect(parsed.preferences.startupComputerIds).toBeUndefined()
     expect(parsed.backup).toEqual({ lastArchive: "", completedLabel: "", compressedSize: "", destination: "" })
   })
 
   it("retains separate setup and lifecycle diagnostics (D-39)", () => {
     const local = structuredClone(source)
-    const row = { ...local.workspaces[0], lifecycleFailure: "Start failed. Retry.", lifecycleFailureDiagnostic: "Exit code 13" }
+    const row = { ...local.computers[0], lifecycleFailure: "Start failed. Retry.", lifecycleFailureDiagnostic: "Exit code 13" }
     const activity = { ...local.activities[0], diagnostic: "Exit code 13", partial: true }
-    const parsed = parseApplicationSource({ ...local, workspaces: [row], activities: [activity] })
-    expect(parsed.workspaces[0]).toMatchObject({ lifecycleFailureDiagnostic: "Exit code 13" })
+    const parsed = parseApplicationSource({ ...local, computers: [row], activities: [activity] })
+    expect(parsed.computers[0]).toMatchObject({ lifecycleFailureDiagnostic: "Exit code 13" })
     expect(parsed.activities[0]).toMatchObject({ diagnostic: "Exit code 13", partial: true })
   })
 
   it("rejects local state whose shown fields are malformed (H-17)", () => {
     expect(() => parseApplicationSource({ ...structuredClone(source), runtimeRepair: { status: "needed" } })).toThrow()
-    expect(() => parseApplicationSource({ ...structuredClone(source), workspaces: [{ ...structuredClone(source.workspaces[0]), machine: { id: "x", name: "dev" } }] })).toThrow()
+    expect(() => parseApplicationSource({ ...structuredClone(source), computers: [{ ...structuredClone(source.computers[0]), configuration: { id: "x", name: "dev" } }] })).toThrow()
   })
 })
 
@@ -1123,7 +1123,7 @@ describe("GitHub state from full reads", () => {
   it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
     let failed = false
     const connected = { ...source, github: { ...source.github, state: "connected" as const, account: "octo", policyRevision: 4, repositoryCatalog: ["acme/silo"], repositoryCatalogStatus: { status: "available" as const } } }
-    const fallback = { ...source, github: { state: "disconnected", accessEnabled: false, repositoryCatalog: [], repositoryCatalogStatus: { status: "unavailable", message: "GitHub settings could not be read.", canRetry: true }, workspaceOperations: [] } }
+    const fallback = { ...source, github: { state: "disconnected", accessEnabled: false, repositoryCatalog: [], repositoryCatalogStatus: { status: "unavailable", message: "GitHub settings could not be read.", canRetry: true }, computerOperations: [] } }
     const mock = bridge(command => command === "read_application_state" ? structuredClone(failed ? fallback : connected) : undefined)
     const store = createProductionSource(mock.native)
     try {

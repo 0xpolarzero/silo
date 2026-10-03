@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { ApplicationSource } from "@/features/application/model/application-source"
-import { defaultStartupWorkspaceIds, startupWorkspaceCandidates } from "@/features/application/model/startup-workspaces"
+import { defaultStartupComputerIds, startupComputerCandidates } from "@/features/application/model/startup-computers"
 import { ApplicationPreferenceFields } from "@/features/preferences/components/application-preference-fields"
 import { SettingsSaveNotice } from "@/features/preferences/components/settings-save-notice"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
@@ -38,7 +38,7 @@ type GeneralPageProps = {
   onReduceMotionChange: (enabled: boolean) => void
 }
 
-/** Uses the application's settings store; the startup default only ever names local sandboxes. */
+/** Uses the application's settings store; the startup default only ever names local computers. */
 export function GeneralPage({
   source,
   applicationPreferences,
@@ -49,14 +49,14 @@ export function GeneralPage({
   const { theme, setTheme } = useTheme()
   const { settings, store, updateSettings } = useSettings()
   const integrations = useSystemIntegrations()
-  const { startWorkspacesAtLaunch: startAtLaunch } = settings
-  const startupWorkspaces = new Set(settings.startupWorkspaceIds)
+  const { startComputersAtLaunch: startAtLaunch } = settings
+  const startupComputers = new Set(settings.startupComputerIds)
 
   useLayoutEffect(() => {
     store.updateDefaults({
-      startupWorkspaceIds: source.preferences.startupWorkspaceIds ?? defaultStartupWorkspaceIds(source.workspaces),
+      startupComputerIds: source.preferences.startupComputerIds ?? defaultStartupComputerIds(source.computers),
     })
-  }, [store, source.workspaces, source.preferences.startupWorkspaceIds])
+  }, [store, source.computers, source.preferences.startupComputerIds])
 
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
@@ -83,7 +83,7 @@ export function GeneralPage({
         <h3 className="text-xs font-medium">Startup</h3>
         <ListCard divided>
           <div>
-            <SettingRow icon={Power} title="Launch Silo at login" description="Keep sandbox status and notifications available." control={<Switch checked={integrations.loginEnabled} disabled={!integrations.initialized || integrations.loginPending || integrations.loginItem.state === "error" || integrations.loginItem.state === "unavailable"} onCheckedChange={(enabled) => { void integrations.setLaunchAtLogin(enabled) }} aria-label="Launch Silo at login" />} />
+            <SettingRow icon={Power} title="Launch Silo at login" description="Keep computer status and notifications available." control={<Switch checked={integrations.loginEnabled} disabled={!integrations.initialized || integrations.loginPending || integrations.loginItem.state === "error" || integrations.loginItem.state === "unavailable"} onCheckedChange={(enabled) => { void integrations.setLaunchAtLogin(enabled) }} aria-label="Launch Silo at login" />} />
             {integrations.loginItem.state === "requiresApproval" && <ListRow
               icon={null}
               title="Approval required"
@@ -93,19 +93,19 @@ export function GeneralPage({
             />}
           </div>
           <div>
-            <SettingRow icon={Power} title="Start sandboxes at launch" description="Start selected sandboxes when Silo opens." control={<Switch checked={startAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startWorkspacesAtLaunch: enabled, ...(enabled ? { startupWorkspaceIds: settings.startupWorkspaceIds } : {}) }) }} aria-label="Start sandboxes at launch" />} />
+            <SettingRow icon={Power} title="Start computers at launch" description="Start selected computers when Silo opens." control={<Switch checked={startAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startComputersAtLaunch: enabled, ...(enabled ? { startupComputerIds: settings.startupComputerIds } : {}) }) }} aria-label="Start computers at launch" />} />
             {startAtLaunch && (
-              <ListRowDetails label="Sandboxes to start at launch" className="gap-2">
+              <ListRowDetails label="Computers to start at launch" className="gap-2">
                 <FilterCombobox
-                  options={startupWorkspaceCandidates(source.workspaces).map(({ machine }) => ({ value: machine.id, label: machine.name }))}
-                  selectedValues={startupWorkspaces}
-                  onChange={(selected) => { void updateSettings({ startupWorkspaceIds: [...selected] }) }}
-                  label="Startup sandboxes"
-                  inputLabel="Add sandbox at startup"
-                  placeholder="Select sandboxes…"
-                  listLabel="Available startup sandboxes"
-                  selectedLabel="Selected startup sandboxes"
-                  emptyMessage="No sandboxes available."
+                  options={startupComputerCandidates(source.computers).map(({ configuration }) => ({ value: configuration.id, label: configuration.name }))}
+                  selectedValues={startupComputers}
+                  onChange={(selected) => { void updateSettings({ startupComputerIds: [...selected] }) }}
+                  label="Startup computers"
+                  inputLabel="Add computer at startup"
+                  placeholder="Select computers…"
+                  listLabel="Available startup computers"
+                  selectedLabel="Selected startup computers"
+                  emptyMessage="No computers available."
                 />
               </ListRowDetails>
             )}

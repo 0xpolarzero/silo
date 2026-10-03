@@ -11,7 +11,7 @@ export function ErrorDetails({ message, diagnostic, fallbackSummary, className }
   message: string
   /** The backend's separate diagnostic output, when it provides one. */
   diagnostic?: string | null
-  /** Shown when the message is only command output, e.g. "Sandbox changes failed." */
+  /** Shown when the message is only command output, e.g. "Computer changes failed." */
   fallbackSummary?: string
   className?: string
 }) {

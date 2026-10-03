@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useState } from "react"
 
-import type { ApplicationTab, SandboxDetailTab, SettingsSection, WorkspaceSection } from "./application-source"
+import type { ApplicationTab, ComputerDetailTab, SettingsSection, ComputerSection } from "./application-source"
 
 interface Location {
   tab: ApplicationTab
-  workspaceSection: WorkspaceSection
+  computerSection: ComputerSection
   settingsSection: SettingsSection
-  /** The sandbox whose detail page is open in the Sandboxes overview, by machine id. */
-  workspace?: string
-  /** The active tab on that sandbox's detail page. */
-  sandboxTab?: SandboxDetailTab
+  /** The computer whose detail page is open in the Computers overview, by configuration id. */
+  computer?: string
+  /** The active tab on that computer's detail page. */
+  computerTab?: ComputerDetailTab
 }
 
-export type ApplicationInitialRoute = Partial<Location> & { workspace?: string }
+export type ApplicationInitialRoute = Partial<Location> & { computer?: string }
 
 interface History {
   entries: Location[]
@@ -22,12 +22,12 @@ interface History {
 function sameDestination(left: Location, right: Location) {
   if (left.tab !== right.tab) return false
   if (left.tab === "settings") return left.settingsSection === right.settingsSection
-  if (left.tab !== "workspaces") return true
-  if (left.workspaceSection !== right.workspaceSection) return false
-  // On the Sandboxes overview an open sandbox detail (and its tab) is its own destination.
-  if (left.workspaceSection !== "overview") return true
-  return (left.workspace ?? undefined) === (right.workspace ?? undefined)
-    && (left.sandboxTab ?? undefined) === (right.sandboxTab ?? undefined)
+  if (left.tab !== "computers") return true
+  if (left.computerSection !== right.computerSection) return false
+  // On the Computers overview an open computer detail (and its tab) is its own destination.
+  if (left.computerSection !== "overview") return true
+  return (left.computer ?? undefined) === (right.computer ?? undefined)
+    && (left.computerTab ?? undefined) === (right.computerTab ?? undefined)
 }
 
 function withoutSystemIssue(history: History): History {
@@ -37,7 +37,7 @@ function withoutSystemIssue(history: History): History {
   history.entries.forEach((entry, position) => {
     if (entry.tab === "system" && position !== history.index) return
     const destination: Location = entry.tab === "system"
-      ? { ...entry, tab: "workspaces", workspaceSection: "overview" }
+      ? { ...entry, tab: "computers", computerSection: "overview" }
       : entry
     if (!entries.length || !sameDestination(entries.at(-1)!, destination)) entries.push(destination)
     if (position <= history.index) index = entries.length - 1
@@ -48,12 +48,12 @@ function withoutSystemIssue(history: History): History {
 export function useApplicationNavigation(hasSystemIssue: boolean, initialRoute?: ApplicationInitialRoute) {
   const [storedHistory, setHistory] = useState<History>({
     entries: [{
-      tab: initialRoute?.tab ?? "workspaces",
-      workspaceSection: initialRoute?.workspaceSection ?? "overview",
+      tab: initialRoute?.tab ?? "computers",
+      computerSection: initialRoute?.computerSection ?? "overview",
       settingsSection: initialRoute?.settingsSection ?? "general",
-      // A deep link into the overview can preselect a sandbox detail page and tab.
-      ...((initialRoute?.workspaceSection ?? "overview") === "overview" && initialRoute?.workspace
-        ? { workspace: initialRoute.workspace, sandboxTab: initialRoute.sandboxTab ?? "overview" }
+      // A deep link into the overview can preselect a computer detail page and tab.
+      ...((initialRoute?.computerSection ?? "overview") === "overview" && initialRoute?.computer
+        ? { computer: initialRoute.computer, computerTab: initialRoute.computerTab ?? "overview" }
         : {}),
     }],
     index: 0,
@@ -76,17 +76,17 @@ export function useApplicationNavigation(hasSystemIssue: boolean, initialRoute?:
     })
   }, [hasSystemIssue])
 
-  // A sandbox that no longer exists (deleted, or gone after a refresh) turns every entry
-  // that showed it into the plain Sandboxes list, in place: the current position and the
+  // A computer that no longer exists (deleted, or gone after a refresh) turns every entry
+  // that showed it into the plain Computers list, in place: the current position and the
   // forward history survive, and Back never lands on (and bounces off) a missing page.
-  const forgetSandboxes = useCallback((exists: (workspace: string) => boolean) => {
+  const forgetComputers = useCallback((exists: (computer: string) => boolean) => {
     setHistory((stored) => {
-      if (!stored.entries.some(({ workspace }) => workspace !== undefined && !exists(workspace))) return stored
+      if (!stored.entries.some(({ computer }) => computer !== undefined && !exists(computer))) return stored
       const entries: Location[] = []
       let index = 0
       stored.entries.forEach((entry, position) => {
-        const destination: Location = entry.workspace !== undefined && !exists(entry.workspace)
-          ? { ...entry, workspace: undefined, sandboxTab: undefined }
+        const destination: Location = entry.computer !== undefined && !exists(entry.computer)
+          ? { ...entry, computer: undefined, computerTab: undefined }
           : entry
         if (!entries.length || !sameDestination(entries.at(-1)!, destination)) entries.push(destination)
         if (position <= stored.index) index = entries.length - 1
@@ -110,12 +110,12 @@ export function useApplicationNavigation(hasSystemIssue: boolean, initialRoute?:
     goBack: () => move(-1),
     goForward: () => move(1),
     selectTab: (tab: ApplicationTab) => navigate({ tab }),
-    // Selecting a workspace section clears any open sandbox detail so the section shows plainly.
-    selectWorkspaceSection: (workspaceSection: WorkspaceSection) => navigate({ tab: "workspaces", workspaceSection, workspace: undefined, sandboxTab: undefined }),
+    // Selecting a computer section clears any open computer detail so the section shows plainly.
+    selectComputerSection: (computerSection: ComputerSection) => navigate({ tab: "computers", computerSection, computer: undefined, computerTab: undefined }),
     selectSettingsSection: (settingsSection: SettingsSection) => navigate({ tab: "settings", settingsSection }),
-    openSandbox: (workspace: string, sandboxTab: SandboxDetailTab = "overview") => navigate({ tab: "workspaces", workspaceSection: "overview", workspace, sandboxTab }),
-    selectSandboxTab: (sandboxTab: SandboxDetailTab) => navigate({ tab: "workspaces", workspaceSection: "overview", sandboxTab }),
-    closeSandbox: () => navigate({ tab: "workspaces", workspaceSection: "overview", workspace: undefined, sandboxTab: undefined }),
-    forgetSandboxes,
+    openComputer: (computer: string, computerTab: ComputerDetailTab = "overview") => navigate({ tab: "computers", computerSection: "overview", computer, computerTab }),
+    selectComputerTab: (computerTab: ComputerDetailTab) => navigate({ tab: "computers", computerSection: "overview", computerTab }),
+    closeComputer: () => navigate({ tab: "computers", computerSection: "overview", computer: undefined, computerTab: undefined }),
+    forgetComputers,
   }
 }

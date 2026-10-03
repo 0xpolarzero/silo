@@ -28,7 +28,7 @@ it("keeps valid saved choices when another field is malformed and leaves unknown
     theme: "dark",
     browser: "A browser no longer installed",
     notificationsEnabled: "false",
-    startupWorkspaceIds: ["sandbox-a", 12],
+    startupComputerIds: ["computer-a", 12],
     futureSetting: { enabled: true },
   }
   const original = structuredClone(saved)
@@ -39,8 +39,8 @@ it("keeps valid saved choices when another field is malformed and leaves unknown
 it("preserves explicit false values, empty startup selections, and unavailable application choices", () => {
   const saved = {
     launchAtLogin: false,
-    startWorkspacesAtLaunch: false,
-    startupWorkspaceIds: [],
+    startComputersAtLaunch: false,
+    startupComputerIds: [],
     terminal: "Unavailable terminal",
     editor: "Unavailable editor",
     notificationsEnabled: false,
@@ -54,7 +54,7 @@ it.each([
   { theme: "automatic", browser: "Firefox" },
   { notifyFailures: "false" },
   { terminal: "" },
-  { startupWorkspaceIds: [""] },
+  { startupComputerIds: [""] },
   { futureSetting: true },
 ])("rejects an invalid settings write without accepting a partial edit: %j", (patch) => {
   expect(settingsPatchSchema.safeParse(patch).success).toBe(false)

@@ -3,7 +3,7 @@ import { resolve } from "node:path"
 import { expect, it } from "vitest"
 
 const native = resolve(import.meta.dirname, "../../src-tauri")
-const commands = ["query_sandbox_logs", "export_workspace_logs", "cancel_log_export"]
+const commands = ["query_computer_logs", "export_computer_logs", "cancel_log_export"]
 
 it.each(commands)("allows the main window to invoke %s through the native boundary", command => {
   const manifest = readFileSync(resolve(native, "build.rs"), "utf8").split(".commands(&[")[1]?.split("])")[0] ?? ""

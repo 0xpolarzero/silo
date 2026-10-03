@@ -12,7 +12,7 @@ export const desktopUpdateBackend: UpdateBackend = {
   }),
   check: () => snapshot("check_for_update"),
   download: () => snapshot("download_update"),
-  install: (stopSandboxes) => snapshot("install_update", { stopSandboxes }),
+  install: (stopComputers) => snapshot("install_update", { stopComputers }),
   setAutomaticChecks: (enabled) => snapshot("set_update_automatic_checks", { enabled }),
   openRelease: () => invoke("open_update_release"),
 }

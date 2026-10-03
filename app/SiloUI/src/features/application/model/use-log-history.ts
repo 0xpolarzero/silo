@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react"
 import { errorMessage } from "@/lib/operation-toast"
-import type { ApplicationWorkspace } from "./application-source"
+import type { ApplicationComputer } from "./application-source"
 import { isUnsupportedRemote, logIdentity, LOG_ROW_HEIGHT, type LogEntry, type LogLoader, type LogPage, type LogQuery } from "./logs"
 
-export type LogHistoryRow = { entry: LogEntry; workspace: ApplicationWorkspace }
-export type LogHistoryResult = { workspace: ApplicationWorkspace; page: LogPage; request: LogQuery }
-type OrderKey = Pick<LogEntry, "occurredAt" | "id" | "deviceId" | "sandboxId">
+export type LogHistoryRow = { entry: LogEntry; computer: ApplicationComputer }
+export type LogHistoryResult = { computer: ApplicationComputer; page: LogPage; request: LogQuery }
+type OrderKey = Pick<LogEntry, "occurredAt" | "id" | "deviceId" | "computerId">
 type CachedResult = LogHistoryResult & { cursors: Set<string>; frontier?: OrderKey }
 type Options = {
-  workspaces: ApplicationWorkspace[]
+  computers: ApplicationComputer[]
   loader?: LogLoader
   active: boolean
   query: string
@@ -44,33 +44,33 @@ function unsupportedPage(): LogPage {
 function list(names: string[]): string {
   return names.length < 3 ? names.join(" and ") : `${names.slice(0, -1).join(", ")}, and ${names.at(-1)}`
 }
-/** One plain notice per device whose Silo cannot serve logs, instead of a raw error per sandbox. */
+/** One plain notice per device whose Silo cannot serve logs, instead of a raw error per computer. */
 export function unsupportedLogsNotice(results: LogHistoryResult[]): string {
   const byDevice = new Map<string, string[]>()
-  for (const { workspace, page } of results) {
+  for (const { computer, page } of results) {
     if (!page.unsupported) continue
-    const device = workspace.device?.name ?? "that device"
-    byDevice.set(device, [...(byDevice.get(device) ?? []), workspace.machine.name])
+    const device = computer.device?.name ?? "that device"
+    byDevice.set(device, [...(byDevice.get(device) ?? []), computer.configuration.name])
   }
   return [...byDevice].map(([device, names]) => `Update Silo on ${device} to see logs for ${list(names)}.`).join(" ")
 }
-function ownerKey(workspace: ApplicationWorkspace): string {
-  const identity = logIdentity(workspace)
-  return JSON.stringify([identity.deviceId ?? "local", identity.sandboxId])
+function ownerKey(computer: ApplicationComputer): string {
+  const identity = logIdentity(computer)
+  return JSON.stringify([identity.deviceId ?? "local", identity.computerId])
 }
 function entryKey(entry: LogEntry): string {
-  return JSON.stringify([entry.deviceId, entry.sandboxId, entry.id])
+  return JSON.stringify([entry.deviceId, entry.computerId, entry.id])
 }
 function descending(a: string, b: string): number { return a === b ? 0 : a < b ? 1 : -1 }
 function newestFirst(a: { entry: OrderKey }, b: { entry: OrderKey }): number {
   return descending(a.entry.occurredAt, b.entry.occurredAt)
     || descending(a.entry.id, b.entry.id)
     || descending(a.entry.deviceId, b.entry.deviceId)
-    || descending(a.entry.sandboxId, b.entry.sandboxId)
+    || descending(a.entry.computerId, b.entry.computerId)
 }
 function pageFrontier(page: LogPage): OrderKey | undefined {
   const entry = page.nextCursor ? page.entries.at(-1) : undefined
-  return entry && { occurredAt: entry.occurredAt, id: entry.id, deviceId: entry.deviceId, sandboxId: entry.sandboxId }
+  return entry && { occurredAt: entry.occurredAt, id: entry.id, deviceId: entry.deviceId, computerId: entry.computerId }
 }
 function chronologicalRows(results: CachedResult[]): LogHistoryRow[] {
   // Buffer older rows until every owner's unread history is older as well, so
@@ -79,12 +79,12 @@ function chronologicalRows(results: CachedResult[]): LogHistoryRow[] {
     return frontier ? [{ entry: frontier }] : []
   }).sort(newestFirst)
   const frontier = frontiers[0]
-  return results.flatMap(({ workspace, page }) => page.entries.map(entry => ({ entry, workspace })))
+  return results.flatMap(({ computer, page }) => page.entries.map(entry => ({ entry, computer })))
     .filter(row => !frontier || newestFirst(row, frontier) <= 0)
     .sort(newestFirst)
 }
 function entryBytes(entry: LogEntry): number {
-  return 256 + 2 * (entry.line.length + entry.id.length + entry.occurredAt.length + entry.source.length + (entry.session?.length ?? 0) + entry.deviceId.length + entry.sandboxId.length + (entry.deviceName?.length ?? 0) + (entry.sandboxName?.length ?? 0))
+  return 256 + 2 * (entry.line.length + entry.id.length + entry.occurredAt.length + entry.source.length + (entry.session?.length ?? 0) + entry.deviceId.length + entry.computerId.length + (entry.deviceName?.length ?? 0) + (entry.computerName?.length ?? 0))
 }
 function prune(cache: Map<string, HistoryStore>) {
   const now = Date.now()
@@ -105,7 +105,7 @@ function prune(cache: Map<string, HistoryStore>) {
 class HistoryStore {
   private cache: Map<string, HistoryStore>
   private loader: LogLoader
-  private requests: { workspace: ApplicationWorkspace; request: LogQuery }[]
+  private requests: { computer: ApplicationComputer; request: LogQuery }[]
   private snapshot: Snapshot = { results: [], busy: false, loadingOlder: false, ready: false, error: "", scrollTop: 0, expandedRows: new Map(), historyLimited: false }
   private listeners = new Set<() => void>()
   private errors = new Map<string, string>()
@@ -116,7 +116,7 @@ class HistoryStore {
   lastUsedAt = Date.now()
   bytes = 0
 
-  constructor(cache: Map<string, HistoryStore>, loader: LogLoader, requests: { workspace: ApplicationWorkspace; request: LogQuery }[]) {
+  constructor(cache: Map<string, HistoryStore>, loader: LogLoader, requests: { computer: ApplicationComputer; request: LogQuery }[]) {
     this.cache = cache
     this.loader = loader
     this.requests = requests
@@ -134,15 +134,15 @@ class HistoryStore {
     for (const listener of this.listeners) listener()
   }
   private errorMessage() {
-    return this.requests.flatMap(({ workspace }) => {
-      const error = this.errors.get(ownerKey(workspace))
+    return this.requests.flatMap(({ computer }) => {
+      const error = this.errors.get(ownerKey(computer))
       return error ? [error] : []
     }).join("; ")
   }
-  private sandboxLabel(workspace: ApplicationWorkspace) {
-    const name = workspace.machine.name
-    const ambiguous = this.requests.some(request => ownerKey(request.workspace) !== ownerKey(workspace) && request.workspace.machine.name === name)
-    return ambiguous ? `${name} (${workspace.device?.name ?? "This device"})` : name
+  private computerLabel(computer: ApplicationComputer) {
+    const name = computer.configuration.name
+    const ambiguous = this.requests.some(request => ownerKey(request.computer) !== ownerKey(computer) && request.computer.configuration.name === name)
+    return ambiguous ? `${name} (${computer.device?.name ?? "This device"})` : name
   }
   private retain(results: CachedResult[], older: boolean): Partial<Snapshot> {
     const ordered = results.flatMap(result => result.page.entries.map(entry => ({ entry }))).sort(newestFirst)
@@ -184,31 +184,31 @@ class HistoryStore {
     return this.inFlight
   }
   private async fetchFirst(follow: boolean) {
-    const previous = new Map(this.snapshot.results.map(result => [ownerKey(result.workspace), result]))
+    const previous = new Map(this.snapshot.results.map(result => [ownerKey(result.computer), result]))
     const completed = new Map(previous)
     this.errors.clear()
     this.failedPaging.clear()
     this.stalled = false
     let succeeded = false
     const publish = () => {
-      const results = this.requests.flatMap(({ workspace }) => {
-        const result = completed.get(ownerKey(workspace))
+      const results = this.requests.flatMap(({ computer }) => {
+        const result = completed.get(ownerKey(computer))
         return result ? [result] : []
       })
-      const historyLimited = this.snapshot.historyLimited && results.some(result => previous.get(ownerKey(result.workspace)) === result)
+      const historyLimited = this.snapshot.historyLimited && results.some(result => previous.get(ownerKey(result.computer)) === result)
       this.update({ historyLimited, ...this.retain(results, false), ready: true, error: this.errorMessage(), ...(succeeded && { scrollTop: 0 }) })
     }
-    await Promise.allSettled(this.requests.map(async ({ workspace, request }) => {
-      const key = ownerKey(workspace)
+    await Promise.allSettled(this.requests.map(async ({ computer, request }) => {
+      const key = ownerKey(computer)
       try {
         const snapshot = follow ? previous.get(key)?.page.snapshot : undefined
         // The stored request stays a plain search: pagination and export never follow.
         const page = await this.loader(snapshot ? { ...request, follow: snapshot } : request)
-        completed.set(key, { workspace, request, page, frontier: pageFrontier(page), cursors: new Set() })
+        completed.set(key, { computer, request, page, frontier: pageFrontier(page), cursors: new Set() })
         succeeded = true
       } catch (cause) {
-        if (isUnsupportedRemote(cause)) completed.set(key, { workspace, request, cursors: new Set(), page: unsupportedPage() })
-        else this.errors.set(key, `${this.sandboxLabel(workspace)}: ${errorMessage(cause)}`)
+        if (isUnsupportedRemote(cause)) completed.set(key, { computer, request, cursors: new Set(), page: unsupportedPage() })
+        else this.errors.set(key, `${this.computerLabel(computer)}: ${errorMessage(cause)}`)
       }
       // Each device publishes independently; an unavailable owner cannot hide fresh logs.
       publish()
@@ -223,7 +223,7 @@ class HistoryStore {
     const frontier = unfinished.flatMap(result => result.frontier ? [{ entry: result.frontier }] : []).sort(newestFirst)[0]
     // Read only the next chronological frontier, leaving quieter owners' buffered
     // pages untouched until their records can become visible.
-    const requested = unfinished.filter(result => onlyOwners ? onlyOwners.has(ownerKey(result.workspace)) : !frontier || !result.frontier || (descending(result.frontier.occurredAt, frontier.entry.occurredAt) || descending(result.frontier.id, frontier.entry.id)) <= 0)
+    const requested = unfinished.filter(result => onlyOwners ? onlyOwners.has(ownerKey(result.computer)) : !frontier || !result.frontier || (descending(result.frontier.occurredAt, frontier.entry.occurredAt) || descending(result.frontier.id, frontier.entry.id)) <= 0)
     if (!requested.length) return Promise.resolve()
     this.update({ busy: true, loadingOlder: true })
     this.inFlight = this.fetchOlder(requested).finally(() => this.finish())
@@ -234,9 +234,9 @@ class HistoryStore {
     const updates = new Map<string, CachedResult>()
     for (const [index, value] of settled.entries()) {
       const result = requested[index]
-      const key = ownerKey(result.workspace)
+      const key = ownerKey(result.computer)
       if (value.status === "rejected") {
-        this.errors.set(key, `${this.sandboxLabel(result.workspace)}: ${errorMessage(value.reason)}`)
+        this.errors.set(key, `${this.computerLabel(result.computer)}: ${errorMessage(value.reason)}`)
         this.failedPaging.add(key)
         continue
       }
@@ -249,14 +249,14 @@ class HistoryStore {
       for (const entry of page.entries) merged.set(entryKey(entry), entry)
       const didNotAdvance = Boolean(page.nextCursor && (cursors.has(page.nextCursor) || merged.size === result.page.entries.length || result.frontier && !page.entries.some(entry => newestFirst({ entry }, { entry: result.frontier! }) > 0)))
       if (didNotAdvance) {
-        this.errors.set(key, `${this.sandboxLabel(result.workspace)}: Log history did not advance. Refresh to continue.`)
+        this.errors.set(key, `${this.computerLabel(result.computer)}: Log history did not advance. Refresh to continue.`)
         this.stalled = true
       }
       const entries = [...merged.values()].sort((a, b) => newestFirst({ entry: a }, { entry: b }))
       const nextPage = { ...page, entries, nextCursor: didNotAdvance ? null : page.nextCursor }
       updates.set(key, { ...result, cursors, frontier: didNotAdvance ? undefined : pageFrontier(page), page: nextPage })
     }
-    this.update({ ...this.retain(this.snapshot.results.map(result => updates.get(ownerKey(result.workspace)) ?? result), true), error: this.errorMessage() })
+    this.update({ ...this.retain(this.snapshot.results.map(result => updates.get(ownerKey(result.computer)) ?? result), true), error: this.errorMessage() })
   }
   private finish() {
     this.inFlight = undefined
@@ -267,15 +267,15 @@ class HistoryStore {
 }
 
 export function useLogHistory(options: Options) {
-  const { workspaces, loader = unavailable, active, query, source, since, until, invalidRange } = options
+  const { computers, loader = unavailable, active, query, source, since, until, invalidRange } = options
   const filters = { query, source: source || undefined, since: since || undefined, until: until || undefined }
-  const key = JSON.stringify({ owners: workspaces.map(ownerKey).sort(), ...filters })
+  const key = JSON.stringify({ owners: computers.map(ownerKey).sort(), ...filters })
   let cache = caches.get(loader)
   if (!cache) { cache = new Map(); caches.set(loader, cache) }
   prune(cache)
   let store = cache.get(key)
   if (!store) {
-    store = new HistoryStore(cache, loader, workspaces.map(workspace => ({ workspace, request: { ...logIdentity(workspace), ...filters, limit: 200 } })))
+    store = new HistoryStore(cache, loader, computers.map(computer => ({ computer, request: { ...logIdentity(computer), ...filters, limit: 200 } })))
     cache.set(key, store)
   }
   const history = store
@@ -284,14 +284,14 @@ export function useLogHistory(options: Options) {
     if (active && !invalidRange && !history.getSnapshot().ready) void history.refresh()
   }, [active, invalidRange, history])
   const results = useMemo(() => {
-    const current = new Map(workspaces.map(workspace => [ownerKey(workspace), workspace]))
-    return snapshot.results.map(result => ({ ...result, workspace: current.get(ownerKey(result.workspace)) ?? result.workspace }))
-  }, [snapshot.results, workspaces])
+    const current = new Map(computers.map(computer => [ownerKey(computer), computer]))
+    return snapshot.results.map(result => ({ ...result, computer: current.get(ownerKey(result.computer)) ?? result.computer }))
+  }, [snapshot.results, computers])
   const orderedRows = useMemo(() => chronologicalRows(snapshot.results), [snapshot.results])
   const rows = useMemo(() => {
-    const current = new Map(workspaces.map(workspace => [ownerKey(workspace), workspace]))
-    return orderedRows.map(row => ({ ...row, workspace: current.get(ownerKey(row.workspace)) ?? row.workspace }))
-  }, [orderedRows, workspaces])
+    const current = new Map(computers.map(computer => [ownerKey(computer), computer]))
+    return orderedRows.map(row => ({ ...row, computer: current.get(ownerKey(row.computer)) ?? row.computer }))
+  }, [orderedRows, computers])
   const refresh = useCallback(() => active && !invalidRange ? history.refresh() : Promise.resolve(), [history, active, invalidRange])
   const follow = useCallback(() => active && !invalidRange ? history.refresh(true) : Promise.resolve(), [history, active, invalidRange])
   const loadOlder = useCallback(() => active && !invalidRange ? history.loadOlder() : Promise.resolve(), [history, active, invalidRange])

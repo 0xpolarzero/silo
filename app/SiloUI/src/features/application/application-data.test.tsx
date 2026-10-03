@@ -6,7 +6,7 @@ import { expect, it, vi } from "vitest"
 import { ApplicationPreview } from "@/fixtures/application-preview"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import type { WorkspaceFixtureMode } from "@/fixtures/application-scenarios"
+import type { ComputerFixtureMode } from "@/fixtures/application-scenarios"
 
 
 function renderApplication(scenario: Parameters<typeof applicationSourceForScenario>[0] = "running", source?: ApplicationSource) {
@@ -28,17 +28,17 @@ function appPanel(name: string) {
 }
 
 
-it("uses one global sandbox filter across Files, Logs, Network, and Activity", async () => {
+it("uses one global computer filter across Files, Logs, Network, and Activity", async () => {
   const { actions, user } = renderApplication()
   const navigation = within(appNavigation())
-  const sandboxSections = within(navigation.getByRole("group", { name: "Sandbox sections" }))
+  const computerSections = within(navigation.getByRole("group", { name: "Computer sections" }))
 
-  await user.click(sandboxSections.getByRole("button", { name: "Files" }))
-  const panel = within(appPanel("Sandboxes"))
-  const filters = within(panel.getByRole("group", { name: "Sandbox filters" }))
-  expect(panel.queryByRole("heading", { name: "Sandboxes" })).not.toBeInTheDocument()
+  await user.click(computerSections.getByRole("button", { name: "Files" }))
+  const panel = within(appPanel("Computers"))
+  const filters = within(panel.getByRole("group", { name: "Computer filters" }))
+  expect(panel.queryByRole("heading", { name: "Computers" })).not.toBeInTheDocument()
   expect(panel.queryByText("Inspect state, files, logs, networking, and recent activity.")).not.toBeInTheDocument()
-  expect(filters.getByRole("combobox", { name: "Filter sandboxes" })).toHaveAttribute("placeholder", "Filter sandboxes…")
+  expect(filters.getByRole("combobox", { name: "Filter computers" })).toHaveAttribute("placeholder", "Filter computers…")
   expect(filters.queryByRole("button", { name: /^Remove / })).not.toBeInTheDocument()
   expect(filters.getByRole("button", { name: "Clear" })).toBeDisabled()
   expect(filters.queryByRole("button", { name: "All" })).not.toBeInTheDocument()
@@ -102,9 +102,9 @@ it("uses one global sandbox filter across Files, Logs, Network, and Activity", a
   expect(devBadge).toHaveClass("h-5", "items-center", "justify-center", "text-[10px]")
   expect(devBadge.querySelector('[data-slot="status-badge-indicator"]')).toHaveClass("grid", "size-2", "place-items-center")
   expect(devBadge.querySelector('[data-slot="status-badge-label"]')).toHaveTextContent("dev")
-  expect(devRepository.querySelector('[data-workspace-state-dot="running"]')).toHaveClass("bg-emerald-500")
+  expect(devRepository.querySelector('[data-computer-state-dot="running"]')).toHaveClass("bg-emerald-500")
   expect(within(playgroundsRepository).getByLabelText("playgrounds, Stopped")).toBeVisible()
-  expect(playgroundsRepository.querySelector('[data-workspace-state-dot="stopped"]')).toHaveClass("bg-muted-foreground/55")
+  expect(playgroundsRepository.querySelector('[data-computer-state-dot="stopped"]')).toHaveClass("bg-muted-foreground/55")
   const repositoryHeader = devRepository.querySelector("[data-repository-header]") as HTMLElement
   const repositoryActions = devRepository.querySelector("[data-repository-actions]") as HTMLElement
   const pushButton = within(repositoryActions).getByRole("button", { name: "Push 2 commits for acme/silo in dev" })
@@ -132,7 +132,7 @@ it("uses one global sandbox filter across Files, Logs, Network, and Activity", a
   expect(panel.queryByRole("list", { name: "Files in dev" })).not.toBeInTheDocument()
   await user.click(devFolder)
 
-  await user.click(filters.getByRole("combobox", { name: "Filter sandboxes" }))
+  await user.click(filters.getByRole("combobox", { name: "Filter computers" }))
   await user.click(screen.getByRole("option", { name: "dev" }))
   expect(filters.getByRole("button", { name: "Remove dev" })).toBeVisible()
   expect(within(repositories).getByText("silo")).toBeVisible()
@@ -144,11 +144,11 @@ it("uses one global sandbox filter across Files, Logs, Network, and Activity", a
   expect(within(repositories).getByText("platform-tools")).toBeVisible()
   expect(within(fileTree).getByRole("button", { name: "personal" })).toBeVisible()
 
-  await user.click(filters.getByRole("combobox", { name: "Filter sandboxes" }))
+  await user.click(filters.getByRole("combobox", { name: "Filter computers" }))
   await user.click(screen.getByRole("option", { name: "playgrounds" }))
-  await user.click(filters.getByRole("combobox", { name: "Filter sandboxes" }))
+  await user.click(filters.getByRole("combobox", { name: "Filter computers" }))
   await user.click(screen.getByRole("option", { name: "personal" }))
-  await user.click(sandboxSections.getByRole("button", { name: "Logs" }))
+  await user.click(computerSections.getByRole("button", { name: "Logs" }))
   const logs = panel.getByRole("table", { name: "Logs" })
   expect(logs.closest('[data-slot="card"]')).toBeNull()
   expect(logs).toHaveClass("max-h-full", "min-h-0", "overflow-hidden")
@@ -158,7 +158,7 @@ it("uses one global sandbox filter across Files, Logs, Network, and Activity", a
   expect(within(logs).getAllByRole("columnheader")[0].parentElement).toHaveClass("shrink-0")
   expect(panel.queryByRole("heading", { name: "Logs" })).not.toBeInTheDocument()
   expect(within(logs).queryByText("dev")).not.toBeInTheDocument()
-  expect(within(logs).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Time", "Message", "Sandbox", "Source", "Actions"])
+  expect(within(logs).getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Time", "Message", "Computer", "Source", "Actions"])
   expect(within(logs).getByLabelText("playgrounds, Stopped")).toBeVisible()
   expect(within(logs).getByLabelText("personal, Stopped")).toBeVisible()
 
@@ -166,28 +166,28 @@ it("uses one global sandbox filter across Files, Logs, Network, and Activity", a
   expect(playgroundsRow).toHaveClass("hover:bg-muted/55", "focus-within:bg-muted/55")
   const playgroundsCells = within(playgroundsRow).getAllByRole("cell")
   expect(playgroundsCells[0]).toHaveTextContent("17:02:11")
-  expect(playgroundsCells[1]).toHaveTextContent("silo Sandbox stopped cleanly")
+  expect(playgroundsCells[1]).toHaveTextContent("silo Computer stopped cleanly")
   expect(playgroundsCells[2]).toContainElement(within(playgroundsRow).getByLabelText("playgrounds, Stopped"))
   const copyLine = within(playgroundsRow).getByRole("button", { name: "Copy log line from playgrounds at 17:02:11" })
   expect(copyLine).toHaveClass("opacity-0", "group-hover/log-row:opacity-100", "group-focus-within/log-row:opacity-100")
   const copy = vi.spyOn(navigator.clipboard, "writeText")
   await user.click(copyLine)
-  expect(copy).toHaveBeenCalledWith("2026-09-03T17:02:11Z\tThis device (local)\tplaygrounds (00000000-0000-4000-8000-000000000002)\toutput\t\t17:02:11  silo  Sandbox stopped cleanly")
+  expect(copy).toHaveBeenCalledWith("2026-09-03T17:02:11Z\tThis device (local)\tplaygrounds (00000000-0000-4000-8000-000000000002)\toutput\t\t17:02:11  silo  Computer stopped cleanly")
   const copiedLine = within(playgroundsRow).getByRole("button", { name: "Log line copied" })
   expect(copiedLine).toHaveAttribute("data-copy-status", "copied")
   expect(copiedLine.querySelector("svg")).toHaveClass("lucide-check")
 
   await user.click(panel.getByRole("button", { name: "Copy logs" }))
-  expect(copy).toHaveBeenLastCalledWith(expect.stringMatching(/2026-09-03T17:02:11Z\tThis device \(local\)\tplaygrounds .*\n.*09:41:02.*\tThis device \(local\)\tpersonal .*Sandbox stopped cleanly/))
+  expect(copy).toHaveBeenLastCalledWith(expect.stringMatching(/2026-09-03T17:02:11Z\tThis device \(local\)\tplaygrounds .*\n.*09:41:02.*\tThis device \(local\)\tpersonal .*Computer stopped cleanly/))
   const copiedLogs = panel.getByRole("button", { name: "Logs copied" })
   expect(copiedLogs).toHaveTextContent("Copied")
   expect(copiedLogs.querySelector("svg")).toHaveClass("lucide-check")
 
-  await user.click(sandboxSections.getByRole("button", { name: "Network" }))
+  await user.click(computerSections.getByRole("button", { name: "Network" }))
   expect(panel.queryByRole("region", { name: "Network for dev" })).not.toBeInTheDocument()
   expect(panel.getByText("No ports")).toBeVisible()
 
-  await user.click(sandboxSections.getByRole("button", { name: "Activity" }))
+  await user.click(computerSections.getByRole("button", { name: "Activity" }))
   const activity = panel.getByRole("list", { name: "Recent activity" })
   expect(activity.closest('[data-slot="card"]')).toBeNull()
   expect(activity).toHaveClass("max-h-full", "min-h-0", "overflow-y-auto")
@@ -200,16 +200,16 @@ it("uses one global sandbox filter across Files, Logs, Network, and Activity", a
   expect(activityRows).toHaveLength(2)
   expect(within(activityRows[0]).getByText("Stop verified")).toBeVisible()
 
-  expect(within(activityRows[0]).getByText("A fresh observation confirmed that the sandbox is stopped.")).toBeVisible()
+  expect(within(activityRows[0]).getByText("A fresh observation confirmed that the computer is stopped.")).toBeVisible()
   expect(within(activityRows[0]).getByLabelText("playgrounds, Stopped")).toBeVisible()
   const activityContent = activityRows[0].querySelector('[data-activity-content]') as HTMLElement
   const activityMeta = activityRows[0].querySelector('[data-activity-meta]') as HTMLElement
   const activityTime = activityMeta.querySelector("time")!
   expect(activityTime).toHaveTextContent(new Date(activityTime.dateTime).toLocaleString(undefined, { dateStyle: "short", timeStyle: "medium" }))
   expect(activityContent).not.toContainElement(activityTime)
-  expect(activityContent).not.toContainElement(within(activityRows[0]).getByLabelText("Category: Sandbox"))
+  expect(activityContent).not.toContainElement(within(activityRows[0]).getByLabelText("Category: Computer"))
   expect(activityMeta).toHaveClass("items-end")
-  expect(activityMeta).toContainElement(within(activityRows[0]).getByLabelText("Category: Sandbox"))
+  expect(activityMeta).toContainElement(within(activityRows[0]).getByLabelText("Category: Computer"))
 
   const categoryFilters = within(panel.getByRole("group", { name: "Activity category filters" }))
   const categoryCombobox = categoryFilters.getByRole("combobox", { name: "Add category filter" })
@@ -226,7 +226,7 @@ it("uses one global sandbox filter across Files, Logs, Network, and Activity", a
   expect(within(activity).getByText("Export completed")).toBeVisible()
 
   await user.click(categoryCombobox)
-  await user.click(screen.getByRole("option", { name: "Sandbox" }))
+  await user.click(screen.getByRole("option", { name: "Computer" }))
   expect(within(activity).getAllByRole("listitem")).toHaveLength(2)
   await user.click(categoryFilters.getByRole("button", { name: "Remove Export & import" }))
   expect(within(activity).getAllByRole("listitem")).toHaveLength(1)
@@ -249,15 +249,15 @@ it("uses one global sandbox filter across Files, Logs, Network, and Activity", a
 })
 
 
-it("orders logs newest first independently of workspace configuration order", async () => {
+it("orders logs newest first independently of computer configuration order", async () => {
   const source = applicationSourceForScenario("running")
-  source.workspaces.reverse()
+  source.computers.reverse()
   const application = renderApplication("running", source)
-  const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+  const computerSections = within(within(appNavigation()).getByRole("group", { name: "Computer sections" }))
 
-  await application.user.click(sandboxSections.getByRole("button", { name: "Logs" }))
+  await application.user.click(computerSections.getByRole("button", { name: "Logs" }))
 
-  const rows = within(within(appPanel("Sandboxes")).getByRole("table", { name: "Logs" })).getAllByRole("row").slice(1)
+  const rows = within(within(appPanel("Computers")).getByRole("table", { name: "Logs" })).getAllByRole("row").slice(1)
   expect(rows.map((row) => row.querySelector("time")?.textContent)).toEqual(["19:18:42", "19:18:40", "19:18:37", "17:02:11", "09:41:02"])
 })
 
@@ -272,11 +272,11 @@ it("shows one truthful network table and uses the selected browser for opening p
   await application.user.click(browser)
   await application.user.click(screen.getByRole("option", { name: "Firefox" }))
 
-  await application.user.click(navigation.getByRole("button", { name: "Sandboxes" }))
-  const sandboxSections = within(navigation.getByRole("group", { name: "Sandbox sections" }))
-  await application.user.click(sandboxSections.getByRole("button", { name: "Network" }))
+  await application.user.click(navigation.getByRole("button", { name: "Computers" }))
+  const computerSections = within(navigation.getByRole("group", { name: "Computer sections" }))
+  await application.user.click(computerSections.getByRole("button", { name: "Network" }))
 
-  const panel = within(appPanel("Sandboxes"))
+  const panel = within(appPanel("Computers"))
   const network = panel.getByRole("table", { name: "Network" })
   expect(network.closest('[data-slot="card"]')).toBeNull()
   expect(network).toHaveClass("min-h-0")
@@ -288,7 +288,7 @@ it("shows one truthful network table and uses the selected browser for opening p
   expect(network).not.toHaveClass("min-w-[42rem]")
   expect(network.parentElement).not.toHaveClass("overflow-x-auto")
   expect(panel.queryByRole("heading", { name: "Network" })).not.toBeInTheDocument()
-  expect(panel.queryByText("Each sandbox has its own .silo.test address, so the same port can be active in multiple sandboxes.")).not.toBeInTheDocument()
+  expect(panel.queryByText("Each computer has its own .silo.test address, so the same port can be active in multiple computers.")).not.toBeInTheDocument()
   expect(within(network).queryByText(/^(web|vite|api)$/)).not.toBeInTheDocument()
 
   const rows = within(network).getAllByRole("row").slice(1)
@@ -319,11 +319,11 @@ it("shows one truthful network table and uses the selected browser for opening p
 
 it("shows the newest activity first and keeps failure context in its row", async () => {
   const application = renderApplication("bootstrap-failure")
-  const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+  const computerSections = within(within(appNavigation()).getByRole("group", { name: "Computer sections" }))
 
-  await application.user.click(sandboxSections.getByRole("button", { name: "Activity" }))
+  await application.user.click(computerSections.getByRole("button", { name: "Activity" }))
 
-  const activity = within(appPanel("Sandboxes")).getByRole("list", { name: "Recent activity" })
+  const activity = within(appPanel("Computers")).getByRole("list", { name: "Recent activity" })
   const firstRow = within(activity).getAllByRole("listitem")[0]
   expect(within(firstRow).getByText("Start failed")).toBeVisible()
   expect(within(firstRow).getByText("Candidate networking did not become ready.")).toBeVisible()
@@ -337,15 +337,15 @@ it("shows the newest activity first and keeps failure context in its row", async
 it("shows all six production-backed activity categories", async () => {
   const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "catalog")
   const application = renderApplication("running", source)
-  const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+  const computerSections = within(within(appNavigation()).getByRole("group", { name: "Computer sections" }))
 
-  await application.user.click(sandboxSections.getByRole("button", { name: "Activity" }))
+  await application.user.click(computerSections.getByRole("button", { name: "Activity" }))
 
-  const panel = within(appPanel("Sandboxes"))
+  const panel = within(appPanel("Computers"))
   const filters = within(panel.getByRole("group", { name: "Activity category filters" }))
   await application.user.click(filters.getByRole("combobox", { name: "Add category filter" }))
   expect(screen.getAllByRole("option").map(({ textContent }) => textContent)).toEqual([
-    "Sandbox",
+    "Computer",
     "Git",
     "Export & import",
     "Secrets",
@@ -354,7 +354,7 @@ it("shows all six production-backed activity categories", async () => {
   ])
 
   const activity = panel.getByRole("list", { name: "Recent activity" })
-  for (const category of ["Sandbox", "Git", "Export & import", "Secrets", "GitHub", "System"]) {
+  for (const category of ["Computer", "Git", "Export & import", "Secrets", "GitHub", "System"]) {
     expect(within(activity).getAllByLabelText(`Category: ${category}`).length).toBeGreaterThan(0)
   }
   expect(within(activity).getByText("Restart outcome unknown")).toBeVisible()
@@ -378,11 +378,11 @@ it("updates a live activity in place through progress and completion", async () 
     step,
   )
   const application = renderApplication("running", sourceAt(0))
-  const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+  const computerSections = within(within(appNavigation()).getByRole("group", { name: "Computer sections" }))
 
-  await application.user.click(sandboxSections.getByRole("button", { name: "Activity" }))
+  await application.user.click(computerSections.getByRole("button", { name: "Activity" }))
 
-  const panel = within(appPanel("Sandboxes"))
+  const panel = within(appPanel("Computers"))
   const firstRow = panel.getByRole("list", { name: "Recent activity" }).querySelector<HTMLElement>('[data-activity-id="live-backup"]')
   expect(firstRow).not.toBeNull()
   expect(firstRow).toHaveAttribute("aria-busy", "true")
@@ -410,10 +410,10 @@ it("updates a live activity in place through progress and completion", async () 
 it("shows repository push progress inside its row", async () => {
   const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "pushing")
   const application = renderApplication("running", source)
-  const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+  const computerSections = within(within(appNavigation()).getByRole("group", { name: "Computer sections" }))
 
-  await application.user.click(sandboxSections.getByRole("button", { name: "Files" }))
-  const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
+  await application.user.click(computerSections.getByRole("button", { name: "Files" }))
+  const row = within(appPanel("Computers")).getByText("silo").closest('[role="listitem"]') as HTMLElement
   expect(within(row).getByRole("status")).toHaveClass("h-6")
   expect(within(row).getByRole("status")).toHaveTextContent("Pushing 2 commits…")
   expect(row).toHaveAttribute("aria-busy", "true")
@@ -424,10 +424,10 @@ it("shows repository push progress inside its row", async () => {
 it("clears a push that already succeeded without an inline line", async () => {
   const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "succeeded")
   const application = renderApplication("running", source)
-  const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+  const computerSections = within(within(appNavigation()).getByRole("group", { name: "Computer sections" }))
 
-  await application.user.click(sandboxSections.getByRole("button", { name: "Files" }))
-  const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
+  await application.user.click(computerSections.getByRole("button", { name: "Files" }))
+  const row = within(appPanel("Computers")).getByText("silo").closest('[role="listitem"]') as HTMLElement
   expect(within(row).queryByRole("status")).not.toBeInTheDocument()
   expect(row).toHaveTextContent("main · 0 ahead, 0 behind")
 })
@@ -435,25 +435,25 @@ it("clears a push that already succeeded without an inline line", async () => {
 
 it("sends unknown-result acknowledgement to the host before showing push again", async () => {
   const source = applicationSourceForScenario("running")
-  source.repositoryPushOperations = [{ workspace: "dev", repositoryPath: source.workspaces[0].repositories[0].path, commitCount: 2, status: "unknown", message: "Check this branch on GitHub before retrying." }]
+  source.repositoryPushOperations = [{ computer: "dev", repositoryPath: source.computers[0].repositories[0].path, commitCount: 2, status: "unknown", message: "Check this branch on GitHub before retrying." }]
   const dismissRepositoryPush = vi.fn()
   const pushRepository = vi.fn()
-  render(<ApplicationPreview source={source} actions={{ dismissRepositoryPush, pushRepository }} initialRoute={{ workspace: "dev", workspaceSection: "files" }} />)
+  render(<ApplicationPreview source={source} actions={{ dismissRepositoryPush, pushRepository }} initialRoute={{ computer: "dev", computerSection: "files" }} />)
   await userEvent.setup().click(screen.getByRole("button", { name: "I’ve checked GitHub" }))
-  expect(dismissRepositoryPush).toHaveBeenCalledExactlyOnceWith("dev", source.workspaces[0].repositories[0].path)
+  expect(dismissRepositoryPush).toHaveBeenCalledExactlyOnceWith("dev", source.computers[0].repositories[0].path)
   expect(pushRepository).not.toHaveBeenCalled()
   expect(screen.getByRole("button", { name: "I’ve checked GitHub" })).toBeVisible()
 })
 
 
-it.each(["stopped", "stale", "busy"])("blocks failed-push retry while the sandbox is %s", async (condition) => {
+it.each(["stopped", "stale", "busy"])("blocks failed-push retry while the computer is %s", async (condition) => {
   const source = structuredClone(applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "failed"))
-  const workspace = source.workspaces.find(workspace => workspace.machine.name === "dev")!
-  if (condition === "stopped") workspace.state = "stopped"
-  if (condition === "stale") workspace.freshness = "stale"
-  if (condition === "busy") workspace.checkpointOperation = { kind: "capture", status: "running", stage: "Capturing" }
+  const computer = source.computers.find(computer => computer.configuration.name === "dev")!
+  if (condition === "stopped") computer.state = "stopped"
+  if (condition === "stale") computer.freshness = "stale"
+  if (condition === "busy") computer.checkpointOperation = { kind: "capture", status: "running", stage: "Capturing" }
   const application = renderApplication("running", source)
-  await application.user.click(within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "Files" }))
+  await application.user.click(within(within(appNavigation()).getByRole("group", { name: "Computer sections" })).getByRole("button", { name: "Files" }))
   await application.user.click(screen.getByRole("button", { name: "Push failed for acme/silo. Show details" }))
   expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Retry push for acme/silo" })).toBeDisabled()
   expect(application.actions.pushRepository).not.toHaveBeenCalled()
@@ -463,10 +463,10 @@ it.each(["stopped", "stale", "busy"])("blocks failed-push retry while the sandbo
 it("keeps a failed push as a small in-row label with details and retry", async () => {
   const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "failed")
   const application = renderApplication("running", source)
-  const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+  const computerSections = within(within(appNavigation()).getByRole("group", { name: "Computer sections" }))
 
-  await application.user.click(sandboxSections.getByRole("button", { name: "Files" }))
-  const row = within(appPanel("Sandboxes")).getByText("silo").closest('[role="listitem"]') as HTMLElement
+  await application.user.click(computerSections.getByRole("button", { name: "Files" }))
+  const row = within(appPanel("Computers")).getByText("silo").closest('[role="listitem"]') as HTMLElement
   expect(within(row).queryByText(/no longer matches/)).not.toBeInTheDocument()
 
   await application.user.click(within(row).getByRole("button", { name: "Push failed for acme/silo. Show details" }))
@@ -487,13 +487,13 @@ it.each([
   ["stopped", "Stopped", "stopped", "bg-muted-foreground/55"],
   ["error", "Failed", "failed", "bg-destructive"],
 ] as const)("colors repository VM badges for the %s fixture", async (mode, label, state, className) => {
-  const application = renderApplication("running", applicationSourceForScenario("running", undefined, mode satisfies WorkspaceFixtureMode))
+  const application = renderApplication("running", applicationSourceForScenario("running", undefined, mode satisfies ComputerFixtureMode))
   const navigation = within(appNavigation())
-  const sandboxSections = within(navigation.getByRole("group", { name: "Sandbox sections" }))
+  const computerSections = within(navigation.getByRole("group", { name: "Computer sections" }))
 
-  await application.user.click(sandboxSections.getByRole("button", { name: "Files" }))
-  const repositories = within(appPanel("Sandboxes")).getByRole("list", { name: "Repositories" })
+  await application.user.click(computerSections.getByRole("button", { name: "Files" }))
+  const repositories = within(appPanel("Computers")).getByRole("list", { name: "Repositories" })
   const badge = within(repositories).getAllByLabelText(`dev, ${label}`)[0]
-  expect(badge.querySelector(`[data-workspace-state-dot="${state}"]`)).toHaveClass(className)
+  expect(badge.querySelector(`[data-computer-state-dot="${state}"]`)).toHaveClass(className)
   application.unmount()
 })

@@ -79,9 +79,9 @@ it("applies repository changes immediately and commits identity fields on blur",
   expect(within(selected).queryByText("acme/design-system")).not.toBeInTheDocument()
   expect(actions.saveGitHubConfiguration).toHaveBeenCalledTimes(4)
   expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-    workspaces: expect.arrayContaining([
+    computers: expect.arrayContaining([
       expect.objectContaining({
-        workspace: "playgrounds",
+        computer: "playgrounds",
         repositories: [{ repository: "acme/platform-tools", allowPushes: true }],
       }),
     ]),
@@ -120,7 +120,7 @@ it("keeps Git identity editable through disconnected and connecting GitHub state
 
 
 
-it("shows per-sandbox GitHub apply progress, success, and actionable failure through notifications", async () => {
+it("shows per-computer GitHub apply progress, success, and actionable failure through notifications", async () => {
   const source = applicationSourceForScenario("running", "connected")
   const application = renderApplication("running", source)
   await application.user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
@@ -137,7 +137,7 @@ it("shows per-sandbox GitHub apply progress, success, and actionable failure thr
   await application.user.click(github.getByRole("button", { name: "Disable access" }))
   next("applying", 1)
   expect(await screen.findByText("Applying repository access…")).toBeVisible()
-  expect(github.getByRole("region", { name: "Sandbox Git identity and repository access" })).toHaveAttribute("aria-busy", "true")
+  expect(github.getByRole("region", { name: "Computer Git identity and repository access" })).toHaveAttribute("aria-busy", "true")
 
   next("succeeded", 2)
   expect(await screen.findByText("GitHub settings applied")).toBeVisible()

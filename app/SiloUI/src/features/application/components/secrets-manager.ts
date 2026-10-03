@@ -6,7 +6,7 @@ import { restoreFocus } from "@/lib/focus"
 const actionableFailures = new Set([
   "Cannot access secrets in the system credential store. Unlock it and retry.",
   "Secret settings are too large. Reduce assignments or allowed domains and retry. No settings were overwritten.",
-  "A selected sandbox was removed while saving this secret. Select sandboxes again and retry.",
+  "A selected computer was removed while saving this secret. Select computers again and retry.",
 ])
 
 function operationFailure(error: unknown, fallback: string) {
@@ -16,12 +16,12 @@ function operationFailure(error: unknown, fallback: string) {
 
 interface EditorState {
   secret?: ApplicationSecret
-  /** Preselected sandboxes when adding a new secret scoped to one sandbox. */
-  initialWorkspaces?: string[]
+  /** Preselected computers when adding a new secret scoped to one computer. */
+  initialComputers?: string[]
 }
 
 /** Shared state and operations for viewing, adding, editing, removing, and retrying secrets.
- * Both the full Secrets page and a sandbox's Secrets section drive identical row states from it. */
+ * Both the full Secrets page and a computer's Secrets section drive identical row states from it. */
 export function useSecretsManager({ source, onSaveSecret, onRemoveSecret, onRetrySecret }: {
   source: ApplicationSource
   onSaveSecret: (request: SecretConfigurationRequest) => Promise<void> | void

@@ -6,7 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { ForkBody } from "./fork-popover"
 
 function setup(onFork = vi.fn(), disabled = false) {
-  render(<TooltipProvider><ActionsMenu label="More actions for dev" items={[{ label: "Fork…", accessibleLabel: "Fork dev", popover: "fork" }]} popovers={{ fork: close => <ForkBody sandboxName="dev" disabled={disabled} onFork={onFork} onClose={close} /> }} /></TooltipProvider>)
+  render(<TooltipProvider><ActionsMenu label="More actions for dev" items={[{ label: "Fork…", accessibleLabel: "Fork dev", popover: "fork" }]} popovers={{ fork: close => <ForkBody computerName="dev" disabled={disabled} onFork={onFork} onClose={close} /> }} /></TooltipProvider>)
   return onFork
 }
 
@@ -21,7 +21,7 @@ it("closes at once on submit and hands the trimmed name to the caller", async ()
   await openFork(user)
   expect(await screen.findByText("Fork dev")).toBeVisible()
   expect(screen.getByRole("button", { name: "Fork" })).toBeDisabled()
-  await user.type(screen.getByRole("textbox", { name: "New sandbox name" }), " experiment ")
+  await user.type(screen.getByRole("textbox", { name: "New computer name" }), " experiment ")
   await user.click(screen.getByRole("button", { name: "Fork" }))
   expect(screen.queryByText("Fork dev")).not.toBeInTheDocument()
   await waitFor(() => expect(onFork).toHaveBeenCalledWith("experiment"))
@@ -39,7 +39,7 @@ it("does not submit while disabled", async () => {
   const user = userEvent.setup()
   setup(vi.fn(), true)
   await openFork(user)
-  await user.type(await screen.findByRole("textbox", { name: "New sandbox name" }), "experiment")
+  await user.type(await screen.findByRole("textbox", { name: "New computer name" }), "experiment")
   expect(screen.getByRole("button", { name: "Fork" })).toBeDisabled()
 })
 
@@ -47,7 +47,7 @@ it("turns off auto-capitalization and autocorrect on the name field", async () =
   const user = userEvent.setup()
   setup()
   await openFork(user)
-  const input = await screen.findByRole("textbox", { name: "New sandbox name" })
+  const input = await screen.findByRole("textbox", { name: "New computer name" })
   expect(input).toHaveAttribute("autocapitalize", "off")
   expect(input).toHaveAttribute("autocorrect", "off")
   expect(input).toHaveAttribute("spellcheck", "false")
@@ -57,16 +57,16 @@ it("turns off auto-capitalization and autocorrect on the name field", async () =
 it("rejects invalid or taken names inline before submit", async () => {
   const user = userEvent.setup()
   const onFork = vi.fn()
-  render(<TooltipProvider><ActionsMenu label="More actions for dev" items={[{ label: "Fork…", accessibleLabel: "Fork dev", popover: "fork" }]} popovers={{ fork: close => <ForkBody sandboxName="dev" takenNames={["dev", "taken"]} onFork={onFork} onClose={close} /> }} /></TooltipProvider>)
+  render(<TooltipProvider><ActionsMenu label="More actions for dev" items={[{ label: "Fork…", accessibleLabel: "Fork dev", popover: "fork" }]} popovers={{ fork: close => <ForkBody computerName="dev" takenNames={["dev", "taken"]} onFork={onFork} onClose={close} /> }} /></TooltipProvider>)
   await openFork(user)
-  const input = await screen.findByRole("textbox", { name: "New sandbox name" })
+  const input = await screen.findByRole("textbox", { name: "New computer name" })
   await user.type(input, "My Fork")
   expect(screen.getByText(/lowercase letters, numbers, or hyphens/)).toBeVisible()
   expect(input).toHaveAttribute("aria-invalid", "true")
   expect(screen.getByRole("button", { name: "Fork" })).toBeDisabled()
   await user.clear(input)
   await user.type(input, "taken")
-  expect(screen.getByText("A sandbox named taken already exists.")).toBeVisible()
+  expect(screen.getByText("A computer named taken already exists.")).toBeVisible()
   expect(screen.getByRole("button", { name: "Fork" })).toBeDisabled()
   await user.clear(input)
   await user.type(input, "fresh")

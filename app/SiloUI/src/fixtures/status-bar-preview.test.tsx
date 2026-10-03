@@ -27,14 +27,14 @@ describe("status bar preview", () => {
     const source = applicationSourceForScenario("running")
     expect(statusBarFixtureModeFromSearch("?status-bar=unknown")).toBeUndefined()
     expect(statusBarFixtureModeFromSearch("?status-bar=stale")).toBe("stale")
-    expect(statusBarSourceForFixture(source, "stale").workspaces.every(({ freshness }) => freshness === "stale")).toBe(true)
-    expect(statusBarSourceForFixture(source, "empty").workspaces).toHaveLength(0)
-    const longList = statusBarSourceForFixture(source, "long-list").workspaces
+    expect(statusBarSourceForFixture(source, "stale").computers.every(({ freshness }) => freshness === "stale")).toBe(true)
+    expect(statusBarSourceForFixture(source, "empty").computers).toHaveLength(0)
+    const longList = statusBarSourceForFixture(source, "long-list").computers
     expect(longList).toHaveLength(10)
-    expect(new Set(longList.map(({ machine }) => machine.id)).size).toBe(10)
-    expect(new Set(longList.map(({ machine }) => machine.name)).size).toBe(10)
-    expect(source.workspaces).toHaveLength(3)
-    expect(source.workspaces.every(({ freshness }) => freshness === "fresh")).toBe(true)
+    expect(new Set(longList.map(({ configuration }) => configuration.id)).size).toBe(10)
+    expect(new Set(longList.map(({ configuration }) => configuration.name)).size).toBe(10)
+    expect(source.computers).toHaveLength(3)
+    expect(source.computers.every(({ freshness }) => freshness === "fresh")).toBe(true)
   })
 
   it("simulates lifecycle actions and hands the resulting snapshot to the application", async () => {
@@ -63,12 +63,12 @@ describe("status bar preview", () => {
     expect(screen.getByRole("complementary", { name: "Preview feedback" })).toHaveTextContent("Preview: dev restarted.")
     await user.click(screen.getByRole("button", { name: "Open Silo" }))
     expect(onOpenSilo).toHaveBeenCalledWith(expect.objectContaining({
-      workspaces: expect.arrayContaining([
-        expect.objectContaining({ machine: expect.objectContaining({ name: "dev" }), state: "running", stateDetail: "Running" }),
-        expect.objectContaining({ machine: expect.objectContaining({ name: "playgrounds" }), state: "stopped", stateDetail: "Stopped" }),
+      computers: expect.arrayContaining([
+        expect.objectContaining({ configuration: expect.objectContaining({ name: "dev" }), state: "running", stateDetail: "Running" }),
+        expect.objectContaining({ configuration: expect.objectContaining({ name: "playgrounds" }), state: "stopped", stateDetail: "Stopped" }),
       ]),
     }), undefined)
-    expect(source.workspaces[0].stateDetail).toBe("Running for 2h 18m")
+    expect(source.computers[0].stateDetail).toBe("Running for 2h 18m")
   })
 
   it("pushes the pending commits, clears success feedback, and hands off the updated repository", async () => {
@@ -91,12 +91,12 @@ describe("status bar preview", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
       const result = onOpenSilo.mock.calls[0][0]
-      expect(result.workspaces[0].repositories).toEqual([
-        { ...source.workspaces[0].repositories[0], ahead: 0 },
-        source.workspaces[0].repositories[1],
+      expect(result.computers[0].repositories).toEqual([
+        { ...source.computers[0].repositories[0], ahead: 0 },
+        source.computers[0].repositories[1],
       ])
       expect(result.repositoryPushOperations).toEqual([])
-      expect(source.workspaces[0].repositories[0].ahead).toBe(2)
+      expect(source.computers[0].repositories[0].ahead).toBe(2)
     } finally {
       preview.unmount()
       vi.useRealTimers()
@@ -106,13 +106,13 @@ describe("status bar preview", () => {
   it.each(["handoff", "quit"])("settles concurrent pushes before an early %s without changing unrelated operations", async (action) => {
     vi.useFakeTimers()
     const base = applicationSourceForScenario("running")
-    const unrelated = { workspace: "personal", repositoryPath: "taylor/docs-site", commitCount: 1, status: "failed" as const, message: "Remote unavailable." }
+    const unrelated = { computer: "personal", repositoryPath: "taylor/docs-site", commitCount: 1, status: "failed" as const, message: "Remote unavailable." }
     const source = {
       ...base,
-      workspaces: base.workspaces.map((workspace) => workspace.machine.name === "dev" ? {
-        ...workspace,
-        repositories: workspace.repositories.map((repository) => repository.path === "acme/design-system" ? { ...repository, ahead: 3 } : repository),
-      } : workspace),
+      computers: base.computers.map((computer) => computer.configuration.name === "dev" ? {
+        ...computer,
+        repositories: computer.repositories.map((repository) => repository.path === "acme/design-system" ? { ...repository, ahead: 3 } : repository),
+      } : computer),
       repositoryPushOperations: [unrelated],
     }
     const onOpenSilo = vi.fn()
@@ -125,7 +125,7 @@ describe("status bar preview", () => {
       expect(screen.getByText("Pushing 3 commits…")).toBeVisible()
       if (action === "quit") {
         fireEvent.click(screen.getByRole("button", { name: "Quit Silo" }))
-        // Running sandboxes ask for confirmation first (I-06).
+        // Running computers ask for confirmation first (I-06).
         const confirmQuit = screen.queryByRole("button", { name: "Quit and stop" })
         if (confirmQuit) fireEvent.click(confirmQuit)
         fireEvent.click(screen.getByRole("button", { name: "Relaunch Silo" }))
@@ -134,13 +134,13 @@ describe("status bar preview", () => {
       }
       fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
       const result = onOpenSilo.mock.calls[0][0]
-      expect(result.workspaces[0].repositories.map(({ ahead }: { ahead: number }) => ahead)).toEqual([0, 0])
-      expect(result.workspaces[1].state).toBe("running")
-      expect(result.workspaces[2]).toEqual(source.workspaces[2])
+      expect(result.computers[0].repositories.map(({ ahead }: { ahead: number }) => ahead)).toEqual([0, 0])
+      expect(result.computers[1].state).toBe("running")
+      expect(result.computers[2]).toEqual(source.computers[2])
       expect(result.repositoryPushOperations).toEqual([
         unrelated,
-        { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "succeeded" },
-        { workspace: "dev", repositoryPath: "acme/design-system", commitCount: 3, status: "succeeded" },
+        { computer: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "succeeded" },
+        { computer: "dev", repositoryPath: "acme/design-system", commitCount: 3, status: "succeeded" },
       ])
       await act(async () => { await vi.advanceTimersByTimeAsync(900) })
       expect(onOpenSilo).toHaveBeenCalledTimes(1)
@@ -164,9 +164,9 @@ describe("status bar preview", () => {
       expect(screen.getByText("Pushed 2 commits.")).toBeVisible()
       fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
       expect(onOpenSilo.mock.calls[0][0].repositoryPushOperations).toEqual([
-        { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "succeeded" },
+        { computer: "dev", repositoryPath: "acme/silo", commitCount: 2, status: "succeeded" },
       ])
-      expect(onOpenSilo.mock.calls[0][0].workspaces[0].repositories[0].ahead).toBe(0)
+      expect(onOpenSilo.mock.calls[0][0].computers[0].repositories[0].ahead).toBe(0)
     } finally {
       preview.unmount()
       vi.useRealTimers()
@@ -205,11 +205,11 @@ describe("status bar preview", () => {
     await user.click(screen.getByRole("button", { name: "Quit Silo" }))
     preview.rerender(<StatusBarPreview fixtureKey="running" source={source} mode="empty" onOpenSilo={onOpenSilo} />)
     expect(screen.getByRole("button", { name: "Silo status bar" })).toBeVisible()
-    expect(screen.getByText("No sandboxes yet")).toBeVisible()
+    expect(screen.getByText("No computers yet")).toBeVisible()
     expect(screen.queryByRole("button", { name: "Relaunch Silo" })).not.toBeInTheDocument()
   })
 
-  it("opens the requested application section with its sandbox filter and changed state", async () => {
+  it("opens the requested application section with its computer filter and changed state", async () => {
     window.history.replaceState(null, "", "?view=status-bar&scenario=running&repository-push=failed")
     const user = userEvent.setup()
     render(<FixtureApp />)
@@ -222,8 +222,8 @@ describe("status bar preview", () => {
     const repositories = within(screen.getByRole("list", { name: "Repositories" }))
     expect(repositories.getByText("silo")).toBeVisible()
     expect(repositories.queryByText("acme/platform-tools")).not.toBeInTheDocument()
-    await user.click(navigation.getByRole("button", { name: "All sandboxes" }))
-    const playgrounds = within(screen.getByRole("list", { name: "Configured sandboxes" })).getByText("playgrounds").closest("li")!
+    await user.click(navigation.getByRole("button", { name: "All computers" }))
+    const playgrounds = within(screen.getByRole("list", { name: "Configured computers" })).getByText("playgrounds").closest("li")!
     expect(within(playgrounds).getByText("Running", { exact: true })).toBeVisible()
     expect(new URL(window.location.href).searchParams.get("view")).toBe("app")
   })
@@ -237,7 +237,7 @@ describe("status bar preview", () => {
     expect(screen.queryByRole("main", { name: "Status bar preview" })).not.toBeInTheDocument()
   })
 
-  it("opens the Logs item filtered to the sandbox with an error", async () => {
+  it("opens the Logs item filtered to the computer with an error", async () => {
     window.history.replaceState(null, "", "?view=status-bar&scenario=bootstrap-failure")
     const user = userEvent.setup()
     render(<FixtureApp />)

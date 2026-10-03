@@ -17,7 +17,7 @@ it.each([
   source.github.state = state
   source.github.accessEnabled = enabled
   source.github.personalToken = { state: "connected", saved: true, account: "token-user" }
-  source.github.workspaces = source.github.workspaces!.map(policy => ({ ...policy, authenticationMethod: "token" }))
+  source.github.computers = source.github.computers!.map(policy => ({ ...policy, authenticationMethod: "token" }))
   const actions = createApplicationActionsMock()
   const view = render(<GitHubPage source={source} actions={actions} />)
   expect(screen.getByRole("radio", { name: "Use token for dev" })).toBeChecked()

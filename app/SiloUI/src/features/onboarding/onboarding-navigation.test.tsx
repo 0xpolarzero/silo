@@ -10,8 +10,8 @@ import { githubStateFromSearch, onboardingScenarios, repositoryFixtures } from "
 
 function renderScenario(name: keyof typeof onboardingScenarios = "running", githubState?: GitHubConnectionState) {
   return render(<OnboardingPreview source={onboardingScenarios[name]} initialGitHubConnectionState={githubState} repositoryOptions={repositoryFixtures} actions={{
-    saveMachineConfiguration: vi.fn(),
-    retryWorkspaceSetup: vi.fn(),
+    saveComputerConfiguration: vi.fn(),
+    retryComputerSetup: vi.fn(),
     finishSetup: vi.fn(),
   }} />)
 }
@@ -52,10 +52,10 @@ it("navigates four steps with GitHub going directly to Review", async () => {
 
   expectHiddenPanelHeading("Dependencies")
   await user.click(screen.getByRole("button", { name: "Continue" }))
-  expectHiddenPanelHeading("Creating your sandboxes")
+  expectHiddenPanelHeading("Creating your computers")
   await user.click(screen.getByRole("button", { name: "Continue" }))
   expectHiddenPanelHeading("GitHub")
-  expect(screen.getAllByRole("tab").map(tab => tab.getAttribute("aria-label"))).toEqual(["Dependencies", "Sandboxes", "GitHub", "Review"])
+  expect(screen.getAllByRole("tab").map(tab => tab.getAttribute("aria-label"))).toEqual(["Dependencies", "Computers", "GitHub", "Review"])
   await user.click(screen.getByRole("button", { name: "Continue" }))
   expectHiddenPanelHeading("Review setup")
   await user.click(screen.getByRole("tab", { name: /Review/ }))
@@ -76,7 +76,7 @@ it("shares the application choices in onboarding and keeps the selected browser"
 
   await user.click(browser)
   await user.click(screen.getByRole("option", { name: "Firefox" }))
-  await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
+  await user.click(screen.getByRole("tab", { name: /Computers/ }))
   await user.click(screen.getByRole("tab", { name: /Dependencies/ }))
   expect(screen.getByRole("combobox", { name: "Browser" })).toHaveTextContent("Firefox")
 })
@@ -100,20 +100,20 @@ it("supports vertical arrow-key navigation across the setup sidebar", async () =
   await user.click(dependencies)
   await user.keyboard("{ArrowDown}")
 
-  expect(screen.getByRole("tab", { name: /Sandboxes/ })).toHaveAttribute("aria-selected", "true")
-  expectHiddenPanelHeading("Creating your sandboxes")
+  expect(screen.getByRole("tab", { name: /Computers/ })).toHaveAttribute("aria-selected", "true")
+  expectHiddenPanelHeading("Creating your computers")
 })
 
 
-it("shows running workspace feedback only in the sidebar outside Workspaces", async () => {
+it("shows running computer feedback only in the sidebar outside Computers", async () => {
   const user = userEvent.setup()
   renderScenario()
 
   for (const step of ["GitHub", "Review"]) {
     await user.click(screen.getByRole("tab", { name: new RegExp(step) }))
     const panel = screen.getByRole("tabpanel")
-    expect(within(panel).queryByRole("progressbar", { name: "Sandbox setup progress" })).not.toBeInTheDocument()
-    expect(screen.getByRole("tab", { name: /Sandboxes/ })).toHaveAccessibleDescription("In progress")
-    expect(screen.getByRole("tab", { name: /Sandboxes/ })).toHaveAttribute("aria-busy", "true")
+    expect(within(panel).queryByRole("progressbar", { name: "Computer setup progress" })).not.toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: /Computers/ })).toHaveAccessibleDescription("In progress")
+    expect(screen.getByRole("tab", { name: /Computers/ })).toHaveAttribute("aria-busy", "true")
   }
 })

@@ -24,7 +24,7 @@ it("reuses the compact onboarding GitHub editor without redundant page framing",
 
   const github = within(appPanel("GitHub"))
   expect(github.queryByRole("heading", { name: "GitHub" })).not.toBeInTheDocument()
-  expect(github.queryByText("Manage the account and repository access available inside each sandbox.")).not.toBeInTheDocument()
+  expect(github.queryByText("Manage the account and repository access available inside each computer.")).not.toBeInTheDocument()
   expect(github.queryByRole("heading", { name: "Repository access" })).not.toBeInTheDocument()
   expect(github.getByText("Connected as @taylor")).toBeVisible()
   expect(github.getByRole("button", { name: "Disable access" })).toBeVisible()
@@ -38,19 +38,19 @@ it("reuses the compact onboarding GitHub editor without redundant page framing",
   expect(github.queryByRole("button", { name: "Save changes" })).not.toBeInTheDocument()
   expect(github.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
 
-  const editor = github.getByRole("region", { name: "Sandbox Git identity and repository access" })
+  const editor = github.getByRole("region", { name: "Computer Git identity and repository access" })
   expect(editor).toBeVisible()
   expect(editor).toHaveClass("min-h-0", "flex-1")
   expect(editor.querySelector(".divide-y")).not.toBeNull()
 
-  for (const workspace of ["dev", "playgrounds", "personal"]) {
-    const identity = github.getByRole("group", { name: `Git identity for ${workspace}` })
+  for (const computer of ["dev", "playgrounds", "personal"]) {
+    const identity = github.getByRole("group", { name: `Git identity for ${computer}` })
     expect(identity.closest('[data-slot="card"]')).toBeNull()
-    expect(github.getByLabelText(`Git name for ${workspace}`)).toBeVisible()
-    expect(github.getByLabelText(`Git email for ${workspace}`)).toBeVisible()
-    expect(github.getByRole("checkbox", { name: `Apply Git identity to ${workspace}` })).toBeVisible()
-    expect(github.getByRole("button", { name: `Reset Git identity for ${workspace}` })).toBeVisible()
-    expect(github.getByRole("combobox", { name: `Add repository to ${workspace}` })).toBeVisible()
+    expect(github.getByLabelText(`Git name for ${computer}`)).toBeVisible()
+    expect(github.getByLabelText(`Git email for ${computer}`)).toBeVisible()
+    expect(github.getByRole("checkbox", { name: `Apply Git identity to ${computer}` })).toBeVisible()
+    expect(github.getByRole("button", { name: `Reset Git identity for ${computer}` })).toBeVisible()
+    expect(github.getByRole("combobox", { name: `Add repository to ${computer}` })).toBeVisible()
   }
 
   expect(github.getByLabelText("Git name for dev")).toHaveValue("Taylor Example")
@@ -75,10 +75,10 @@ it("reuses the compact onboarding GitHub editor without redundant page framing",
 
 
 
-it.each([false, true])("uses the detected host author for each sandbox missing a policy (partial=%s)", async (partial) => {
+it.each([false, true])("uses the detected host author for each computer missing a policy (partial=%s)", async (partial) => {
   const source = applicationSourceForScenario("running")
-  const existing = source.github.workspaces![0]
-  source.github.workspaces = partial ? [existing] : []
+  const existing = source.github.computers![0]
+  source.github.computers = partial ? [existing] : []
   source.github.deviceIdentity = { name: "Local Author", email: "local@example.test" }
   const { actions, user } = renderGitHub("running", source)
 
@@ -88,7 +88,7 @@ it.each([false, true])("uses the detected host author for each sandbox missing a
   if (partial) expect(github.getByLabelText("Git name for dev")).toHaveValue(existing.identity.name)
   await user.click(github.getByRole("checkbox", { name: "All repositories for playgrounds" }))
   expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-    workspaces: expect.arrayContaining([expect.objectContaining({ workspace: "playgrounds", repositoryMode: "all", identity: { name: "Local Author", email: "local@example.test", apply: true } })]),
+    computers: expect.arrayContaining([expect.objectContaining({ computer: "playgrounds", repositoryMode: "all", identity: { name: "Local Author", email: "local@example.test", apply: true } })]),
   }))
 })
 
@@ -96,7 +96,7 @@ it.each([false, true])("uses the detected host author for each sandbox missing a
 
 it("allows repository selection without inventing a missing Git identity", async () => {
   const source = applicationSourceForScenario("running")
-  source.github.workspaces = []
+  source.github.computers = []
   source.github.deviceIdentity = null
   const { actions, user } = renderGitHub("running", source)
 
@@ -104,7 +104,7 @@ it("allows repository selection without inventing a missing Git identity", async
   expect(github.getByLabelText("Git name for dev")).toHaveValue("")
   await user.click(github.getByRole("checkbox", { name: "All repositories for dev" }))
   expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-    workspaces: expect.arrayContaining([expect.objectContaining({ workspace: "dev", repositoryMode: "all", identity: { name: "", email: "", apply: false } })]),
+    computers: expect.arrayContaining([expect.objectContaining({ computer: "dev", repositoryMode: "all", identity: { name: "", email: "", apply: false } })]),
   }))
 })
 
@@ -118,9 +118,9 @@ it("does not submit an incomplete author edit with repository changes", async ()
   await user.clear(github.getByLabelText("Git name for dev"))
   await user.click(github.getByRole("checkbox", { name: "All repositories for playgrounds" }))
   expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
-  // Only the changed sandbox is saved, so dev's unfinished author is not submitted.
+  // Only the changed computer is saved, so dev's unfinished author is not submitted.
   const [saved] = vi.mocked(actions.saveGitHubConfiguration!).mock.calls[0]
-  expect(saved.workspaces.map(({ workspace }) => workspace)).toEqual(["playgrounds"])
+  expect(saved.computers.map(({ computer }) => computer)).toEqual(["playgrounds"])
   expect(github.getByLabelText("Git name for dev")).toHaveValue("")
 })
 
@@ -134,13 +134,13 @@ it.each(["name", "email"] as const)("saves an explicit Git identity disable even
 
   expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
   expect(actions.saveGitHubConfiguration).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-    workspaces: [expect.objectContaining({ workspace: "dev", identity: expect.objectContaining({ [field]: "", apply: false }) })],
+    computers: [expect.objectContaining({ computer: "dev", identity: expect.objectContaining({ [field]: "", apply: false }) })],
   }))
 })
 
 
 
-it("saves only the edited sandbox against the shown revision and never turns access on", async () => {
+it("saves only the edited computer against the shown revision and never turns access on", async () => {
   const source = applicationSourceForScenario("running", "connected")
   source.github.policyRevision = 10
   source.github.accessEnabled = false
@@ -153,12 +153,12 @@ it("saves only the edited sandbox against the shown revision and never turns acc
   await user.tab()
   expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
   const [saved] = vi.mocked(actions.saveGitHubConfiguration!).mock.calls[0]
-  // Other sandboxes (such as a fork's copied assignment) keep their saved choices, and a
+  // Other computers (such as a fork's copied assignment) keep their saved choices, and a
   // save right after Disable access cannot re-enable it.
   expect(saved).toEqual({
     baseRevision: 10,
     deviceIdentity: source.github.deviceIdentity ?? null,
-    workspaces: [expect.objectContaining({ workspace: "playgrounds", identity: expect.objectContaining({ name: "Morgan Example" }) })],
+    computers: [expect.objectContaining({ computer: "playgrounds", identity: expect.objectContaining({ name: "Morgan Example" }) })],
   })
   expect(saved).not.toHaveProperty("accessEnabled")
 })
@@ -168,7 +168,7 @@ it("saves only the edited sandbox against the shown revision and never turns acc
 it("settles a newer GitHub revision even when its completion matches the previous save", async () => {
   const source = applicationSourceForScenario("running", "connected")
   source.github.policyRevision = 10
-  source.github.workspaceOperations = [{ workspace: "dev", status: "succeeded", message: "GitHub access verified." }]
+  source.github.computerOperations = [{ computer: "dev", status: "succeeded", message: "GitHub access verified." }]
   const application = renderGitHub("running", source)
 
   const github = within(appPanel("GitHub"))
@@ -176,7 +176,7 @@ it("settles a newer GitHub revision even when its completion matches the previou
   expect(await screen.findByText("Applying repository access…")).toBeVisible()
   const completed = structuredClone(source)
   completed.github.policyRevision = 11
-  completed.github.workspaces = vi.mocked(application.actions.saveGitHubConfiguration!).mock.calls[0][0].workspaces
+  completed.github.computers = vi.mocked(application.actions.saveGitHubConfiguration!).mock.calls[0][0].computers
   application.rerender(<GitHubPanel source={completed} actions={application.actions} />)
   expect(await screen.findByText("GitHub settings applied")).toBeVisible()
   expect(screen.queryByText("Applying repository access…")).not.toBeInTheDocument()
@@ -215,7 +215,7 @@ it("ignores a rejected save once a newer repository change is pending", async ()
 
 
 
-it("settles all pending sandbox edits when the latest complete save fails, and retries that draft", async () => {
+it("settles all pending computer edits when the latest complete save fails, and retries that draft", async () => {
   const { actions, user } = renderGitHub()
   vi.mocked(actions.saveGitHubConfiguration!)
     .mockImplementationOnce(() => new Promise<void>(() => {}))
@@ -230,9 +230,9 @@ it("settles all pending sandbox edits when the latest complete save fails, and r
   expect(actions.saveGitHubConfiguration).toHaveBeenCalledTimes(3)
   expect(actions.retryGitHubConfiguration).not.toHaveBeenCalled()
   expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-    workspaces: expect.arrayContaining([
-      expect.objectContaining({ workspace: "dev", repositoryMode: "all" }),
-      expect.objectContaining({ workspace: "playgrounds", repositoryMode: "all" }),
+    computers: expect.arrayContaining([
+      expect.objectContaining({ computer: "dev", repositoryMode: "all" }),
+      expect.objectContaining({ computer: "playgrounds", repositoryMode: "all" }),
     ]),
   }))
 })
@@ -273,7 +273,7 @@ it("disconnects the current GitHub account so another account can be connected",
 
 
 
-it("applies access toggles immediately and confirms clearing one sandbox's repositories", async () => {
+it("applies access toggles immediately and confirms clearing one computer's repositories", async () => {
   const { actions, unmount, user } = renderGitHub()
 
   const github = within(appPanel("GitHub"))
@@ -296,7 +296,7 @@ it("applies access toggles immediately and confirms clearing one sandbox's repos
   expect(github.getByRole("table", { name: "Selected repositories for personal" })).toBeVisible()
   expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
   expect(actions.saveGitHubConfiguration).toHaveBeenCalledWith(expect.objectContaining({
-    workspaces: expect.arrayContaining([expect.objectContaining({ workspace: "dev", repositories: [] })]),
+    computers: expect.arrayContaining([expect.objectContaining({ computer: "dev", repositories: [] })]),
   }))
   unmount()
 
@@ -315,10 +315,10 @@ it("applies access toggles immediately and confirms clearing one sandbox's repos
 
 
 
-it("keeps obsolete sandbox errors compact and copies only safe explanations", async () => {
+it("keeps obsolete computer errors compact and copies only safe explanations", async () => {
   const source = applicationSourceForScenario("running", "connected")
-  source.github.workspaceOperations = [{ workspace: "dev", status: "failed", canRetry: true,
-    message: 'Recreate this development sandbox to enable the new GitHub integration. Git identity: {"before":"GIT_AUTHOR_EMAIL=private@example.com","disposition":"requires restart"}',
+  source.github.computerOperations = [{ computer: "dev", status: "failed", canRetry: true,
+    message: 'Recreate this development computer to enable the new GitHub integration. Git identity: {"before":"GIT_AUTHOR_EMAIL=private@example.com","disposition":"requires restart"}',
     diagnosticDetails: "secret runtime output",
   }]
   const application = renderGitHub("running", source)
@@ -327,7 +327,7 @@ it("keeps obsolete sandbox errors compact and copies only safe explanations", as
   expect(label).toHaveTextContent("Not applied")
   await application.user.click(label)
   const details = within(await screen.findByRole("dialog"))
-  expect(details.getByText("This sandbox needs a new setup for GitHub access.")).toBeVisible()
+  expect(details.getByText("This computer needs a new setup for GitHub access.")).toBeVisible()
   expect(details.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
   expect(details.getByText(/A restart alone does not resolve/)).toBeVisible()
   expect(details.queryByText(/private@example|secret runtime|GIT_AUTHOR_EMAIL/)).not.toBeInTheDocument()
@@ -416,7 +416,7 @@ it("keeps failed sign-in retry on Connect GitHub instead of repository refresh",
 it.each(["selected", "all"] as const)("retries rejected repository intent after refresh from %s mode", async (repositoryMode) => {
   const source = applicationSourceForScenario("running", "connected")
   source.github.policyRevision = 10
-  source.github.workspaces = source.github.workspaces!.map((policy) => ({ ...policy, repositoryMode }))
+  source.github.computers = source.github.computers!.map((policy) => ({ ...policy, repositoryMode }))
   const application = renderGitHub("running", source)
   let resolveFirst!: () => void
   let rejectSecond!: (cause: Error) => void
@@ -436,12 +436,12 @@ it.each(["selected", "all"] as const)("retries rejected repository intent after 
 
   const refreshed = structuredClone(source)
   refreshed.github.policyRevision = 11
-  refreshed.github.workspaces = source.github.workspaces!.map((policy) => first.workspaces.find((saved) => saved.workspace === policy.workspace) ?? policy)
+  refreshed.github.computers = source.github.computers!.map((policy) => first.computers.find((saved) => saved.computer === policy.computer) ?? policy)
   application.rerender(<GitHubPanel source={refreshed} actions={application.actions} />)
   await application.user.click(screen.getByRole("button", { name: "Retry" }))
   expect(application.actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
     baseRevision: 11,
-    workspaces: [expect.objectContaining({ workspace: "dev", repositoryMode })],
+    computers: [expect.objectContaining({ computer: "dev", repositoryMode })],
   }))
 })
 
@@ -464,7 +464,7 @@ it("retries interleaved repository and identity intents after an authoritative r
 
   const refreshed = structuredClone(source)
   refreshed.github.policyRevision = 11
-  refreshed.github.workspaces = refreshed.github.workspaces!.map((policy) => ({
+  refreshed.github.computers = refreshed.github.computers!.map((policy) => ({
     ...policy,
     identity: { ...policy.identity, name: "Saved Author" },
   }))

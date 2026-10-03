@@ -7,7 +7,7 @@ import { ApplicationTitleBar } from "@/features/application/components/applicati
 import { WindowToolbar } from "./window-toolbar"
 import { shortcutFor } from "@/lib/shortcuts"
 
-const props = { activeTab: "github" as const, workspaceSection: "overview" as const, settingsSection: "general" as const, systemIssueStatus: null, workspaceAttention: { errors: 0, warnings: 0 }, onTabChange: vi.fn(), onWorkspaceSectionChange: vi.fn(), onSettingsSectionChange: vi.fn(), canGoBack: false, canGoForward: false, onGoBack: vi.fn(), onGoForward: vi.fn() }
+const props = { activeTab: "github" as const, computerSection: "overview" as const, settingsSection: "general" as const, systemIssueStatus: null, computerAttention: { errors: 0, warnings: 0 }, onTabChange: vi.fn(), onComputerSectionChange: vi.fn(), onSettingsSectionChange: vi.fn(), canGoBack: false, canGoForward: false, onGoBack: vi.fn(), onGoForward: vi.fn() }
 it("renders shared keycaps without changing the control's accessible name", () => {
   render(<button aria-keyshortcuts="Meta+K">Search<ShortcutBadge shortcut={{ keys: ["⌘", "K"], aria: "Meta+K" }} /></button>)
   const button = screen.getByRole("button", { name: "Search" })

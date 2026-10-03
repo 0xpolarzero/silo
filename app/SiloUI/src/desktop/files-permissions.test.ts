@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url"
 import { describe, expect, it } from "vitest"
 
 const native = resolve(dirname(fileURLToPath(import.meta.url)), "../../src-tauri")
-const commands = ["list_workspace_directory"]
+const commands = ["list_computer_directory"]
 type Capability = { windows: string[]; permissions: Array<string | { identifier: string }> }
 const capabilities = readdirSync(resolve(native, "capabilities")).filter((name) => name.endsWith(".json"))
   .map((name) => JSON.parse(readFileSync(resolve(native, "capabilities", name), "utf8")) as Capability)

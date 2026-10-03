@@ -16,14 +16,14 @@ it("keeps the application gated through failure and requires an explicit acknowl
   const backend: RuntimeMigrationBackend = { read, retry, continueAfterFailure, subscribe: async handler => { refresh = handler; return () => {} } }
   render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
   expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
-  await screen.findByText("Some sandboxes could not be migrated")
+  await screen.findByText("Some computers could not be migrated")
   expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
-  expect(screen.getByRole("button", { name: "Continue with available sandboxes" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Continue with available computers" })).toBeDisabled()
   fireEvent.click(screen.getByRole("button", { name: "Show logs" }))
   expect(screen.getByText(/Conversion failed/)).toBeVisible()
   expect(screen.getByRole("link", { name: "Prepare GitHub issue" })).toHaveAttribute("href", expect.stringContaining("issues/new"))
   fireEvent.click(screen.getByRole("checkbox"))
-  fireEvent.click(screen.getByRole("button", { name: "Continue with available sandboxes" }))
+  fireEvent.click(screen.getByRole("button", { name: "Continue with available computers" }))
   await screen.findByText("Normal application")
   expect(continueAfterFailure).toHaveBeenCalledOnce()
   await act(async () => { refresh?.() })
@@ -72,7 +72,7 @@ it("does not announce a migration before the first status arrives", async () => 
   const backend: RuntimeMigrationBackend = { read, retry: vi.fn(), continueAfterFailure: vi.fn(), subscribe: async () => () => {} }
   render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
   await vi.waitFor(() => expect(read).toHaveBeenCalled())
-  expect(screen.queryByText("Updating your sandboxes")).not.toBeInTheDocument()
+  expect(screen.queryByText("Updating your computers")).not.toBeInTheDocument()
   expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
   await act(async () => resolve({ ...failed, status: "not-required", error: undefined }))
   expect(screen.getByText("Normal application")).toBeVisible()
@@ -84,7 +84,7 @@ it("shows migration progress once the first status reports it", async () => {
     retry: vi.fn(), continueAfterFailure: vi.fn(), subscribe: async () => () => {},
   }
   render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
-  expect(await screen.findByText("Updating your sandboxes")).toBeVisible()
+  expect(await screen.findByText("Updating your computers")).toBeVisible()
 })
 
 function deferred<T>() {
@@ -103,12 +103,12 @@ it.each(["complete", "failed"] as const)("preserves event-%s when an older Retry
     subscribe: async handler => { refresh = handler; return () => {} },
   }
   render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
-  await screen.findByText("Some sandboxes could not be migrated")
+  await screen.findByText("Some computers could not be migrated")
   fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
   current = { ...failed, status, stage: "Attempt finished", error: status === "failed" ? "Retry conversion failed" : undefined }
   await act(async () => refresh())
   await act(async () => response.resolve({ ...failed, status: "running", error: undefined }))
-  expect(screen.queryByText("Updating your sandboxes")).not.toBeInTheDocument()
+  expect(screen.queryByText("Updating your computers")).not.toBeInTheDocument()
   if (status === "complete") expect(screen.getByText("Normal application")).toBeVisible()
   else {
     expect(screen.getByRole("alert")).toHaveTextContent("Retry conversion failed")
@@ -126,7 +126,7 @@ it("keeps the latest event read when two status reads resolve in reverse order",
     subscribe: async handler => { refresh = handler; return () => {} },
   }
   render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
-  await screen.findByText("Some sandboxes could not be migrated")
+  await screen.findByText("Some computers could not be migrated")
   await act(async () => { refresh(); refresh() })
   await act(async () => newer.resolve({ ...failed, status: "complete", error: undefined }))
   expect(screen.getByText("Normal application")).toBeVisible()
@@ -141,7 +141,7 @@ it("reads authoritative status after Retry even without a completion event", asy
     continueAfterFailure: vi.fn(), subscribe: async () => () => {},
   }
   render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
-  await screen.findByText("Some sandboxes could not be migrated")
+  await screen.findByText("Some computers could not be migrated")
   fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
   expect(await screen.findByText("Normal application")).toBeVisible()
   expect(read).toHaveBeenCalledTimes(2)

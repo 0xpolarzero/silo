@@ -26,7 +26,7 @@ export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseSta
     appVersion: "26.928.31416", runtimeVersion: "0.0.14", lcuVersion: "0.8.0", agents: ["Claude Code", "Codex"],
   }
   switch (name) {
-    case "unavailable": return { ...base, state: "unavailable", reason: "This sandbox was created before computer use was built in.", agents: null }
+    case "unavailable": return { ...base, state: "unavailable", reason: "This computer was created before computer use was built in.", agents: null }
     case "preparing": return { ...base, state: "preparing", reason: "Preparing ChatGPT for Linux.", appVersion: null, runtimeVersion: null, lcuVersion: null, agents: null }
     case "installing": return { ...base, state: "installing", reason: "Configuring Claude Code and Codex." }
     case "failed": return { ...base, state: "failed", reason: "No supported agent was found. Install one, then set up computer use again.", agents: [] }
@@ -37,8 +37,8 @@ export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseSta
     // The user turned it off; Silo is applying it and the agents still have the old setting.
     case "approval-pending": return { ...base, approval: "ask", appliedApproval: "auto", approvalApply: "pending" }
     // Silo could not apply it: nothing is assumed rolled back.
-    case "approval-failed": return { ...base, approval: "ask", appliedApproval: "auto", approvalApply: "failed", approvalApplyReason: "Applying took too long. Silo tries again when the sandbox starts." }
-    case "approval-partial": return { ...base, approval: "ask", appliedApproval: "auto", approvalApply: "partial", approvalApplyReason: "Some agents could not be configured. Details are in /var/log/silo-computer-use.log in the sandbox." }
+    case "approval-failed": return { ...base, approval: "ask", appliedApproval: "auto", approvalApply: "failed", approvalApplyReason: "Applying took too long. Silo tries again when the computer starts." }
+    case "approval-partial": return { ...base, approval: "ask", appliedApproval: "auto", approvalApply: "partial", approvalApplyReason: "Some agents could not be configured. Details are in /var/log/silo-computer-use.log in the computer." }
     default: return base
   }
 }
@@ -46,7 +46,7 @@ export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseSta
 export function fixtureDesktopState(name: ComputerUseFixtureName): LinuxDesktopState {
   const common = { installed: true, autoStart: true, state: "running" as const, sessionState: "running" as const, streamState: "running" as const }
   return name === "pre-v4"
-    ? { ...common, lcuState: "needs-runtime", lcuReason: "Install the official ChatGPT app in this sandbox." }
+    ? { ...common, lcuState: "needs-runtime", lcuReason: "Install the official ChatGPT app in this computer." }
     : { ...common, computerUse: fixtureComputerUse(name) }
 }
 
@@ -77,9 +77,9 @@ export function withDevicesFixture(source: ApplicationSource): ApplicationSource
 export function withComputerUseFixture(source: ApplicationSource, name: ComputerUseFixtureName): ApplicationSource {
   return {
     ...source,
-    workspaces: source.workspaces.map((workspace, index) => index === 0
-      ? { ...workspace, machine: { ...workspace.machine, desktop: name === "pre-v4" ? { startWithSandbox: true } : { startWithSandbox: true, builtIn: true } } }
-      : workspace),
+    computers: source.computers.map((computer, index) => index === 0
+      ? { ...computer, configuration: { ...computer.configuration, desktop: name === "pre-v4" ? { startWithComputer: true } : { startWithComputer: true, builtIn: true } } }
+      : computer),
   }
 }
 
@@ -98,7 +98,7 @@ export function createFixtureComputerUseBackend(name: ComputerUseFixtureName, ch
   return {
     readDesktopState: async () => structuredClone(desktop),
     // Like the native one: the choice is stored at once and applied in the background.
-    setApproval: async (_workspace, mode) => {
+    setApproval: async (_computer, mode) => {
       setUse({ approval: mode, approvalApply: "pending", approvalApplyReason: null })
       window.setTimeout(() => setUse({ appliedApproval: mode, approvalApply: "applied" }), 900)
       return structuredClone(desktop)

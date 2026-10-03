@@ -10,7 +10,7 @@ export interface DirectoryPage {
   nextOffset: number | null
 }
 
-export type DirectoryLoader = (workspace: string, path: string, offset: number, snapshotId?: string) => Promise<DirectoryPage>
+export type DirectoryLoader = (computer: string, path: string, offset: number, snapshotId?: string) => Promise<DirectoryPage>
 export interface DirectorySnapshot {
   snapshotId: string | null
   loadingMore: boolean
@@ -24,14 +24,14 @@ export interface DirectorySnapshot {
 const safeErrors = new Set([
   'Could not load this folder.', 'Folder listing expired. Refresh this folder.',
   'This folder no longer exists.', 'Permission denied.', 'This folder cannot be browsed.',
-  'This folder is too large to list.', 'Start this sandbox to browse its files.', 'Invalid folder request.',
+  'This folder is too large to list.', 'Start this computer to browse its files.', 'Invalid folder request.',
   'Folder changed. Reload to continue.',
 ])
 const emptySnapshot: DirectorySnapshot = { snapshotId: null, loadingMore: false, errorOperation: null, entries: null, nextOffset: null, loading: false, error: null }
-export const directoryKey = (workspace: string, path: string) => JSON.stringify([workspace, path])
+export const directoryKey = (computer: string, path: string) => JSON.stringify([computer, path])
 
 type RecordState = {
-  workspace: string
+  computer: string
   snapshot: DirectorySnapshot
   listeners: Set<() => void>
   generation: number
@@ -58,8 +58,8 @@ export function createDirectoryStore(loader?: DirectoryLoader) {
   function getRecord(key: string) {
     let record = records.get(key)
     if (!record) {
-      const [workspace] = JSON.parse(key) as [string, string]
-      record = { workspace, snapshot: emptySnapshot, listeners: new Set(), generation: 0, pending: null }
+      const [computer] = JSON.parse(key) as [string, string]
+      record = { computer, snapshot: emptySnapshot, listeners: new Set(), generation: 0, pending: null }
     }
     records.delete(key)
     records.set(key, record)
@@ -97,9 +97,9 @@ export function createDirectoryStore(loader?: DirectoryLoader) {
     update(record, emptySnapshot)
   }
 
-  function load(workspace: string, path: string, options: { more?: boolean; refresh?: boolean } = {}): Promise<void> {
+  function load(computer: string, path: string, options: { more?: boolean; refresh?: boolean } = {}): Promise<void> {
     if (disposed) return Promise.resolve()
-    const record = getRecord(directoryKey(workspace, path))
+    const record = getRecord(directoryKey(computer, path))
     if (record.pending) return record.pending
     const previous = record.snapshot
     if (previous.entries && !options.refresh && (!options.more || previous.nextOffset === null)) return Promise.resolve()
@@ -121,7 +121,7 @@ export function createDirectoryStore(loader?: DirectoryLoader) {
         let nextOffset: number | null = null
         // Refresh every already loaded page, publishing only once all succeed.
         do {
-          const page = await loader(workspace, path, offset, snapshotId ?? undefined)
+          const page = await loader(computer, path, offset, snapshotId ?? undefined)
           if (!current()) return
           if (!page.snapshotId || (snapshotId !== null && page.snapshotId !== snapshotId)) throw new Error('Folder changed. Reload to continue.')
           snapshotId = page.snapshotId
@@ -136,7 +136,7 @@ export function createDirectoryStore(loader?: DirectoryLoader) {
         update(record, { entries, nextOffset, snapshotId, loading: false, loadingMore: false, error: null, errorOperation: null })
       } catch (error) {
         const nativeMessage = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-        const message = nativeMessage === 'Start this VM to browse its files.' ? 'Start this sandbox to browse its files.' : nativeMessage
+        const message = nativeMessage === 'Start this VM to browse its files.' ? 'Start this computer to browse its files.' : nativeMessage
         const retryOperation = message === 'Folder listing expired. Refresh this folder.' || message === 'Folder changed. Reload to continue.' ? 'refresh' : operation
         if (current()) update(record, { ...previous, loading: false, loadingMore: false, errorOperation: retryOperation, error: safeErrors.has(message) ? message : loader ? 'Could not load this folder.' : 'Files are unavailable.' })
       } finally {
@@ -158,8 +158,8 @@ export function createDirectoryStore(loader?: DirectoryLoader) {
     },
     getSnapshot(key: string): DirectorySnapshot { return records.get(key)?.snapshot ?? emptySnapshot },
     load,
-    invalidateWorkspace(workspace: string) {
-      for (const record of records.values()) if (record.workspace === workspace) invalidate(record)
+    invalidateComputer(computer: string) {
+      for (const record of records.values()) if (record.computer === computer) invalidate(record)
       prune()
     },
     dispose() {

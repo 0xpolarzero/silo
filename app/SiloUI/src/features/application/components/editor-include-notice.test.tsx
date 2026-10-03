@@ -88,7 +88,7 @@ it("shows the line to add with its explanation and a copy button, until dismisse
   const store = createMemorySettingsStore()
   render(notice(store, createFixtureEditorInclude()))
   const section = await screen.findByRole("region", region)
-  expect(section).toHaveTextContent("Silo couldn't update your SSH config, which links to a file it can't change. Add this line at the top so editors reconnect to your current sandboxes.")
+  expect(section).toHaveTextContent("Silo couldn't update your SSH config, which links to a file it can't change. Add this line at the top so editors reconnect to your current computers.")
   expect(section).toHaveTextContent(fixtureEditorIncludeLine)
 
   await user.click(screen.getByRole("button", { name: "Copy line to add" }))

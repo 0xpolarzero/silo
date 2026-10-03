@@ -12,11 +12,11 @@ export const noticeSchema = z.object({
   key: z.string().min(1),
   title: z.string(),
   body: z.string(),
-  sandbox: z.object({ id: z.string(), name: z.string() }).nullable(),
+  computer: z.object({ id: z.string(), name: z.string() }).nullable(),
 })
 
 export type Notice = z.infer<typeof noticeSchema>
-export type NoticeSandbox = NonNullable<Notice["sandbox"]>
+export type NoticeComputer = NonNullable<Notice["computer"]>
 
 export const NOTICE_EVENT = "silo://notice"
 
@@ -31,10 +31,10 @@ export function deliverNotice(notice: Notice): void {
   invoke("deliver_notice", { notice }).catch((error: unknown) => console.error("Silo notice:", error))
 }
 
-/** Drop the system notifications of a sandbox (the backend also does this on deletion). */
-export function clearSandboxNotices(sandboxId: string): void {
+/** Drop the system notifications of a computer (the backend also does this on deletion). */
+export function clearComputerNotices(computerId: string): void {
   if (!isTauri()) return
-  invoke("clear_sandbox_notices", { sandboxId }).catch((error: unknown) => console.error("Silo notice:", error))
+  invoke("clear_computer_notices", { computerId }).catch((error: unknown) => console.error("Silo notice:", error))
 }
 
 /** Subscribe to backend-originated notices that need an in-app toast. Returns a disposer. */

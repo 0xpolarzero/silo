@@ -10,11 +10,11 @@ function LogsTable(props: Omit<ComponentProps<typeof ControlledLogsTable>, "expa
   return <ControlledLogsTable {...props} expandedRows={expandedRows} onExpandedRowsChange={setExpandedRows} />
 }
 
-const workspace = applicationSourceForScenario("running").workspaces[0]
+const computer = applicationSourceForScenario("running").computers[0]
 function rows(count: number): LogRow[] {
-  return Array.from({ length: count }, (_, index) => ({ workspace, entry: {
+  return Array.from({ length: count }, (_, index) => ({ computer, entry: {
     id: String(index), line: `record ${index}`, occurredAt: "2026-09-22T10:00:00Z",
-    deviceId: "local", sandboxId: workspace.machine.id, source: "runtime",
+    deviceId: "local", computerId: computer.configuration.id, source: "runtime",
   } }))
 }
 function props(entries = rows(1)) {
@@ -57,7 +57,7 @@ describe("logs table", () => {
     render(<LogsTable {...props([])} loading />)
     const table = screen.getByRole("table", { name: "Logs" })
     expect(table).toHaveAttribute("aria-busy", "true")
-    expect(within(table).getAllByRole("columnheader").map(header => header.textContent)).toEqual(["Time", "Message", "Sandbox", "Source", "Actions"])
+    expect(within(table).getAllByRole("columnheader").map(header => header.textContent)).toEqual(["Time", "Message", "Computer", "Source", "Actions"])
     expect(table.querySelectorAll('[data-log-skeleton]')).toHaveLength(8)
     expect(within(table).queryByRole("button")).not.toBeInTheDocument()
   })
@@ -89,10 +89,10 @@ describe("logs table", () => {
     expect(screen.queryByRole("button", { name: "Load older" })).not.toBeInTheDocument()
   })
 
-  it("distinguishes a same-named remote sandbox and reveals its device on hover or focus", async () => {
+  it("distinguishes a same-named remote computer and reveals its device on hover or focus", async () => {
     const entries = rows(2)
-    entries[1].workspace = { ...workspace, device: { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: "remote-dev" } }
-    entries[1].entry = { ...entries[1].entry, deviceId: "office", sandboxId: "remote-dev" }
+    entries[1].computer = { ...computer, device: { id: "office", name: "Office Mac", address: "office.local", connected: true, computerId: "remote-dev" } }
+    entries[1].entry = { ...entries[1].entry, deviceId: "office", computerId: "remote-dev" }
     const user = userEvent.setup()
     render(<LogsTable {...props(entries)} />)
     expect(screen.queryByRole("columnheader", { name: "Device" })).not.toBeInTheDocument()
@@ -100,7 +100,7 @@ describe("logs table", () => {
     const remote = screen.getByLabelText("dev, Running, on Office Mac")
     expect(local).toHaveTextContent(/^dev$/)
     expect(remote).toHaveTextContent("dev · Office Mac")
-    expect(remote.querySelector('[data-workspace-state-dot="running"]')).not.toBeNull()
+    expect(remote.querySelector('[data-computer-state-dot="running"]')).not.toBeNull()
     expect(remote).toHaveAttribute("tabindex", "0")
     await user.hover(remote)
     expect(await screen.findByRole("tooltip")).toHaveTextContent("Office Mac")

@@ -5,7 +5,7 @@ import { z } from "zod"
 import { formatStorageBytes } from "@/features/application/model/workspace-storage"
 
 /**
- * The previous sandbox storage, kept after an upgrade that converted every sandbox. Silo deletes it
+ * The previous computer storage, kept after an upgrade that converted every computer. Silo deletes it
  * on its own 14 days later. `deleteAt` is that instant; it is null when Silo cannot read its saved
  * date, in which case the backup is never deleted automatically but can still be deleted by hand.
  */
@@ -181,7 +181,7 @@ export function deleteConfirmation(size: PreUpgradeBackupSize) {
   const freed = typeof size === "number" ? `frees up to ${formatStorageBytes(size)}` : "frees its disk space"
   return {
     title: "Delete the pre-upgrade backup permanently?",
-    description: `This deletes the copy of your sandboxes from before the upgrade and ${freed}. It can't be undone. Your current sandboxes aren't affected.`,
+    description: `This deletes the copy of your computers from before the upgrade and ${freed}. It can't be undone. Your current computers aren't affected.`,
     confirmLabel: "Delete permanently",
   }
 }

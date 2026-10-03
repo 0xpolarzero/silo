@@ -13,7 +13,7 @@ import type {
   ApplicationActions,
   ApplicationGitHubConfiguration,
   ApplicationSource,
-  GitHubWorkspaceOperation,
+  GitHubComputerOperation,
 } from "@/features/application/model/application-source"
 import {
   GitHubAccessEditor,
@@ -22,23 +22,23 @@ import {
   type GitHubRepositorySelection,
 } from "@/features/github/components/github-access-editor"
 
-type WorkspaceSelections = Record<string, GitHubRepositorySelection[]>
-type WorkspaceIdentities = Record<string, GitHubIdentity>
-type WorkspaceOperations = Record<string, GitHubWorkspaceOperation>
+type ComputerSelections = Record<string, GitHubRepositorySelection[]>
+type ComputerIdentities = Record<string, GitHubIdentity>
+type ComputerOperations = Record<string, GitHubComputerOperation>
 
 interface GitHubDraft {
   access: Record<string, GitHubRepositoryAccess>
-  selections: WorkspaceSelections
-  identities: WorkspaceIdentities
+  selections: ComputerSelections
+  identities: ComputerIdentities
 }
 
 function draftFromSource(
-  policiesSnapshot: ApplicationSource["github"]["workspaces"],
+  policiesSnapshot: ApplicationSource["github"]["computers"],
   deviceIdentity: ApplicationSource["github"]["deviceIdentity"],
-  workspaces: ApplicationSource["workspaces"],
+  computers: ApplicationSource["computers"],
 ): GitHubDraft {
-  const policies = workspaces.map((workspace) => policiesSnapshot?.find((policy) => policy.workspace === workspace.machine.name) ?? ({
-    workspace: workspace.machine.name,
+  const policies = computers.map((computer) => policiesSnapshot?.find((policy) => policy.computer === computer.configuration.name) ?? ({
+    computer: computer.configuration.name,
     repositoryMode: "selected" as const,
     allRepositoriesAllowChanges: false,
     identity: {
@@ -46,33 +46,33 @@ function draftFromSource(
       email: deviceIdentity?.email ?? "",
       apply: Boolean(deviceIdentity?.name.trim() && deviceIdentity.email.trim()),
     },
-    repositories: workspace.githubRepositories.map((repository) => ({ repository, allowPushes: false })),
+    repositories: computer.githubRepositories.map((repository) => ({ repository, allowPushes: false })),
   }))
 
   return {
-    access: Object.fromEntries(policies.map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, ...(policy.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}) }])),
+    access: Object.fromEntries(policies.map((policy) => [policy.computer, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, ...(policy.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}) }])),
     selections: Object.fromEntries(policies.map((policy) => [
-      policy.workspace,
+      policy.computer,
       policy.repositories.map((repository) => ({ ...repository })),
     ])),
-    identities: Object.fromEntries(policies.map((policy) => [policy.workspace, { ...policy.identity }])),
+    identities: Object.fromEntries(policies.map((policy) => [policy.computer, { ...policy.identity }])),
   }
 }
 
 function copyDraft(draft: GitHubDraft): GitHubDraft {
   return {
     access: Object.fromEntries(Object.entries(draft.access).map(([name, access]) => [name, { ...access }])),
-    selections: Object.fromEntries(Object.entries(draft.selections).map(([workspace, selections]) => [
-      workspace,
+    selections: Object.fromEntries(Object.entries(draft.selections).map(([computer, selections]) => [
+      computer,
       selections.map((selection) => ({ ...selection })),
     ])),
-    identities: Object.fromEntries(Object.entries(draft.identities).map(([workspace, identity]) => [workspace, { ...identity }])),
+    identities: Object.fromEntries(Object.entries(draft.identities).map(([computer, identity]) => [computer, { ...identity }])),
   }
 }
 
 /**
- * A save of the sandboxes in `changed` only, based on the settings revision this page
- * shows. Other sandboxes keep their saved choices (for example an assignment a fork just
+ * A save of the computers in `changed` only, based on the settings revision this page
+ * shows. Other computers keep their saved choices (for example an assignment a fork just
  * copied), and access on/off is never part of a save: a save sent right after Disable
  * access must not turn access back on.
  */
@@ -80,31 +80,31 @@ function configurationFromDraft(source: ApplicationSource, draft: GitHubDraft, c
   return {
     baseRevision: source.github.policyRevision,
     deviceIdentity: source.github.deviceIdentity ?? null,
-    workspaces: source.workspaces.filter((w) => !w.device && changed.has(w.machine.name)).map(({ machine }) => ({
-      workspace: machine.name,
-      ...(draft.access[machine.name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }),
-      identity: draft.identities[machine.name] ?? { name: "", email: "", apply: false },
-      repositories: draft.selections[machine.name] ?? [],
+    computers: source.computers.filter((w) => !w.device && changed.has(w.configuration.name)).map(({ configuration }) => ({
+      computer: configuration.name,
+      ...(draft.access[configuration.name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }),
+      identity: draft.identities[configuration.name] ?? { name: "", email: "", apply: false },
+      repositories: draft.selections[configuration.name] ?? [],
     })),
   }
 }
 
-function operationsFromSource(operations: readonly GitHubWorkspaceOperation[] | undefined): WorkspaceOperations {
-  return Object.fromEntries((operations ?? []).map((operation) => [operation.workspace, operation]))
+function operationsFromSource(operations: readonly GitHubComputerOperation[] | undefined): ComputerOperations {
+  return Object.fromEntries((operations ?? []).map((operation) => [operation.computer, operation]))
 }
 
 function sameIdentity(left: GitHubIdentity | undefined, right: GitHubIdentity) {
   return left?.name === right.name && left.email === right.email && left.apply === right.apply
 }
 
-/** Small persistent label in the sandbox header; the transient progress and results live in toasts. */
-function WorkspaceSyncStatus({ operation }: { operation: GitHubWorkspaceOperation }) {
+/** Small persistent label in the computer header; the transient progress and results live in toasts. */
+function ComputerSyncStatus({ operation }: { operation: GitHubComputerOperation }) {
   if (operation.status !== "failed") return null
   const failure = githubFailure(operation.message)
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-destructive hover:text-destructive" aria-label={`GitHub settings not applied for ${operation.workspace}. View details`}>
+        <Button type="button" variant="ghost" size="xs" className="h-6 gap-1 px-1.5 text-[11px] text-destructive hover:text-destructive" aria-label={`GitHub settings not applied for ${operation.computer}. View details`}>
           <TriangleAlert className="size-3" aria-hidden="true" />Not applied
         </Button>
       </PopoverTrigger>
@@ -131,32 +131,32 @@ export function GitHubPage({
   onBusyChange?: (busy: boolean) => void
 }) {
   const sourceDraft = useMemo(
-    () => draftFromSource(source.github.workspaces, source.github.deviceIdentity, source.workspaces.filter(w => !w.device)),
-    [source.github.deviceIdentity, source.github.workspaces, source.workspaces],
+    () => draftFromSource(source.github.computers, source.github.deviceIdentity, source.computers.filter(w => !w.device)),
+    [source.github.deviceIdentity, source.github.computers, source.computers],
   )
-  const workspaceOwners = useMemo(
-    () => new Map(source.workspaces.filter(workspace => !workspace.device).map(({ machine }) => [machine.name, machine.id])),
-    [source.workspaces],
+  const computerOwners = useMemo(
+    () => new Map(source.computers.filter(computer => !computer.device).map(({ configuration }) => [configuration.name, configuration.id])),
+    [source.computers],
   )
   const [draft, setDraft] = useState(() => copyDraft(sourceDraft))
   const [connectionState, setConnectionState] = useState(source.github.state)
   const [accessEnabled, setAccessEnabled] = useState(source.github.accessEnabled ?? true)
-  const [workspaceOperations, setWorkspaceOperations] = useState<WorkspaceOperations>(() => operationsFromSource(source.github.workspaceOperations))
+  const [computerOperations, setComputerOperations] = useState<ComputerOperations>(() => operationsFromSource(source.github.computerOperations))
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false)
-  const identityIntent = useRef<WorkspaceIdentities>(copyDraft(sourceDraft).identities)
+  const identityIntent = useRef<ComputerIdentities>(copyDraft(sourceDraft).identities)
   const saveSequence = useRef(0)
   const rejectedSaves = useRef(new Set<string>())
   const pendingSaves = useRef(new Map<string, number>())
-  const saveIntents = useRef(new Map<string, ApplicationGitHubConfiguration["workspaces"][number]>())
-  const workspaceOwnersRef = useRef(workspaceOwners)
-  const sourceDraftKey = useRef(JSON.stringify([sourceDraft, [...workspaceOwners]]))
-  const sourceOperationsKey = useRef(JSON.stringify([source.github.policyRevision, source.github.workspaceOperations]))
+  const saveIntents = useRef(new Map<string, ApplicationGitHubConfiguration["computers"][number]>())
+  const computerOwnersRef = useRef(computerOwners)
+  const sourceDraftKey = useRef(JSON.stringify([sourceDraft, [...computerOwners]]))
+  const sourceOperationsKey = useRef(JSON.stringify([source.github.policyRevision, source.github.computerOperations]))
   // Only operations the user started here notify; remember their toasts for owner changes.
   const userInitiated = useRef(new Set<string>())
-  const toastWorkspaces = useRef(new Set<string>())
+  const toastComputers = useRef(new Set<string>())
   const catalogAvailable = source.github.repositoryCatalogStatus?.status !== "unavailable"
   const tokenConnected = source.github.personalToken?.state === "connected"
-  const applying = Object.values(workspaceOperations).some((operation) => operation.status === "applying")
+  const applying = Object.values(computerOperations).some((operation) => operation.status === "applying")
   const busy = connectionState === "connecting" || applying
 
   useEffect(() => {
@@ -164,38 +164,38 @@ export function GitHubPage({
   }, [busy, onBusyChange])
 
   useEffect(() => {
-    const key = JSON.stringify([sourceDraft, [...workspaceOwners]])
+    const key = JSON.stringify([sourceDraft, [...computerOwners]])
     if (sourceDraftKey.current === key) return
     sourceDraftKey.current = key
     const changedOwners = new Set<string>()
-    for (const [name, id] of workspaceOwnersRef.current) {
-      if (workspaceOwners.get(name) === id) continue
+    for (const [name, id] of computerOwnersRef.current) {
+      if (computerOwners.get(name) === id) continue
       changedOwners.add(name)
       pendingSaves.current.delete(name)
       rejectedSaves.current.delete(name)
       saveIntents.current.delete(name)
       userInitiated.current.delete(name)
-      if (toastWorkspaces.current.delete(name)) dismissOperationToast(`github-apply:${name}`)
+      if (toastComputers.current.delete(name)) dismissOperationToast(`github-apply:${name}`)
     }
-    workspaceOwnersRef.current = workspaceOwners
+    computerOwnersRef.current = computerOwners
     const submittedIdentities = identityIntent.current
     const next = copyDraft(sourceDraft)
-    for (const [workspace, policy] of saveIntents.current) {
-      if (!next.access[workspace]) continue
-      next.access[workspace] = { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, authenticationMethod: policy.authenticationMethod }
-      next.selections[workspace] = policy.repositories.map((repository) => ({ ...repository }))
-      next.identities[workspace] = { ...policy.identity }
+    for (const [computer, policy] of saveIntents.current) {
+      if (!next.access[computer]) continue
+      next.access[computer] = { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, authenticationMethod: policy.authenticationMethod }
+      next.selections[computer] = policy.repositories.map((repository) => ({ ...repository }))
+      next.identities[computer] = { ...policy.identity }
     }
     identityIntent.current = copyDraft(next).identities
     // Preserve text still being edited; blur submits it separately.
     // oxlint-disable-next-line react/set-state-in-effect
     setDraft((current) => {
-      for (const [workspace, identity] of Object.entries(current.identities)) {
-        if (!changedOwners.has(workspace) && next.identities[workspace] && !sameIdentity(submittedIdentities[workspace], identity)) next.identities[workspace] = identity
+      for (const [computer, identity] of Object.entries(current.identities)) {
+        if (!changedOwners.has(computer) && next.identities[computer] && !sameIdentity(submittedIdentities[computer], identity)) next.identities[computer] = identity
       }
       return next
     })
-  }, [sourceDraft, workspaceOwners])
+  }, [sourceDraft, computerOwners])
 
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
@@ -210,68 +210,68 @@ export function GitHubPage({
   }, [source.github.state, source.github.accessEnabled])
 
   useEffect(() => {
-    const key = JSON.stringify([source.github.policyRevision, source.github.workspaceOperations])
+    const key = JSON.stringify([source.github.policyRevision, source.github.computerOperations])
     if (sourceOperationsKey.current === key) return
     sourceOperationsKey.current = key
     // Consecutive saves can finish with identical messages before an applying snapshot reaches the UI.
     // A new revision still settles the optimistic progress for that save.
     // oxlint-disable-next-line react/set-state-in-effect
-    setWorkspaceOperations(operationsFromSource(source.github.workspaceOperations))
-  }, [source.github.policyRevision, source.github.workspaceOperations])
+    setComputerOperations(operationsFromSource(source.github.computerOperations))
+  }, [source.github.policyRevision, source.github.computerOperations])
 
-  const retryRef = useRef(retryWorkspace)
-  retryRef.current = retryWorkspace
-  const workspacesRef = useRef(source.workspaces)
-  workspacesRef.current = source.workspaces
-  const announced = useRef(new Map<string, string>(Object.entries(workspaceOperations).map(([name, operation]) => [name, `${operation.status}|${operation.message}`])))
+  const retryRef = useRef(retryComputer)
+  retryRef.current = retryComputer
+  const computersRef = useRef(source.computers)
+  computersRef.current = source.computers
+  const announced = useRef(new Map<string, string>(Object.entries(computerOperations).map(([name, operation]) => [name, `${operation.status}|${operation.message}`])))
 
   useEffect(() => {
-    for (const [name, operation] of Object.entries(workspaceOperations)) {
+    for (const [name, operation] of Object.entries(computerOperations)) {
       const key = `${operation.status}|${operation.message}`
       if (announced.current.get(name) === key) continue
       announced.current.set(name, key)
       if (!userInitiated.current.has(name)) continue
-      toastWorkspaces.current.add(name)
+      toastComputers.current.add(name)
       if (operation.status !== "applying") userInitiated.current.delete(name)
       const id = `github-apply:${name}`
-      const machine = workspacesRef.current.find((workspace) => !workspace.device && workspace.machine.name === name)?.machine
-      const noticeSandbox = machine ? { id: machine.id, name: machine.name } : undefined
-      if (operation.status === "applying") showOperationProgress(id, { title: operation.message, step: name, sandbox: name })
-      else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name, sandbox: name, persist: true, noticeSandbox })
+      const configuration = computersRef.current.find((computer) => !computer.device && computer.configuration.name === name)?.configuration
+      const noticeComputer = configuration ? { id: configuration.id, name: configuration.name } : undefined
+      if (operation.status === "applying") showOperationProgress(id, { title: operation.message, step: name, computer: name })
+      else if (operation.status === "succeeded") showOperationSuccess(id, "GitHub settings applied", { description: name, computer: name, persist: true, noticeComputer })
       else {
         const failure = githubFailure(operation.message)
         showOperationFailure(id, failure.message, {
           description: `${name}: ${firstLine(failure.details)}`,
-          sandbox: name,
-          noticeSandbox,
-          retry: failure.canRetry && machine ? () => {
-            const current = workspacesRef.current.find(workspace => !workspace.device && workspace.machine.name === name)
-            if (current?.machine.id === machine.id) retryRef.current(name)
+          computer: name,
+          noticeComputer,
+          retry: failure.canRetry && configuration ? () => {
+            const current = computersRef.current.find(computer => !computer.device && computer.configuration.name === name)
+            if (current?.configuration.id === configuration.id) retryRef.current(name)
           } : undefined,
         })
       }
     }
-    for (const name of [...announced.current.keys()]) if (!workspaceOperations[name]) announced.current.delete(name)
-  }, [workspaceOperations])
+    for (const name of [...announced.current.keys()]) if (!computerOperations[name]) announced.current.delete(name)
+  }, [computerOperations])
 
-  function applyWorkspaceDraft(workspace: string, nextDraft: GitHubDraft, message: string) {
+  function applyComputerDraft(computer: string, nextDraft: GitHubDraft, message: string) {
     setDraft(nextDraft)
-    userInitiated.current.add(workspace)
-    setWorkspaceOperations((current) => ({
+    userInitiated.current.add(computer)
+    setComputerOperations((current) => ({
       ...current,
-      [workspace]: { workspace, status: "applying", message },
+      [computer]: { computer, status: "applying", message },
     }))
     const sequence = ++saveSequence.current
     // A save carries every edit not yet confirmed: this one, earlier pending ones and
     // rejected ones, so one failure settles them together and a retry resends them.
     for (const name of rejectedSaves.current) pendingSaves.current.set(name, sequence)
     rejectedSaves.current.clear()
-    pendingSaves.current.set(workspace, sequence)
+    pendingSaves.current.set(computer, sequence)
     const submittedDraft = copyDraft({ ...nextDraft, identities: identityIntent.current })
-    const intent = configurationFromDraft(source, submittedDraft, new Set([workspace])).workspaces[0]
-    if (intent) saveIntents.current.set(workspace, intent)
+    const intent = configurationFromDraft(source, submittedDraft, new Set([computer])).computers[0]
+    if (intent) saveIntents.current.set(computer, intent)
     const configuration = configurationFromDraft(source, submittedDraft, new Set(pendingSaves.current.keys()))
-    configuration.workspaces = configuration.workspaces.map((policy) => saveIntents.current.get(policy.workspace) ?? policy)
+    configuration.computers = configuration.computers.map((policy) => saveIntents.current.get(policy.computer) ?? policy)
     void Promise.resolve().then(() => actions.saveGitHubConfiguration?.(configuration)).then(() => {
       for (const [name, pendingSequence] of pendingSaves.current) {
         if (pendingSequence <= sequence) {
@@ -282,72 +282,72 @@ export function GitHubPage({
     }).catch((cause: unknown) => {
       if (sequence !== saveSequence.current) return
       // Each save contains the complete configuration, including earlier pending edits.
-      const failedWorkspaces = [...pendingSaves.current.keys()]
+      const failedComputers = [...pendingSaves.current.keys()]
       pendingSaves.current.clear()
-      failedWorkspaces.forEach((name) => rejectedSaves.current.add(name))
-      setWorkspaceOperations((current) => {
+      failedComputers.forEach((name) => rejectedSaves.current.add(name))
+      setComputerOperations((current) => {
         const next = { ...current }
-        for (const name of failedWorkspaces) {
-          next[name] = { workspace: name, status: "failed", message: cause instanceof Error ? cause.message : "GitHub settings could not be saved.", canRetry: true }
+        for (const name of failedComputers) {
+          next[name] = { computer: name, status: "failed", message: cause instanceof Error ? cause.message : "GitHub settings could not be saved.", canRetry: true }
         }
         return next
       })
     })
   }
 
-  function updateSelections(workspace: string, selections: GitHubRepositorySelection[]) {
-    applyWorkspaceDraft(workspace, {
+  function updateSelections(computer: string, selections: GitHubRepositorySelection[]) {
+    applyComputerDraft(computer, {
       ...draft,
-      selections: { ...draft.selections, [workspace]: selections },
+      selections: { ...draft.selections, [computer]: selections },
     }, "Applying repository access…")
   }
 
-  function updateIdentity(workspace: string, identity: GitHubIdentity) {
-    const previous = draft.identities[workspace]
+  function updateIdentity(computer: string, identity: GitHubIdentity) {
+    const previous = draft.identities[computer]
     const nextDraft = {
       ...draft,
-      identities: { ...draft.identities, [workspace]: identity },
+      identities: { ...draft.identities, [computer]: identity },
     }
     setDraft(nextDraft)
-    if (previous?.apply !== identity.apply) commitIdentity(workspace, identity, nextDraft)
+    if (previous?.apply !== identity.apply) commitIdentity(computer, identity, nextDraft)
   }
 
-  function commitIdentity(workspace: string, identity: GitHubIdentity, currentDraft = draft) {
-    if ((identity.apply && (!identity.name.trim() || !identity.email.trim())) || sameIdentity(identityIntent.current[workspace], identity)) return
-    identityIntent.current = { ...identityIntent.current, [workspace]: { ...identity } }
-    applyWorkspaceDraft(workspace, {
+  function commitIdentity(computer: string, identity: GitHubIdentity, currentDraft = draft) {
+    if ((identity.apply && (!identity.name.trim() || !identity.email.trim())) || sameIdentity(identityIntent.current[computer], identity)) return
+    identityIntent.current = { ...identityIntent.current, [computer]: { ...identity } }
+    applyComputerDraft(computer, {
       ...currentDraft,
-      identities: { ...currentDraft.identities, [workspace]: identity },
+      identities: { ...currentDraft.identities, [computer]: identity },
     }, "Applying Git identity…")
   }
 
-  function resetIdentity(workspace: string) {
+  function resetIdentity(computer: string) {
     if (!source.github.deviceIdentity) return
     const identity = { ...source.github.deviceIdentity, apply: true }
     const nextDraft = {
       ...draft,
-      identities: { ...draft.identities, [workspace]: identity },
+      identities: { ...draft.identities, [computer]: identity },
     }
-    identityIntent.current = { ...identityIntent.current, [workspace]: identity }
-    applyWorkspaceDraft(workspace, nextDraft, "Applying Git identity…")
+    identityIntent.current = { ...identityIntent.current, [computer]: identity }
+    applyComputerDraft(computer, nextDraft, "Applying Git identity…")
   }
 
-  function retryWorkspace(workspace: string) {
-    if (rejectedSaves.current.has(workspace)) {
-      applyWorkspaceDraft(workspace, draft, "Retrying GitHub access…")
+  function retryComputer(computer: string) {
+    if (rejectedSaves.current.has(computer)) {
+      applyComputerDraft(computer, draft, "Retrying GitHub access…")
       return
     }
-    userInitiated.current.add(workspace)
-    setWorkspaceOperations((current) => ({
+    userInitiated.current.add(computer)
+    setComputerOperations((current) => ({
       ...current,
-      [workspace]: { workspace, status: "applying", message: "Retrying GitHub access…" },
+      [computer]: { computer, status: "applying", message: "Retrying GitHub access…" },
     }))
-    actions.retryGitHubConfiguration?.(workspace)
+    actions.retryGitHubConfiguration?.(computer)
   }
 
   function toggleAccess() {
     const nextEnabled = !accessEnabled
-    source.workspaces.filter((w) => !w.device).forEach(({ machine }) => userInitiated.current.add(machine.name))
+    source.computers.filter((w) => !w.device).forEach(({ configuration }) => userInitiated.current.add(configuration.name))
     actions.setGitHubAccessEnabled?.(nextEnabled)
   }
 
@@ -384,21 +384,21 @@ export function GitHubPage({
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="mb-2 flex shrink-0 items-center justify-between gap-3">
-        <p className="text-[11px] text-muted-foreground">GitHub access for sandboxes on this device.</p>
+        <p className="text-[11px] text-muted-foreground">GitHub access for computers on this device.</p>
         {connectionState !== "connected" && tokenConnected && accessToggle}
       </div>
       <GitHubAccessEditor
         compactConnection
-        workspaces={source.workspaces.filter(w => !w.device).map(({ machine }) => ({ name: machine.name }))}
+        computers={source.computers.filter(w => !w.device).map(({ configuration }) => ({ name: configuration.name }))}
         connectionState={connectionState}
         tokenConnected={tokenConnected}
         tokenConnection={<PersonalTokenConnection status={source.github.personalToken}
           onSave={actions.saveGitHubPersonalToken} onRemove={actions.removeGitHubPersonalToken} />}
         repositoryOptions={source.github.repositoryCatalog ?? []}
-        workspaceSelections={draft.selections}
-        workspaceRepositoryAccess={draft.access}
-        onWorkspaceRepositoryAccessChange={(workspace, access) => applyWorkspaceDraft(workspace, { ...draft, access: { ...draft.access, [workspace]: access } }, "Applying repository access…")}
-        workspaceIdentities={draft.identities}
+        computerSelections={draft.selections}
+        computerRepositoryAccess={draft.access}
+        onComputerRepositoryAccessChange={(computer, access) => applyComputerDraft(computer, { ...draft, access: { ...draft.access, [computer]: access } }, "Applying repository access…")}
+        computerIdentities={draft.identities}
         currentDeviceGitIdentity={source.github.deviceIdentity ?? null}
         onConnect={() => {
           setConnectionState("connecting")
@@ -407,19 +407,19 @@ export function GitHubPage({
         onCancelConnection={actions.cancelGitHubConnection}
         onReopenAuthorization={actions.reopenGitHubAuthorization}
         onManageRepositories={actions.manageGitHubRepositories}
-        onWorkspaceSelectionsChange={updateSelections}
-        onWorkspaceIdentityChange={updateIdentity}
-        onCommitWorkspaceIdentity={commitIdentity}
-        onResetWorkspaceIdentity={resetIdentity}
+        onComputerSelectionsChange={updateSelections}
+        onComputerIdentityChange={updateIdentity}
+        onCommitComputerIdentity={commitIdentity}
+        onResetComputerIdentity={resetIdentity}
         connectedTitle={`Connected as @${source.github.account ?? "unknown"}`}
         connectedDetail={accessEnabled
-          ? "Repository credentials are scoped to each sandbox."
-          : "GitHub access is off for every sandbox, including sandboxes that use a personal token."}
+          ? "Repository credentials are scoped to each computer."
+          : "GitHub access is off for every computer, including computers that use a personal token."}
         connectedActions={connectedActions}
         notice={catalogNotice}
-        renderWorkspaceActions={({ name }) => {
-          const operation = workspaceOperations[name]
-          return operation ? <WorkspaceSyncStatus operation={operation} /> : undefined
+        renderComputerActions={({ name }) => {
+          const operation = computerOperations[name]
+          return operation ? <ComputerSyncStatus operation={operation} /> : undefined
         }}
         repositoryControlsAvailable={catalogAvailable && accessEnabled}
         confirmRepositoryClear

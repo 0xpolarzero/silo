@@ -9,13 +9,13 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen }))
 beforeEach(() => { native.invoke.mockReset(); native.listen.mockClear() })
 
 // Matches backup_controller::BackupState's serde camelCase JSON.
-const archive = { name: "dev.silo-backup", archivePath: "/exports/dev.silo-backup", completedLabel: "In progress", size: "Unknown", destination: "/exports", sandboxes: ["dev"] }
-const result = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "failed", title: "Export interrupted before the upgrade", message: "Silo closed before this export finished.", detail: "No export file was saved. Export the sandbox again." }
+const archive = { name: "dev.silo-backup", archivePath: "/exports/dev.silo-backup", completedLabel: "In progress", size: "Unknown", destination: "/exports", computers: ["dev"] }
+const result = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "failed", title: "Export interrupted before the upgrade", message: "Silo closed before this export finished.", detail: "No export file was saved. Export the computer again." }
 const state = { snapshotId: "3", operationId: "op-1", availability: "available", archives: [], operation: result, resultUnseen: true }
 
 describe("the unseen export or import result", () => {
   it("is the result the runtime marked unseen, with the id that acknowledges it", () => {
-    expect(unseenTransferResult(state)).toEqual({ id: "op-1", operation: "backup", outcome: "failed", title: "Export interrupted before the upgrade", message: "Silo closed before this export finished.", detail: "No export file was saved. Export the sandbox again." })
+    expect(unseenTransferResult(state)).toEqual({ id: "op-1", operation: "backup", outcome: "failed", title: "Export interrupted before the upgrade", message: "Silo closed before this export finished.", detail: "No export file was saved. Export the computer again." })
     const { detail: _detail, ...withoutDetail } = result
     expect(unseenTransferResult({ ...state, operation: withoutDetail })).toEqual({ id: "op-1", operation: "backup", outcome: "failed", title: "Export interrupted before the upgrade", message: "Silo closed before this export finished." })
   })

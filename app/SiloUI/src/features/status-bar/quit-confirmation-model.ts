@@ -1,12 +1,12 @@
-import type { ApplicationWorkspace } from "@/features/application/model/application-source"
+import type { ApplicationComputer } from "@/features/application/model/application-source"
 
-/** Quit stops Silo-owned local sandboxes only; remote sandboxes keep running (decision 7). */
-export function sandboxesStoppedByQuit(workspaces: ApplicationWorkspace[]): string[] {
-  return workspaces
-    .filter((workspace) => !workspace.device && (workspace.state === "running" || workspace.state === "starting"))
-    .map(({ machine }) => machine.name)
+/** Quit stops Silo-owned local computers only; remote computers keep running (decision 7). */
+export function computersStoppedByQuit(computers: ApplicationComputer[]): string[] {
+  return computers
+    .filter((computer) => !computer.device && (computer.state === "running" || computer.state === "starting"))
+    .map(({ configuration }) => configuration.name)
 }
 
 export function quitConfirmationDetail(names: string[]): string {
-  return `This stops ${names.length} running ${names.length === 1 ? "sandbox" : "sandboxes"}: ${names.join(", ")}.`
+  return `This stops ${names.length} running ${names.length === 1 ? "computer" : "computers"}: ${names.join(", ")}.`
 }

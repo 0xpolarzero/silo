@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { commitLabel, pushTarget, shortCommit } from "@/features/application/model/repository-push"
 import type { ApplicationRepository, RepositoryPushOperation, RepositoryPushTarget } from "@/features/application/model/application-source"
 
-export type PushRepository = (workspace: string, repositoryPath: string, commitCount: number, target: RepositoryPushTarget) => void
+export type PushRepository = (computer: string, repositoryPath: string, commitCount: number, target: RepositoryPushTarget) => void
 
 /** Every push names its repository and branch first (owner decision 1); the host then pushes exactly this commit. */
 function pushConfirmation(target: RepositoryPushTarget, commitCount: number) {
@@ -18,11 +18,11 @@ function pushConfirmation(target: RepositoryPushTarget, commitCount: number) {
   }
 }
 
-const UNCONFIRMABLE = "Silo cannot tell where this repository pushes. It needs a GitHub origin; refresh repositories, or update Silo on the device that runs this sandbox."
+const UNCONFIRMABLE = "Silo cannot tell where this repository pushes. It needs a GitHub origin; refresh repositories, or update Silo on the device that runs this computer."
 
 /**
  * The push button: asks for confirmation naming the repository, branch and commit, then pushes that
- * target. Disabled when the sandbox did not report a GitHub destination.
+ * target. Disabled when the computer did not report a GitHub destination.
  */
 export function RepositoryPushButton({ repository, disabled = false, label, onPush, children }: {
   repository: ApplicationRepository
@@ -41,7 +41,7 @@ export function RepositoryPushButton({ repository, disabled = false, label, onPu
 /** Compact in-row state for a push. Results are announced by notifications; only states that need attention or a decision stay. */
 export function RepositoryPushFeedback({
   operation,
-  workspace,
+  computer,
   repositoryPath,
   repository,
   onPush,
@@ -50,22 +50,22 @@ export function RepositoryPushFeedback({
   disabled = false,
 }: {
   operation: RepositoryPushOperation
-  workspace: string
+  computer: string
   repositoryPath: string
-  /** The repository as the sandbox reports it now; Retry confirms and pushes its current target. */
+  /** The repository as the computer reports it now; Retry confirms and pushes its current target. */
   repository?: ApplicationRepository
   onPush: (target: RepositoryPushTarget) => void
-  onDismiss: (workspace: string, repositoryPath: string) => void
+  onDismiss: (computer: string, repositoryPath: string) => void
   /** Show the success line and clear it after a few seconds. For surfaces without notifications. */
   showSuccess?: boolean
-  /** The sandbox must be available to retry a push. */
+  /** The computer must be available to retry a push. */
   disabled?: boolean
 }) {
   useEffect(() => {
     if (!showSuccess || operation.status !== "succeeded") return
-    const timer = window.setTimeout(() => onDismiss(workspace, repositoryPath), 4_000)
+    const timer = window.setTimeout(() => onDismiss(computer, repositoryPath), 4_000)
     return () => window.clearTimeout(timer)
-  }, [showSuccess, operation.status, onDismiss, repositoryPath, workspace])
+  }, [showSuccess, operation.status, onDismiss, repositoryPath, computer])
 
   if (operation.status === "pushing") {
     return (
@@ -79,7 +79,7 @@ export function RepositoryPushFeedback({
     return <div className="flex h-6 min-w-0 items-center gap-1.5 text-xs text-muted-foreground" role="status">
       <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
       <span className="truncate" title={operation.message}>{operation.message}</span>
-      <Button className="shrink-0" variant="outline" size="xs" onClick={() => onDismiss(workspace, repositoryPath)}>I’ve checked GitHub</Button>
+      <Button className="shrink-0" variant="outline" size="xs" onClick={() => onDismiss(computer, repositoryPath)}>I’ve checked GitHub</Button>
     </div>
   }
   if (operation.status === "succeeded") {

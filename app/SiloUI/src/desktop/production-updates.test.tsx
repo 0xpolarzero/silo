@@ -66,7 +66,7 @@ it.each(["preferences", "onboarding draft"] as const)("keeps undelivered %s and 
     updateOnboardingDraft: (draft) => deliver({ onboardingDraft: draft }),
     flush: nativeFlush,
   }, {}, saved)
-  const draft = { currentStep: "dependencies" as const, machines: [], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} }
+  const draft = { currentStep: "dependencies" as const, configurations: [], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} }
   if (kind === "preferences") await store.updateSettings({ theme: "dark" })
   else await store.updateOnboardingDraft(draft)
   render(<SettingsProvider store={store}><ProductionSurface source={source} dependencyStore={null} /></SettingsProvider>)

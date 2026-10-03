@@ -1,37 +1,37 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { ApplicationSecret, ApplicationSource, ApplicationWorkspace, SecretConfigurationRequest } from "@/features/application/model/application-source"
-import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
-import { remoteWorkspaceTarget, workspaceTarget } from "@/features/application/model/connections"
+import type { ApplicationSecret, ApplicationSource, ApplicationComputer, SecretConfigurationRequest } from "@/features/application/model/application-source"
+import type { ComputerCheckpoint } from "@/features/application/model/checkpoint-source"
+import { remoteComputerTarget, computerTarget } from "@/features/application/model/connections"
 
-function fixtureCheckpoint(workspace: ApplicationWorkspace, name: string, reason: WorkspaceCheckpoint["reason"]): WorkspaceCheckpoint {
-  return { id: `c${crypto.randomUUID().replaceAll("-", "").slice(0, 31)}`, name, createdAt: new Date().toISOString(), scope: workspace.pendingCheckpointRestore?.state ?? (workspace.state === "running" ? "full" : "disk"), reason }
+function fixtureCheckpoint(computer: ApplicationComputer, name: string, reason: ComputerCheckpoint["reason"]): ComputerCheckpoint {
+  return { id: `c${crypto.randomUUID().replaceAll("-", "").slice(0, 31)}`, name, createdAt: new Date().toISOString(), scope: computer.pendingCheckpointRestore?.state ?? (computer.state === "running" ? "full" : "disk"), reason }
 }
 
-function pendingWorkspace(workspace: ApplicationWorkspace): ApplicationWorkspace {
+function pendingComputer(computer: ApplicationComputer): ApplicationComputer {
   return {
-    machine: workspace.machine, device: workspace.device, purpose: "Local MicroSandbox",
+    configuration: computer.configuration, device: computer.device, purpose: "Local MicroSandbox",
     state: "stopped", stateDetail: "Ready to start from checkpoint", freshness: "fresh", settling: false,
     canDismissError: false,
-    repositories: [], files: [], ports: [], logs: [], githubRepositories: workspace.githubRepositories,
-    secretNames: workspace.secretNames, pendingSecretRevocations: [], checkpoints: [],
+    repositories: [], files: [], ports: [], logs: [], githubRepositories: computer.githubRepositories,
+    secretNames: computer.secretNames, pendingSecretRevocations: [], checkpoints: [],
     checkpointOperation: null, unfinishedRestore: null,
   }
 }
 
 export function useApplicationFixture(source: ApplicationSource) {
-  const [workspaceSnapshot, setWorkspaceSnapshot] = useState(source.workspaces)
-  const [workspaces, setWorkspaces] = useState(source.workspaces)
+  const [computerSnapshot, setComputerSnapshot] = useState(source.computers)
+  const [computers, setComputers] = useState(source.computers)
   const checkpointMembers = useRef(new Map<string, string>())
-  useEffect(() => { checkpointMembers.current.clear() }, [source.workspaces])
+  useEffect(() => { checkpointMembers.current.clear() }, [source.computers])
   // Native status snapshots clone the source; only changed metadata resets local edits.
   const incomingSecrets = JSON.stringify(source.secrets)
   const [secretSnapshot, setSecretSnapshot] = useState(incomingSecrets)
   const [secrets, setSecrets] = useState(source.secrets)
 
-  if (workspaceSnapshot !== source.workspaces) {
-    setWorkspaceSnapshot(source.workspaces)
-    setWorkspaces(source.workspaces)
+  if (computerSnapshot !== source.computers) {
+    setComputerSnapshot(source.computers)
+    setComputers(source.computers)
   }
   if (secretSnapshot !== incomingSecrets) {
     setSecretSnapshot(incomingSecrets)
@@ -39,12 +39,12 @@ export function useApplicationFixture(source: ApplicationSource) {
   }
 
   const onRestoreComplete = useCallback((targetName: string) => {
-    setWorkspaces((current) => {
-      const sourceWorkspace = current[0]
-      if (!sourceWorkspace || current.some(({ machine }) => machine.name === targetName)) return current
+    setComputers((current) => {
+      const sourceComputer = current[0]
+      if (!sourceComputer || current.some(({ configuration }) => configuration.name === targetName)) return current
       return [...current, {
-        ...sourceWorkspace,
-        machine: { ...sourceWorkspace.machine, id: crypto.randomUUID(), name: targetName },
+        ...sourceComputer,
+        configuration: { ...sourceComputer.configuration, id: crypto.randomUUID(), name: targetName },
         state: "stopped",
         stateDetail: "Restored and verified",
         attention: undefined,
@@ -62,49 +62,49 @@ export function useApplicationFixture(source: ApplicationSource) {
       const code = character.codePointAt(0)!
       return code < 32 || (code >= 127 && code <= 159)
     })) throw "Checkpoint name must contain 1 to 80 printable characters."
-    const selected = workspaces.find((workspace) => workspaceTarget(workspace) === target)
-    if (!selected) throw "This workspace is not a local VM."
+    const selected = computers.find((computer) => computerTarget(computer) === target)
+    if (!selected) throw "This computer is not a local VM."
     const point = fixtureCheckpoint(selected, label, "manual")
     if (selected.pendingCheckpointRestore) checkpointMembers.current.set(point.id, selected.pendingCheckpointRestore.checkpointId)
-    setWorkspaces((current) => current.map((workspace) => workspaceTarget(workspace) === target
-      ? { ...workspace, checkpoints: [point, ...(workspace.checkpoints ?? [])], checkpointOperation: null }
-      : workspace))
-  }, [workspaces])
+    setComputers((current) => current.map((computer) => computerTarget(computer) === target
+      ? { ...computer, checkpoints: [point, ...(computer.checkpoints ?? [])], checkpointOperation: null }
+      : computer))
+  }, [computers])
   const forkCheckpoint = useCallback(async (target: string, checkpointId: string | null, newName: string) => {
-    const selected = workspaces.find((workspace) => workspaceTarget(workspace) === target)
-    if (!selected) throw "The source workspace is not a local VM."
-    if (workspaces.some((workspace) => workspace.device?.id === selected.device?.id && workspace.machine.name === newName)) throw "The fork name is already in use or the workspace limit was reached."
+    const selected = computers.find((computer) => computerTarget(computer) === target)
+    if (!selected) throw "The source computer is not a local VM."
+    if (computers.some((computer) => computer.device?.id === selected.device?.id && computer.configuration.name === newName)) throw "The fork name is already in use or the workspace limit was reached."
     const pending = checkpointId === null ? selected.pendingCheckpointRestore : undefined
     const captured = checkpointId === null && !pending ? fixtureCheckpoint(selected, "Fork point", "manual") : undefined
     const point = captured ?? selected.checkpoints?.find((checkpoint) => checkpoint.id === checkpointId)
     if (!pending && !point) throw "The selected checkpoint no longer exists."
     const id = crypto.randomUUID()
-    const child: ApplicationWorkspace = {
-      ...pendingWorkspace(selected),
-      machine: { ...selected.machine, id: selected.device ? remoteWorkspaceTarget(selected.device.id, id) : id, name: newName },
-      device: selected.device ? { ...selected.device, vmId: id } : undefined,
-      pendingCheckpointRestore: pending ?? { checkpointId: checkpointMembers.current.get(point!.id) ?? point!.id, sourceWorkspace: selected.pendingCheckpointRestore?.sourceWorkspace ?? selected.machine.name, state: point!.scope },
+    const child: ApplicationComputer = {
+      ...pendingComputer(selected),
+      configuration: { ...selected.configuration, id: selected.device ? remoteComputerTarget(selected.device.id, id) : id, name: newName },
+      device: selected.device ? { ...selected.device, computerId: id } : undefined,
+      pendingCheckpointRestore: pending ?? { checkpointId: checkpointMembers.current.get(point!.id) ?? point!.id, sourceComputer: selected.pendingCheckpointRestore?.sourceComputer ?? selected.configuration.name, state: point!.scope },
     }
-    setWorkspaces((current) => [...current.map((workspace) => workspaceTarget(workspace) === target && captured
-      ? { ...workspace, checkpoints: [captured, ...(workspace.checkpoints ?? [])] }
-      : workspace), child])
-  }, [workspaces])
+    setComputers((current) => [...current.map((computer) => computerTarget(computer) === target && captured
+      ? { ...computer, checkpoints: [captured, ...(computer.checkpoints ?? [])] }
+      : computer), child])
+  }, [computers])
   const restoreCheckpoint = useCallback(async (target: string, checkpointId: string) => {
-    const selected = workspaces.find((workspace) => workspaceTarget(workspace) === target)
-    if (!selected) throw "This workspace is not a local VM."
+    const selected = computers.find((computer) => computerTarget(computer) === target)
+    if (!selected) throw "This computer is not a local VM."
     const point = selected.checkpoints?.find((checkpoint) => checkpoint.id === checkpointId)
     if (!point) throw "The selected checkpoint no longer exists."
     const recovery = fixtureCheckpoint(selected, "Before restore", "before-restore")
     if (selected.pendingCheckpointRestore) checkpointMembers.current.set(recovery.id, selected.pendingCheckpointRestore.checkpointId)
-    setWorkspaces((current) => current.map((workspace) => workspaceTarget(workspace) === target
-      ? { ...pendingWorkspace(workspace), checkpoints: [recovery, ...(workspace.checkpoints ?? [])], pendingCheckpointRestore: { checkpointId: checkpointMembers.current.get(point.id) ?? point.id, sourceWorkspace: workspace.pendingCheckpointRestore?.sourceWorkspace ?? workspace.machine.name, state: point.scope } }
-      : workspace))
-  }, [workspaces])
+    setComputers((current) => current.map((computer) => computerTarget(computer) === target
+      ? { ...pendingComputer(computer), checkpoints: [recovery, ...(computer.checkpoints ?? [])], pendingCheckpointRestore: { checkpointId: checkpointMembers.current.get(point.id) ?? point.id, sourceComputer: computer.pendingCheckpointRestore?.sourceComputer ?? computer.configuration.name, state: point.scope } }
+      : computer))
+  }, [computers])
 
   const deleteCheckpoint = useCallback(async (target: string, checkpointId: string) => {
-    setWorkspaces((current) => current.map((workspace) => workspace.machine.name === target
-      ? { ...workspace, checkpoints: (workspace.checkpoints ?? []).filter((point) => point.id !== checkpointId) }
-      : workspace))
+    setComputers((current) => current.map((computer) => computer.configuration.name === target
+      ? { ...computer, checkpoints: (computer.checkpoints ?? []).filter((point) => point.id !== checkpointId) }
+      : computer))
   }, [])
 
   const saveSecret = useCallback((request: SecretConfigurationRequest) => {
@@ -112,7 +112,7 @@ export function useApplicationFixture(source: ApplicationSource) {
     const secret: ApplicationSecret = {
       id: request.operation === "edit" ? request.id : crypto.randomUUID(),
       name: request.name,
-      workspaces: request.workspaces,
+      computers: request.computers,
       allowedDomains: request.allowedDomains,
       state: "restart-required",
     }
@@ -121,5 +121,5 @@ export function useApplicationFixture(source: ApplicationSource) {
       : [...current, secret])
   }, [])
 
-  return { source: { ...source, workspaces, secrets }, saveSecret, removeSecret, onRestoreComplete, createCheckpoint, forkCheckpoint, restoreCheckpoint, deleteCheckpoint }
+  return { source: { ...source, computers, secrets }, saveSecret, removeSecret, onRestoreComplete, createCheckpoint, forkCheckpoint, restoreCheckpoint, deleteCheckpoint }
 }

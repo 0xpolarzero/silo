@@ -15,7 +15,7 @@ import {
 } from "./pre-upgrade-backup"
 
 /**
- * Settings, General: the copy of the previous sandbox storage that an upgrade keeps. The section
+ * Settings, General: the copy of the previous computer storage that an upgrade keeps. The section
  * exists only while there is such a copy to show, so it disappears once the copy is deleted.
  */
 export function StorageSection() {

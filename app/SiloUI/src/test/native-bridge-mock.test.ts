@@ -7,8 +7,8 @@ afterEach(assertNativeBridgeMocksHandled)
 describe("native bridge mock", () => {
   it("routes an explicit command and preserves its arguments", async () => {
     const invoke = nativeBridgeMock({ read_state: args => ({ id: args?.id }) })
-    await expect(invoke("read_state", { id: "sandbox" })).resolves.toEqual({ id: "sandbox" })
-    expect(invoke).toHaveBeenCalledExactlyOnceWith("read_state", { id: "sandbox" })
+    await expect(invoke("read_state", { id: "computer" })).resolves.toEqual({ id: "computer" })
+    expect(invoke).toHaveBeenCalledExactlyOnceWith("read_state", { id: "computer" })
   })
 
   it("allows an intentional void reply", async () => {

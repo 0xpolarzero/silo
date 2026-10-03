@@ -8,7 +8,7 @@ export const computerUseStates = ["unavailable", "preparing", "installing", "rea
 export const computerUseSchema = z.object({
   state: z.enum(computerUseStates).catch("unavailable"),
   reason: z.string().nullish().catch(null),
-  // `app-download`: a failure of the host's ChatGPT download, which setting up the sandbox cannot fix.
+  // `app-download`: a failure of the host's ChatGPT download, which setting up the computer cannot fix.
   cause: z.enum(["app-download"]).nullish().catch(null),
   compatibility: z.enum(["tested", "untested", "unknown"]).catch("unknown"),
   warning: z.string().nullish().catch(null),
@@ -17,7 +17,7 @@ export const computerUseSchema = z.object({
   // The last mode Silo applied completely ("unknown" before any was, or when an older Silo does not
   // report it). It differs from `approval` while a change is pending, failed or only partly worked.
   appliedApproval: z.enum(["ask", "auto", "unknown"]).catch("unknown"),
-  // How applying `approval` stands: Silo drives the sandbox toward the chosen mode itself and keeps
+  // How applying `approval` stands: Silo drives the computer toward the chosen mode itself and keeps
   // the last result. Missing or malformed status is unknown, never a confirmed success.
   approvalApply: z.enum(["applied", "pending", "failed", "partial", "unknown"]).catch("unknown"),
   // Why it failed or only partly worked, in words for the user.
@@ -95,6 +95,6 @@ export function parseLinuxDesktopState(value: unknown): LinuxDesktopState {
 
 export function desktopViewerRoute() {
   const query = new URLSearchParams(window.location.search)
-  const workspace = query.get("desktop")
-  return workspace ? { workspace, name: query.get("name") ?? workspace } : null
+  const computer = query.get("desktop")
+  return computer ? { computer, name: query.get("name") ?? computer } : null
 }

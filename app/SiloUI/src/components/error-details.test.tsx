@@ -9,7 +9,7 @@ const stderr = Array.from({ length: 40 }, (_, index) => `krun: step ${index} fai
 
 describe("splitErrorDetails", () => {
   it("keeps a short message whole, with no details", () => {
-    expect(splitErrorDetails("Stop sandbox 'dev' before removing it.")).toEqual({ summary: "Stop sandbox 'dev' before removing it.", details: null })
+    expect(splitErrorDetails("Stop computer 'dev' before removing it.")).toEqual({ summary: "Stop computer 'dev' before removing it.", details: null })
     expect(splitErrorDetails("Start failed: libkrunfw could not load\nThe library signature was rejected.")).toEqual({
       summary: "Start failed: libkrunfw could not load\nThe library signature was rejected.", details: null,
     })
@@ -22,8 +22,8 @@ describe("splitErrorDetails", () => {
   })
 
   it("moves exit codes and command output into the details", () => {
-    expect(splitErrorDetails("Sandbox setup failed (exit code 3): mount: permission denied")).toEqual({
-      summary: "Sandbox setup failed.", details: "Sandbox setup failed (exit code 3): mount: permission denied",
+    expect(splitErrorDetails("Computer setup failed (exit code 3): mount: permission denied")).toEqual({
+      summary: "Computer setup failed.", details: "Computer setup failed (exit code 3): mount: permission denied",
     })
     expect(splitErrorDetails("exit code 1: error: unable to open /dev/kvm")).toEqual({ summary: null, details: "exit code 1: error: unable to open /dev/kvm" })
   })
@@ -46,7 +46,7 @@ describe("splitErrorDetails", () => {
 
 describe("ErrorDetails", () => {
   it("keeps the full recovery and partial-change warning when diagnostics are separate", async () => {
-    const message = "Creating the sandbox: Sandbox CPU, memory, or storage limits could not be validated. Review the sandbox resources against this device's limits and retry. Completed changes were kept; reload the sandbox list before retrying."
+    const message = "Creating the computer: Computer CPU, memory, or storage limits could not be validated. Review the computer resources against this device's limits and retry. Completed changes were kept; reload the computer list before retrying."
     render(<ErrorDetails message={message} diagnostic={stderr} />)
     expect(screen.getByText(message)).toBeVisible()
     expect(screen.queryByText(/krun: step 39/)).not.toBeInTheDocument()
@@ -68,14 +68,14 @@ describe("ErrorDetails", () => {
   })
 
   it("renders a short message as plain text", () => {
-    render(<ErrorDetails message="Stop sandbox 'dev' before removing it." />)
-    expect(screen.getByText("Stop sandbox 'dev' before removing it.")).toBeVisible()
+    render(<ErrorDetails message="Stop computer 'dev' before removing it." />)
+    expect(screen.getByText("Stop computer 'dev' before removing it.")).toBeVisible()
     expect(screen.queryByRole("button", { name: "Show details" })).not.toBeInTheDocument()
   })
 
   it("falls back to the caller's summary when the message is only command output", () => {
-    render(<ErrorDetails message="exit code 1: error: unable to open /dev/kvm" fallbackSummary="Sandbox changes failed." />)
-    expect(screen.getByText("Sandbox changes failed.")).toBeVisible()
+    render(<ErrorDetails message="exit code 1: error: unable to open /dev/kvm" fallbackSummary="Computer changes failed." />)
+    expect(screen.getByText("Computer changes failed.")).toBeVisible()
     expect(screen.queryByText(/exit code/)).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Show details" })).toBeVisible()
   })

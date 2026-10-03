@@ -12,12 +12,12 @@ describe("GitHubAccessEditor", () => {
     const user = userEvent.setup()
     const onCommit = vi.fn()
     render(<GitHubAccessEditor
-      workspaces={[{ name: "dev" }]} connectionState="connected"
-      repositoryOptions={[]} workspaceSelections={{}}
-      workspaceIdentities={{ dev: { name: "Taylor", email: "taylor@example.com", apply: true } }}
+      computers={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={[]} computerSelections={{}}
+      computerIdentities={{ dev: { name: "Taylor", email: "taylor@example.com", apply: true } }}
       currentDeviceGitIdentity={null} onConnect={vi.fn()}
-      onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
-      onCommitWorkspaceIdentity={onCommit}
+      onComputerSelectionsChange={vi.fn()} onComputerIdentityChange={vi.fn()} onResetComputerIdentity={vi.fn()}
+      onCommitComputerIdentity={onCommit}
     />)
     const input = screen.getByRole("textbox", { name: `Git ${field} for dev` })
     await user.click(input)
@@ -33,10 +33,10 @@ describe("GitHubAccessEditor", () => {
     const user = userEvent.setup()
     const onSelections = vi.fn()
     render(<GitHubAccessEditor
-      workspaces={[{ name: "dev" }]} connectionState="connected"
-      repositoryOptions={["acme/first", "acme/second"]} workspaceSelections={{}} workspaceIdentities={{}}
+      computers={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={["acme/first", "acme/second"]} computerSelections={{}} computerIdentities={{}}
       currentDeviceGitIdentity={null} onConnect={vi.fn()}
-      onWorkspaceSelectionsChange={onSelections} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
+      onComputerSelectionsChange={onSelections} onComputerIdentityChange={vi.fn()} onResetComputerIdentity={vi.fn()}
     />)
     const input = screen.getByRole("combobox", { name: "Add repository to dev" })
     await user.click(input)
@@ -62,10 +62,10 @@ describe("GitHubAccessEditor", () => {
     })
     const onSelections = vi.fn()
     const props = {
-      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
-      repositoryOptions, workspaceSelections: {}, workspaceIdentities: {},
-      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
-      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
+      computers: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions, computerSelections: {}, computerIdentities: {},
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onComputerSelectionsChange: onSelections,
+      onComputerIdentityChange: vi.fn(), onResetComputerIdentity: vi.fn(),
     }
     const view = render(<GitHubAccessEditor {...props} />)
     catalogReads = 0
@@ -83,10 +83,10 @@ describe("GitHubAccessEditor", () => {
   it.each([{ repositoryOptions: [] }, { repositoryOptions: ["acme/silo"] }])("excludes repository suggestions and GitHub authorization from the page Tab order (%j)", async ({ repositoryOptions }) => {
     const user = userEvent.setup()
     render(<GitHubAccessEditor
-      workspaces={[{ name: "dev" }]} connectionState="connected"
-      repositoryOptions={repositoryOptions} workspaceSelections={{}} workspaceIdentities={{}}
+      computers={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={repositoryOptions} computerSelections={{}} computerIdentities={{}}
       currentDeviceGitIdentity={null} onConnect={vi.fn()}
-      onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
+      onComputerSelectionsChange={vi.fn()} onComputerIdentityChange={vi.fn()} onResetComputerIdentity={vi.fn()}
       onManageRepositories={vi.fn()}
     />)
     await user.click(screen.getByRole("combobox", { name: "Add repository to dev" }))
@@ -101,11 +101,11 @@ describe("GitHubAccessEditor", () => {
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
     const onManage = vi.fn()
     render(<GitHubAccessEditor
-      workspaces={[{ name: "dev" }]} connectionState="connected"
+      computers={[{ name: "dev" }]} connectionState="connected"
       repositoryOptions={Array.from({ length: 30 }, (_, index) => `acme/repo-${index}`)}
-      workspaceSelections={{}} workspaceIdentities={{}} currentDeviceGitIdentity={null}
-      onConnect={vi.fn()} onWorkspaceSelectionsChange={vi.fn()}
-      onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()} onManageRepositories={onManage}
+      computerSelections={{}} computerIdentities={{}} currentDeviceGitIdentity={null}
+      onConnect={vi.fn()} onComputerSelectionsChange={vi.fn()}
+      onComputerIdentityChange={vi.fn()} onResetComputerIdentity={vi.fn()} onManageRepositories={onManage}
     />)
     const input = screen.getByRole("combobox", { name: "Add repository to dev" })
     await user.click(input)
@@ -124,16 +124,16 @@ describe("GitHubAccessEditor", () => {
     expect(onManage).toHaveBeenCalledOnce()
   })
 
-  it("uses empty defaults for an incoming sandbox named constructor", () => {
+  it("uses empty defaults for an incoming computer named constructor", () => {
     const props = {
-      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
-      repositoryOptions: ["acme/silo"], workspaceSelections: { dev: [] }, workspaceIdentities: {},
-      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(),
-      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
-      onWorkspaceRepositoryAccessChange: vi.fn(),
+      computers: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/silo"], computerSelections: { dev: [] }, computerIdentities: {},
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onComputerSelectionsChange: vi.fn(),
+      onComputerIdentityChange: vi.fn(), onResetComputerIdentity: vi.fn(),
+      onComputerRepositoryAccessChange: vi.fn(),
     }
     const view = render(<GitHubAccessEditor {...props} />)
-    view.rerender(<GitHubAccessEditor {...props} workspaces={[{ name: "dev" }, { name: "constructor" }]} />)
+    view.rerender(<GitHubAccessEditor {...props} computers={[{ name: "dev" }, { name: "constructor" }]} />)
     expect(screen.getByLabelText("Git name for constructor")).toHaveValue("")
     expect(screen.getByLabelText("Git email for constructor")).toHaveValue("")
     expect(screen.getByRole("checkbox", { name: "All repositories for constructor" })).not.toBeChecked()
@@ -141,16 +141,16 @@ describe("GitHubAccessEditor", () => {
     expect(screen.queryByRole("table", { name: "Selected repositories for constructor" })).not.toBeInTheDocument()
   })
 
-  it("uses saved GitHub settings for a sandbox named constructor", () => {
+  it("uses saved GitHub settings for a computer named constructor", () => {
     render(<GitHubAccessEditor
-      workspaces={[{ name: "constructor" }]} connectionState="connected"
+      computers={[{ name: "constructor" }]} connectionState="connected"
       repositoryOptions={["acme/silo"]}
-      workspaceSelections={{ constructor: [{ repository: "acme/silo", allowPushes: true }] }}
-      workspaceIdentities={{ constructor: { name: "Taylor", email: "taylor@example.com", apply: false } }}
-      workspaceRepositoryAccess={{ constructor: { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false } }}
+      computerSelections={{ constructor: [{ repository: "acme/silo", allowPushes: true }] }}
+      computerIdentities={{ constructor: { name: "Taylor", email: "taylor@example.com", apply: false } }}
+      computerRepositoryAccess={{ constructor: { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false } }}
       currentDeviceGitIdentity={null} onConnect={vi.fn()}
-      onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
-      onWorkspaceRepositoryAccessChange={vi.fn()}
+      onComputerSelectionsChange={vi.fn()} onComputerIdentityChange={vi.fn()} onResetComputerIdentity={vi.fn()}
+      onComputerRepositoryAccessChange={vi.fn()}
     />)
     expect(screen.getByLabelText("Git name for constructor")).toHaveValue("Taylor")
     expect(screen.getByLabelText("Git email for constructor")).toHaveValue("taylor@example.com")
@@ -158,13 +158,13 @@ describe("GitHubAccessEditor", () => {
     expect(screen.getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).toBeChecked()
   })
 
-  it("accepts a newly discovered constructor sandbox before the page draft catches up", () => {
+  it("accepts a newly discovered constructor computer before the page draft catches up", () => {
     const source = applicationSourceForScenario("running", "connected")
     const actions = {} as ApplicationActions
     const view = render(<GitHubPage source={source} actions={actions} />)
-    const workspace = source.workspaces.find(item => !item.device)!
-    const incoming = { ...source, workspaces: [...source.workspaces, {
-      ...workspace, machine: { ...workspace.machine, name: "constructor", id: "new-constructor" },
+    const computer = source.computers.find(item => !item.device)!
+    const incoming = { ...source, computers: [...source.computers, {
+      ...computer, configuration: { ...computer.configuration, name: "constructor", id: "new-constructor" },
     }] }
     view.rerender(<GitHubPage source={incoming} actions={actions} />)
     expect(screen.getByLabelText("Git name for constructor")).toBeInTheDocument()
@@ -175,10 +175,10 @@ describe("GitHubAccessEditor", () => {
     const user = userEvent.setup()
     const onSelections = vi.fn()
     const props = {
-      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
-      repositoryOptions: ["acme/base", "acme/silo"], workspaceSelections: {}, workspaceIdentities: {},
-      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
-      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
+      computers: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/base", "acme/silo"], computerSelections: {}, computerIdentities: {},
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onComputerSelectionsChange: onSelections,
+      onComputerIdentityChange: vi.fn(), onResetComputerIdentity: vi.fn(),
     }
     const view = render(<GitHubAccessEditor {...props} />)
     await user.click(screen.getByRole("combobox"))
@@ -193,10 +193,10 @@ describe("GitHubAccessEditor", () => {
     const user = userEvent.setup()
     const onSelections = vi.fn()
     const props = {
-      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
-      repositoryOptions: ["acme/silo", "acme/other"], workspaceSelections: {}, workspaceIdentities: {},
-      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
-      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
+      computers: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/silo", "acme/other"], computerSelections: {}, computerIdentities: {},
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onComputerSelectionsChange: onSelections,
+      onComputerIdentityChange: vi.fn(), onResetComputerIdentity: vi.fn(),
     }
     const view = render(<GitHubAccessEditor {...props} />)
     await user.click(screen.getByRole("combobox"))
@@ -213,10 +213,10 @@ describe("GitHubAccessEditor", () => {
     const onSelections = vi.fn()
     const onManage = vi.fn()
     const props = {
-      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
-      repositoryOptions: ["acme/silo"], workspaceSelections: {}, workspaceIdentities: {},
-      currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
-      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(), onManageRepositories: onManage,
+      computers: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/silo"], computerSelections: {}, computerIdentities: {},
+      currentDeviceGitIdentity: null, onConnect: vi.fn(), onComputerSelectionsChange: onSelections,
+      onComputerIdentityChange: vi.fn(), onResetComputerIdentity: vi.fn(), onManageRepositories: onManage,
     }
     const view = render(<GitHubAccessEditor {...props} />)
     await user.click(screen.getByRole("combobox"))
@@ -232,10 +232,10 @@ describe("GitHubAccessEditor", () => {
     const user = userEvent.setup()
     const onManageRepositories = vi.fn()
     render(<GitHubAccessEditor
-      workspaces={[{ name: "dev" }]} connectionState="connected"
-      repositoryOptions={["acme/silo"]} workspaceSelections={{}} workspaceIdentities={{}}
+      computers={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={["acme/silo"]} computerSelections={{}} computerIdentities={{}}
       currentDeviceGitIdentity={null} onConnect={vi.fn()}
-      onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
+      onComputerSelectionsChange={vi.fn()} onComputerIdentityChange={vi.fn()} onResetComputerIdentity={vi.fn()}
       onManageRepositories={onManageRepositories}
     />)
     expect(screen.queryByRole("option", { name: "Add more repositories on GitHub" })).not.toBeInTheDocument()
@@ -256,44 +256,44 @@ describe("GitHubAccessEditor", () => {
     const user = userEvent.setup()
     const onAccess = vi.fn()
     const props = {
-      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
-      repositoryOptions: ["acme/silo"], workspaceSelections: { dev: [{ repository: "acme/silo", allowPushes: true }] },
-      workspaceIdentities: {}, currentDeviceGitIdentity: null,
-      onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(), onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
-      onWorkspaceRepositoryAccessChange: onAccess,
+      computers: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/silo"], computerSelections: { dev: [{ repository: "acme/silo", allowPushes: true }] },
+      computerIdentities: {}, currentDeviceGitIdentity: null,
+      onConnect: vi.fn(), onComputerSelectionsChange: vi.fn(), onComputerIdentityChange: vi.fn(), onResetComputerIdentity: vi.fn(),
+      onComputerRepositoryAccessChange: onAccess,
     }
     const { rerender } = render(<GitHubAccessEditor {...props} />)
     await user.click(screen.getByRole("checkbox", { name: "All repositories for dev" }))
     expect(onAccess).toHaveBeenLastCalledWith("dev", { repositoryMode: "all", allRepositoriesAllowChanges: false })
-    rerender(<GitHubAccessEditor {...props} workspaceRepositoryAccess={{ dev: { repositoryMode: "all", allRepositoriesAllowChanges: false } }} />)
+    rerender(<GitHubAccessEditor {...props} computerRepositoryAccess={{ dev: { repositoryMode: "all", allRepositoriesAllowChanges: false } }} />)
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
     expect(screen.queryByRole("table")).not.toBeInTheDocument()
     expect(screen.getByText("All repositories authorized on GitHub, including future additions.")).toBeVisible()
     await user.click(screen.getByRole("checkbox", { name: "Allow GitHub changes for all repositories in dev" }))
     expect(onAccess).toHaveBeenLastCalledWith("dev", { repositoryMode: "all", allRepositoriesAllowChanges: true })
-    expect(props.onWorkspaceSelectionsChange).not.toHaveBeenCalled()
-    rerender(<GitHubAccessEditor {...props} workspaceRepositoryAccess={{ dev: { repositoryMode: "selected", allRepositoriesAllowChanges: false } }} />)
+    expect(props.onComputerSelectionsChange).not.toHaveBeenCalled()
+    rerender(<GitHubAccessEditor {...props} computerRepositoryAccess={{ dev: { repositoryMode: "selected", allRepositoriesAllowChanges: false } }} />)
     expect(screen.getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).toBeChecked()
   })
 
   it("supports app extensions and makes a disabled editor readable but immutable", () => {
     render(
       <GitHubAccessEditor
-        workspaces={[{ name: "dev" }]}
+        computers={[{ name: "dev" }]}
         connectionState="connected"
         repositoryOptions={["acme/silo", "acme/design-system"]}
-        workspaceSelections={{ dev: [{ repository: "acme/silo", allowPushes: true }] }}
-        workspaceIdentities={{ dev: { name: "Taylor Example", email: "taylor@example.com", apply: true } }}
+        computerSelections={{ dev: [{ repository: "acme/silo", allowPushes: true }] }}
+        computerIdentities={{ dev: { name: "Taylor Example", email: "taylor@example.com", apply: true } }}
         currentDeviceGitIdentity={{ name: "Taylor Example", email: "taylor@example.com" }}
         onConnect={vi.fn()}
-        onWorkspaceSelectionsChange={vi.fn()}
-        onWorkspaceIdentityChange={vi.fn()}
-        onResetWorkspaceIdentity={vi.fn()}
+        onComputerSelectionsChange={vi.fn()}
+        onComputerIdentityChange={vi.fn()}
+        onResetComputerIdentity={vi.fn()}
         connectedTitle="Connected as @taylor"
         connectedDetail="Private repositories are available."
         connectedActions={<button type="button">Disconnect</button>}
         notice={<p>GitHub access is paused.</p>}
-        renderWorkspaceActions={({ name }) => <button type="button">Disable {name} access</button>}
+        renderComputerActions={({ name }) => <button type="button">Disable {name} access</button>}
         footer={<div role="status">Unsaved changes</div>}
         disabled
       />,
@@ -306,7 +306,7 @@ describe("GitHubAccessEditor", () => {
     expect(screen.getByRole("button", { name: "Disable dev access" })).toBeEnabled()
     expect(screen.getByRole("status")).toHaveTextContent("Unsaved changes")
 
-    const editor = screen.getByRole("region", { name: "Sandbox Git identity and repository access" })
+    const editor = screen.getByRole("region", { name: "Computer Git identity and repository access" })
     expect(within(editor).getByLabelText("Git name for dev")).toBeDisabled()
     expect(within(editor).getByLabelText("Git email for dev")).toBeDisabled()
     expect(within(editor).getByRole("checkbox", { name: "Apply Git identity to dev" })).toBeDisabled()
@@ -317,23 +317,23 @@ describe("GitHubAccessEditor", () => {
     expect(within(editor).getByRole("button", { name: "Remove acme/silo from dev" })).toBeDisabled()
   })
 
-  it("collapses sandbox sections independently while leaving them expanded initially", async () => {
+  it("collapses computer sections independently while leaving them expanded initially", async () => {
     const user = userEvent.setup()
     render(
       <GitHubAccessEditor
-        workspaces={[{ name: "dev" }, { name: "playgrounds" }]}
+        computers={[{ name: "dev" }, { name: "playgrounds" }]}
         connectionState="connected"
         repositoryOptions={["acme/silo"]}
-        workspaceSelections={{ dev: [{ repository: "acme/silo", allowPushes: true }], playgrounds: [] }}
-        workspaceIdentities={{
+        computerSelections={{ dev: [{ repository: "acme/silo", allowPushes: true }], playgrounds: [] }}
+        computerIdentities={{
           dev: { name: "Taylor Example", email: "taylor@example.com", apply: true },
           playgrounds: { name: "Taylor Example", email: "taylor@example.com", apply: true },
         }}
         currentDeviceGitIdentity={{ name: "Taylor Example", email: "taylor@example.com" }}
         onConnect={vi.fn()}
-        onWorkspaceSelectionsChange={vi.fn()}
-        onWorkspaceIdentityChange={vi.fn()}
-        onResetWorkspaceIdentity={vi.fn()}
+        onComputerSelectionsChange={vi.fn()}
+        onComputerIdentityChange={vi.fn()}
+        onResetComputerIdentity={vi.fn()}
       />,
     )
 

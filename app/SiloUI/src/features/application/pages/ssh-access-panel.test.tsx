@@ -6,14 +6,14 @@ import { toast } from "sonner"
 import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { SshAccessBadges, SshAccessPanel, SshAccessRow } from "./ssh-access-panel"
-import type { ApplicationActions, ApplicationWorkspace, SshAccessWorkspace } from "../model/application-source"
-const workspace = applicationSourceForScenario("complete").workspaces[0]
+import type { ApplicationActions, ApplicationComputer, SshAccessComputer } from "../model/application-source"
+const computer = applicationSourceForScenario("complete").computers[0]
 const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOV89nMlTnLLFa2UlVuqssPU56E2EbdIg1XmcraGpVXQ laptop"
-const base: SshAccessWorkspace = { workspace: "dev", enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [publicKey], state: "listening", message: null, fingerprint: "SHA256:example", deviceName: "Ada’s Mac mini", addresses: ["127.0.0.1", "192.168.1.42"] }
-function setup(patch: Partial<SshAccessWorkspace> = {}, save = vi.fn().mockResolvedValue(undefined), error?: string, displayedWorkspace: ApplicationWorkspace = workspace) {
+const base: SshAccessComputer = { computer: "dev", enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [publicKey], state: "listening", message: null, fingerprint: "SHA256:example", deviceName: "Ada’s Mac mini", addresses: ["127.0.0.1", "192.168.1.42"] }
+function setup(patch: Partial<SshAccessComputer> = {}, save = vi.fn().mockResolvedValue(undefined), error?: string, displayedComputer: ApplicationComputer = computer) {
   const access = { ...base, ...patch }
-  const actions = { sshConnection: vi.fn().mockImplementation((_workspace: string, download: boolean) => Promise.resolve(download ? null : "ssh -i '/managed/client_key' -p 2222 root@127.0.0.1")), saveSshAccess: save, refreshSshAccess: vi.fn().mockResolvedValue(undefined) } as unknown as ApplicationActions
-  const view = render(<><Toaster /><SshAccessPanel workspaces={[displayedWorkspace]} state={{ workspaces: [access] }} error={error} actions={actions} active /></>)
+  const actions = { sshConnection: vi.fn().mockImplementation((_computer: string, download: boolean) => Promise.resolve(download ? null : "ssh -i '/managed/client_key' -p 2222 root@127.0.0.1")), saveSshAccess: save, refreshSshAccess: vi.fn().mockResolvedValue(undefined) } as unknown as ApplicationActions
+  const view = render(<><Toaster /><SshAccessPanel computers={[displayedComputer]} state={{ computers: [access] }} error={error} actions={actions} active /></>)
   return { user: vi.isFakeTimers() ? setupFakeTimerUser() : userEvent.setup(), access, save, actions, ...view }
 }
 afterEach(() => { toast.dismiss(); vi.useRealTimers() })
@@ -101,7 +101,7 @@ describe("managed SSH access", () => {
     await selectAction(user, "Edit network connection")
     expect(screen.getByRole("combobox", { name: "LAN or VPN address" })).toHaveValue("192.168.1.42")
   })
-  it("enables a stopped sandbox without key setup or a start action", async () => {
+  it("enables a stopped computer without key setup or a start action", async () => {
     const { user, save } = setup({ enabled: false, state: "disabled", keys: [] })
     await expand(user)
     expect(screen.getByRole("switch", { name: "Allow SSH from other devices" })).toBeDisabled()
@@ -255,18 +255,18 @@ describe("managed SSH access", () => {
   })
   it("routes connection preparation and changes to the remote owner", async () => {
     const target = "silo-remote:office:vm-immutable-id"
-    const remote = { ...workspace, device: { id: "office", vmId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }
-    const { user, actions, save } = setup({ workspace: target, deviceName: "Office Mac", bindAddress: "192.168.1.42" }, undefined, undefined, remote)
+    const remote = { ...computer, device: { id: "office", computerId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }
+    const { user, actions, save } = setup({ computer: target, deviceName: "Office Mac", bindAddress: "192.168.1.42" }, undefined, undefined, remote)
     await expand(user)
     expect(screen.getByRole("switch", { name: "Allow SSH from Office Mac" })).toBeChecked()
     await selectAction(user, "Copy network SSH command")
     expect(actions.sshConnection).toHaveBeenCalledWith(target, false, true)
     await user.click(screen.getByRole("switch", { name: "Allow SSH from Office Mac" }))
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ workspace: target, enabled: false }))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ computer: target, enabled: false }))
   })
   it("hides the owner's loopback address on remote rows and uses the reported account", async () => {
-    const remote = { ...workspace, device: { id: "office", vmId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }
-    const { user } = setup({ workspace: "silo-remote:office:vm-immutable-id", deviceName: "Office Mac", bindAddress: "192.168.1.42", user: "guest" }, undefined, undefined, remote)
+    const remote = { ...computer, device: { id: "office", computerId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }
+    const { user } = setup({ computer: "silo-remote:office:vm-immutable-id", deviceName: "Office Mac", bindAddress: "192.168.1.42", user: "guest" }, undefined, undefined, remote)
     await expand(user)
     const local = within(screen.getByRole("group", { name: "Allow SSH from Office Mac" }))
     expect(local.getByText("Only on Office Mac")).toBeVisible()
@@ -276,8 +276,8 @@ describe("managed SSH access", () => {
     expect(await navigator.clipboard.readText()).toBe("ssh -p 2222 guest@192.168.1.42")
   })
   it("disables stale remote connections and changes", async () => {
-    const remote = { ...workspace, device: { id: "office", vmId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }
-    const { user } = setup({ workspace: "silo-remote:office:vm-immutable-id", deviceName: "Office Mac", unavailable: "SSH status on Office Mac is unavailable." }, undefined, undefined, remote)
+    const remote = { ...computer, device: { id: "office", computerId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }
+    const { user } = setup({ computer: "silo-remote:office:vm-immutable-id", deviceName: "Office Mac", unavailable: "SSH status on Office Mac is unavailable." }, undefined, undefined, remote)
     await expand(user)
     expect(screen.getByText("SSH status unavailable")).toBeVisible()
     expect(screen.getByRole("switch", { name: "Allow SSH from Office Mac" })).toBeDisabled()
@@ -287,8 +287,8 @@ describe("managed SSH access", () => {
     expect(screen.getByRole("menuitem", { name: "Edit connection" })).toHaveAttribute("data-disabled")
   })
   it("keeps healthy remote controls writable when local status fails", async () => {
-    const remote = { ...workspace, device: { id: "office", vmId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }
-    const { user } = setup({ workspace: "silo-remote:office:vm-immutable-id", deviceName: "Office Mac" }, undefined, "Could not check SSH access.", remote)
+    const remote = { ...computer, device: { id: "office", computerId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }
+    const { user } = setup({ computer: "silo-remote:office:vm-immutable-id", deviceName: "Office Mac" }, undefined, "Could not check SSH access.", remote)
     await expand(user)
     expect(screen.getByRole("switch", { name: "Allow SSH from Office Mac" })).toBeEnabled()
   })
@@ -324,7 +324,7 @@ describe("SSH badge", () => {
   })
   it("names a waiting listener without alarming", () => {
     render(<SshAccessBadges access={{ ...base, state: "waiting" }} />)
-    expect(badge()).toHaveAccessibleName("SSH from Ada’s Mac mini only: Waiting for sandbox")
+    expect(badge()).toHaveAccessibleName("SSH from Ada’s Mac mini only: Waiting for computer")
     expect(badge().querySelector(".lucide-triangle-alert")).toBeNull()
   })
 })
@@ -390,7 +390,7 @@ it("ignores an old SSH Retry after a newer save completes", async () => {
   expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ port: 2223 }))
 })
 
-it("ignores an SSH Retry after its sandbox controls unmount", async () => {
+it("ignores an SSH Retry after its computer controls unmount", async () => {
   const save = vi.fn().mockRejectedValue(new Error("Port is in use."))
   const { user, rerender } = setup({}, save)
   await expand(user)
@@ -405,10 +405,10 @@ it("ignores an SSH Retry after its sandbox controls unmount", async () => {
 it("checks current read-only state before retrying an SSH save", async () => {
   const save = vi.fn().mockRejectedValue(new Error("Port is in use."))
   const user = userEvent.setup()
-  const { rerender } = render(<><Toaster /><SshAccessRow workspace={workspace} access={base} save={save} stale={false} embedded /></>)
+  const { rerender } = render(<><Toaster /><SshAccessRow computer={computer} access={base} save={save} stale={false} embedded /></>)
   await user.click(screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" }))
   const retry = await screen.findByRole("button", { name: "Retry" })
-  rerender(<><Toaster /><SshAccessRow workspace={workspace} access={base} save={save} stale={false} embedded readOnly /></>)
+  rerender(<><Toaster /><SshAccessRow computer={computer} access={base} save={save} stale={false} embedded readOnly /></>)
   await user.click(retry)
   expect(save).toHaveBeenCalledTimes(1)
 })

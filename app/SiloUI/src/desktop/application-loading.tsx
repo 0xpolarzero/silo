@@ -1,6 +1,6 @@
 import { Monitor, Power } from "lucide-react"
 import { useRef, type ReactNode } from "react"
-import type { SetupMachineConfiguration } from "@/contracts/silo"
+import type { SetupComputerConfiguration } from "@/contracts/silo"
 import { SiloMark } from "@/components/silo-mark"
 import { Button } from "@/components/ui/button"
 import { ListCard, ListRowIcon } from "@/components/list-row"
@@ -8,8 +8,8 @@ import { desktopCommand } from "@/desktop/commands"
 import { useStatusPanelSize } from "@/desktop/use-status-panel-size"
 import { ApplicationShell } from "@/features/application/components/application-shell"
 import { ApplicationCommandMenu } from "@/features/application/components/application-command-menu"
-import { MachineList } from "@/features/sandboxes/components/machine-list"
-import { SandboxListItem, SandboxListRow } from "@/features/sandboxes/components/sandbox-list"
+import { ComputerConfigurationList } from "@/features/computers/components/computer-configuration-list"
+import { ComputerListItem, ComputerListRow } from "@/features/computers/components/computer-list"
 import { useSettings } from "@/features/preferences/settings-store"
 import { cn } from "@/lib/utils"
 
@@ -53,25 +53,25 @@ export function StatusPanelUnavailable({ message, retry, checking = false }: { m
   </StatusPanelFrame>
 }
 
-export function ApplicationLoading({ machines, statusPanel = false }: { machines: SetupMachineConfiguration[]; statusPanel?: boolean }) {
+export function ApplicationLoading({ configurations, statusPanel = false }: { configurations: SetupComputerConfiguration[]; statusPanel?: boolean }) {
   const { settings } = useSettings()
   const detail = <span className="flex h-4 items-center"><Skeleton className="h-2.5 w-20" /></span>
   if (statusPanel) return <StatusPanelFrame busy>
-    <span role="status" className="sr-only">Loading sandbox state</span>
+    <span role="status" className="sr-only">Loading computer state</span>
     <div className="shrink-0 px-2 pt-2" />
-    <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">{machines.length ? <ListCard className="border-0"><ol aria-label="Sandboxes" className="divide-y">
-      {machines.map((machine) => <SandboxListItem key={machine.id}><SandboxListRow name={machine.name} detail={detail} actions={<LoadingControls />} /></SandboxListItem>)}
-    </ol></ListCard> : <div className="grid justify-items-center gap-1.5 py-8 text-center"><ListRowIcon><Monitor className="size-3.5" /></ListRowIcon><p className="text-[13px] font-medium">Loading sandboxes…</p></div>}</div>
+    <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">{configurations.length ? <ListCard className="border-0"><ol aria-label="Computers" className="divide-y">
+      {configurations.map((configuration) => <ComputerListItem key={configuration.id}><ComputerListRow name={configuration.name} detail={detail} actions={<LoadingControls />} /></ComputerListItem>)}
+    </ol></ListCard> : <div className="grid justify-items-center gap-1.5 py-8 text-center"><ListRowIcon><Monitor className="size-3.5" /></ListRowIcon><p className="text-[13px] font-medium">Loading computers…</p></div>}</div>
   </StatusPanelFrame>
-  return <ApplicationShell activeTab="workspaces" workspaceSection="overview" settingsSection="general"
-    systemIssueStatus={null} workspaceAttention={{ errors: 0, warnings: 0 }} navigationDisabled
-    onTabChange={unavailable} onWorkspaceSectionChange={unavailable} onSettingsSectionChange={unavailable}
+  return <ApplicationShell activeTab="computers" computerSection="overview" settingsSection="general"
+    systemIssueStatus={null} computerAttention={{ errors: 0, warnings: 0 }} navigationDisabled
+    onTabChange={unavailable} onComputerSectionChange={unavailable} onSettingsSectionChange={unavailable}
     canGoBack={false} canGoForward={false} onGoBack={unavailable} onGoForward={unavailable}
     reduceMotion={settings.reduceMotion} commandMenu={<ApplicationCommandMenu commands={[]} disabled />}>
     <div aria-busy="true" className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
-      <span role="status" className="sr-only">Loading sandbox state</span>
+      <span role="status" className="sr-only">Loading computer state</span>
       <div className="min-h-0 flex-1">
-        <MachineList machines={machines} onMachinesChange={unavailable} interactionDisabled
+        <ComputerConfigurationList configurations={configurations} onConfigurationsChange={unavailable} interactionDisabled
           getRowPresentation={() => ({ detail, actions: <LoadingControls />, busy: true })} />
       </div>
     </div>

@@ -14,8 +14,8 @@ import { Toaster } from "@/components/ui/sonner"
 it.each(["default", "empty"] as const)("persists the %s startup selection when enabled without editing the selection", async (selection) => {
   const user = userEvent.setup()
   const source = applicationSourceForScenario("running")
-  const expected = selection === "default" ? [source.workspaces.find(({ machine }) => machine.name === "dev")!.machine.id] : []
-  let saved: SettingsSnapshot = { revision: 0, settings: selection === "empty" ? { startupWorkspaceIds: [] } : {}, onboardingDraft: null, saveError: null }
+  const expected = selection === "default" ? [source.computers.find(({ configuration }) => configuration.name === "dev")!.configuration.id] : []
+  let saved: SettingsSnapshot = { revision: 0, settings: selection === "empty" ? { startupComputerIds: [] } : {}, onboardingDraft: null, saveError: null }
   const backend: SettingsBackend = {
     read: async () => saved,
     subscribe: async () => () => {},
@@ -27,55 +27,55 @@ it.each(["default", "empty"] as const)("persists the %s startup selection when e
   await settings.initialize()
   const view = render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)
 
-  await user.click(screen.getByRole("switch", { name: "Start sandboxes at launch" }))
+  await user.click(screen.getByRole("switch", { name: "Start computers at launch" }))
   await settings.flush()
-  expect(saved.settings).toMatchObject({ startWorkspacesAtLaunch: true, startupWorkspaceIds: expected })
+  expect(saved.settings).toMatchObject({ startComputersAtLaunch: true, startupComputerIds: expected })
   view.unmount()
   settings.dispose()
 
   const reopened = createSettingsStore(backend)
   await reopened.initialize()
-  expect(reopened.getSnapshot().settings).toMatchObject({ startWorkspacesAtLaunch: true, startupWorkspaceIds: expected })
+  expect(reopened.getSnapshot().settings).toMatchObject({ startComputersAtLaunch: true, startupComputerIds: expected })
   reopened.dispose()
 })
 
-it("defaults the startup selection to a local sandbox even when a remote one is named dev", async () => {
+it("defaults the startup selection to a local computer even when a remote one is named dev", async () => {
   const user = userEvent.setup()
   const source = structuredClone(applicationSourceForScenario("running"))
-  const [dev, playgrounds] = source.workspaces
-  source.workspaces = [{ ...dev, machine: { ...dev.machine, id: "remote-dev" }, device: { id: "office", name: "Office Mac", address: "office.local", connected: true, vmId: dev.machine.id } }, playgrounds]
-  source.preferences = { ...source.preferences, startWorkspacesAtLaunch: false, startupWorkspaceIds: undefined }
+  const [dev, playgrounds] = source.computers
+  source.computers = [{ ...dev, configuration: { ...dev.configuration, id: "remote-dev" }, device: { id: "office", name: "Office Mac", address: "office.local", connected: true, computerId: dev.configuration.id } }, playgrounds]
+  source.preferences = { ...source.preferences, startComputersAtLaunch: false, startupComputerIds: undefined }
   const settings = createMemorySettingsStore({})
   render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)
-  await user.click(screen.getByRole("switch", { name: "Start sandboxes at launch" }))
-  expect(settings.getSnapshot().settings.startupWorkspaceIds).toEqual([playgrounds.machine.id])
-  expect(screen.getByRole("button", { name: `Remove ${playgrounds.machine.name}` })).toBeVisible()
+  await user.click(screen.getByRole("switch", { name: "Start computers at launch" }))
+  expect(settings.getSnapshot().settings.startupComputerIds).toEqual([playgrounds.configuration.id])
+  expect(screen.getByRole("button", { name: `Remove ${playgrounds.configuration.name}` })).toBeVisible()
 })
 
-it("searches a long startup sandbox list and preserves selections when startup is toggled", async () => {
+it("searches a long startup computer list and preserves selections when startup is toggled", async () => {
   const user = userEvent.setup()
   const source = applicationSourceForScenario("running")
-  source.workspaces = Array.from({ length: 64 }, (_, index) => ({
-    ...source.workspaces[0],
-    machine: { ...source.workspaces[0].machine, id: `sandbox-${index + 1}`, name: `sandbox-${index + 1}` },
+  source.computers = Array.from({ length: 64 }, (_, index) => ({
+    ...source.computers[0],
+    configuration: { ...source.computers[0].configuration, id: `computer-${index + 1}`, name: `computer-${index + 1}` },
   }))
   const settings = createMemorySettingsStore(source.preferences)
   render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)
-  const startup = screen.getByRole("switch", { name: "Start sandboxes at launch" })
-  if (!source.preferences.startWorkspacesAtLaunch) await user.click(startup)
-  const input = screen.getByRole("combobox", { name: "Add sandbox at startup" })
-  await user.type(input, "sandbox-64")
+  const startup = screen.getByRole("switch", { name: "Start computers at launch" })
+  if (!source.preferences.startComputersAtLaunch) await user.click(startup)
+  const input = screen.getByRole("combobox", { name: "Add computer at startup" })
+  await user.type(input, "computer-64")
   expect(screen.getAllByRole("option")).toHaveLength(1)
   await user.keyboard("{Enter}")
-  expect(screen.getByRole("button", { name: "Remove sandbox-64" })).toBeVisible()
-  await user.click(screen.getByRole("button", { name: "Remove sandbox-1" }))
+  expect(screen.getByRole("button", { name: "Remove computer-64" })).toBeVisible()
+  await user.click(screen.getByRole("button", { name: "Remove computer-1" }))
   await user.click(startup)
-  expect(screen.queryByRole("combobox", { name: "Add sandbox at startup" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("combobox", { name: "Add computer at startup" })).not.toBeInTheDocument()
   await user.click(startup)
-  expect(screen.getByRole("button", { name: "Remove sandbox-64" })).toBeVisible()
-  expect(screen.queryByRole("button", { name: "Remove sandbox-1" })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Remove computer-64" })).toBeVisible()
+  expect(screen.queryByRole("button", { name: "Remove computer-1" })).not.toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Clear" }))
-  expect(screen.queryByRole("button", { name: "Remove sandbox-64" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Remove computer-64" })).not.toBeInTheDocument()
 })
 
 function renderGeneralPage(backup?: ReturnType<typeof createFixturePreUpgradeBackup>) {
@@ -112,7 +112,7 @@ it("reports unsaved preferences and retries delivery without losing the selectio
   const user = userEvent.setup()
   const errors = vi.spyOn(console, "error").mockImplementation(() => {})
   const source = applicationSourceForScenario("running")
-  let saved: SettingsSnapshot = { revision: 0, settings: { startWorkspacesAtLaunch: false }, onboardingDraft: null, saveError: null }
+  let saved: SettingsSnapshot = { revision: 0, settings: { startComputersAtLaunch: false }, onboardingDraft: null, saveError: null }
   let failDelivery = true
   const settings = createSettingsStore({
     read: async () => saved, subscribe: async () => () => {},
@@ -123,16 +123,16 @@ it("reports unsaved preferences and retries delivery without losing the selectio
     updateOnboardingDraft: async () => saved, flush: async () => {},
   }, {}, saved)
   render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)
-  await user.click(screen.getByRole("switch", { name: "Start sandboxes at launch" }))
+  await user.click(screen.getByRole("switch", { name: "Start computers at launch" }))
   expect(errors).toHaveBeenCalledExactlyOnceWith("Silo settings:", "Settings delivery unavailable")
   errors.mockRestore()
   expect(await screen.findByRole("alert")).toHaveTextContent("Settings could not be saved")
-  expect(screen.getByRole("switch", { name: "Start sandboxes at launch" })).toBeChecked()
-  expect(saved.settings.startWorkspacesAtLaunch).toBe(false)
+  expect(screen.getByRole("switch", { name: "Start computers at launch" })).toBeChecked()
+  expect(saved.settings.startComputersAtLaunch).toBe(false)
   failDelivery = false
   await user.click(screen.getByRole("button", { name: "Retry saving settings" }))
   await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
-  expect(saved.settings.startWorkspacesAtLaunch).toBe(true)
+  expect(saved.settings.startComputersAtLaunch).toBe(true)
   settings.dispose()
 })
 

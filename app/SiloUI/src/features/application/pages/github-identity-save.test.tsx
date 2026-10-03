@@ -16,12 +16,12 @@ it.each(["name", "email"])("saves disabling the Git identity after clearing its 
   await user.click(screen.getByRole("checkbox", { name: "Apply Git identity to dev" }))
   await waitFor(() => expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce())
   const [saved] = vi.mocked(actions.saveGitHubConfiguration!).mock.calls[0]
-  expect(saved.workspaces).toEqual([expect.objectContaining({
-    workspace: "dev", identity: expect.objectContaining({ [field]: "", apply: false }),
+  expect(saved.computers).toEqual([expect.objectContaining({
+    computer: "dev", identity: expect.objectContaining({ [field]: "", apply: false }),
   })])
   const refreshed = structuredClone(source)
   refreshed.github.policyRevision = 11
-  refreshed.github.workspaces = source.github.workspaces!.map(policy => policy.workspace === "dev" ? saved.workspaces[0] : policy)
+  refreshed.github.computers = source.github.computers!.map(policy => policy.computer === "dev" ? saved.computers[0] : policy)
   view.rerender(<GitHubPage source={refreshed} actions={actions} />)
   expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
   expect(screen.getByLabelText(`Git ${field} for dev`)).toHaveValue("")

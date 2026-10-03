@@ -8,7 +8,7 @@ export interface AppMenuState {
   busy: boolean
   canGoBack: boolean
   canGoForward: boolean
-  canCreateSandbox: boolean
+  canCreateComputer: boolean
   canImport: boolean
   canCheckUpdates: boolean
   sidebarCollapsed: boolean

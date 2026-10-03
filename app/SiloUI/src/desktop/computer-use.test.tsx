@@ -3,10 +3,10 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { setupFakeTimerUser } from "@/test/fake-timer-user"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
-import { MachineList } from "@/features/sandboxes/components/machine-list"
+import { productionComputerDefaults } from "@/features/onboarding/model/computer-configuration"
+import { ComputerConfigurationList } from "@/features/computers/components/computer-configuration-list"
 import { computerUseFixtureNames, createFixtureComputerUseBackend, fixtureChatGptStatus, fixtureComputerUse, fixtureDesktopState } from "@/fixtures/computer-use"
-import { deviceOfWorkspace, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
+import { deviceOfComputer, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
 import { ComputerUseProvider } from "./computer-use-provider"
 import { CHATGPT_DOWNLOAD_NOTE, ChatGptAppProgress, ChatGptAppStatusView, ComputerUsePanel, ComputerUseSection } from "./computer-use-panel"
 import { chatGptStatusText } from "./computer-use-labels"
@@ -74,14 +74,14 @@ describe("computer use panel", () => {
   it.each(["preparing", "installing", "ready", "untested", "auto"] as const)("shows only the approval switch and one hint while %s", name => {
     const { container } = render(<ComputerUsePanel approval={controller(fixtureComputerUse(name))} />)
     expect(screen.getByRole("switch", { name: "Allow without asking" })).toBeVisible()
-    expect(screen.getByText(/use this sandbox's desktop without asking first/)).toBeVisible()
+    expect(screen.getByText(/use this computer's desktop without asking first/)).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.queryByRole("note")).not.toBeInTheDocument()
     expect(screen.queryByRole("button")).not.toBeInTheDocument()
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
     expect(container).not.toHaveTextContent(/Details|Set up computer use|Installing|Ready|Preparing|26\.928/)
   })
-  it("keeps the switch while the sandbox's computer use is still unavailable", () => {
+  it("keeps the switch while the computer's computer use is still unavailable", () => {
     renderPanel(fixtureComputerUse("unavailable"))
     expect(screen.getByRole("switch", { name: "Allow without asking" })).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
@@ -94,21 +94,21 @@ describe("computer use panel", () => {
     await user.click(toggle)
     expect(approval.setApproval).toHaveBeenCalledWith("ask")
   })
-  it("keeps the switch usable while the sandbox is stopped", async () => {
+  it("keeps the switch usable while the computer is stopped", async () => {
     const approval = renderPanel(ready, { running: false })
     await userEvent.setup().click(screen.getByRole("switch", { name: "Allow without asking" }))
     expect(approval.setApproval).toHaveBeenCalledWith("auto")
   })
-  it("offers Try again for a failed setup, running setup only while the sandbox runs", async () => {
+  it("offers Try again for a failed setup, running setup only while the computer runs", async () => {
     const approval = renderPanel(fixtureComputerUse("failed"))
     expect(screen.getByRole("alert")).toHaveTextContent("setup failed")
     await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }))
     expect(approval.setup).toHaveBeenCalledOnce()
   })
-  it("explains instead of running setup when the sandbox is stopped", () => {
+  it("explains instead of running setup when the computer is stopped", () => {
     renderPanel(fixtureComputerUse("failed"), { running: false })
     expect(screen.getByRole("button", { name: "Try again" })).toBeDisabled()
-    expect(screen.getByRole("button", { name: "Try again" })).toHaveAttribute("title", "Start the sandbox to try again.")
+    expect(screen.getByRole("button", { name: "Try again" })).toHaveAttribute("title", "Start the computer to try again.")
   })
   it("keeps the backend reason of a failure in a tooltip", () => {
     renderPanel(fixtureComputerUse("app-failed"), {}, { retry: vi.fn(), busy: false })
@@ -137,12 +137,12 @@ describe("computer use panel", () => {
 })
 
 describe("approval switch for other surfaces", () => {
-  it("renders nothing until the sandbox's computer use is known", () => {
+  it("renders nothing until the computer's computer use is known", () => {
     const { container } = render(<ComputerUseApprovalSwitch approval={controller(null)} />)
     expect(container).toBeEmptyDOMElement()
   })
   it("embeds on its own with a hook", async () => {
-    const setApproval = vi.fn(async (_workspace: string, mode: "ask" | "auto") => ({ ...fixtureDesktopState("ready"), computerUse: { ...ready, approval: mode, appliedApproval: mode } }))
+    const setApproval = vi.fn(async (_computer: string, mode: "ask" | "auto") => ({ ...fixtureDesktopState("ready"), computerUse: { ...ready, approval: mode, appliedApproval: mode } }))
     function Toast() { return <ComputerUseApprovalSwitch approval={useComputerUseApproval("office/vm-1", 60_000)} /> }
     render(wrap(backend({ readDesktopState: async () => fixtureDesktopState("ready"), setApproval }), <Toast />))
     await userEvent.setup().click(await screen.findByRole("switch", { name: "Allow without asking" }))
@@ -205,16 +205,16 @@ describe("ChatGPT app progress, read-only", () => {
     expect(chatGptStatusText({ state: "failed", reason: "x", retryable: true })).toBe("Failed")
     expect(chatGptStatusText({ state: "unknown" })).toBe("Unknown")
     expect(chatGptStatusText(null)).toBe("Unknown")
-    expect(CHATGPT_DOWNLOAD_NOTE).toBe("Silo downloads ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux desktop.")
+    expect(CHATGPT_DOWNLOAD_NOTE).toBe("Silo downloads ChatGPT for Linux from OpenAI so agents in your computers can use the Linux desktop.")
   })
 })
 
 describe("computer use section", () => {
   function section(b: ComputerUseBackend) {
-    render(wrap(b, <ComputerUseSection workspace="office/vm-1" pollMs={60_000} />))
+    render(wrap(b, <ComputerUseSection computer="office/vm-1" pollMs={60_000} />))
   }
   it("sets the approval mode through the owning device's command and shows the result", async () => {
-    const setApproval = vi.fn(async (_workspace: string, mode: "ask" | "auto") => ({ ...fixtureDesktopState("ready"), computerUse: { ...ready, approval: mode } }))
+    const setApproval = vi.fn(async (_computer: string, mode: "ask" | "auto") => ({ ...fixtureDesktopState("ready"), computerUse: { ...ready, approval: mode } }))
     section(backend({ readDesktopState: async () => fixtureDesktopState("ready"), setApproval }))
     const toggle = await screen.findByRole("switch", { name: /Allow without asking/ })
     expect(toggle).not.toBeChecked()
@@ -243,10 +243,10 @@ describe("computer use section", () => {
     expect(screen.queryByRole("progressbar")).not.toBeInTheDocument()
   })
   it("shows a rejected setup", async () => {
-    section(backend({ readDesktopState: async () => fixtureDesktopState("failed"), setup: async () => { throw new Error("The sandbox stopped.") } }))
+    section(backend({ readDesktopState: async () => fixtureDesktopState("failed"), setup: async () => { throw new Error("The computer stopped.") } }))
     await screen.findByText(/setup failed/)
     await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }))
-    expect(await screen.findByText("The sandbox stopped.")).toBeVisible()
+    expect(await screen.findByText("The computer stopped.")).toBeVisible()
   })
   it("retries a failed ChatGPT download without offering setup", async () => {
     const retry = vi.fn(async (_device?: string) => ({}))
@@ -262,14 +262,14 @@ describe("computer use section", () => {
     expect(screen.getByRole("button", { name: "Try again" })).toBeEnabled()
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
   })
-  it("renders nothing for a pre-v4 sandbox", async () => {
+  it("renders nothing for a pre-v4 computer", async () => {
     const read = vi.fn(async () => fixtureDesktopState("pre-v4"))
     section(backend({ readDesktopState: read }))
     await waitFor(() => expect(read).toHaveBeenCalled())
     expect(screen.queryByRole("region", { name: "Computer use" })).not.toBeInTheDocument()
   })
   it("renders nothing without a bridge", () => {
-    render(<ComputerUseSection workspace="dev" />)
+    render(<ComputerUseSection computer="dev" />)
     expect(screen.queryByRole("region", { name: "Computer use" })).not.toBeInTheDocument()
   })
 })
@@ -280,12 +280,12 @@ describe("v3 and v4 desktop viewer", () => {
     render(<LinuxDesktopViewer name="dev" state={state} busy={false} error={null} onAction={onAction} onRetry={vi.fn()} onFullscreen={vi.fn()} />)
     return onAction
   }
-  it("offers legacy LCU setup only for older sandboxes", async () => {
+  it("offers legacy LCU setup only for older computers", async () => {
     const onAction = viewer(fixtureDesktopState("pre-v4"))
     await userEvent.setup().click(screen.getByRole("button", { name: "Set up LCU" }))
     expect(onAction).toHaveBeenCalledWith("setup-lcu")
   })
-  it("shows nothing about computer use for a healthy v4 sandbox", () => {
+  it("shows nothing about computer use for a healthy v4 computer", () => {
     viewer(fixtureDesktopState("ready"))
     expect(screen.queryByText(/Computer use/)).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Set up/ })).not.toBeInTheDocument()
@@ -294,11 +294,11 @@ describe("v3 and v4 desktop viewer", () => {
   })
   it("says a ChatGPT download failed without offering setup", async () => {
     const onAction = viewer(fixtureDesktopState("app-failed"))
-    expect(screen.getByRole("alert")).toHaveTextContent("ChatGPT download failed. Retry from the sandbox's page.")
+    expect(screen.getByRole("alert")).toHaveTextContent("ChatGPT download failed. Retry from the computer's page.")
     expect(screen.queryByRole("button", { name: "Try again" })).not.toBeInTheDocument()
     expect(onAction).not.toHaveBeenCalled()
   })
-  it("offers Try again for a failed setup of the sandbox itself", async () => {
+  it("offers Try again for a failed setup of the computer itself", async () => {
     const onAction = viewer(fixtureDesktopState("failed"))
     expect(screen.getByRole("alert")).toHaveTextContent("Computer use setup failed")
     await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }))
@@ -309,62 +309,62 @@ describe("v3 and v4 desktop viewer", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Set up|Try again/ })).not.toBeInTheDocument()
   })
-  it("does not send a v4 sandbox to Add Linux desktop", () => {
+  it("does not send a v4 computer to Add Linux desktop", () => {
     viewer({ ...fixtureDesktopState("ready"), state: "uninstalled", installed: false })
     expect(screen.queryByText(/Add Linux desktop/)).not.toBeInTheDocument()
     expect(screen.getByText("Desktop unavailable")).toBeVisible()
   })
-  it("still points an older sandbox to Add Linux desktop", () => {
+  it("still points an older computer to Add Linux desktop", () => {
     viewer({ installed: false, autoStart: false, state: "uninstalled" })
     expect(screen.getByText(/Add Linux desktop/)).toBeVisible()
   })
 })
 
-describe("sandbox settings for v3 and v4", () => {
-  const machine = productionMachineDefaults[0]
-  function editor(draft: typeof machine, created: boolean, provider: boolean) {
-    const list = <TooltipProvider><MachineList machines={created ? [draft] : []} onMachinesChange={vi.fn()}
-      isMachineCreated={() => created} isMachineRunning={() => created}
+describe("computer settings for v3 and v4", () => {
+  const configuration = productionComputerDefaults[0]
+  function editor(draft: typeof configuration, created: boolean, provider: boolean) {
+    const list = <TooltipProvider><ComputerConfigurationList configurations={created ? [draft] : []} onConfigurationsChange={vi.fn()}
+      isComputerCreated={() => created} isComputerRunning={() => created}
       initialEditorDraft={{ draft, originalID: created ? draft.id : undefined, insertAt: 0 }} /></TooltipProvider>
     render(provider ? wrap(backend(), list) : list)
   }
-  it("shows no desktop controls or note for a built-in sandbox", () => {
-    editor({ ...machine, desktop: { startWithSandbox: true, builtIn: true } }, true, true)
-    expect(screen.queryByRole("switch", { name: "Start desktop with sandbox" })).not.toBeInTheDocument()
+  it("shows no desktop controls or note for a built-in computer", () => {
+    editor({ ...configuration, desktop: { startWithComputer: true, builtIn: true } }, true, true)
+    expect(screen.queryByRole("switch", { name: "Start desktop with computer" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Add Linux desktop" })).not.toBeInTheDocument()
     expect(screen.queryByText(/Built in/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Linux desktop and computer use/)).not.toBeInTheDocument()
   })
-  it("keeps the startup switch for a sandbox created before v4", () => {
-    editor({ ...machine, desktop: { startWithSandbox: true } }, true, true)
-    expect(screen.getByRole("switch", { name: "Start desktop with sandbox" })).toBeVisible()
+  it("keeps the startup switch for a computer created before v4", () => {
+    editor({ ...configuration, desktop: { startWithComputer: true } }, true, true)
+    expect(screen.getByRole("switch", { name: "Start desktop with computer" })).toBeVisible()
   })
-  it("keeps Add Linux desktop for an older sandbox without a desktop", () => {
-    editor(machine, true, true)
+  it("keeps Add Linux desktop for an older computer without a desktop", () => {
+    editor(configuration, true, true)
     expect(screen.getByRole("button", { name: "Add Linux desktop" })).toBeVisible()
   })
-  it("shows no download notice or consent when creating a sandbox, and saving is never blocked", async () => {
-    editor(machine, false, true)
+  it("shows no download notice or consent when creating a computer, and saving is never blocked", async () => {
+    editor(configuration, false, true)
     expect(screen.queryByRole("checkbox", { name: "Linux desktop" })).not.toBeInTheDocument()
     expect(screen.queryByRole("group", { name: "Download ChatGPT for Linux?" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /Accept|Not now/ })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Create" })).toBeEnabled()
   })
   it("keeps the desktop checkbox without computer use support", () => {
-    editor(machine, false, false)
+    editor(configuration, false, false)
     expect(screen.getByRole("checkbox", { name: "Linux desktop" })).toBeVisible()
   })
 })
 
-describe("creating a sandbox on the selected device", () => {
-  const machine = productionMachineDefaults[0]
+describe("creating a computer on the selected device", () => {
+  const configuration = productionComputerDefaults[0]
   const devices = [{ id: "11111111-1111-4111-8111-111111111111", name: "Linux box", connected: true }]
-  function creating(status: unknown, draft: typeof machine = machine, onMachinesChange = vi.fn()) {
+  function creating(status: unknown, draft: typeof configuration = configuration, onConfigurationsChange = vi.fn()) {
     const bridgeBackend = backend({ chatGptStatus: async device => device ? status : { state: "ready" } })
-    render(wrap(bridgeBackend, <TooltipProvider><MachineList machines={[]} devices={devices} getDeviceId={() => undefined} onMachinesChange={onMachinesChange}
-      isMachineCreated={() => false} isMachineRunning={() => false}
+    render(wrap(bridgeBackend, <TooltipProvider><ComputerConfigurationList configurations={[]} devices={devices} getDeviceId={() => undefined} onConfigurationsChange={onConfigurationsChange}
+      isComputerCreated={() => false} isComputerRunning={() => false}
       initialEditorDraft={{ draft, insertAt: 0 }} /></TooltipProvider>))
-    return onMachinesChange
+    return onConfigurationsChange
   }
   const choose = (user: ReturnType<typeof userEvent.setup>) => user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), devices[0]!.id)
 
@@ -384,19 +384,19 @@ describe("creating a sandbox on the selected device", () => {
     expect(screen.queryByText(/Built in/)).not.toBeInTheDocument()
     expect(screen.queryByRole("checkbox", { name: "Linux desktop" })).not.toBeInTheDocument()
   })
-  it("starts the desktop of a new built-in sandbox even when duplicated settings chose to start it by hand", async () => {
-    const onMachinesChange = creating({ state: "ready" }, { ...machine, desktop: { startWithSandbox: false } })
+  it("starts the desktop of a new built-in computer even when duplicated settings chose to start it by hand", async () => {
+    const onConfigurationsChange = creating({ state: "ready" }, { ...configuration, desktop: { startWithComputer: false } })
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Create" }))
-    await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
-    expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ desktop: { startWithSandbox: true } })])
+    await waitFor(() => expect(onConfigurationsChange).toHaveBeenCalled())
+    expect(onConfigurationsChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ desktop: { startWithComputer: true } })])
   })
-  it("keeps a manual desktop start for a sandbox created before the built-in desktop", () => {
-    const draft = { ...machine, desktop: { startWithSandbox: false } }
-    render(wrap(backend(), <TooltipProvider><MachineList machines={[draft]} onMachinesChange={vi.fn()}
-      isMachineCreated={() => true} isMachineRunning={() => false}
+  it("keeps a manual desktop start for a computer created before the built-in desktop", () => {
+    const draft = { ...configuration, desktop: { startWithComputer: false } }
+    render(wrap(backend(), <TooltipProvider><ComputerConfigurationList configurations={[draft]} onConfigurationsChange={vi.fn()}
+      isComputerCreated={() => true} isComputerRunning={() => false}
       initialEditorDraft={{ draft, originalID: draft.id, insertAt: 0 }} /></TooltipProvider>))
-    expect(screen.getByRole("switch", { name: "Start desktop with sandbox" })).not.toBeChecked()
+    expect(screen.getByRole("switch", { name: "Start desktop with computer" })).not.toBeChecked()
   })
 })
 
@@ -409,17 +409,17 @@ function deferred<T>() {
 const HOST = "11111111-1111-4111-8111-111111111111"
 const OTHER = "22222222-2222-4222-8222-222222222222"
 const VM = "33333333-3333-4333-8333-333333333333"
-const remoteVm = `silo-remote:${HOST}:${VM}`
+const remoteComputer = `silo-remote:${HOST}:${VM}`
 
 describe("ChatGPT app store per device", () => {
-  it("addresses a device by its device id, never a placeholder sandbox, and keeps one store per device", async () => {
+  it("addresses a device by its device id, never a placeholder computer, and keeps one store per device", async () => {
     const calls: Array<[string, string | undefined]> = []
     const bridge = createComputerUseBridge(backend({
       chatGptStatus: async device => { calls.push(["status", device]); return { state: "failed", reason: "Offline.", retryable: true } },
       retry: async device => { calls.push(["retry", device]) },
     }))
     expect(bridge.chatGptFor()).toBe(bridge.chatGptFor())
-    expect(bridge.chatGptFor(HOST)).toBe(bridge.chatGptFor(deviceOfWorkspace(remoteVm)))
+    expect(bridge.chatGptFor(HOST)).toBe(bridge.chatGptFor(deviceOfComputer(remoteComputer)))
     expect(bridge.chatGptFor(HOST)).not.toBe(bridge.chatGptFor())
     expect(bridge.chatGptFor(HOST)).not.toBe(bridge.chatGptFor(OTHER))
     await bridge.chatGptFor(HOST).retry()
@@ -428,10 +428,10 @@ describe("ChatGPT app store per device", () => {
     expect(calls.at(-1)).toEqual(["status", undefined])
     expect(JSON.stringify(calls)).not.toContain("silo-remote")
   })
-  it("finds the owning device of a sandbox", () => {
-    expect(deviceOfWorkspace(remoteVm)).toBe(HOST)
-    expect(deviceOfWorkspace("dev")).toBeUndefined()
-    expect(deviceOfWorkspace(undefined)).toBeUndefined()
+  it("finds the owning device of a computer", () => {
+    expect(deviceOfComputer(remoteComputer)).toBe(HOST)
+    expect(deviceOfComputer("dev")).toBeUndefined()
+    expect(deviceOfComputer(undefined)).toBeUndefined()
   })
   it("applies a status event only to this device", async () => {
     const handlers: Array<(payload: unknown) => void> = []
@@ -735,7 +735,7 @@ describe("ChatGPT app errors", () => {
 })
 
 describe("computer use section reads and errors", () => {
-  const section = (b: ComputerUseBackend, pollMs = 60_000) => render(wrap(b, <ComputerUseSection workspace="office/vm-1" pollMs={pollMs} />))
+  const section = (b: ComputerUseBackend, pollMs = 60_000) => render(wrap(b, <ComputerUseSection computer="office/vm-1" pollMs={pollMs} />))
   it("never runs two reads at once, so a slow older read cannot overwrite a newer one", async () => {
     vi.useFakeTimers()
     const slow = deferred<unknown>()
@@ -792,9 +792,9 @@ describe("computer use section reads and errors", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Connection lost")
     expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeVisible()
   })
-  it("reads the ChatGPT status of the device that owns the sandbox, only for a failed download", async () => {
+  it("reads the ChatGPT status of the device that owns the computer, only for a failed download", async () => {
     const status = vi.fn(async (_device?: string) => ({ state: "downloading", receivedBytes: 100_000_000, totalBytes: 200_000_000 }))
-    render(wrap(backend({ readDesktopState: async () => fixtureDesktopState("app-failed"), chatGptStatus: status }), <ComputerUseSection workspace={remoteVm} pollMs={60_000} />))
+    render(wrap(backend({ readDesktopState: async () => fixtureDesktopState("app-failed"), chatGptStatus: status }), <ComputerUseSection computer={remoteComputer} pollMs={60_000} />))
     await screen.findByRole("button", { name: "Retry" })
     expect(status).toHaveBeenCalledWith(HOST)
   })
@@ -844,11 +844,11 @@ describe("chosen and applied approval", () => {
     expect(screen.getByRole("note")).toHaveTextContent("Agents may still ask first until this is applied.")
     expect(screen.queryByText(/still act without asking/)).toBeNull()
   })
-  it("does not say Applying… for a stopped sandbox, and keeps the warning until the change is applied at start", () => {
+  it("does not say Applying… for a stopped computer, and keeps the warning until the change is applied at start", () => {
     render_(fixtureComputerUse("approval-pending"), { running: false })
     expect(screen.queryByText("Applying…")).toBeNull()
     expect(screen.getByRole("note")).toHaveTextContent("may still act without asking until this is applied")
-    // A sandbox that never applied anything has nothing to wait for.
+    // A computer that never applied anything has nothing to wait for.
     const { unmount } = render_({ ...ready, appliedApproval: "unknown", approvalApply: "pending" }, { running: false })
     expect(screen.getAllByRole("note")).toHaveLength(1)
     unmount()
@@ -858,7 +858,7 @@ describe("chosen and applied approval", () => {
     expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
     const note = screen.getByRole("note")
     expect(note).toHaveTextContent("Not applied to every agent. Some may still act without asking.")
-    expect(within(note).getByText(/Not applied/)).toHaveAttribute("title", expect.stringContaining("Applying took too long. Silo tries again when the sandbox starts."))
+    expect(within(note).getByText(/Not applied/)).toHaveAttribute("title", expect.stringContaining("Applying took too long. Silo tries again when the computer starts."))
     expect(screen.queryByText("Applying…")).toBeNull()
   })
   it("reports a partial apply and warns that some agents may still act without asking", () => {
@@ -872,7 +872,7 @@ describe("chosen and applied approval", () => {
     unmount()
   })
   it("warns after a failure to apply ask when nothing says ask is in place, and not when it is", () => {
-    const { unmount } = render_({ ...ready, appliedApproval: "unknown", approvalApply: "failed", approvalApplyReason: "Silo could not reach the sandbox to apply it." })
+    const { unmount } = render_({ ...ready, appliedApproval: "unknown", approvalApply: "failed", approvalApplyReason: "Silo could not reach the computer to apply it." })
     expect(screen.getByRole("note")).toHaveTextContent("may still act without asking")
     unmount()
     render_({ ...ready, appliedApproval: "ask", approvalApply: "failed" })
@@ -931,11 +931,11 @@ describe("chosen and applied approval", () => {
     expect(screen.getAllByRole("note")).toHaveLength(1)
     expect(screen.getByRole("note")).toHaveTextContent("could not read the approval setting")
   })
-  it("shows Applying… as soon as the switch is used, then the result the sandbox reports", async () => {
+  it("shows Applying… as soon as the switch is used, then the result the computer reports", async () => {
     const user = userEvent.setup()
     const change = deferred<unknown>()
     const reads = vi.fn(async () => ({ ...fixtureDesktopState("ready"), computerUse: fixtureComputerUse("auto") }))
-    render(wrap(backend({ readDesktopState: reads, setApproval: () => change.promise }), <ComputerUseSection workspace="office/vm-1" pollMs={60_000} />))
+    render(wrap(backend({ readDesktopState: reads, setApproval: () => change.promise }), <ComputerUseSection computer="office/vm-1" pollMs={60_000} />))
     await user.click(await screen.findByRole("switch", { name: /Allow without asking/ }))
     expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
     expect(screen.getByText("Applying…")).toBeVisible()
@@ -944,12 +944,12 @@ describe("chosen and applied approval", () => {
     expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
     expect(screen.queryByText("Applying…")).toBeNull()
   })
-  it("reads the sandbox's state again after a command error instead of restoring the old snapshot", async () => {
+  it("reads the computer's state again after a command error instead of restoring the old snapshot", async () => {
     const user = userEvent.setup()
     // The command stored the choice and started applying it, then the answer was lost.
     const states = [fixtureComputerUse("auto"), { ...fixtureComputerUse("approval-pending"), approval: "ask" as const }]
     const readDesktopState = vi.fn(async () => ({ ...fixtureDesktopState("ready"), computerUse: states.length > 1 ? states.shift()! : states[0] }))
-    render(wrap(backend({ readDesktopState, setApproval: async () => { throw new Error("The connection to office-mac was lost.") } }), <ComputerUseSection workspace="office/vm-1" pollMs={60_000} />))
+    render(wrap(backend({ readDesktopState, setApproval: async () => { throw new Error("The connection to office-mac was lost.") } }), <ComputerUseSection computer="office/vm-1" pollMs={60_000} />))
     expect(await screen.findByRole("switch", { name: /Allow without asking/ })).toBeChecked()
     await user.click(screen.getByRole("switch", { name: /Allow without asking/ }))
     expect(await screen.findByRole("alert")).toHaveTextContent("The connection to office-mac was lost.")
@@ -965,7 +965,7 @@ describe("chosen and applied approval", () => {
     render(wrap(backend({
       readDesktopState: async () => { reads += 1; if (reads > 1) throw new Error("office-mac is offline"); return { ...fixtureDesktopState("ready"), computerUse: fixtureComputerUse("auto") } },
       setApproval: async () => { throw new Error("office-mac is offline") },
-    }), <ComputerUseSection workspace="office/vm-1" pollMs={60_000} />))
+    }), <ComputerUseSection computer="office/vm-1" pollMs={60_000} />))
     await user.click(await screen.findByRole("switch", { name: /Allow without asking/ }))
     await waitFor(() => expect(screen.getAllByRole("alert").length).toBe(2))
     expect(screen.getByRole("button", { name: "Try again" })).toBeVisible()

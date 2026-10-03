@@ -129,7 +129,7 @@ export function ApplicationPreferenceFields({
         title="Terminal"
         error={failures.terminal}
         errorId={errorId("terminal")}
-        description="Used by sandbox terminal shortcuts."
+        description="Used by computer terminal shortcuts."
         control={applicationSelect("terminal", "Terminal")}
       />
       <ApplicationPreferenceRow
@@ -138,7 +138,7 @@ export function ApplicationPreferenceFields({
         title="Code editor"
         error={failures.editor}
         errorId={errorId("editor")}
-        description="Used when opening sandbox files."
+        description="Used when opening computer files."
         control={applicationSelect("editor", "Code editor")}
       />
       <ApplicationPreferenceRow
@@ -147,7 +147,7 @@ export function ApplicationPreferenceFields({
         title="Browser"
         error={failures.browser}
         errorId={errorId("browser")}
-        description="Used when opening sandbox URLs."
+        description="Used when opening computer URLs."
         control={applicationSelect("browser", "Browser")}
       />
     </>

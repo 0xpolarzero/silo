@@ -181,7 +181,7 @@ it("explains connection removal before it is selected", async () => {
   const removeDevice = vi.fn().mockResolvedValue(undefined)
   const remote = { id: "office", name: "Office", address: "office.example", connected: false, busy: false }
   render(<ConnectionsSettings source={{ ...source(undefined), devices: [remote] }} actions={actions({ removeDevice })} />)
-  expect(screen.getByText("Removing the connection leaves sandboxes on Office unchanged.")).toBeVisible()
+  expect(screen.getByText("Removing the connection leaves computers on Office unchanged.")).toBeVisible()
   fireEvent.click(screen.getByRole("button", { name: "Remove connection to Office" }))
   await waitFor(() => expect(removeDevice).toHaveBeenCalledExactlyOnceWith("office"))
 })
@@ -223,11 +223,11 @@ describe("Computer use components", () => {
     expect(await screen.findByRole("region", { name: "Computer use components" })).toBeVisible()
     expect(within(row("Office Mac")).getByRole("alert")).toHaveTextContent("Silo could not reach OpenAI. Silo tries again automatically.")
     expect(screen.queryByText("This device")).not.toBeInTheDocument()
-    expect(screen.getByText("Silo downloads ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux desktop.")).toBeVisible()
+    expect(screen.getByText("Silo downloads ChatGPT for Linux from OpenAI so agents in your computers can use the Linux desktop.")).toBeVisible()
     expect(screen.queryByRole("button", { name: /Accept|Not now|Download/ })).not.toBeInTheDocument()
   })
 
-  it("retries a failed device by its device id and not through a sandbox", async () => {
+  it("retries a failed device by its device id and not through a computer", async () => {
     const { retry } = settings({ local: { state: "ready", path: "/p", version: "1" }, [HOST]: { state: "failed", reason: "Offline.", retryable: true } })
     fireEvent.click(await screen.findByRole("button", { name: "Retry ChatGPT for Linux on Office Mac" }))
     await waitFor(() => expect(retry).toHaveBeenCalledWith(HOST))
@@ -265,7 +265,7 @@ describe("Computer use components", () => {
   })
 })
 
-describe("New sandbox approval default", () => {
+describe("New computer approval default", () => {
   function withBridge(store = createMemorySettingsStore()) {
     const backend: ComputerUseBackend = {
       readDesktopState: async () => ({}), setApproval: async () => ({}), setup: async () => ({}),
@@ -279,9 +279,9 @@ describe("New sandbox approval default", () => {
 
   it("is off by default and saves the choice", async () => {
     const store = withBridge()
-    const toggle = screen.getByRole("switch", { name: "Allow agents to use the device without asking in new sandboxes" })
+    const toggle = screen.getByRole("switch", { name: "Allow agents to use the device without asking in new computers" })
     expect(toggle).not.toBeChecked()
-    expect(screen.getByText("Claude Code, Codex and similar agents stop asking before using the sandbox’s desktop. Not a security boundary.")).toBeVisible()
+    expect(screen.getByText("Claude Code, Codex and similar agents stop asking before using the computer’s desktop. Not a security boundary.")).toBeVisible()
     fireEvent.click(toggle)
     await waitFor(() => expect(store.getSnapshot().settings.computerUseAutoApproval).toBe(true))
     expect(toggle).toBeChecked()

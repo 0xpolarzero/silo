@@ -9,49 +9,49 @@ import type { ApplicationSource } from "../model/application-source"
 import { showBackendNotice } from "../model/use-backend-notices"
 import { OverviewPage } from "./overview-page"
 
-it.each(["local", "remote"])("deleting the %s sandbox clears only its backend notification despite identical names", async owner => {
+it.each(["local", "remote"])("deleting the %s computer clears only its backend notification despite identical names", async owner => {
   const source = structuredClone(applicationSourceForScenario("running"))
-  const local = source.workspaces[0]
+  const local = source.computers[0]
   const remote = {
     ...structuredClone(local),
-    machine: { ...local.machine, id: `silo-remote:office:${local.machine.id}` },
-    device: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
+    configuration: { ...local.configuration, id: `silo-remote:office:${local.configuration.id}` },
+    device: { id: "office", computerId: local.configuration.id, name: "Office", address: "office.test", connected: true },
   }
-  source.workspaces = [local, remote]
+  source.computers = [local, remote]
   const actions = createApplicationActionsMock()
-  const onMachinesChange = vi.fn()
-  const view = (current: ApplicationSource) => <><Toaster /><OverviewPage source={current} actions={actions} onMachinesChange={onMachinesChange} /></>
+  const onConfigurationsChange = vi.fn()
+  const view = (current: ApplicationSource) => <><Toaster /><OverviewPage source={current} actions={actions} onConfigurationsChange={onConfigurationsChange} /></>
   const { rerender } = render(view(source))
   act(() => {
-    for (const [kind, workspace] of [["local", local], ["remote", remote]] as const) {
-      showBackendNotice({ category: "failures", key: `backend-${kind}`, title: `${kind} failure`, body: "Start failed", sandbox: { id: workspace.machine.id, name: workspace.machine.name } })
+    for (const [kind, computer] of [["local", local], ["remote", remote]] as const) {
+      showBackendNotice({ category: "failures", key: `backend-${kind}`, title: `${kind} failure`, body: "Start failed", computer: { id: computer.configuration.id, name: computer.configuration.name } })
     }
   })
   expect(await screen.findByText("local failure")).toBeVisible()
   expect(await screen.findByText("remote failure")).toBeVisible()
   const remaining = owner === "local" ? remote : local
-  rerender(view({ ...source, workspaces: [remaining] }))
+  rerender(view({ ...source, computers: [remaining] }))
   await waitFor(() => expect(screen.queryByText(`${owner} failure`)).not.toBeInTheDocument())
   expect(screen.getByText(`${owner === "local" ? "remote" : "local"} failure`)).toBeVisible()
 })
 
-it("a recreated sandbox keeps its own frontend notification and clears its predecessor's", async () => {
+it("a recreated computer keeps its own frontend notification and clears its predecessor's", async () => {
   const source = structuredClone(applicationSourceForScenario("running"))
-  const original = source.workspaces[0]
-  const replacement = { ...original, machine: { ...original.machine, id: "replacement-vm" } }
-  source.workspaces = [original]
+  const original = source.computers[0]
+  const replacement = { ...original, configuration: { ...original.configuration, id: "replacement-vm" } }
+  source.computers = [original]
   const actions = createApplicationActionsMock()
-  const onMachinesChange = vi.fn()
-  const view = (current: ApplicationSource) => <><Toaster /><OverviewPage source={current} actions={actions} onMachinesChange={onMachinesChange} /></>
+  const onConfigurationsChange = vi.fn()
+  const view = (current: ApplicationSource) => <><Toaster /><OverviewPage source={current} actions={actions} onConfigurationsChange={onConfigurationsChange} /></>
   const { rerender } = render(view(source))
   act(() => {
-    for (const [kind, workspace] of [["original", original], ["replacement", replacement]] as const) {
-      showOperationFailure(`frontend-${kind}`, `${kind} failure`, { sandbox: workspace.machine.name, noticeSandbox: { id: workspace.machine.id, name: workspace.machine.name }, native: false })
+    for (const [kind, computer] of [["original", original], ["replacement", replacement]] as const) {
+      showOperationFailure(`frontend-${kind}`, `${kind} failure`, { computer: computer.configuration.name, noticeComputer: { id: computer.configuration.id, name: computer.configuration.name }, native: false })
     }
   })
   expect(await screen.findByText("original failure")).toBeVisible()
   expect(await screen.findByText("replacement failure")).toBeVisible()
-  rerender(view({ ...source, workspaces: [replacement] }))
+  rerender(view({ ...source, computers: [replacement] }))
   await waitFor(() => expect(screen.queryByText("original failure")).not.toBeInTheDocument())
   expect(screen.getByText("replacement failure")).toBeVisible()
 })

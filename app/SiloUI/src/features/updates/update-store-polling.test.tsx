@@ -6,7 +6,7 @@ const ready: UpdateSnapshot = {
   phase: "ready", lastChecked: null, retryAction: null, currentVersion: "0.1.0",
   availableVersion: "0.2.0", releaseNotes: null, downloadedBytes: 100, totalBytes: 100,
   automaticChecks: true, packageKind: "macos", releaseUrl: "https://example.invalid/releases",
-  error: null, errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true,
+  error: null, errorDetails: null, installBlockReason: null, runningComputers: [], canInstall: true,
 }
 
 it("backs off failed installation-gate reads and restores normal polling after recovery", async () => {

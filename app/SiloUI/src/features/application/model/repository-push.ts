@@ -7,7 +7,7 @@ export function commitLabel(count: number) {
 /**
  * What a push of this repository would publish: its GitHub repository, current branch and
  * head commit. The user confirms exactly this and the host refuses to push anything else.
- * `null` when the sandbox did not report a GitHub origin or head commit.
+ * `null` when the computer did not report a GitHub origin or head commit.
  */
 export function pushTarget(repository: Pick<ApplicationRepository, "branch" | "repository" | "head">): RepositoryPushTarget | null {
   if (!repository.repository || !repository.head || !repository.branch) return null

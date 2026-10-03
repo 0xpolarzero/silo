@@ -34,7 +34,7 @@ export function GlassStudy() {
         <feDisplacementMap in="SourceGraphic" in2="smoothNoise" scale={strength} xChannelSelector="R" yChannelSelector="G" />
       </filter>
     </defs></svg>
-    <header className="study-heading"><div><span className="study-eyebrow">SILO / MATERIAL STUDY 01</span><h1>A little more depth.</h1><p>The same sandbox, seen through glass.</p></div><span className="study-tag">Interactive concept · Fixture data</span></header>
+    <header className="study-heading"><div><span className="study-eyebrow">SILO / MATERIAL STUDY 01</span><h1>A little more depth.</h1><p>The same computer, seen through glass.</p></div><span className="study-tag">Interactive concept · Fixture data</span></header>
     <div className="study-wallpaper" aria-hidden="true"><div className="study-ribbon"/><div className="study-orbit"/><div className="study-orbit second"/></div>
     <FixtureApp />
     <footer className="study-controls">

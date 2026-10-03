@@ -8,7 +8,7 @@ import { RepositoryPushButton, RepositoryPushFeedback } from "./repository-push-
 import { useRepositoryPushToasts } from "./use-repository-push-toasts"
 
 const target = { repository: "acme/silo", branch: "main", commit: "0123456789abcdef0123456789abcdef01234567" }
-const base = { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, target }
+const base = { computer: "dev", repositoryPath: "acme/silo", commitCount: 2, target }
 const row = { path: "acme/silo", branch: "feature", ahead: 3, behind: 0, dirty: false, repository: "acme/silo", head: "fedcba9876543210fedcba9876543210fedcba98" }
 
 function Harness({ operations, onPush, onDismiss }: { operations: RepositoryPushOperation[]; onPush: () => void; onDismiss: () => void }) {
@@ -109,7 +109,7 @@ describe("repository push notifications", () => {
   it("offers Cancel once the host accepts cancelling the running push", async () => {
     const onCancel = vi.fn()
     const pushing = [{ ...base, status: "pushing" as const }]
-    const entry = { id: 7, label: "Pushing from dev", kind: "push" as const, vmId: "vm", vmName: "dev", sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }
+    const entry = { id: 7, label: "Pushing from dev", kind: "push" as const, computerId: "vm", computerName: "dev", sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }
     function CancelHarness({ cancellable }: { cancellable: boolean }) {
       useRepositoryPushToasts(pushing, { onPush: vi.fn(), onDismiss: vi.fn(), queue: { running: [{ ...entry, cancellable }], waiting: [] }, onCancel })
       return <Toaster />
@@ -160,7 +160,7 @@ describe("push confirmation", () => {
   it("retries a failed push only after confirming the repository's current target", async () => {
     const user = userEvent.setup()
     const onPush = vi.fn()
-    render(<RepositoryPushFeedback operation={{ ...base, status: "failed", message: "The repository changed after you confirmed the push." }} workspace="dev" repositoryPath="acme/silo" repository={row} onPush={onPush} onDismiss={vi.fn()} />)
+    render(<RepositoryPushFeedback operation={{ ...base, status: "failed", message: "The repository changed after you confirmed the push." }} computer="dev" repositoryPath="acme/silo" repository={row} onPush={onPush} onDismiss={vi.fn()} />)
     await user.click(screen.getByRole("button", { name: "Push failed for acme/silo. Show details" }))
     await user.click(screen.getByRole("button", { name: "Retry push for acme/silo" }))
     expect(screen.getByText("Branch feature · 3 commits · fedcba9")).toBeVisible()
@@ -169,20 +169,20 @@ describe("push confirmation", () => {
   })
 })
 
-it.each(["previous-vm", "current-vm"])("push Cancel belongs to the current sandbox ID when the queue entry belongs to %s", async vmId => {
+it.each(["previous-vm", "current-vm"])("push Cancel belongs to the current computer ID when the queue entry belongs to %s", async computerId => {
   const onCancel = vi.fn()
-  const entry = { id: 7, label: "Pushing from dev", kind: "push" as const, vmId, vmName: "dev", sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }
+  const entry = { id: 7, label: "Pushing from dev", kind: "push" as const, computerId, computerName: "dev", sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }
   function Host() {
     useRepositoryPushToasts([{ ...base, status: "pushing" }], {
       onPush: vi.fn(), onDismiss: vi.fn(), onCancel,
-      resolveSandbox: () => ({ id: "current-vm", name: "dev" }),
+      resolveComputer: () => ({ id: "current-vm", name: "dev" }),
       queue: { running: [entry], waiting: [] },
     })
     return <Toaster />
   }
   render(<Host />)
   expect(await screen.findByText("Pushing 2 commits")).toBeInTheDocument()
-  if (vmId === "previous-vm") {
+  if (computerId === "previous-vm") {
     expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
   } else {
     const user = userEvent.setup()
@@ -192,12 +192,12 @@ it.each(["previous-vm", "current-vm"])("push Cancel belongs to the current sandb
   }
 })
 
-it("removes push Cancel when its sandbox is replaced without a new queue snapshot", async () => {
+it("removes push Cancel when its computer is replaced without a new queue snapshot", async () => {
   const onCancel = vi.fn()
   const operations: RepositoryPushOperation[] = [{ ...base, status: "pushing" }]
-  const queue = { running: [{ id: 7, label: "Pushing from dev", kind: "push" as const, vmId: "original-vm", vmName: "dev", sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  const queue = { running: [{ id: 7, label: "Pushing from dev", kind: "push" as const, computerId: "original-vm", computerName: "dev", sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
   function Host({ owner }: { owner: string }) {
-    useRepositoryPushToasts(operations, { onPush: vi.fn(), onDismiss: vi.fn(), onCancel, queue, resolveSandbox: () => ({ id: owner, name: "dev" }) })
+    useRepositoryPushToasts(operations, { onPush: vi.fn(), onDismiss: vi.fn(), onCancel, queue, resolveComputer: () => ({ id: owner, name: "dev" }) })
     return <Toaster />
   }
   const { rerender } = render(<Host owner="original-vm" />)

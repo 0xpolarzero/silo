@@ -19,7 +19,7 @@ export const operationKinds = [
   "portPublish",
   "portRemove",
   "shutdown",
-  "machineConfiguration",
+  "computerConfiguration",
   "other",
 ] as const
 export type OperationKind = (typeof operationKinds)[number]
@@ -31,10 +31,10 @@ export interface OperationEntry {
   /** What the operation is; see {@link OperationKind}. Unknown or missing reads as `other`. */
   kind: OperationKind
   /** Stable VM id this operation is scoped to; `null` for device-wide operations. */
-  vmId: string | null
+  computerId: string | null
   /** VM display name captured when the operation was admitted; `null` for
-   * device-wide operations. For display only — matching keys on `vmId`. */
-  vmName: string | null
+   * device-wide operations. For display only — matching keys on `computerId`. */
+  computerName: string | null
   /** Unix epoch milliseconds when the operation started running or began waiting. */
   sinceMs: number
   /** Whether the user may cancel this operation now. Waiting entries are always
@@ -59,8 +59,8 @@ const operationEntrySchema = z.object({
   id: z.number().int().nonnegative(),
   label: z.string(),
   kind: z.enum(operationKinds).catch("other").default("other"),
-  vmId: z.string().nullable(),
-  vmName: z.string().nullable(),
+  computerId: z.string().nullable(),
+  computerName: z.string().nullable(),
   sinceMs: z.number().int().nonnegative(),
   cancellable: z.boolean(),
   expectedMs: z.number().int().nonnegative().nullable(),
@@ -88,7 +88,7 @@ const SELF_NOTIFIED_KINDS: ReadonlySet<OperationKind> = new Set([
   "push",
   "portPublish",
   "portRemove",
-  "machineConfiguration",
+  "computerConfiguration",
 ])
 
 /** True when an entry already has its own notification and needs no queue toast. */
@@ -110,7 +110,7 @@ export function toastableQueue(queue: OperationQueue): OperationQueue {
  * everything. This mirrors the backend `Scope::conflicts` rule.
  */
 function operationsConflict(a: OperationEntry, b: OperationEntry): boolean {
-  return a.vmId === null || b.vmId === null || a.vmId === b.vmId
+  return a.computerId === null || b.computerId === null || a.computerId === b.computerId
 }
 
 /**
@@ -125,26 +125,26 @@ export function blockingOperations(queue: OperationQueue, entry: OperationEntry)
 }
 
 /**
- * True when `entry`'s scope is the VM with stable id `vmId`. The runtime gate keys
+ * True when `entry`'s scope is the VM with stable id `computerId`. The runtime gate keys
  * per-VM entries by the stable id, so matching is by id alone and survives a rename.
  * Callers must not pass a remote device's VM here: those operations run on that
  * device's own gate and never appear in this local queue.
  */
-export function operationMatchesVm(entry: OperationEntry, vmId: string): boolean {
-  return entry.vmId === vmId
+export function operationMatchesVm(entry: OperationEntry, computerId: string): boolean {
+  return entry.computerId === computerId
 }
 
 /**
  * The waiting operation that a VM row should surface: the earliest waiter whose
- * scope is this sandbox. Device-wide waiters are reported by the global indicator.
+ * scope is this computer. Device-wide waiters are reported by the global indicator.
  */
-export function waitingOperationForVm(queue: OperationQueue, vmId: string): OperationEntry | undefined {
-  return queue.waiting.find((entry) => operationMatchesVm(entry, vmId))
+export function waitingOperationForVm(queue: OperationQueue, computerId: string): OperationEntry | undefined {
+  return queue.waiting.find((entry) => operationMatchesVm(entry, computerId))
 }
 
-/** True when a matching operation for this sandbox is already running or waiting (a duplicate request). */
-export function hasPendingOperationForVm(queue: OperationQueue, vmId: string): boolean {
-  return [...queue.running, ...queue.waiting].some((entry) => operationMatchesVm(entry, vmId))
+/** True when a matching operation for this computer is already running or waiting (a duplicate request). */
+export function hasPendingOperationForVm(queue: OperationQueue, computerId: string): boolean {
+  return [...queue.running, ...queue.waiting].some((entry) => operationMatchesVm(entry, computerId))
 }
 
 /** User-requested cancellation is classified independently of display text. */

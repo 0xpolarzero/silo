@@ -4,7 +4,7 @@ export interface BackupArchive {
   completedLabel: string
   size: string
   destination: string
-  sandboxes: string[]
+  computers: string[]
   /** The checkpoint an export packages; absent for an export of the current state. */
   checkpointName?: string
 }
@@ -36,7 +36,7 @@ export interface BackupState {
   availabilityMessage?: string
   requiredSpaceGB?: number
   availableSpaceGB?: number
-  unsupportedStorage?: { sandbox: string; label: string }
+  unsupportedStorage?: { computer: string; label: string }
   destination?: string
   archives: BackupArchive[]
   operation: BackupOperation | null
@@ -87,7 +87,7 @@ export interface BackupActions {
   chooseArchive: (onSelected?: (archivePath: string) => void, signal?: AbortSignal) => Promise<{ archive: BackupArchive; valid: boolean; reason?: string } | null>
   inspectArchive: (selection: BackupArchive, signal?: AbortSignal) => Promise<{ archive: BackupArchive; valid: boolean; reason?: string }>
   /** Starts an export and returns immediately; the result appears in `BackupState.operation`. */
-  startBackup: (destination: string, sandboxes: string[], checkpointId?: string) => void
+  startBackup: (destination: string, computers: string[], checkpointId?: string) => void
   /**
    * Starts an export to a folder from `chooseDestination` and settles only with
    * that export's own result: resolves once it completed and its file was
@@ -95,7 +95,7 @@ export interface BackupActions {
    * the result are also shown through `BackupState.operation`, like `startBackup`.
    * "Export, then delete" deletes only after this resolves.
    */
-  exportAndVerify: (destination: string, sandboxes: string[], checkpointId?: string) => Promise<VerifiedExport>
+  exportAndVerify: (destination: string, computers: string[], checkpointId?: string) => Promise<VerifiedExport>
   startRestore: (archive: BackupArchive, newName: string, sourceName?: string) => void
   cancelOperation: () => void
   dismissOperation: () => void

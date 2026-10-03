@@ -58,10 +58,10 @@ export function createDesktopSettingsStore(initialSettings: SettingsPatch, main:
 }
 
 /**
- * How long Quit waits for setup work (onboarding sandbox creation, GitHub
+ * How long Quit waits for setup work (onboarding computer creation, GitHub
  * verification) before saving settings. Silo's native shutdown then waits for
- * any sandbox operation that is still running, and the Quit overlay names it
- * and offers to cancel it, instead of an unexplained "Stopping local sandboxes…".
+ * any computer operation that is still running, and the Quit overlay names it
+ * and offers to cancel it, instead of an unexplained "Stopping local computers…".
  */
 export const SETUP_DRAIN_LIMIT_MS = 5_000
 
@@ -120,13 +120,13 @@ export async function connectSettingsLifecycle(store: SettingsStore, main: boole
 
 const quitRequestSchema = z.object({
   requestId: z.number().int().nonnegative(),
-  /** Running local sandbox names; empty when their status could not be read. */
-  sandboxes: z.array(z.string()),
+  /** Running local computer names; empty when their status could not be read. */
+  computers: z.array(z.string()),
 })
 export type QuitRequest = z.infer<typeof quitRequestSchema>
 
 /**
- * Opt the main window in to confirming Quit while local sandboxes run (decision 7).
+ * Opt the main window in to confirming Quit while local computers run (decision 7).
  * `ask` resolves true for "Quit and stop" and false for "Cancel". A repeated Quit
  * while the prompt is open re-sends the same request and is ignored here.
  */

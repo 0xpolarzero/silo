@@ -2,7 +2,7 @@ import { Download, ExternalLink, RefreshCw } from "lucide-react"
 import type { ApplicationCommand } from "@/features/application/components/application-commands"
 import type { Updates } from "./update-store"
 
-/** Unavailable actions are omitted, matching sandbox commands in the palette. */
+/** Unavailable actions are omitted, matching computer commands in the palette. */
 export function updateCommands(updates: Updates | null, openUpdates: () => void): ApplicationCommand[] {
   if (!updates || updates.pending) return []
   const state = updates.snapshot

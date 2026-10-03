@@ -1,9 +1,9 @@
 import { hasBridgeErrorCode } from "@/contracts/bridge-error"
 import { z } from "zod"
-import type { ApplicationWorkspace } from "./application-source"
+import type { ApplicationComputer } from "./application-source"
 
 export interface LogQuery {
-  sandboxId: string
+  computerId: string
   deviceId?: string
   query?: string
   source?: string
@@ -16,10 +16,10 @@ export interface LogQuery {
   follow?: string
 }
 export const logEntrySchema = z.object({
-  id: z.string(), line: z.string(), occurredAt: z.string(), sandboxId: z.string(),
-  sandboxName: z.string().optional(), deviceName: z.string().optional(),
+  id: z.string(), line: z.string(), occurredAt: z.string(), computerId: z.string(),
+  computerName: z.string().optional(), deviceName: z.string().optional(),
   deviceId: z.string(), source: z.string(), session: z.string().nullish(),
-  /** The time was parsed from console text the sandbox wrote. */
+  /** The time was parsed from console text the computer wrote. */
   guestTimestamp: z.boolean().optional(),
 })
 export const logPageSchema = z.object({
@@ -40,16 +40,16 @@ export type LogEntry = z.infer<typeof logEntrySchema>
 export type LogPage = z.infer<typeof logPageSchema>
 export type LogLoader = (request: LogQuery) => Promise<LogPage>
 export const LOG_ROW_HEIGHT = 52
-export function logIdentity(workspace: ApplicationWorkspace): Pick<LogQuery, "sandboxId" | "deviceId"> {
-  return { sandboxId: workspace.device?.vmId ?? workspace.machine.id, ...(workspace.device && { deviceId: workspace.device.id }) }
+export function logIdentity(computer: ApplicationComputer): Pick<LogQuery, "computerId" | "deviceId"> {
+  return { computerId: computer.device?.computerId ?? computer.configuration.id, ...(computer.device && { deviceId: computer.device.id }) }
 }
 export function formatLog(entry: LogEntry): string {
   const device = entry.deviceName ? `${entry.deviceName} (${entry.deviceId})` : entry.deviceId
-  const sandbox = entry.sandboxName ? `${entry.sandboxName} (${entry.sandboxId})` : entry.sandboxId
-  return `${entry.occurredAt}\t${device}\t${sandbox}\t${entry.source}\t${entry.session ?? ""}\t${entry.line}`
+  const computer = entry.computerName ? `${entry.computerName} (${entry.computerId})` : entry.computerId
+  return `${entry.occurredAt}\t${device}\t${computer}\t${entry.source}\t${entry.session ?? ""}\t${entry.line}`
 }
 /** Deterministic browser fixtures supply their entire history, never a production fallback. */
-export function fixtureLogPage(workspace: ApplicationWorkspace, request: LogQuery): LogPage {
+export function fixtureLogPage(computer: ApplicationComputer, request: LogQuery): LogPage {
   const fail = (message: string): never => { throw { code: "internal", message } }
   const encoder = new TextEncoder()
   if (encoder.encode(request.query ?? "").length > 4096) fail("Search text is too long.")
@@ -62,8 +62,8 @@ export function fixtureLogPage(workspace: ApplicationWorkspace, request: LogQuer
   }
   const since = timestamp(request.since), until = timestamp(request.until)
   if (since !== undefined && until !== undefined && since > until) fail("The log time range is reversed.")
-  const identity = logIdentity(workspace)
-  const all = workspace.logs.map((log, index): LogEntry => ({ ...log, id: String(index), sandboxId: identity.sandboxId, sandboxName: workspace.machine.name, deviceId: identity.deviceId ?? "local", deviceName: workspace.device?.name ?? "This device", source: "output", session: null }))
+  const identity = logIdentity(computer)
+  const all = computer.logs.map((log, index): LogEntry => ({ ...log, id: String(index), computerId: identity.computerId, computerName: computer.configuration.name, deviceId: identity.deviceId ?? "local", deviceName: computer.device?.name ?? "This device", source: "output", session: null }))
     .sort((a, b) => a.occurredAt === b.occurredAt ? a.id === b.id ? 0 : a.id < b.id ? 1 : -1 : a.occurredAt < b.occurredAt ? 1 : -1)
   let matches = all.filter(entry => (!request.query || entry.line.toLowerCase().includes(request.query.toLowerCase())) && (!request.source || request.source === "all" || entry.source === request.source) && (since === undefined || Date.parse(entry.occurredAt) >= since) && (until === undefined || Date.parse(entry.occurredAt) <= until))
   if (request.aroundId) {

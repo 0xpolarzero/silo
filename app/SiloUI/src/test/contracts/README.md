@@ -8,7 +8,7 @@ same files and verify that the fields needed by the UI survive parsing.
 The application fixtures run `read_application_state_with` with a deterministic
 runtime runner and temporary metadata, checkpoint, lifecycle, and secret stores.
 The test fixes the measured host capacity before serialization because the
-machine running the test changes that value. The remote snapshot fixtures apply
+configuration running the test changes that value. The remote snapshot fixtures apply
 the same `ApplicationSource` to JSON conversion as `runtime.snapshot` dispatch;
 `device_snapshot` passes that payload through. They cover the wire contract,
 not SSH transport or live VM health.
@@ -16,7 +16,7 @@ not SSH transport or live VM health.
 SSH access, network state, and operation queue fixtures serialize the native
 response structs. They exercise all currently supported listener states, port
 states, and operation kinds, including null fields and optional fields. The
-network fixture also uses the production `pending` and `sandbox_host` functions.
+network fixture also uses the production `pending` and `computer_host` functions.
 They do not start listeners, create forwards, or admit live operations.
 
 To regenerate these five fixture files after an intentional native wire change,

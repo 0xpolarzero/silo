@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { secretConfiguration, type SecretDraft } from "./secret-configuration"
 
-const draft: SecretDraft = { name: "SERVICE_TOKEN", value: "fixture-token", workspaces: ["dev"], domains: "api.example.test", allowAnyDomain: false }
+const draft: SecretDraft = { name: "SERVICE_TOKEN", value: "fixture-token", computers: ["dev"], domains: "api.example.test", allowAnyDomain: false }
 
 describe("secret configuration", () => {
   it.each([
@@ -24,11 +24,11 @@ describe("secret configuration", () => {
     expect(result.request?.value).toHaveLength(value.length)
   })
 
-  it.each([100, 101])("checks the native limit for %i sandbox assignments", count => {
-    const workspaces = Array.from({ length: count }, (_, index) => `vm-${index}`)
-    const result = secretConfiguration({ ...draft, workspaces }, [], workspaces)
-    if (count === 100) expect(result.request?.workspaces).toHaveLength(count)
-    else expect(result.errors?.workspaces).toBeDefined()
+  it.each([100, 101])("checks the native limit for %i computer assignments", count => {
+    const computers = Array.from({ length: count }, (_, index) => `vm-${index}`)
+    const result = secretConfiguration({ ...draft, computers }, [], computers)
+    if (count === 100) expect(result.request?.computers).toHaveLength(count)
+    else expect(result.errors?.computers).toBeDefined()
   })
 
   it.each([100, 101])("checks the native limit for %i allowed domains", count => {
@@ -61,7 +61,7 @@ describe("secret configuration", () => {
     const result = secretConfiguration({ ...draft, name: "PATH", value: "" }, [original], ["dev"], original)
     expect(result.request).toEqual({
       operation: "edit", id: original.id, name: original.name,
-      workspaces: ["dev"], allowedDomains: ["api.example.test"],
+      computers: ["dev"], allowedDomains: ["api.example.test"],
     })
     expect(result.request).not.toHaveProperty("value")
   })
@@ -74,7 +74,7 @@ describe("secret configuration", () => {
     expect(secretConfiguration({ ...draft, domains }, [], ["dev"]).errors?.domains).toBeDefined()
   })
 
-  it("rejects sandbox selections that are no longer available", () => {
-    expect(secretConfiguration(draft, [], ["personal"]).errors?.workspaces).toBe("Select an available sandbox.")
+  it("rejects computer selections that are no longer available", () => {
+    expect(secretConfiguration(draft, [], ["personal"]).errors?.computers).toBe("Select an available computer.")
   })
 })

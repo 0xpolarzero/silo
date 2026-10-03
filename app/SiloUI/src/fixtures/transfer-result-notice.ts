@@ -22,7 +22,7 @@ const exportFile: BackupArchive = {
   completedLabel: "Not completed",
   size: "Unknown",
   destination: "/Users/ada/Exports",
-  sandboxes: ["dev"],
+  computers: ["dev"],
 }
 
 type Result = Extract<BackupOperation, { kind: "result" }>
@@ -33,17 +33,17 @@ const results: Record<UnseenResultFixtureMode, Result> = {
     kind: "result", operation: "restore", archive: exportFile, runningNames: [], targetName: "dev-imported", outcome: "failed",
     title: "Import interrupted before the upgrade",
     message: "Silo closed before this import finished.",
-    detail: "No sandbox was added. Import the file again.",
+    detail: "No computer was added. Import the file again.",
   },
   "interrupted-export": {
     kind: "result", operation: "backup", archive: exportFile, runningNames: [], outcome: "failed",
     title: "Export interrupted before the upgrade",
     message: "Silo closed before this export finished.",
-    detail: "No export file was saved. Export the sandbox again.",
+    detail: "No export file was saved. Export the computer again.",
   },
   "set-aside": {
     kind: "result", operation: "backup", outcome: "failed", runningNames: [],
-    archive: { name: "Export or import record", archivePath: "/Users/ada/Library/Application Support/org.silo.dev/backup-operation.unreadable-2026-10-01.json", completedLabel: "Set aside", size: "Unknown", destination: "/Users/ada/Library/Application Support/org.silo.dev", sandboxes: [] },
+    archive: { name: "Export or import record", archivePath: "/Users/ada/Library/Application Support/org.silo.dev/backup-operation.unreadable-2026-10-01.json", completedLabel: "Set aside", size: "Unknown", destination: "/Users/ada/Library/Application Support/org.silo.dev", computers: [] },
     title: "Export or import record set aside",
     message: "An export or import record couldn’t be read and was set aside.",
     detail: "If an export or import was running, run it again.",

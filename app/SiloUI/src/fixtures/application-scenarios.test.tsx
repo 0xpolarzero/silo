@@ -6,12 +6,12 @@ import {
   githubManagementFixtureModes,
   repositoryPushFixtureModeFromSearch,
   repositoryPushFixtureModes,
-  sandboxConfigurationFixtureModeFromSearch,
-  sandboxConfigurationFixtureModes,
+  computerConfigurationFixtureModeFromSearch,
+  computerConfigurationFixtureModes,
   systemIssueFixtureModeFromSearch,
   systemIssueFixtureModes,
-  workspaceFixtureModeFromSearch,
-  workspaceFixtureModes,
+  computerFixtureModeFromSearch,
+  computerFixtureModes,
 } from "@/fixtures/application-scenarios"
 import {
   activityCatalog,
@@ -22,23 +22,23 @@ import {
 } from "@/fixtures/application-activity"
 
 describe("application state fixtures", () => {
-  it("parses and applies every sandbox state mode", () => {
-    for (const mode of workspaceFixtureModes) {
-      expect(workspaceFixtureModeFromSearch(`?sandbox-state=${mode}`)).toBe(mode)
+  it("parses and applies every computer state mode", () => {
+    for (const mode of computerFixtureModes) {
+      expect(computerFixtureModeFromSearch(`?computer-state=${mode}`)).toBe(mode)
       const source = applicationSourceForScenario("running", undefined, mode)
       const expectedState = mode === "error" ? "failed" : mode === "warning" ? "stopped" : mode
-      expect(source.workspaces.every(({ state }) => state === expectedState)).toBe(true)
-      expect(source.workspaces.every(({ attention }) => attention?.level === (mode === "warning" ? "warning" : mode === "error" ? "error" : undefined))).toBe(true)
+      expect(source.computers.every(({ state }) => state === expectedState)).toBe(true)
+      expect(source.computers.every(({ attention }) => attention?.level === (mode === "warning" ? "warning" : mode === "error" ? "error" : undefined))).toBe(true)
     }
-    expect(workspaceFixtureModeFromSearch("?sandbox-state=unknown")).toBeUndefined()
+    expect(computerFixtureModeFromSearch("?computer-state=unknown")).toBeUndefined()
   })
 
-  it("parses every sandbox configuration fixture independently from runtime state", () => {
-    for (const mode of sandboxConfigurationFixtureModes) {
-      expect(sandboxConfigurationFixtureModeFromSearch(`?sandbox-change=${mode}`)).toBe(mode)
-      expect(applicationSourceForScenario("running", undefined, undefined, mode).sandboxConfigurationOperation).not.toBeNull()
+  it("parses every computer configuration fixture independently from runtime state", () => {
+    for (const mode of computerConfigurationFixtureModes) {
+      expect(computerConfigurationFixtureModeFromSearch(`?computer-change=${mode}`)).toBe(mode)
+      expect(applicationSourceForScenario("running", undefined, undefined, mode).computerConfigurationOperation).not.toBeNull()
     }
-    expect(sandboxConfigurationFixtureModeFromSearch("?sandbox-change=unknown")).toBeUndefined()
+    expect(computerConfigurationFixtureModeFromSearch("?computer-change=unknown")).toBeUndefined()
   })
 
   it("parses and applies every system issue state independently", () => {
@@ -56,7 +56,7 @@ describe("application state fixtures", () => {
       expect(repositoryPushFixtureModeFromSearch(`?repository-push=${mode}`)).toBe(mode)
       const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, mode)
       expect(source.repositoryPushOperations).toEqual([expect.objectContaining({
-        workspace: "dev",
+        computer: "dev",
         repositoryPath: "acme/silo",
         commitCount: 2,
         status: mode,
@@ -64,26 +64,26 @@ describe("application state fixtures", () => {
     }
     expect(repositoryPushFixtureModeFromSearch("?repository-push=unknown")).toBeUndefined()
     expect(applicationSourceForScenario("running").repositoryPushOperations).toEqual([])
-    expect(applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "succeeded").workspaces[0].repositories[0].ahead).toBe(0)
+    expect(applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "succeeded").computers[0].repositories[0].ahead).toBe(0)
   })
 
   it("parses and applies every GitHub management fixture independently", () => {
     for (const mode of githubManagementFixtureModes) {
       expect(githubManagementFixtureModeFromSearch(`?github-operation=${mode}`)).toBe(mode)
       const source = applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, mode)
-      expect(source.github.workspaces).toHaveLength(3)
+      expect(source.github.computers).toHaveLength(3)
     }
 
     expect(githubManagementFixtureModeFromSearch("?github-operation=unknown")).toBeUndefined()
     expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "disabled").github.accessEnabled).toBe(false)
-    expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "connected-empty").github.workspaces?.every(({ repositories }) => repositories.length === 0)).toBe(true)
+    expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "connected-empty").github.computers?.every(({ repositories }) => repositories.length === 0)).toBe(true)
     expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "missing-device-identity").github.deviceIdentity).toBeNull()
     expect(applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "catalog-unavailable").github.repositoryCatalogStatus?.status).toBe("unavailable")
   })
 
   it("covers every activity category and presentation state", () => {
     expect(new Set(activityCatalog.map(({ category }) => category))).toEqual(new Set([
-      "sandbox",
+      "computer",
       "git",
       "backup",
       "secrets",

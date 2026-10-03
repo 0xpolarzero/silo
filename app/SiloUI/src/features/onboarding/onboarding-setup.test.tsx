@@ -10,8 +10,8 @@ import { onboardingScenarios, repositoryFixtures } from "@/fixtures/scenarios"
 
 function renderScenario(name: keyof typeof onboardingScenarios = "running", githubState?: GitHubConnectionState) {
   return render(<OnboardingPreview source={onboardingScenarios[name]} initialGitHubConnectionState={githubState} repositoryOptions={repositoryFixtures} actions={{
-    saveMachineConfiguration: vi.fn(),
-    retryWorkspaceSetup: vi.fn(),
+    saveComputerConfiguration: vi.fn(),
+    retryComputerSetup: vi.fn(),
     finishSetup: vi.fn(),
   }} />)
 }
@@ -74,7 +74,7 @@ it("updates native dependency reports through the real fixture wrapper without d
 })
 
 
-it("keeps native dependency failures authoritative after workspace Retry", async () => {
+it("keeps native dependency failures authoritative after computer Retry", async () => {
   const user = userEvent.setup()
   window.history.replaceState(null, "", "/?view=onboarding&scenario=bootstrap-failure")
   const checks = onboardingScenarios.complete.preflightChecks.map((check) => check.id === "system-virtualization" ? {
@@ -84,7 +84,7 @@ it("keeps native dependency failures authoritative after workspace Retry", async
     } : check)
   render(<FixtureApp nativeDependencies={{ checks, retry: vi.fn() }} />)
 
-  await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
+  await user.click(screen.getByRole("tab", { name: /Computers/ }))
   await user.click(screen.getByRole("button", { name: "Retry" }))
   await user.click(screen.getByRole("tab", { name: /Dependencies/ }))
 
@@ -97,14 +97,14 @@ it("keeps native dependency failures authoritative after workspace Retry", async
 it("keeps stress-fixture activity collapsed until requested and filters unsafe output", async () => {
   const user = userEvent.setup()
   renderScenario("stress-running")
-  await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
+  await user.click(screen.getByRole("tab", { name: /Computers/ }))
 
   const panel = within(screen.getByRole("tabpanel"))
-  expect(panel.queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
+  expect(panel.queryByLabelText("Computer activity")).not.toBeInTheDocument()
   expect(panel.getByLabelText("Elapsed time")).toHaveTextContent("02:18")
   expect(panel.getByText("27 of 36 operations complete")).toBeVisible()
-  expect(panel.getByText("12 sandboxes · 12 on this device · 0 on other devices")).toBeVisible()
-  const list = panel.getByRole("list", { name: "Configured sandboxes" })
+  expect(panel.getByText("12 computers · 12 on this device · 0 on other devices")).toBeVisible()
+  const list = panel.getByRole("list", { name: "Configured computers" })
   expect(within(list).getAllByRole("listitem")).toHaveLength(12)
   expect(within(list).getByText("client-alpha-integration")).toBeVisible()
   const working = within(list).getByText("docs-build").closest("li")!
@@ -115,7 +115,7 @@ it("keeps stress-fixture activity collapsed until requested and filters unsafe o
   expect(expand).toHaveAttribute("aria-expanded", "false")
   await user.click(expand)
   expect(expand).toHaveAttribute("aria-expanded", "true")
-  expect(panel.getByLabelText("Sandbox activity")).toHaveTextContent("Verifying 'docs-build'.")
+  expect(panel.getByLabelText("Computer activity")).toHaveTextContent("Verifying 'docs-build'.")
   expect(panel.queryByText(/Internal verification path/)).not.toBeInTheDocument()
 
   const controls = panel.getByRole("group", { name: "Live activity controls" })
@@ -128,11 +128,11 @@ it("keeps stress-fixture activity collapsed until requested and filters unsafe o
   expect(within(controls).getByRole("button", { name: "Activity copied" })).toHaveAttribute("data-copy-status", "copied")
 
   await user.click(within(controls).getByRole("button", { name: "Collapse activity" }))
-  expect(panel.queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
+  expect(panel.queryByLabelText("Computer activity")).not.toBeInTheDocument()
   expect(panel.getByRole("button", { name: "Expand activity" })).toHaveAttribute("aria-expanded", "false")
   expect(list).toBeVisible()
   await user.click(panel.getByRole("button", { name: "Expand activity" }))
-  expect(panel.getByLabelText("Sandbox activity")).toBeVisible()
+  expect(panel.getByLabelText("Computer activity")).toBeVisible()
 })
 
 
@@ -140,7 +140,7 @@ it("reports a clipboard denial without an unhandled interaction failure", async 
   const user = userEvent.setup()
   vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new DOMException("Denied", "NotAllowedError"))
   renderScenario()
-  await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
+  await user.click(screen.getByRole("tab", { name: /Computers/ }))
 
   await user.click(screen.getByRole("button", { name: "Copy activity" }))
 
@@ -161,19 +161,19 @@ it("enables Finish only after every queue operation succeeds", async () => {
 
   const finishSetup = vi.fn()
   render(<OnboardingPreview source={onboardingScenarios.complete} actions={{
-    saveMachineConfiguration: vi.fn(),
-    retryWorkspaceSetup: vi.fn(),
+    saveComputerConfiguration: vi.fn(),
+    retryComputerSetup: vi.fn(),
     finishSetup,
   }} />)
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled()
-  expect(screen.getAllByRole("list").map(list => list.getAttribute("aria-label"))).toEqual(["Sandboxes"])
-  expect(within(screen.getByRole("list", { name: "Sandboxes" })).getAllByText("Complete")).toHaveLength(3)
+  expect(screen.getAllByRole("list").map(list => list.getAttribute("aria-label"))).toEqual(["Computers"])
+  expect(within(screen.getByRole("list", { name: "Computers" })).getAllByText("Complete")).toHaveLength(3)
   await user.click(screen.getByRole("button", { name: "Finish" }))
   expect(finishSetup).toHaveBeenCalledWith({
-    machineConfiguration: {
+    computerConfiguration: {
       schemaVersion: 1,
-      machines: onboardingScenarios.complete.machineConfigurations,
+      configurations: onboardingScenarios.complete.computerConfigurations,
     },
     applications: {
       terminal: "Terminal",
@@ -185,19 +185,19 @@ it("enables Finish only after every queue operation succeeds", async () => {
     },
     github: {
       connectionState: "connected",
-      workspaces: [
+      computers: [
         {
-          workspace: "dev",
+          computer: "dev",
           repositories: [{ repository: "acme/silo", allowPushes: false }],
           identity: { name: "Taylor Example", email: "taylor@example.com", apply: true },
         },
         {
-          workspace: "playgrounds",
+          computer: "playgrounds",
           repositories: [],
           identity: { name: "Taylor Example", email: "taylor@example.com", apply: true },
         },
         {
-          workspace: "personal",
+          computer: "personal",
           repositories: [],
           identity: { name: "Taylor Example", email: "taylor@example.com", apply: true },
         },
@@ -216,8 +216,8 @@ it("finishes connected setup with explicit zero repository access and no skip st
     initialGitHubConnectionState="connected"
     repositoryOptions={repositoryFixtures}
     actions={{
-      saveMachineConfiguration: vi.fn(),
-      retryWorkspaceSetup: vi.fn(),
+      saveComputerConfiguration: vi.fn(),
+      retryComputerSetup: vi.fn(),
       finishSetup,
     }}
   />)
@@ -225,35 +225,35 @@ it("finishes connected setup with explicit zero repository access and no skip st
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
   await user.click(screen.getByRole("button", { name: "Remove acme/silo from dev" }))
   await user.click(screen.getByRole("button", { name: "Continue" }))
-  expect(screen.getByText("0 repositories across 0 of 3 sandboxes · 0 repositories allowing GitHub changes")).toBeVisible()
+  expect(screen.getByText("0 repositories across 0 of 3 computers · 0 repositories allowing GitHub changes")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Finish" }))
 
   expect(finishSetup).toHaveBeenCalledOnce()
   const request = finishSetup.mock.lastCall?.[0]
   expect(request.github.connectionState).toBe("connected")
-  expect(request.github.workspaces.map(({ workspace, repositories }: { workspace: string; repositories: unknown[] }) => ({ workspace, repositories }))).toEqual([
-    { workspace: "dev", repositories: [] },
-    { workspace: "playgrounds", repositories: [] },
-    { workspace: "personal", repositories: [] },
+  expect(request.github.computers.map(({ computer, repositories }: { computer: string; repositories: unknown[] }) => ({ computer, repositories }))).toEqual([
+    { computer: "dev", repositories: [] },
+    { computer: "playgrounds", repositories: [] },
+    { computer: "personal", repositories: [] },
   ])
   expect(request.github).not.toHaveProperty("skipped")
   expect(request).not.toHaveProperty("repositoryAccessSkipped")
 })
 
 
-it("does not treat CLI workspace completion as completion of later setup work", () => {
+it("does not treat CLI computer completion as completion of later setup work", () => {
   const source = onboardingScenarios.complete
-  const workspaceOnly = projectOnboarding({
+  const computerOnly = projectOnboarding({
     ...source,
     bootstrapState: {
       ...source.bootstrapState,
-      completedPhases: ["preflight", "toolchain", "deviceIntegration", "workspaces"],
+      completedPhases: ["preflight", "toolchain", "deviceIntegration", "computers"],
     },
   }, "connected")
 
-  expect(workspaceOnly.queueItems.find(({ id }) => id === "workspaceVerify")?.status).toBe("succeeded")
-  expect(workspaceOnly.queueItems.find(({ id }) => id === "githubRun")?.status).toBe("queued")
-  expect(workspaceOnly.finishEnabled).toBe(false)
+  expect(computerOnly.queueItems.find(({ id }) => id === "computerVerify")?.status).toBe("succeeded")
+  expect(computerOnly.queueItems.find(({ id }) => id === "githubRun")?.status).toBe("queued")
+  expect(computerOnly.finishEnabled).toBe(false)
 })
 
 
@@ -262,28 +262,28 @@ it("presents the bootstrap failure with its exact recovery", async () => {
   renderScenario("bootstrap-failure")
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   expect(screen.getByRole("alert")).toHaveTextContent("Candidate networking could not become ready for 'playgrounds'.")
-  expect(screen.getByRole("alert")).toHaveTextContent("Repair sandbox startup or SSH forwarding for 'playgrounds', then resume Setup.")
+  expect(screen.getByRole("alert")).toHaveTextContent("Repair computer startup or SSH forwarding for 'playgrounds', then resume Setup.")
   expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled()
 })
 
 
-it("does not claim workspace creation started while dependencies are blocked", async () => {
+it("does not claim computer creation started while dependencies are blocked", async () => {
   const user = userEvent.setup()
   renderScenario("dependency-failure")
 
-  await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
-  expectHiddenPanelHeading("Sandboxes are waiting")
-  expect(screen.queryByText("Complete the dependency checks before workspace creation starts.")).not.toBeInTheDocument()
+  await user.click(screen.getByRole("tab", { name: /Computers/ }))
+  expectHiddenPanelHeading("Computers are waiting")
+  expect(screen.queryByText("Complete the dependency checks before computer creation starts.")).not.toBeInTheDocument()
 })
 
 
-it("routes retryable workspace failures through the narrow action seam", async () => {
+it("routes retryable computer failures through the narrow action seam", async () => {
   const user = userEvent.setup()
-  const retryWorkspaceSetup = vi.fn()
-  const actions = { saveMachineConfiguration: vi.fn(), retryWorkspaceSetup, finishSetup: vi.fn() }
+  const retryComputerSetup = vi.fn()
+  const actions = { saveComputerConfiguration: vi.fn(), retryComputerSetup, finishSetup: vi.fn() }
 
   render(<OnboardingPreview source={onboardingScenarios["bootstrap-failure"]} actions={actions} />)
-  await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
+  await user.click(screen.getByRole("tab", { name: /Computers/ }))
   await user.click(screen.getByRole("button", { name: "Retry" }))
-  expect(retryWorkspaceSetup).toHaveBeenCalledOnce()
+  expect(retryComputerSetup).toHaveBeenCalledOnce()
 })

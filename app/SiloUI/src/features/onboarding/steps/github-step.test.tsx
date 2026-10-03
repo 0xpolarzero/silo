@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 import { GitHubStep } from "./github-step"
 import type { GitHubAccessEditorProps } from "@/features/github/components/github-access-editor"
 
-const props: GitHubAccessEditorProps = { workspaces: [], connectionState: "connected", repositoryOptions: [], workspaceSelections: {}, workspaceIdentities: {}, currentDeviceGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(), onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn() }
+const props: GitHubAccessEditorProps = { computers: [], connectionState: "connected", repositoryOptions: [], computerSelections: {}, computerIdentities: {}, currentDeviceGitIdentity: null, onConnect: vi.fn(), onComputerSelectionsChange: vi.fn(), onComputerIdentityChange: vi.fn(), onResetComputerIdentity: vi.fn() }
 
 describe("GitHub setup feedback", () => {
   it.each([
@@ -41,15 +41,15 @@ describe("GitHub setup feedback", () => {
       { id: "githubRun", label: "Save GitHub", status: "succeeded" },
       { id: "githubVerify", label: "Verify GitHub", status: "running" },
     ]} activityEvents={[
-      { schemaVersion: 1, type: "progress", requestId: "github", phase: "github", step: "verify", message: "Waiting for sandbox confirmation.", safeForDisplay: true },
+      { schemaVersion: 1, type: "progress", requestId: "github", phase: "github", step: "verify", message: "Waiting for computer confirmation.", safeForDisplay: true },
       { schemaVersion: 1, type: "progress", requestId: "github", phase: "github", step: "verify", message: "private token", safeForDisplay: false },
-      { schemaVersion: 1, type: "progress", requestId: "vm", phase: "workspaces", step: "create", message: "Unrelated VM activity", safeForDisplay: true },
+      { schemaVersion: 1, type: "progress", requestId: "vm", phase: "computers", step: "create", message: "Unrelated VM activity", safeForDisplay: true },
     ]} />)
     expect(screen.getByRole("heading", { name: "Connected to GitHub" })).toBeVisible()
     expect(screen.getByRole("progressbar", { name: "GitHub setup progress" })).toHaveAttribute("aria-valuenow", "75")
     expect(screen.getByText("3 of 4 operations complete")).toBeVisible()
     await user.click(screen.getByRole("button", { name: "Expand activity" }))
-    expect(screen.getByLabelText("Sandbox activity")).toHaveTextContent("Waiting for sandbox confirmation.")
+    expect(screen.getByLabelText("Computer activity")).toHaveTextContent("Waiting for computer confirmation.")
     expect(screen.queryByText(/private token|Unrelated VM activity/)).not.toBeInTheDocument()
   })
 

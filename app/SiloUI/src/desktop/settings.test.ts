@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen }))
 
 import { connectQuitConfirmation, connectSettingsLifecycle, createDesktopSettingsStore } from "./settings"
-import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
+import { fixtureComputerDefaults } from "@/fixtures/computer-configurations"
 import type { OnboardingDraft } from "@/features/onboarding/model/onboarding-draft"
 
 const cleanups: (() => void)[] = []
@@ -49,10 +49,10 @@ afterEach(() => {
 describe("native settings transport", () => {
   it.each(["cpus", "maxCPUs"])("does not restore a saved %s count the native command cannot deserialize", async field => {
     vi.spyOn(console, "error").mockImplementation(() => {})
-    const machine = { ...fixtureMachineDefaults[0], cpus: 1, maxCPUs: 255, [field]: 256 }
-    if (field === "cpus") machine.maxCPUs = 256
+    const configuration = { ...fixtureComputerDefaults[0], cpus: 1, maxCPUs: 255, [field]: 256 }
+    if (field === "cpus") configuration.maxCPUs = 256
     native.invoke.mockResolvedValue({ ...snapshot(1, { theme: "dark" }), onboardingDraft: {
-      currentStep: "review", machines: [machine], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {},
+      currentStep: "review", configurations: [configuration], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {},
     } })
     const settings = store()
     await settings.initialize()
@@ -64,10 +64,10 @@ describe("native settings transport", () => {
   it("reads the main window's authorized draft when a public settings event arrives", async () => {
     const draft: OnboardingDraft = {
       currentStep: "github",
-      machines: [...fixtureMachineDefaults],
-      unfinishedMachineEditor: null,
-      workspaceSelections: {},
-      workspaceIdentities: { dev: { name: "Saved author", email: "saved@example.com", apply: true } },
+      configurations: [...fixtureComputerDefaults],
+      unfinishedComputerEditor: null,
+      computerSelections: {},
+      computerIdentities: { dev: { name: "Saved author", email: "saved@example.com", apply: true } },
     }
     native.invoke.mockResolvedValue({ ...snapshot(), onboardingDraft: draft })
     const settings = store()
@@ -355,10 +355,10 @@ describe("native settings transport", () => {
     vi.spyOn(console, "error").mockImplementation(() => {})
     const savedDraft: OnboardingDraft = {
       currentStep: "github",
-      machines: [...fixtureMachineDefaults],
-      unfinishedMachineEditor: null,
-      workspaceSelections: {},
-      workspaceIdentities: { dev: { name: "Saved author", email: "saved@example.com", apply: true } },
+      configurations: [...fixtureComputerDefaults],
+      unfinishedComputerEditor: null,
+      computerSelections: {},
+      computerIdentities: { dev: { name: "Saved author", email: "saved@example.com", apply: true } },
     }
     let state = { ...snapshot(), onboardingDraft: savedDraft }
     native.invoke.mockImplementation(async (command: string, args?: { patch?: Record<string, unknown> }) => {
@@ -369,7 +369,7 @@ describe("native settings transport", () => {
     await settings.initialize()
     await settings.updateOnboardingDraft({
       ...savedDraft,
-      workspaceIdentities: { dev: { ...savedDraft.workspaceIdentities.dev, name: "😀".repeat(70_000) } },
+      computerIdentities: { dev: { ...savedDraft.computerIdentities.dev, name: "😀".repeat(70_000) } },
     })
     expect(settings.getSnapshot().saveError).toBe("Onboarding draft is too large to save")
     expect(settings.getSnapshot().onboardingDraft).toEqual(savedDraft)
@@ -391,7 +391,7 @@ describe("quit confirmation", () => {
     const ask = vi.fn(() => new Promise<boolean>((resolve) => { answer = resolve }))
     cleanups.push(await connectQuitConfirmation(ask))
     expect(native.invoke).toHaveBeenCalledWith("enable_quit_confirmation")
-    const request = { requestId: 3, sandboxes: ["dev", "api"] }
+    const request = { requestId: 3, computers: ["dev", "api"] }
     native.handlers.get("silo://quit-requested")?.({ payload: request })
     native.handlers.get("silo://quit-requested")?.({ payload: request })
     expect(ask).toHaveBeenCalledTimes(1)

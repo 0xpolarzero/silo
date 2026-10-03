@@ -7,8 +7,8 @@ import { useSettings } from "@/features/preferences/settings-store"
 import { useSystemIntegrations } from "@/features/preferences/system-integrations-store"
 
 const categories = [
-  { id: "notifyFailures", label: "Failures", detail: "Actions and background work that fail, such as start, push, sandbox export, or sandbox import.", icon: CircleAlert },
-  { id: "notifyChanges", label: "Unexpected sandbox changes", detail: "A sandbox stops, fails, or recovers without you asking.", icon: HeartPulse },
+  { id: "notifyFailures", label: "Failures", detail: "Actions and background work that fail, such as start, push, computer export, or computer import.", icon: CircleAlert },
+  { id: "notifyChanges", label: "Unexpected computer changes", detail: "A computer stops, fails, or recovers without you asking.", icon: HeartPulse },
   { id: "notifyCompletions", label: "Long tasks finished", detail: "Work that took more than a few seconds finishes while Silo is in the background.", icon: CircleCheck },
 ] as const
 

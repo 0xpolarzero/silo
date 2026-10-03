@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url"
 import { expect, it } from "vitest"
 
 const native = resolve(dirname(fileURLToPath(import.meta.url)), "../../src-tauri")
-const shared = ["device_list", "device_snapshot", "connections_status", "remote_workspace_action", "remote_network_state", "remote_open_network_port", "read_application_shell", "read_shutdown_state"]
-const management = ["set_connections_enabled", "connect_device", "remove_device", "authorize_device", "setup_device_key", "remote_upsert_machine", "remote_delete_machine", "remote_save_network_port", "remote_remove_network_port", "cancel_settings_flush"]
+const shared = ["device_list", "device_snapshot", "connections_status", "remote_computer_action", "remote_network_state", "remote_open_network_port", "read_application_shell", "read_shutdown_state"]
+const management = ["set_connections_enabled", "connect_device", "remove_device", "authorize_device", "setup_device_key", "remote_upsert_computer", "remote_delete_computer", "remote_save_network_port", "remote_remove_network_port", "cancel_settings_flush"]
 const capabilities = readdirSync(resolve(native, "capabilities"))
   .filter(name => name.endsWith(".json"))
   .map(name => JSON.parse(readFileSync(resolve(native, "capabilities", name), "utf8")) as { windows: string[]; permissions: string[] })

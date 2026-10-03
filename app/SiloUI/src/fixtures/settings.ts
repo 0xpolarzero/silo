@@ -3,8 +3,8 @@ import { createMemorySettingsStore } from "@/features/preferences/settings-store
 import type { SettingsPatch } from "@/features/preferences/model/settings"
 
 export function settingsForFixture(source: ApplicationSource): SettingsPatch {
-  const startup = source.workspaces.find(({ machine }) => machine.name === "dev") ?? source.workspaces[0]
-  return { ...source.preferences, startupWorkspaceIds: source.preferences.startupWorkspaceIds ?? (startup ? [startup.machine.id] : []) }
+  const startup = source.computers.find(({ configuration }) => configuration.name === "dev") ?? source.computers[0]
+  return { ...source.preferences, startupComputerIds: source.preferences.startupComputerIds ?? (startup ? [startup.configuration.id] : []) }
 }
 
 export function createFixtureSettingsStore(source: ApplicationSource) {

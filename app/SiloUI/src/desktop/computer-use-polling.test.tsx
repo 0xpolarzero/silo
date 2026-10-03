@@ -10,7 +10,7 @@ import { createFixtureComputerUseBackend, fixtureDesktopState } from "@/fixtures
 import { createComputerUseBridge, useChatGptApp, type ComputerUseBackend } from "./computer-use-bridge"
 import { ComputerUseSection } from "./computer-use-panel"
 
-const workspace = "silo-remote:11111111-1111-4111-8111-111111111111:33333333-3333-4333-8333-333333333333"
+const computer = "silo-remote:11111111-1111-4111-8111-111111111111:33333333-3333-4333-8333-333333333333"
 const backend = (overrides: Partial<ComputerUseBackend> = {}): ComputerUseBackend => ({
   ...createFixtureComputerUseBackend("ready", "ready"),
   listenStatus: async () => () => {},
@@ -23,7 +23,7 @@ function visibility(hidden: boolean) {
 }
 function section(b: ComputerUseBackend, active = true) {
   const bridge = createComputerUseBridge(b, { busy: 1000, idle: 1000 })
-  const page = (visible: boolean) => <ComputerUseProvider bridge={bridge}><ComputerUseSection workspace={workspace} active={visible} /></ComputerUseProvider>
+  const page = (visible: boolean) => <ComputerUseProvider bridge={bridge}><ComputerUseSection computer={computer} active={visible} /></ComputerUseProvider>
   const view = render(page(active))
   return { ...view, setActive: (visible: boolean) => view.rerender(page(visible)) }
 }
@@ -54,7 +54,7 @@ it("does not commit the computer-use panel for equal reads but shows changed app
   const bridge = createComputerUseBridge(backend({ readDesktopState: read }))
   const commits = vi.fn()
   const view = render(<ComputerUseProvider bridge={bridge}><Profiler id="computer-use" onRender={commits}>
-    <ComputerUseSection workspace={workspace} />
+    <ComputerUseSection computer={computer} />
   </Profiler></ComputerUseProvider>)
   try {
     await advance(0)
@@ -160,7 +160,7 @@ it("backs off malformed remote download status and restores polling after recove
 })
 
 it("backs off failed computer-use state reads and stops a pending schedule when inactive", async () => {
-  const read = vi.fn(async (): Promise<unknown> => { throw new Error("Sandbox unavailable") })
+  const read = vi.fn(async (): Promise<unknown> => { throw new Error("Computer unavailable") })
   const view = section(backend({ readDesktopState: read }))
   await advance(0)
   expect(read).toHaveBeenCalledOnce()

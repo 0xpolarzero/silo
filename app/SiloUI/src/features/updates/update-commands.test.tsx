@@ -10,7 +10,7 @@ const initial: UpdateSnapshot = {
   phase: "idle", lastChecked: null, retryAction: null, currentVersion: "0.3.3", availableVersion: null,
   releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "appimage",
   releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null,
-  installBlockReason: null, runningSandboxes: [], canInstall: true,
+  installBlockReason: null, runningComputers: [], canInstall: true,
 }
 function mount(patch: Partial<UpdateSnapshot> = {}) {
   const state = { ...initial, ...patch }
@@ -48,7 +48,7 @@ it("checks for updates from Ctrl+K and offers downloading only once a release is
 
 it("requires the existing VM-stop confirmation for a palette install and allows cancellation", async () => {
   const user = userEvent.setup()
-  const { backend } = mount({ phase: "ready", availableVersion: "0.3.4", runningSandboxes: ["dev", "build"] })
+  const { backend } = mount({ phase: "ready", availableVersion: "0.3.4", runningComputers: ["dev", "build"] })
   await screen.findByRole("button", { name: "Restart and update" })
   await selectCommand(user, "Restart and update")
   expect(backend.install).not.toHaveBeenCalled()
@@ -56,7 +56,7 @@ it("requires the existing VM-stop confirmation for a palette install and allows 
   await user.click(screen.getByRole("button", { name: "Cancel" }))
   expect(backend.install).not.toHaveBeenCalled()
   await selectCommand(user, "Restart and update")
-  await user.click(screen.getByRole("button", { name: "Stop sandboxes and update" }))
+  await user.click(screen.getByRole("button", { name: "Stop computers and update" }))
   expect(backend.install).toHaveBeenCalledExactlyOnceWith(true)
 })
 
@@ -84,7 +84,7 @@ it("opens manual installers instead of invoking the AppImage downloader", async 
 
 it("retries installation through the same confirmation and removes the command when native admission blocks it", async () => {
   const user = userEvent.setup()
-  const { backend, emit } = mount({ phase: "error", availableVersion: "0.3.4", retryAction: "install", error: "Could not stop dev", runningSandboxes: ["dev"] })
+  const { backend, emit } = mount({ phase: "error", availableVersion: "0.3.4", retryAction: "install", error: "Could not stop dev", runningComputers: ["dev"] })
   await screen.findByRole("button", { name: "Retry" })
   await selectCommand(user, "Retry update installation")
   expect(backend.install).not.toHaveBeenCalled()
@@ -96,25 +96,25 @@ it("retries installation through the same confirmation and removes the command w
 
 it("invalidates confirmation when a newer update replaces the requested version", async () => {
   const user = userEvent.setup()
-  const { emit, backend } = mount({ phase: "ready", availableVersion: "0.3.4", runningSandboxes: ["dev"] })
+  const { emit, backend } = mount({ phase: "ready", availableVersion: "0.3.4", runningComputers: ["dev"] })
   await screen.findByRole("button", { name: "Restart and update" })
   await selectCommand(user, "Restart and update")
-  expect(screen.getByRole("button", { name: "Stop sandboxes and update" })).toBeVisible()
+  expect(screen.getByRole("button", { name: "Stop computers and update" })).toBeVisible()
   emit({ availableVersion: "0.3.5" })
-  expect(screen.queryByRole("button", { name: "Stop sandboxes and update" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Stop computers and update" })).not.toBeInTheDocument()
   expect(backend.install).not.toHaveBeenCalled()
 })
 
 it.each(["version", "admission"] as const)("does not restore a withdrawn stop confirmation when %s returns to its previous state", async (change) => {
   const user = userEvent.setup()
-  const { emit, backend } = mount({ phase: "ready", availableVersion: "0.3.4", runningSandboxes: ["dev"] })
+  const { emit, backend } = mount({ phase: "ready", availableVersion: "0.3.4", runningComputers: ["dev"] })
   await screen.findByRole("button", { name: "Restart and update" })
   await selectCommand(user, "Restart and update")
-  expect(screen.getByRole("button", { name: "Stop sandboxes and update" })).toBeVisible()
+  expect(screen.getByRole("button", { name: "Stop computers and update" })).toBeVisible()
   emit(change === "version" ? { availableVersion: "0.3.5" } : { canInstall: false })
-  expect(screen.queryByRole("button", { name: "Stop sandboxes and update" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Stop computers and update" })).not.toBeInTheDocument()
   emit({ availableVersion: "0.3.4", canInstall: true })
-  expect(screen.queryByRole("button", { name: "Stop sandboxes and update" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Stop computers and update" })).not.toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Restart and update" })).toBeEnabled()
   expect(backend.install).not.toHaveBeenCalled()
 })

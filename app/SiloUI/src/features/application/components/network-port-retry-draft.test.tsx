@@ -17,10 +17,10 @@ beforeEach(() => vi.clearAllMocks())
 
 describe("port Retry preserves subsequent drafts", () => {
   it.each(["edited", "new"])("does not discard the %s draft after an older save succeeds", async (draftKind) => {
-    const workspaces = [structuredClone(applicationSourceForScenario("running").workspaces[0])]
+    const computers = [structuredClone(applicationSourceForScenario("running").computers[0])]
     const save = vi.fn().mockRejectedValueOnce(new Error("Local port occupied")).mockResolvedValue(undefined)
     const actions = createApplicationActionsMock({ saveNetworkPort: save })
-    render(<NetworkPage workspaces={workspaces} network={{ workspaces: [] }} browser="Firefox" actions={actions} active={false} />)
+    render(<NetworkPage computers={computers} network={{ computers: [] }} browser="Firefox" actions={actions} active={false} />)
     fireEvent.click(screen.getByRole("button", { name: "Add port" }))
     fireEvent.change(screen.getByRole("spinbutton", { name: "Port" }), { target: { value: "9000" } })
     await act(async () => fireEvent.submit(screen.getByRole("row", { name: "New port" })))
@@ -32,7 +32,7 @@ describe("port Retry preserves subsequent drafts", () => {
     }
     fireEvent.change(screen.getByRole("spinbutton", { name: "Port" }), { target: { value: "9001" } })
     await act(async () => retry?.())
-    expect(save).toHaveBeenNthCalledWith(2, { workspace: workspaces[0].machine.name, port: 9000, hostPort: null, scheme: "http" })
+    expect(save).toHaveBeenNthCalledWith(2, { computer: computers[0].configuration.name, port: 9000, hostPort: null, scheme: "http" })
     expect(screen.getByRole("spinbutton", { name: "Port" })).toHaveValue(9001)
   })
 })

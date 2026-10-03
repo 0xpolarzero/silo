@@ -9,24 +9,24 @@ function setup(complete = false) {
   const finishSetup = vi.fn()
   const onOpenApp = vi.fn()
   render(<OnboardingPreview source={onboardingScenarios[complete ? "complete" : "running"]} onOpenApp={onOpenApp} actions={{
-    saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup,
+    saveComputerConfiguration: vi.fn(), retryComputerSetup: vi.fn(), finishSetup,
   }} />)
   return { user: userEvent.setup(), finishSetup, onOpenApp }
 }
 
 describe("onboarding continuity", () => {
-  it("retains an unsaved sandbox draft and only exposes the active panel", async () => {
+  it("retains an unsaved computer draft and only exposes the active panel", async () => {
     const { user } = setup()
-    await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
+    await user.click(screen.getByRole("tab", { name: /Computers/ }))
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    await user.clear(screen.getByRole("textbox", { name: "Sandbox name" }))
-    await user.type(screen.getByRole("textbox", { name: "Sandbox name" }), "unfinished")
+    await user.click(screen.getByRole("menuitem", { name: "New computer" }))
+    await user.clear(screen.getByRole("textbox", { name: "Computer name" }))
+    await user.type(screen.getByRole("textbox", { name: "Computer name" }), "unfinished")
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
-    expect(screen.queryByRole("textbox", { name: "Sandbox name" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Computer name" })).not.toBeInTheDocument()
     expect(screen.getAllByRole("tabpanel")).toHaveLength(1)
-    await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
-    expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveValue("unfinished")
+    await user.click(screen.getByRole("tab", { name: /Computers/ }))
+    expect(screen.getByRole("textbox", { name: "Computer name" })).toHaveValue("unfinished")
   })
 
   it("retains expanded dependency details when returning to the step", async () => {

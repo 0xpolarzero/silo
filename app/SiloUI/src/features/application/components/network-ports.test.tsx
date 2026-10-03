@@ -3,29 +3,29 @@ import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
-import { workspaceTarget } from "../model/connections"
+import { computerTarget } from "../model/connections"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { OverviewPage } from "../pages/overview-page"
 
-function openSandboxPage(active: boolean, refreshNetwork: ApplicationActions["refreshNetwork"]) {
+function openComputerPage(active: boolean, refreshNetwork: ApplicationActions["refreshNetwork"]) {
   const source = structuredClone(applicationSourceForScenario("complete"))
   source.devices = []
-  const workspace = source.workspaces.find(item => !item.device)!
-  workspace.state = "running"
-  workspace.freshness = "fresh"
-  source.network = { workspaces: [{ workspace: workspaceTarget(workspace), error: null, ports: [] }] }
+  const computer = source.computers.find(item => !item.device)!
+  computer.state = "running"
+  computer.freshness = "fresh"
+  source.network = { computers: [{ computer: computerTarget(computer), error: null, ports: [] }] }
   const actions = { refreshNetwork, saveNetworkPort: vi.fn(), removeNetworkPort: vi.fn(), openNetworkPort: vi.fn() } as unknown as ApplicationActions
-  const page = (visible: boolean) => <OverviewPage active={visible} source={source} actions={actions} onMachinesChange={vi.fn()}
-    selectedSandboxId={workspace.machine.id} sandboxTab="overview" onOpenSandbox={vi.fn()} onCloseSandbox={vi.fn()} onSelectSandboxTab={vi.fn()} />
+  const page = (visible: boolean) => <OverviewPage active={visible} source={source} actions={actions} onConfigurationsChange={vi.fn()}
+    selectedComputerId={computer.configuration.id} computerTab="overview" onOpenComputer={vi.fn()} onCloseComputer={vi.fn()} onSelectComputerTab={vi.fn()} />
   const view = render(page(active))
   return { ...view, show: () => view.rerender(page(true)) }
 }
 
-it("does not poll a sandbox's ports while the Sandboxes panel is hidden", async () => {
+it("does not poll a computer's ports while the Computers panel is hidden", async () => {
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
   try {
     const refreshNetwork = vi.fn(async () => {})
-    const { show } = openSandboxPage(false, refreshNetwork)
+    const { show } = openComputerPage(false, refreshNetwork)
     vi.advanceTimersByTime(20_000)
     expect(refreshNetwork).not.toHaveBeenCalled()
 
@@ -37,18 +37,18 @@ it("does not poll a sandbox's ports while the Sandboxes panel is hidden", async 
 })
 
 
-it("names each remote device in the port form's sandbox selector", async () => {
+it("names each remote device in the port form's computer selector", async () => {
   const { NetworkPortForm } = await import("./network-ports")
   const { useNetworkPorts } = await import("./network-ports-state")
   const source = structuredClone(applicationSourceForScenario("running"))
-  const local = source.workspaces.find(workspace => !workspace.device)!
-  const remote = { ...local, machine: { ...local.machine, id: "silo-remote:office:vm" }, device: { id: "office", name: "Office Mac", address: "user@office", connected: true, vmId: "vm" } }
+  const local = source.computers.find(computer => !computer.device)!
+  const remote = { ...local, configuration: { ...local.configuration, id: "silo-remote:office:vm" }, device: { id: "office", name: "Office Mac", address: "user@office", connected: true, computerId: "vm" } }
   function Form() {
-    const controller = useNetworkPorts({ workspaces: [local, remote], actions: {} as ApplicationActions, active: false })
+    const controller = useNetworkPorts({ computers: [local, remote], actions: {} as ApplicationActions, active: false })
     return <><button onClick={() => controller.add()}>Add port</button><NetworkPortForm controller={controller} fieldID="test" /></>
   }
   render(<TooltipProvider><Form /></TooltipProvider>)
   await userEvent.setup().click(screen.getByRole("button", { name: "Add port" }))
-  expect(screen.getByRole("option", { name: `${local.machine.name} · Office Mac` })).toHaveValue(workspaceTarget(remote))
-  expect(screen.getByRole("option", { name: local.machine.name })).toHaveValue(local.machine.name)
+  expect(screen.getByRole("option", { name: `${local.configuration.name} · Office Mac` })).toHaveValue(computerTarget(remote))
+  expect(screen.getByRole("option", { name: local.configuration.name })).toHaveValue(local.configuration.name)
 })

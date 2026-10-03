@@ -1,26 +1,26 @@
 import type { LifecycleStep } from "./lifecycle-progress"
 import type { OperationQueue } from "./operation-queue"
 import type { WorkspaceStorageState } from "./workspace-storage"
-import type { CheckpointUsage, PendingCheckpointRestore, UnfinishedRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
+import type { CheckpointUsage, PendingCheckpointRestore, UnfinishedRestore, ComputerCheckpoint, ComputerCheckpointOperation } from "./checkpoint-source"
 import type { LogLoader, LogQuery } from "./logs"
-import type { Device, ConnectionsStatus, WorkspaceDevice } from "./connections"
+import type { Device, ConnectionsStatus, ComputerDevice } from "./connections"
 import type { DirectoryLoader } from "./directory-store"
 import type {
-  SetupMachineConfiguration,
-  SetupMachineConfigurationRequest,
+  SetupComputerConfiguration,
+  SetupComputerConfigurationRequest,
   SiloBootstrapResult,
   SiloProgressEvent,
   SiloProtocolError,
 } from "@/contracts/silo"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 
-export type ApplicationTab = "workspaces" | "github" | "secrets" | "system" | "settings"
+export type ApplicationTab = "computers" | "github" | "secrets" | "system" | "settings"
 export type SettingsSection = "general" | "devices" | "notifications"
-export type WorkspaceSection = "overview" | "files" | "logs" | "network" | "activity"
-export type WorkspaceDetailSection = Exclude<WorkspaceSection, "overview">
-/** Tabs on a single sandbox's detail page, reached from the Sandboxes overview. */
-export type SandboxDetailTab = "overview" | "checkpoints" | "storage" | "access"
-export type WorkspaceState = "running" | "starting" | "stopped" | "failed"
+export type ComputerSection = "overview" | "files" | "logs" | "network" | "activity"
+export type ComputerDetailSection = Exclude<ComputerSection, "overview">
+/** Tabs on a single computer's detail page, reached from the Computers overview. */
+export type ComputerDetailTab = "overview" | "checkpoints" | "storage" | "access"
+export type ComputerState = "running" | "starting" | "stopped" | "failed"
 
 export type RuntimeRepairPresentation = {
   status: "needed" | "unavailable"
@@ -31,11 +31,11 @@ export type RuntimeRepairPresentation = {
 
 export type ActiveRuntimeRepairPresentation = RuntimeRepairPresentation
 
-export type SandboxConfigurationOperation =
+export type ComputerConfigurationOperation =
   | {
       id: string
       status: "applying"
-      candidate: SetupMachineConfigurationRequest
+      candidate: SetupComputerConfigurationRequest
       progressEvents: readonly SiloProgressEvent[]
       result: null
       error: null
@@ -43,7 +43,7 @@ export type SandboxConfigurationOperation =
   | {
       id: string
       status: "awaiting-approval"
-      candidate: SetupMachineConfigurationRequest
+      candidate: SetupComputerConfigurationRequest
       progressEvents: readonly SiloProgressEvent[]
       result: SiloBootstrapResult
       error: null
@@ -51,7 +51,7 @@ export type SandboxConfigurationOperation =
   | {
       id: string
       status: "failed"
-      candidate: SetupMachineConfigurationRequest
+      candidate: SetupComputerConfigurationRequest
       progressEvents: readonly SiloProgressEvent[]
       result: null
       error: SiloProtocolError
@@ -79,7 +79,7 @@ export interface RepositoryPushTarget {
 export type RepositoryPushOperation = {
   /** The host-owned push this result belongs to; older hosts may omit it. */
   operationId?: string
-  workspace: string
+  computer: string
   repositoryPath: string
   commitCount: number
   /** What this push publishes, as confirmed by the user. */
@@ -105,18 +105,18 @@ export interface NetworkPort {
   configured: boolean
   message?: string | null
 }
-export interface NetworkState { workspaces: { workspace: string; ports: NetworkPort[]; error: string | null; /** Host name published websites open at; absent means 127.0.0.1. */ host?: string | null }[] }
-export interface SshAccessWorkspace {
+export interface NetworkState { computers: { computer: string; ports: NetworkPort[]; error: string | null; /** Host name published websites open at; absent means 127.0.0.1. */ host?: string | null }[] }
+export interface SshAccessComputer {
   unavailable?: string
-  workspace: string; enabled: boolean; port: number; bindAddress: string; keys: string[]
+  computer: string; enabled: boolean; port: number; bindAddress: string; keys: string[]
   state: "disabled" | "waiting" | "listening" | "error"; message: string | null
   fingerprint: string | null; deviceName: string; addresses: string[]
   /** Guest account SSH clients log in as; older owners omit it. */
   user?: string
 }
-export interface SshAccessState { workspaces: SshAccessWorkspace[] }
-export type SshAccessRequest = Pick<SshAccessWorkspace, "workspace" | "enabled" | "port" | "bindAddress"> & { keys?: string[] }
-export interface NetworkPortRequest { workspace: string; port: number; hostPort: number | null; scheme: "http" | "https" | null }
+export interface SshAccessState { computers: SshAccessComputer[] }
+export type SshAccessRequest = Pick<SshAccessComputer, "computer" | "enabled" | "port" | "bindAddress"> & { keys?: string[] }
+export interface NetworkPortRequest { computer: string; port: number; hostPort: number | null; scheme: "http" | "https" | null }
 
 export interface ApplicationPort {
   /** Host supplied by port forwarding; absent means 127.0.0.1. */
@@ -134,7 +134,7 @@ export interface ApplicationFileEntry {
   children?: ApplicationFileEntry[]
 }
 
-export type ApplicationActivityCategory = "sandbox" | "git" | "backup" | "secrets" | "github" | "system"
+export type ApplicationActivityCategory = "computer" | "git" | "backup" | "secrets" | "github" | "system"
 
 export type ApplicationActivityStatus = "running" | "completed"
 
@@ -151,18 +151,18 @@ export interface ApplicationActivity {
   time: string
   tone: "success" | "neutral" | "warning" | "danger"
   status: ApplicationActivityStatus
-  workspace?: string
+  computer?: string
   progress?: number
   progressLabel?: string
   /** A start, stop or restart the user cancelled: neither a failure nor a success. */
   cancelled?: boolean
 }
 
-export interface ApplicationWorkspace {
-  device?: WorkspaceDevice
-  machine: SetupMachineConfiguration
+export interface ApplicationComputer {
+  device?: ComputerDevice
+  configuration: SetupComputerConfiguration
   purpose: string
-  state: WorkspaceState
+  state: ComputerState
   stateDetail: string
   canDismissError?: boolean
   lifecycleFailure?: string
@@ -190,10 +190,10 @@ export interface ApplicationWorkspace {
   logs: ApplicationLog[]
   githubRepositories: string[]
   secretNames: string[]
-  /** Removed secrets that this sandbox may still hold until revocation or restart. */
+  /** Removed secrets that this computer may still hold until revocation or restart. */
   pendingSecretRevocations?: string[]
-  checkpoints?: WorkspaceCheckpoint[]
-  checkpointOperation?: WorkspaceCheckpointOperation | null
+  checkpoints?: ComputerCheckpoint[]
+  checkpointOperation?: ComputerCheckpointOperation | null
   pendingCheckpointRestore?: PendingCheckpointRestore | null
   unfinishedRestore?: UnfinishedRestore | null
 }
@@ -201,10 +201,10 @@ export interface ApplicationWorkspace {
 export interface ApplicationSecret {
   id: string
   name: string
-  workspaces: string[]
+  computers: string[]
   allowedDomains: string[]
   state: "active" | "applying" | "restart-required"
-  pendingWorkspaces?: string[]
+  pendingComputers?: string[]
   error?: string
   removing?: boolean
 }
@@ -212,7 +212,7 @@ export interface ApplicationSecret {
 // Values travel only with a save request, never in the published secret metadata.
 export type SecretConfigurationRequest = {
   name: string
-  workspaces: string[]
+  computers: string[]
   allowedDomains: string[]
 } & ({ operation: "add"; value: string } | { operation: "edit"; id: string; value?: string })
 
@@ -221,7 +221,7 @@ export interface ApplicationGitIdentity {
   email: string
 }
 
-export interface ApplicationWorkspaceGitIdentity extends ApplicationGitIdentity {
+export interface ApplicationComputerGitIdentity extends ApplicationGitIdentity {
   apply: boolean
 }
 
@@ -230,29 +230,29 @@ export interface ApplicationGitHubRepositoryPolicy {
   allowPushes: boolean
 }
 
-export interface ApplicationGitHubWorkspacePolicy {
+export interface ApplicationGitHubComputerPolicy {
   authenticationMethod?: "oauth" | "token"
   repositoryMode?: "selected" | "all"
   allRepositoriesAllowChanges?: boolean
-  workspace: string
-  identity: ApplicationWorkspaceGitIdentity
+  computer: string
+  identity: ApplicationComputerGitIdentity
   repositories: readonly ApplicationGitHubRepositoryPolicy[]
 }
 
 /**
- * A save of sandbox GitHub choices. `workspaces` lists only the sandboxes being changed;
- * other sandboxes keep their saved choices. `baseRevision` is the `policyRevision` the
+ * A save of computer GitHub choices. `computers` lists only the computers being changed;
+ * other computers keep their saved choices. `baseRevision` is the `policyRevision` the
  * edit was based on, so a change made meanwhile (such as a fork's copied assignment) is
  * not overwritten. Access on/off is changed only through `setGitHubAccessEnabled`.
  */
 export interface ApplicationGitHubConfiguration {
   baseRevision?: number
   deviceIdentity: ApplicationGitIdentity | null
-  workspaces: readonly ApplicationGitHubWorkspacePolicy[]
+  computers: readonly ApplicationGitHubComputerPolicy[]
 }
 
-export type GitHubWorkspaceOperation = {
-  workspace: string
+export type GitHubComputerOperation = {
+  computer: string
   message: string
 } & (
   | { status: "applying" }
@@ -277,9 +277,9 @@ export interface ApplicationSource {
   runtimeRepair: RuntimeRepairPresentation | null
   /** Ordered admission queue for VM-changing operations on this device. */
   operationQueue?: OperationQueue
-  workspaces: ApplicationWorkspace[]
+  computers: ApplicationComputer[]
   activities: ApplicationActivity[]
-  sandboxConfigurationOperation: SandboxConfigurationOperation | null
+  computerConfigurationOperation: ComputerConfigurationOperation | null
   repositoryPushOperations: RepositoryPushOperation[]
   github: {
     personalToken?: { state: "connected" | "disconnected"; saved: boolean; account?: string; message?: string }
@@ -291,8 +291,8 @@ export interface ApplicationSource {
     repositoryCatalog?: readonly string[]
     repositoryCatalogStatus?: GitHubRepositoryCatalogStatus
     deviceIdentity?: ApplicationGitIdentity | null
-    workspaces?: readonly ApplicationGitHubWorkspacePolicy[]
-    workspaceOperations?: readonly GitHubWorkspaceOperation[]
+    computers?: readonly ApplicationGitHubComputerPolicy[]
+    computerOperations?: readonly GitHubComputerOperation[]
   }
   secrets: ApplicationSecret[]
   backup: {
@@ -303,33 +303,33 @@ export interface ApplicationSource {
   }
   /** Operation-owned capacity evidence. Fixtures set this only through an explicit scenario. */
   resourceNotice?:
-    | { kind: "create-storage"; sandbox: string; requiredGB: number; availableGB: number; volume: string }
-    | { kind: "start-memory"; sandbox: string; memoryGiB: number }
-  vmOperationsUnavailable?: string
-  /** This device's limits for sandbox CPU and memory ceilings (D-46); absent when unmeasured. */
+    | { kind: "create-storage"; computer: string; requiredGB: number; availableGB: number; volume: string }
+    | { kind: "start-memory"; computer: string; memoryGiB: number }
+  computerOperationsUnavailable?: string
+  /** This device's limits for computer CPU and memory ceilings (D-46); absent when unmeasured. */
   deviceCapacity?: { logicalCpus: number; physicalMemoryBytes: number; maxMemoryGib: number }
   preferences: ApplicationPreferenceSelection & {
     launchAtLogin: boolean
-    startWorkspacesAtLaunch: boolean
-    startupWorkspaceIds?: string[]
+    startComputersAtLaunch: boolean
+    startupComputerIds?: string[]
     reduceMotion: boolean
   }
 }
 
 export interface ApplicationActions {
-  createCheckpoint?: (workspace: string, name: string) => Promise<void>
-  forkCheckpoint?: (workspace: string, checkpointId: string | null, newName: string) => Promise<void>
-  restoreCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
-  /** Give up an unfinished Restore of a sandbox on this device, keeping its current state. */
-  abandonRestore?: (workspace: string) => Promise<void>
-  /** Delete one checkpoint of a sandbox on this device. */
-  deleteCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
-  /** Checkpoint sizes and Delete availability for a sandbox on this device, by its ID. */
-  readCheckpointUsage?: (workspaceId: string) => Promise<CheckpointUsage>
-  readWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
-  reclaimWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
+  createCheckpoint?: (computer: string, name: string) => Promise<void>
+  forkCheckpoint?: (computer: string, checkpointId: string | null, newName: string) => Promise<void>
+  restoreCheckpoint?: (computer: string, checkpointId: string) => Promise<void>
+  /** Give up an unfinished Restore of a computer on this device, keeping its current state. */
+  abandonRestore?: (computer: string) => Promise<void>
+  /** Delete one checkpoint of a computer on this device. */
+  deleteCheckpoint?: (computer: string, checkpointId: string) => Promise<void>
+  /** Checkpoint sizes and Delete availability for a computer on this device, by its ID. */
+  readCheckpointUsage?: (computerId: string) => Promise<CheckpointUsage>
+  readWorkspaceStorage?: (computerId: string) => Promise<WorkspaceStorageState>
+  reclaimWorkspaceStorage?: (computerId: string) => Promise<WorkspaceStorageState>
   refreshRepositories?: () => Promise<void>
-  openDesktop?: (workspace: string) => void | Promise<void>
+  openDesktop?: (computer: string) => void | Promise<void>
   cancelLogExport?: () => Promise<void>
   queryLogs?: LogLoader
   exportLogs?: (requests: LogQuery[]) => Promise<boolean>
@@ -338,34 +338,34 @@ export interface ApplicationActions {
   authorizeDevice?: (address: string) => Promise<void>
   connectDevice?: (address: string, options?: { replaceAddress?: boolean }) => Promise<void>
   removeDevice?: (deviceId: string) => Promise<void>
-  saveRemoteMachine?: (deviceId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
-  deleteRemoteMachine?: (deviceId: string, machine: SetupMachineConfiguration) => Promise<void>
-  sshConnection?: (workspace: string, download: boolean, network?: boolean) => Promise<string | null>
+  saveRemoteComputer?: (deviceId: string, configuration: SetupComputerConfiguration, expected?: SetupComputerConfiguration) => Promise<void>
+  deleteRemoteComputer?: (deviceId: string, configuration: SetupComputerConfiguration) => Promise<void>
+  sshConnection?: (computer: string, download: boolean, network?: boolean) => Promise<string | null>
   refreshSshAccess?: (options?: { background?: boolean }) => Promise<void>
   saveSshAccess?: (request: SshAccessRequest) => Promise<void>
   refreshNetwork?: (options?: { background?: boolean }) => Promise<void>
   saveNetworkPort?: (request: NetworkPortRequest) => Promise<void>
-  removeNetworkPort?: (workspace: string, port: number) => Promise<void>
-  openNetworkPort?: (workspace: string, port: number) => Promise<void>
-  listWorkspaceDirectory?: DirectoryLoader
+  removeNetworkPort?: (computer: string, port: number) => Promise<void>
+  openNetworkPort?: (computer: string, port: number) => Promise<void>
+  listComputerDirectory?: DirectoryLoader
   saveSecret: (request: SecretConfigurationRequest) => Promise<void> | void
   removeSecret: (id: string) => Promise<void> | void
   retrySecret?: (id: string) => Promise<void> | void
   retryRuntimeChecks: () => void
-  saveMachineConfiguration: (request: SetupMachineConfigurationRequest, baseline?: SetupMachineConfiguration[]) => Promise<void> | void
-  dismissMachineConfigurationError: () => void
-  retryMachineConfiguration: (workspace: string) => void
-  dismissRepositoryPush?: (workspace: string, repositoryPath: string) => void
-  /** Push exactly the confirmed `target`; the host aborts if the sandbox no longer matches it. */
-  pushRepository: (workspace: string, repositoryPath: string, target: RepositoryPushTarget) => void
-  startWorkspace: (workspace: string) => void
-  stopWorkspace: (workspace: string) => void
-  restartWorkspace: (workspace: string) => void
+  saveComputerConfiguration: (request: SetupComputerConfigurationRequest, baseline?: SetupComputerConfiguration[]) => Promise<void> | void
+  dismissComputerConfigurationError: () => void
+  retryComputerConfiguration: (computer: string) => void
+  dismissRepositoryPush?: (computer: string, repositoryPath: string) => void
+  /** Push exactly the confirmed `target`; the host aborts if the computer no longer matches it. */
+  pushRepository: (computer: string, repositoryPath: string, target: RepositoryPushTarget) => void
+  startComputer: (computer: string) => void
+  stopComputer: (computer: string) => void
+  restartComputer: (computer: string) => void
   /** Cancel a queued or cancellable running operation by its operation-queue id. */
   cancelOperation?: (id: number) => void
-  dismissWorkspaceError: (workspace: string) => void
-  openTerminal: (workspace: string) => void
-  openEditor: (workspace: string, path?: string) => void
+  dismissComputerError: (computer: string) => void
+  openTerminal: (computer: string) => void
+  openEditor: (computer: string, path?: string) => void
   cancelGitHubConnection?: () => void
   reopenGitHubAuthorization?: () => void
   manageGitHubRepositories?: () => void
@@ -375,6 +375,6 @@ export interface ApplicationActions {
   disconnectGitHub?: () => void
   setGitHubAccessEnabled?: (enabled: boolean) => void
   saveGitHubConfiguration?: (configuration: ApplicationGitHubConfiguration) => void | Promise<void>
-  retryGitHubConfiguration?: (workspace?: string) => void
+  retryGitHubConfiguration?: (computer?: string) => void
   retryGitHubRepositoryCatalog?: () => void
 }

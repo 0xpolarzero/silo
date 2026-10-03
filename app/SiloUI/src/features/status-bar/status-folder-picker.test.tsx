@@ -6,22 +6,22 @@ import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { DirectoryPage } from "@/features/application/model/directory-store"
 import { StatusFolderPicker } from "./status-folder-picker"
 
-const workspace = applicationSourceForScenario("running").workspaces[0]
+const computer = applicationSourceForScenario("running").computers[0]
 const page = (names: string[], parent = "/workspace", nextOffset: number | null = null): DirectoryPage => ({
   snapshotId: parent, entries: names.map(name => ({ name, path: `${parent}/${name}`, kind: "folder" })), nextOffset,
 })
 function setup(loader = vi.fn().mockResolvedValue(page([]))) {
   const onOpen = vi.fn()
-  const props = { workspace, editor: "Cursor", onBack: vi.fn(), onOpen, listDirectory: loader }
+  const props = { computer, editor: "Cursor", onBack: vi.fn(), onOpen, listDirectory: loader }
   return { user: userEvent.setup(), loader, props, onOpen, ...render(<StatusFolderPicker {...props} />) }
 }
 describe("status folder picker live directories", () => {
-  it("reveals complete sanitized folder names and the sandbox heading", async () => {
+  it("reveals complete sanitized folder names and the computer heading", async () => {
     const name = `${"folder-".repeat(30)}\u202E`
     setup(vi.fn().mockResolvedValue(page([name])))
     const displayed = name.replace("\u202E", "⟨U+202E⟩")
     expect(await screen.findByText(displayed)).toHaveAttribute("title", displayed)
-    const heading = `${workspace.machine.name} folders`
+    const heading = `${computer.configuration.name} folders`
     expect(screen.getByRole("heading", { name: heading })).toHaveAttribute("title", heading)
   })
 
@@ -31,11 +31,11 @@ describe("status folder picker live directories", () => {
     const { user, onOpen } = setup(loader)
     expect(screen.getByRole("status", { name: "Loading folders" })).toBeVisible()
     expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeDisabled()
-    expect(loader).toHaveBeenCalledExactlyOnceWith(workspace.machine.name, "/workspace", 0, undefined)
+    expect(loader).toHaveBeenCalledExactlyOnceWith(computer.configuration.name, "/workspace", 0, undefined)
     await act(async () => resolve(page(["project"])))
     await user.click(screen.getByRole("button", { name: "project" }))
     expect(await screen.findByRole("button", { name: "nested" })).toBeVisible()
-    expect(loader).toHaveBeenLastCalledWith(workspace.machine.name, "/workspace/project", 0, undefined)
+    expect(loader).toHaveBeenLastCalledWith(computer.configuration.name, "/workspace/project", 0, undefined)
     await user.click(screen.getByRole("button", { name: "Open in Cursor" }))
     expect(onOpen).toHaveBeenCalledExactlyOnceWith("/workspace/project")
     loader.mockImplementation(() => new Promise(() => {}))
@@ -78,15 +78,15 @@ describe("status folder picker live directories", () => {
     const { user, onOpen, loader } = setup(vi.fn().mockResolvedValueOnce(page([spoofed])).mockResolvedValue(page([], `/workspace/${spoofed}`)))
     const folder = await screen.findByRole("button", { name: "photos⟨U+202E⟩gpj.exe" })
     await user.click(folder)
-    expect(loader).toHaveBeenLastCalledWith(workspace.machine.name, `/workspace/${spoofed}`, 0, undefined)
+    expect(loader).toHaveBeenLastCalledWith(computer.configuration.name, `/workspace/${spoofed}`, 0, undefined)
     expect(screen.getByRole("navigation", { name: "Folder path" })).toHaveTextContent("photos⟨U+202E⟩gpj.exe")
     await user.click(screen.getByRole("button", { name: "Open in Cursor" }))
     expect(onOpen).toHaveBeenCalledExactlyOnceWith(`/workspace/${spoofed}`)
   })
   it.each(["stopped", "stale"])("does not load or open a %s VM", (state) => {
     const loader = vi.fn()
-    render(<StatusFolderPicker workspace={{ ...workspace, ...(state === "stopped" ? { state: "stopped" } : { freshness: "stale" }) }} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} />)
-    expect(screen.getByText(state === "stopped" ? "Start this sandbox to browse its files." : "Reconnect to browse files.")).toBeVisible()
+    render(<StatusFolderPicker computer={{ ...computer, ...(state === "stopped" ? { state: "stopped" } : { freshness: "stale" }) }} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} />)
+    expect(screen.getByText(state === "stopped" ? "Start this computer to browse its files." : "Reconnect to browse files.")).toBeVisible()
     expect(loader).not.toHaveBeenCalled()
     expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeDisabled()
   })
@@ -98,13 +98,13 @@ describe("status folder picker live directories", () => {
     expect(screen.queryByRole("button", { name: "readme" })).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Load more" }))
     expect(await screen.findByRole("button", { name: "later" })).toBeVisible()
-    expect(loader).toHaveBeenLastCalledWith(workspace.machine.name, "/workspace", 200, "/workspace")
+    expect(loader).toHaveBeenLastCalledWith(computer.configuration.name, "/workspace", 200, "/workspace")
     await user.type(screen.getByRole("textbox", { name: "Filter folders" }), "LATE")
     expect(screen.getByRole("button", { name: "later" })).toBeVisible()
     expect(screen.queryByRole("button", { name: "another" })).not.toBeInTheDocument()
   })
   it("never falls back to fixture files without a loader", async () => {
-    render(<StatusFolderPicker workspace={workspace} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} />)
+    render(<StatusFolderPicker computer={computer} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} />)
     expect(await screen.findByRole("alert")).toHaveTextContent("Files are unavailable.")
     expect(screen.queryByRole("button", { name: "projects" })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeDisabled()
@@ -166,7 +166,7 @@ describe("status folder picker live directories", () => {
   })
   it("loads folders after StrictMode replays cleanup", async () => {
     const loader = vi.fn().mockResolvedValue(page(["project"]))
-    render(<StrictMode><StatusFolderPicker workspace={workspace} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} /></StrictMode>)
+    render(<StrictMode><StatusFolderPicker computer={computer} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} /></StrictMode>)
     expect(await screen.findByRole("button", { name: "project" })).toBeVisible()
     expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeEnabled()
   })

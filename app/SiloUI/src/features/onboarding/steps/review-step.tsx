@@ -3,33 +3,33 @@ import { Clock3, GitBranch, LoaderCircle, Pencil, Play, RotateCw, UserRound } fr
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { SetupNotice } from "@/features/onboarding/components/setup-notice"
-import { SandboxList, SandboxListItem, SandboxListRow } from "@/features/sandboxes/components/sandbox-list"
-import { machineSummary } from "@/features/sandboxes/model/machine-summary"
-import type { SetupMachineConfiguration } from "@/contracts/silo"
-import type { OnboardingViewModel, ReviewQueueItemView, WorkspaceView } from "@/features/onboarding/model/onboarding-state"
+import { ComputerList, ComputerListItem, ComputerListRow } from "@/features/computers/components/computer-list"
+import { computerSummary } from "@/features/computers/model/computer-summary"
+import type { SetupComputerConfiguration } from "@/contracts/silo"
+import type { OnboardingViewModel, ReviewQueueItemView, ComputerView } from "@/features/onboarding/model/onboarding-state"
 import { cn } from "@/lib/utils"
 
 interface ReviewStepProps {
-  workspaceRetryable: boolean
+  computerRetryable: boolean
   queueItems: ReviewQueueItemView[]
-  machines: readonly SetupMachineConfiguration[]
-  workspaces: WorkspaceView[]
+  configurations: readonly SetupComputerConfiguration[]
+  computers: ComputerView[]
   identitySummary: string
   githubSummary: string
   githubConnected?: boolean
   errorMessage?: string
   errorRecovery?: string
-  onRetryWorkspaceSetup: () => void
-  onEditStep?: (step: "workspaces" | "github") => void
-  /** Why Finish is unavailable once sandbox setup settled. */
+  onRetryComputerSetup: () => void
+  onEditStep?: (step: "computers" | "github") => void
+  /** Why Finish is unavailable once computer setup settled. */
   finishBlocker?: OnboardingViewModel["finishBlocker"]
-  onStartWorkspace?: (workspace: string) => void
+  onStartComputer?: (computer: string) => void
   onRefresh?: () => void
 }
 
-function FinishBlockerNotice({ blocker, onStartWorkspace, onRefresh }: { blocker: NonNullable<OnboardingViewModel["finishBlocker"]>; onStartWorkspace?: (workspace: string) => void; onRefresh?: () => void }) {
-  const action = blocker.action === "start" && onStartWorkspace
-    ? <Button type="button" variant="outline" size="xs" onClick={() => onStartWorkspace(blocker.workspace)}><Play aria-hidden="true" />Start {blocker.workspace}</Button>
+function FinishBlockerNotice({ blocker, onStartComputer, onRefresh }: { blocker: NonNullable<OnboardingViewModel["finishBlocker"]>; onStartComputer?: (computer: string) => void; onRefresh?: () => void }) {
+  const action = blocker.action === "start" && onStartComputer
+    ? <Button type="button" variant="outline" size="xs" onClick={() => onStartComputer(blocker.computer)}><Play aria-hidden="true" />Start {blocker.computer}</Button>
     : blocker.action === "refresh" && onRefresh
       ? <Button type="button" variant="outline" size="xs" onClick={onRefresh}><RotateCw aria-hidden="true" />Check again</Button>
       : null
@@ -61,7 +61,7 @@ function ValidationBadge({ status }: { status: ReviewQueueItemView["status"] }) 
   )}>{status === "running" && <LoaderCircle className="size-2.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{statusLabel[status]}</span>
 }
 
-export function ReviewStep({ workspaceRetryable, queueItems, machines, workspaces, identitySummary, githubSummary, githubConnected = true, errorMessage, errorRecovery, onRetryWorkspaceSetup, onEditStep, finishBlocker, onStartWorkspace, onRefresh }: ReviewStepProps) {
+export function ReviewStep({ computerRetryable, queueItems, configurations, computers, identitySummary, githubSummary, githubConnected = true, errorMessage, errorRecovery, onRetryComputerSetup, onEditStep, finishBlocker, onStartComputer, onRefresh }: ReviewStepProps) {
   const identityItems = queueItems.filter(({ id }) => id === "identityRun" || id === "identityVerify")
   const githubItems = queueItems.filter(({ id }) => id === "githubRun" || id === "githubVerify")
   const githubStatus = githubItems.some(({ status }) => status === "failed") ? "failed" : githubItems.some(({ status }) => status === "running") ? "running" : githubItems.length === 2 && githubItems.every(({ status }) => status === "succeeded") ? "succeeded" : githubItems.some(({ status }) => status === "queued") ? "queued" : "idle"
@@ -80,35 +80,35 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, workspace
         title="Setup could not finish"
         detail={errorMessage}
         recovery={errorRecovery}
-        action={workspaceRetryable && <Button type="button" variant="outline" size="xs" onClick={onRetryWorkspaceSetup}><RotateCw aria-hidden="true" />Retry</Button>}
+        action={computerRetryable && <Button type="button" variant="outline" size="xs" onClick={onRetryComputerSetup}><RotateCw aria-hidden="true" />Retry</Button>}
       />}
-      {!errorMessage && finishBlocker && <FinishBlockerNotice blocker={finishBlocker} onStartWorkspace={onStartWorkspace} onRefresh={onRefresh} />}
+      {!errorMessage && finishBlocker && <FinishBlockerNotice blocker={finishBlocker} onStartComputer={onStartComputer} onRefresh={onRefresh} />}
 
-      <section aria-labelledby="review-machines-heading" className="min-w-0">
+      <section aria-labelledby="review-configurations-heading" className="min-w-0">
         <div className="mb-2 flex items-center justify-between gap-2">
-          <h3 id="review-machines-heading" className="text-xs font-medium">Sandboxes</h3>
-          {onEditStep && <Button type="button" variant="ghost" size="xs" onClick={() => onEditStep("workspaces")} aria-label="Edit sandboxes"><Pencil aria-hidden="true" />Edit</Button>}
+          <h3 id="review-configurations-heading" className="text-xs font-medium">Computers</h3>
+          {onEditStep && <Button type="button" variant="ghost" size="xs" onClick={() => onEditStep("computers")} aria-label="Edit computers"><Pencil aria-hidden="true" />Edit</Button>}
         </div>
-        <SandboxList label="Sandboxes">
-          {machines.map((machine, index) => {
-            const workspace = workspaces.find(({ name }) => name === machine.name)
-            const state = workspace?.status ?? "waiting"
+        <ComputerList label="Computers">
+          {configurations.map((configuration, index) => {
+            const computer = computers.find(({ name }) => name === configuration.name)
+            const state = computer?.status ?? "waiting"
             const status = state === "ready" ? "succeeded" : state === "working" ? "running" : state === "failed" ? "failed"
-              : queueItems.some(({ id, status }) => (id === "workspaceRun" || id === "workspaceVerify") && status !== "idle") ? "queued" : "idle"
-            const summary = machineSummary(machine)
-            return <SandboxListItem key={machine.id} aria-busy={state === "working"}>
-              <SandboxListRow
-                name={machine.name}
+              : queueItems.some(({ id, status }) => (id === "computerRun" || id === "computerVerify") && status !== "idle") ? "queued" : "idle"
+            const summary = computerSummary(configuration)
+            return <ComputerListItem key={configuration.id} aria-busy={state === "working"}>
+              <ComputerListRow
+                name={configuration.name}
                 leading={<span className="w-5 shrink-0 text-center font-mono text-[10px] tabular-nums text-muted-foreground">{index + 1}</span>}
                 tone={state === "failed" ? "error" : state === "working" ? "starting" : state === "ready" ? "running" : "stopped"}
                 iconState={state === "failed" ? "error" : "normal"}
                 badge={<ValidationBadge status={status} />}
-                detail={<span title={summary}>{summary}{workspace && state !== "ready" && workspace.detail !== "Waiting" ? ` · ${workspace.detail}` : ""}</span>}
+                detail={<span title={summary}>{summary}{computer && state !== "ready" && computer.detail !== "Waiting" ? ` · ${computer.detail}` : ""}</span>}
                 detailClassName={state === "failed" ? "whitespace-normal break-words" : undefined}
               />
-            </SandboxListItem>
+            </ComputerListItem>
           })}
-        </SandboxList>
+        </ComputerList>
       </section>
 
       <section aria-labelledby="review-preferences-heading">

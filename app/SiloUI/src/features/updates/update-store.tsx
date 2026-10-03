@@ -11,7 +11,7 @@ export const updateSnapshotSchema = z.object({
   releaseUrl: z.string(), error: z.string().nullable(), errorDetails: z.string().nullable(),
   installBlockReason: z.string().nullable(),
   installStatus: z.string().nullable().optional(),
-  runningSandboxes: z.array(z.string()), canInstall: z.boolean(),
+  runningComputers: z.array(z.string()), canInstall: z.boolean(),
 })
 export type UpdateSnapshot = z.infer<typeof updateSnapshotSchema>
 export interface UpdateBackend {
@@ -19,7 +19,7 @@ export interface UpdateBackend {
   subscribe(receive: (snapshot: UpdateSnapshot) => void): Promise<() => void>
   check(): Promise<UpdateSnapshot>
   download(): Promise<UpdateSnapshot>
-  install(stopSandboxes: boolean): Promise<UpdateSnapshot>
+  install(stopComputers: boolean): Promise<UpdateSnapshot>
   setAutomaticChecks(enabled: boolean): Promise<UpdateSnapshot>
   openRelease(): Promise<void>
 }
@@ -32,7 +32,7 @@ export interface Updates {
   cancelInstall(): void
   check(): void
   download(): void
-  install(stopSandboxes: boolean): void
+  install(stopComputers: boolean): void
   setAutomaticChecks(enabled: boolean): void
   openRelease(): void
   reconnect(): void
@@ -154,7 +154,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     installConfirmation: Boolean(canInstall && confirmVersion && confirmVersion === snapshot?.availableVersion),
     requestInstall: () => {
       if (!canInstall || inFlight.current) return
-      if (snapshot?.runningSandboxes.length) setConfirmVersion(snapshot.availableVersion)
+      if (snapshot?.runningComputers.length) setConfirmVersion(snapshot.availableVersion)
       else { setConfirmVersion(null); run(() => backend.install(false)) }
     },
     cancelInstall: () => setConfirmVersion(null),

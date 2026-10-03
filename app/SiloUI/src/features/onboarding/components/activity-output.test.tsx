@@ -6,14 +6,14 @@ import type { SiloProgressEvent } from "@/contracts/silo"
 import { ActivityOutput } from "@/features/onboarding/components/activity-output"
 
 function event(overrides: Partial<SiloProgressEvent> = {}): SiloProgressEvent {
-  return { schemaVersion: 1, type: "progress", requestId: "first", phase: "workspaces", workspace: "dev", message: "Preparing disks", safeForDisplay: true, ...overrides }
+  return { schemaVersion: 1, type: "progress", requestId: "first", phase: "computers", computer: "dev", message: "Preparing disks", safeForDisplay: true, ...overrides }
 }
 
 async function show(events: SiloProgressEvent[], error?: string) {
   const user = userEvent.setup()
   render(<ActivityOutput events={events} error={error} />)
   await user.click(screen.getByRole("button", { name: "Expand activity" }))
-  return { user, output: screen.getByLabelText("Sandbox activity") }
+  return { user, output: screen.getByLabelText("Computer activity") }
 }
 
 describe("live setup activity", () => {

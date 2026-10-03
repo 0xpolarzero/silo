@@ -12,7 +12,7 @@ it.each(["network", "ssh"] as const)("backs off failed %s owners without delayin
   let failing = false
   const remote = (args?: Record<string, unknown>) => {
     if (failing && args?.deviceId === "broken") throw new Error("Unavailable")
-    return { workspaces: [] }
+    return { computers: [] }
   }
   const invoke = nativeBridgeMock({
     read_application_state: () => local,
@@ -22,8 +22,8 @@ it.each(["network", "ssh"] as const)("backs off failed %s owners without delayin
     device_list: () => ["broken", "healthy"].map(id => ({ id, name: id, address: `user@${id}` })),
     device_snapshot: () => local,
     connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
-    read_network_state: () => ({ workspaces: [] }),
-    read_ssh_access_state: () => ({ workspaces: [] }),
+    read_network_state: () => ({ computers: [] }),
+    read_ssh_access_state: () => ({ computers: [] }),
     remote_network_state: remote,
     remote_ssh_access_state: remote,
   })
@@ -69,8 +69,8 @@ it.each(["network", "ssh"] as const)("does not queue an immediate %s retry from 
     read_setup_activity: () => [],
     device_list: () => [],
     connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
-    read_network_state: () => hold && service === "network" ? pending : { workspaces: [] },
-    read_ssh_access_state: () => hold && service === "ssh" ? pending : { workspaces: [] },
+    read_network_state: () => hold && service === "network" ? pending : { computers: [] },
+    read_ssh_access_state: () => hold && service === "ssh" ? pending : { computers: [] },
   })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   const refresh = store.applicationActions[service === "network" ? "refreshNetwork" : "refreshSshAccess"]!

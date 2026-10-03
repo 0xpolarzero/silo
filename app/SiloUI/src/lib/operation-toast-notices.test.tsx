@@ -9,8 +9,8 @@ import { SettingsProvider } from "@/features/preferences/settings-store"
 import { showBackendNotice } from "@/features/application/model/use-backend-notices"
 import {
   dismissOperationToast,
-  dismissSandboxToasts,
-  dismissSandboxToastsById,
+  dismissComputerToasts,
+  dismissComputerToastsById,
   LONG_OPERATION_MS,
   runWithOperationToast,
   showActionFailure,
@@ -23,7 +23,7 @@ import {
 
 function Host() { return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster /></SettingsProvider> }
 const tick = () => act(async () => { await Promise.resolve(); await vi.advanceTimersByTimeAsync(50) })
-const sandbox = { id: "vm-1", name: "dev" }
+const computer = { id: "vm-1", name: "dev" }
 
 beforeEach(() => { vi.useFakeTimers({ now: new Date("2026-10-02T12:00:00Z") }); delivered.mockClear() })
 afterEach(() => { dismissOperationToast("op"); vi.useRealTimers() })
@@ -31,8 +31,8 @@ afterEach(() => { dismissOperationToast("op"); vi.useRealTimers() })
 describe("system notice mirroring", () => {
   it.each(["busy", "future_error"])("shows a structured %s error message in action and system notifications", async (code) => {
     render(<Host />)
-    const message = "Another sandbox operation is running. Wait for it to finish, then retry."
-    act(() => showActionFailure("Could not open sandbox", { code, message }))
+    const message = "Another computer operation is running. Wait for it to finish, then retry."
+    act(() => showActionFailure("Could not open computer", { code, message }))
     await tick()
     expect(screen.getByText(message)).toBeInTheDocument()
     expect(screen.queryByText("[object Object]")).not.toBeInTheDocument()
@@ -43,7 +43,7 @@ describe("system notice mirroring", () => {
     render(<Host />)
     const message = "This Silo version does not support that remote operation."
     await act(async () => {
-      await runWithOperationToast("op", { loading: "Opening sandbox", success: "Sandbox opened", failure: "Could not open sandbox" },
+      await runWithOperationToast("op", { loading: "Opening computer", success: "Computer opened", failure: "Could not open computer" },
         () => Promise.reject({ code: "unsupported_remote_operation", message }))
     })
     await tick()
@@ -52,19 +52,19 @@ describe("system notice mirroring", () => {
   })
 
   it("mirrors a failure as a failures notice keyed by the toast id", () => {
-    showOperationFailure("op", "Push failed", { description: "rejected", noticeSandbox: sandbox })
-    expect(delivered).toHaveBeenCalledExactlyOnceWith({ category: "failures", key: "op", title: "Push failed", body: "rejected", sandbox })
+    showOperationFailure("op", "Push failed", { description: "rejected", noticeComputer: computer })
+    expect(delivered).toHaveBeenCalledExactlyOnceWith({ category: "failures", key: "op", title: "Push failed", body: "rejected", computer })
   })
 
-  it("uses an empty body for a non-string description and no sandbox by default", () => {
+  it("uses an empty body for a non-string description and no computer by default", () => {
     showOperationFailure("op", "Import failed", { description: <p>rich</p> })
-    expect(delivered).toHaveBeenCalledExactlyOnceWith({ category: "failures", key: "op", title: "Import failed", body: "", sandbox: null })
+    expect(delivered).toHaveBeenCalledExactlyOnceWith({ category: "failures", key: "op", title: "Import failed", body: "", computer: null })
   })
 
   it("mirrors an action failure with a key derived from its title", () => {
-    showActionFailure("Could not open port 80", new Error("closed"), undefined, { noticeSandbox: sandbox })
+    showActionFailure("Could not open port 80", new Error("closed"), undefined, { noticeComputer: computer })
     showActionFailure("Could not open port 80", "again")
-    expect(delivered).toHaveBeenNthCalledWith(1, { category: "failures", key: "action-failure:Could not open port 80", title: "Could not open port 80", body: "closed", sandbox })
+    expect(delivered).toHaveBeenNthCalledWith(1, { category: "failures", key: "action-failure:Could not open port 80", title: "Could not open port 80", body: "closed", computer })
     expect(delivered.mock.calls[1][0].key).toBe("action-failure:Could not open port 80")
   })
 
@@ -72,9 +72,9 @@ describe("system notice mirroring", () => {
     const start = Date.now()
     showOperationProgress("op", { title: "Working", startedAt: start })
     vi.setSystemTime(start + elapsed)
-    showOperationSuccess("op", "Done", { description: "took a while", noticeSandbox: sandbox })
+    showOperationSuccess("op", "Done", { description: "took a while", noticeComputer: computer })
     if (elapsed > LONG_OPERATION_MS) {
-      expect(delivered).toHaveBeenCalledExactlyOnceWith({ category: "completions", key: "op", title: "Done", body: "took a while", sandbox })
+      expect(delivered).toHaveBeenCalledExactlyOnceWith({ category: "completions", key: "op", title: "Done", body: "took a while", computer })
     } else {
       expect(delivered).not.toHaveBeenCalled()
     }
@@ -103,21 +103,21 @@ describe("system notice mirroring", () => {
 })
 
 describe("backend notices", () => {
-  it("renders by category, replaces by key in place, tags the sandbox, and never re-delivers", async () => {
+  it("renders by category, replaces by key in place, tags the computer, and never re-delivers", async () => {
     render(<Host />)
-    act(() => showBackendNotice({ category: "changes", key: "state:vm-1", title: "dev stopped unexpectedly", body: "", sandbox }))
+    act(() => showBackendNotice({ category: "changes", key: "state:vm-1", title: "dev stopped unexpectedly", body: "", computer }))
     await tick()
     expect(screen.getByText("dev stopped unexpectedly")).toBeInTheDocument()
-    act(() => showBackendNotice({ category: "changes", key: "state:vm-1", title: "dev is running again", body: "Recovered.", sandbox }))
+    act(() => showBackendNotice({ category: "changes", key: "state:vm-1", title: "dev is running again", body: "Recovered.", computer }))
     await tick()
     expect(screen.queryByText("dev stopped unexpectedly")).not.toBeInTheDocument()
     expect(screen.getAllByText("dev is running again")).toHaveLength(1)
-    act(() => showBackendNotice({ category: "failures", key: "update", title: "Update failed", body: "offline", sandbox: null }))
-    act(() => showBackendNotice({ category: "completions", key: "done", title: "Export finished", body: "", sandbox: null }))
+    act(() => showBackendNotice({ category: "failures", key: "update", title: "Update failed", body: "offline", computer: null }))
+    act(() => showBackendNotice({ category: "completions", key: "done", title: "Export finished", body: "", computer: null }))
     await tick()
     expect(screen.getByText("Update failed")).toBeInTheDocument()
     expect(screen.getByText("Export finished")).toBeInTheDocument()
-    act(() => dismissSandboxToastsById(sandbox.id))
+    act(() => dismissComputerToastsById(computer.id))
     await tick()
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.queryByText("dev is running again")).not.toBeInTheDocument()
@@ -125,11 +125,11 @@ describe("backend notices", () => {
   })
 })
 
-describe("toast sandbox ownership", () => {
-  it.each([false, true])("does not dismiss an unrelated replacement after deleting its old sandbox (dismissed: %s)", async (dismissed) => {
+describe("toast computer ownership", () => {
+  it.each([false, true])("does not dismiss an unrelated replacement after deleting its old computer (dismissed: %s)", async (dismissed) => {
     render(<Host />)
     const id = `reused-transfer-${dismissed}`
-    act(() => showOperationSuccess(id, "Imported A", { sandbox: "imported-a", persist: true }))
+    act(() => showOperationSuccess(id, "Imported A", { computer: "imported-a", persist: true }))
     await tick()
     if (dismissed) {
       act(() => dismissOperationToast(id))
@@ -139,24 +139,24 @@ describe("toast sandbox ownership", () => {
     act(() => showOperationSuccess(id, "Exported B", { action: { label: "Reveal B", onClick: vi.fn() } }))
     await tick()
     expect(screen.getByRole("button", { name: "Reveal B" })).toBeInTheDocument()
-    act(() => dismissSandboxToasts("imported-a"))
+    act(() => dismissComputerToasts("imported-a"))
     await tick()
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.getByRole("button", { name: "Reveal B" })).toBeInTheDocument()
     dismissOperationToast(id)
   })
 
-  it("replaces ownership when a toast moves to another sandbox", async () => {
+  it("replaces ownership when a toast moves to another computer", async () => {
     render(<Host />)
-    act(() => showOperationFailure("moved-owner", "Failed A", { sandbox: "owner-a", native: false }))
+    act(() => showOperationFailure("moved-owner", "Failed A", { computer: "owner-a", native: false }))
     await tick()
-    act(() => showOperationFailure("moved-owner", "Failed B", { sandbox: "owner-b", native: false }))
+    act(() => showOperationFailure("moved-owner", "Failed B", { computer: "owner-b", native: false }))
     await tick()
-    act(() => dismissSandboxToasts("owner-a"))
+    act(() => dismissComputerToasts("owner-a"))
     await tick()
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.getByText("Failed B")).toBeInTheDocument()
-    act(() => dismissSandboxToasts("owner-b"))
+    act(() => dismissComputerToasts("owner-b"))
     await tick()
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.queryByText("Failed B")).not.toBeInTheDocument()
@@ -166,8 +166,8 @@ describe("toast sandbox ownership", () => {
 it("keeps progress and cancellation available when Retry replaces the failure in place", async () => {
   render(<Host />)
   const cancel = vi.fn()
-  const retry = () => showOperationProgress("retry-progress", { title: "Retrying operation", sandbox: "retry-vm", cancel: { onCancel: cancel } })
-  act(() => showOperationFailure("retry-progress", "Operation failed", { retry, sandbox: "retry-vm", native: false }))
+  const retry = () => showOperationProgress("retry-progress", { title: "Retrying operation", computer: "retry-vm", cancel: { onCancel: cancel } })
+  act(() => showOperationFailure("retry-progress", "Operation failed", { retry, computer: "retry-vm", native: false }))
   await tick()
   fireEvent.click(screen.getByRole("button", { name: "Retry" }))
   await tick()
@@ -179,17 +179,17 @@ it("keeps progress and cancellation available when Retry replaces the failure in
 })
 
 
-it("retains sandbox ownership while Retry waits for backend-driven progress", async () => {
+it("retains computer ownership while Retry waits for backend-driven progress", async () => {
   render(<Host />)
   const retry = vi.fn()
   const onDismiss = vi.fn()
-  act(() => showOperationFailure("retry-waiting", "Waiting retry", { retry, onDismiss, sandbox: "waiting-vm", native: false }))
+  act(() => showOperationFailure("retry-waiting", "Waiting retry", { retry, onDismiss, computer: "waiting-vm", native: false }))
   await tick()
   fireEvent.click(screen.getByRole("button", { name: "Retry" }))
   await tick()
   expect(retry).toHaveBeenCalledOnce()
   expect(onDismiss).not.toHaveBeenCalled()
-  act(() => dismissSandboxToasts("waiting-vm"))
+  act(() => dismissComputerToasts("waiting-vm"))
   await tick()
   await act(async () => { await vi.advanceTimersByTimeAsync(500) })
   expect(screen.queryByText("Waiting retry")).not.toBeInTheDocument()
@@ -219,14 +219,14 @@ it("acknowledges a result exactly once when its action closes the notification",
   render(<Host />)
   const onDismiss = vi.fn(() => dismissOperationToast("acknowledge-result"))
   const open = vi.fn()
-  act(() => showOperationSuccess("acknowledge-result", "Imported sandbox", {
-    action: { label: "Open imported sandbox", onClick: open }, onDismiss,
+  act(() => showOperationSuccess("acknowledge-result", "Imported computer", {
+    action: { label: "Open imported computer", onClick: open }, onDismiss,
   }))
   await tick()
-  fireEvent.click(screen.getByRole("button", { name: "Open imported sandbox" }))
+  fireEvent.click(screen.getByRole("button", { name: "Open imported computer" }))
   await tick()
   await act(async () => { await vi.advanceTimersByTimeAsync(500) })
   expect(open).toHaveBeenCalledOnce()
   expect(onDismiss).toHaveBeenCalledOnce()
-  expect(screen.queryByText("Imported sandbox")).not.toBeInTheDocument()
+  expect(screen.queryByText("Imported computer")).not.toBeInTheDocument()
 })

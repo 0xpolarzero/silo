@@ -2,27 +2,27 @@ import { SiloWindow } from "@/components/silo-window"
 import { ConnectDeviceForm } from "@/features/application/components/connections-settings"
 import { useEffect, useMemo, useRef, useState } from "react"
 
-import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { productionComputerDefaults } from "@/features/onboarding/model/computer-configuration"
 
 import type { DependencyRuntime } from "@/desktop/dependencies"
 import { useProductionSource, type ProductionSnapshot, type ProductionSource } from "@/desktop/production-source"
-import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SetupMachineConfigurationRequest, type SiloBootstrapConfiguration } from "@/contracts/silo"
+import { setupComputerConfigurationSchema, type SetupComputerConfiguration, type SetupComputerConfigurationRequest, type SiloBootstrapConfiguration } from "@/contracts/silo"
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { OnboardingApp } from "@/features/onboarding/onboarding-app"
 import type { OnboardingCompletionRequest, OnboardingSource, OnboardingSubmissionOptions } from "@/features/onboarding/model/onboarding-source"
 import { useSettings } from "@/features/preferences/settings-store"
 
-function bootstrapConfiguration(machines: readonly SetupMachineConfiguration[]): SiloBootstrapConfiguration {
+function bootstrapConfiguration(configurations: readonly SetupComputerConfiguration[]): SiloBootstrapConfiguration {
   return {
     schemaVersion: 1,
-    workspaces: machines.map((machine) => ({
-      name: machine.name,
-      cpu: machine.cpus,
-      cpuCeiling: machine.maxCPUs,
-      memoryGiB: machine.memoryGiB,
-      memoryCeilingGiB: machine.maxMemoryGiB,
-      workspaceStorageGiB: machine.workspaceStorageGiB,
-      runtimeStorageGiB: machine.runtimeStorageGiB,
+    computers: configurations.map((configuration) => ({
+      name: configuration.name,
+      cpu: configuration.cpus,
+      cpuCeiling: configuration.maxCPUs,
+      memoryGiB: configuration.memoryGiB,
+      memoryCeilingGiB: configuration.maxMemoryGiB,
+      workspaceStorageGiB: configuration.workspaceStorageGiB,
+      runtimeStorageGiB: configuration.runtimeStorageGiB,
     })),
   }
 }
@@ -32,68 +32,68 @@ type Submission = {
   run: (request?: OnboardingCompletionRequest, options?: OnboardingSubmissionOptions) => Promise<unknown>
 }
 
-/** Sandboxes that exist on this device, as committed configuration. */
-function existingLocalMachines(application: ApplicationSource | null): SetupMachineConfiguration[] {
-  return (application?.workspaces ?? []).flatMap(({ device, machine }) => {
+/** Computers that exist on this device, as committed configuration. */
+function existingLocalConfigurations(application: ApplicationSource | null): SetupComputerConfiguration[] {
+  return (application?.computers ?? []).flatMap(({ device, configuration }) => {
     if (device) return []
-    const parsed = setupMachineConfigurationSchema.safeParse(machine)
+    const parsed = setupComputerConfigurationSchema.safeParse(configuration)
     return parsed.success ? [parsed.data] : []
   })
 }
 
 /**
- * Onboarding never deletes an existing sandbox unless the user confirmed deleting it.
+ * Onboarding never deletes an existing computer unless the user confirmed deleting it.
  * Checked against the source's committed list at submission time, which is what the
  * production source derives its changes from.
  */
-function assertConfirmedDeletions(committed: ApplicationSource | null, machines: readonly SetupMachineConfiguration[], options?: OnboardingSubmissionOptions) {
-  const kept = new Set(machines.map(({ id }) => id))
-  const unconfirmed = existingLocalMachines(committed).filter(({ id }) => !kept.has(id) && !options?.confirmedDeletions.includes(id))
+function assertConfirmedDeletions(committed: ApplicationSource | null, configurations: readonly SetupComputerConfiguration[], options?: OnboardingSubmissionOptions) {
+  const kept = new Set(configurations.map(({ id }) => id))
+  const unconfirmed = existingLocalConfigurations(committed).filter(({ id }) => !kept.has(id) && !options?.confirmedDeletions.includes(id))
   if (unconfirmed.length === 0) return
   const names = unconfirmed.map(({ name }) => name).join(", ")
-  throw new Error(`Setup did not delete ${names}. Confirm deleting ${unconfirmed.length === 1 ? "it" : "them"} first, or keep ${unconfirmed.length === 1 ? "it" : "them"} in setup. No sandbox changed.`)
+  throw new Error(`Setup did not delete ${names}. Confirm deleting ${unconfirmed.length === 1 ? "it" : "them"} first, or keep ${unconfirmed.length === 1 ? "it" : "them"} in setup. No computer changed.`)
 }
 
 // oxlint-disable-next-line react/only-export-components
 export function productionOnboardingSource(application: ApplicationSource | null, dependencies: DependencyRuntime, applicationPreferences: OnboardingSource["applicationPreferences"], setup?: ProductionSnapshot): OnboardingSource {
   // Setup on this device must never adopt another device's VM identities.
-  if (application) application = { ...application, workspaces: application.workspaces.filter(workspace => !workspace.device) }
-  const operation = application?.sandboxConfigurationOperation
-  const existingMachines = existingLocalMachines(application)
-  // Only a real read of this device's state says which sandboxes exist. Before it, or
+  if (application) application = { ...application, computers: application.computers.filter(computer => !computer.device) }
+  const operation = application?.computerConfigurationOperation
+  const existingConfigurations = existingLocalConfigurations(application)
+  // Only a real read of this device's state says which computers exist. Before it, or
   // while it is replaced by a shell (local state updating, or unreadable), the saved list
   // or defaults are a placeholder seed that is replaced once the real state loads.
-  const machinesAuthoritative = application !== null && !setup?.localUpdating && !(setup?.error && existingMachines.length === 0)
-  const fallback = !machinesAuthoritative && setup?.savedMachines?.length ? setup.savedMachines : productionMachineDefaults
-  const machines = setup?.setupCandidate?.machines ?? operation?.candidate.machines ?? (existingMachines.length ? existingMachines : fallback)
-  const emptyConfigurationVerified = setup?.setupCandidate?.machines.length === 0
-    && ["workspaceRun", "workspaceVerify"].every((id) => setup.setupQueue.some((item) => item.id === id && item.status === "succeeded"))
-  const configured = !!application && (application.workspaces.length > 0 || emptyConfigurationVerified) && application.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
-  const completedPhases = configured ? ["preflight", "toolchain", "deviceIntegration", "workspaces"] as const : []
-  const workspaceSetupPending = setup?.setupQueue.some(({ id, status }) => ["workspaceRun", "workspaceVerify"].includes(id) && (status === "running" || status === "queued" || status === "failed")) ?? false
-  // Sandbox setup itself explains running, queued and failed work; otherwise say which
-  // sandbox keeps Finish unavailable and how to resolve it.
-  const settled = !!application && !configured && !workspaceSetupPending && operation?.status !== "applying" && operation?.status !== "failed"
-  const failedWorkspace = settled ? application?.workspaces.find(({ state }) => state === "failed") : undefined
-  const staleWorkspace = settled ? application?.workspaces.find(({ freshness }) => freshness === "stale") : undefined
-  const startingWorkspace = settled ? application?.workspaces.find(({ state }) => state === "starting") : undefined
-  const finishBlocker: OnboardingSource["finishBlocker"] = failedWorkspace
-    ? { workspace: failedWorkspace.machine.name, action: "start", message: `${failedWorkspace.machine.name} is not running: ${failedWorkspace.lifecycleFailure ?? failedWorkspace.stateDetail}. Start it to finish setup.` }
-    : staleWorkspace
-      ? { workspace: staleWorkspace.machine.name, action: "refresh", message: `${staleWorkspace.machine.name}'s status could not be confirmed. Check again to finish setup.` }
-      : startingWorkspace
-        ? { workspace: startingWorkspace.machine.name, action: null, message: `Waiting for ${startingWorkspace.machine.name} to start…` }
+  const configurationsAuthoritative = application !== null && !setup?.localUpdating && !(setup?.error && existingConfigurations.length === 0)
+  const fallback = !configurationsAuthoritative && setup?.savedConfigurations?.length ? setup.savedConfigurations : productionComputerDefaults
+  const configurations = setup?.setupCandidate?.configurations ?? operation?.candidate.configurations ?? (existingConfigurations.length ? existingConfigurations : fallback)
+  const emptyConfigurationVerified = setup?.setupCandidate?.configurations.length === 0
+    && ["computerRun", "computerVerify"].every((id) => setup.setupQueue.some((item) => item.id === id && item.status === "succeeded"))
+  const configured = !!application && (application.computers.length > 0 || emptyConfigurationVerified) && application.computers.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
+  const completedPhases = configured ? ["preflight", "toolchain", "deviceIntegration", "computers"] as const : []
+  const computerSetupPending = setup?.setupQueue.some(({ id, status }) => ["computerRun", "computerVerify"].includes(id) && (status === "running" || status === "queued" || status === "failed")) ?? false
+  // Computer setup itself explains running, queued and failed work; otherwise say which
+  // computer keeps Finish unavailable and how to resolve it.
+  const settled = !!application && !configured && !computerSetupPending && operation?.status !== "applying" && operation?.status !== "failed"
+  const failedComputer = settled ? application?.computers.find(({ state }) => state === "failed") : undefined
+  const staleComputer = settled ? application?.computers.find(({ freshness }) => freshness === "stale") : undefined
+  const startingComputer = settled ? application?.computers.find(({ state }) => state === "starting") : undefined
+  const finishBlocker: OnboardingSource["finishBlocker"] = failedComputer
+    ? { computer: failedComputer.configuration.name, action: "start", message: `${failedComputer.configuration.name} is not running: ${failedComputer.lifecycleFailure ?? failedComputer.stateDetail}. Start it to finish setup.` }
+    : staleComputer
+      ? { computer: staleComputer.configuration.name, action: "refresh", message: `${staleComputer.configuration.name}'s status could not be confirmed. Check again to finish setup.` }
+      : startingComputer
+        ? { computer: startingComputer.configuration.name, action: null, message: `Waiting for ${startingComputer.configuration.name} to start…` }
         : null
   return {
-    ...(setup && { setupQueue: setup.setupQueue.map((item) => configured && item.status === "idle" && ["workspaceRun", "workspaceVerify"].includes(item.id) ? { ...item, status: "succeeded" as const } : item) }),
-    readyToFinish: configured && !workspaceSetupPending,
+    ...(setup && { setupQueue: setup.setupQueue.map((item) => configured && item.status === "idle" && ["computerRun", "computerVerify"].includes(item.id) ? { ...item, status: "succeeded" as const } : item) }),
+    readyToFinish: configured && !computerSetupPending,
     finishBlocker,
-    machinesAuthoritative: machinesAuthoritative || Boolean(setup?.setupCandidate ?? operation),
-    existingMachines,
-    machineConfigurations: [...machines],
-    bootstrapConfiguration: bootstrapConfiguration(machines),
+    configurationsAuthoritative: configurationsAuthoritative || Boolean(setup?.setupCandidate ?? operation),
+    existingConfigurations,
+    computerConfigurations: [...configurations],
+    bootstrapConfiguration: bootstrapConfiguration(configurations),
     bootstrapState: {
-      phase: "workspaces",
+      phase: "computers",
       updatedAt: setup?.setupFinishedAt ?? Math.floor(Date.now() / 1000),
       ...(setup?.setupStartedAt && { startedAt: setup.setupStartedAt }),
       completedPhases: [...completedPhases],
@@ -107,7 +107,7 @@ export function productionOnboardingSource(application: ApplicationSource | null
     githubPolicies: [],
     currentDeviceGitIdentity: application?.github.deviceIdentity ?? null,
     applicationPreferences,
-    bootstrapResult: configured ? { resumed: false, phase: "complete", requiresApproval: false, vmsStarted: false, message: "Sandbox configuration verified." } : operation?.status === "awaiting-approval" ? operation.result : null,
+    bootstrapResult: configured ? { resumed: false, phase: "complete", requiresApproval: false, vmsStarted: false, message: "Computer configuration verified." } : operation?.status === "awaiting-approval" ? operation.result : null,
     error: operation?.status === "failed" ? operation.error : null,
   }
 }
@@ -142,21 +142,21 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
   const onboarding = useMemo(
     () => {
       const current = { ...productionOnboardingSource(application, dependencies, preferences, { ...setup, backup: setup.backup.state }), ...(finishing && { readyToFinish: false }) }
-      return operationError ? { ...current, error: { code: "native_operation_failed", message: operationError, recovery: "Review the configuration and retry.", workspace: current.error?.workspace ?? (application === null ? setup.setupEvents.at(-1)?.workspace ?? null : null), retryable: true } } : current
+      return operationError ? { ...current, error: { code: "native_operation_failed", message: operationError, recovery: "Review the configuration and retry.", computer: current.error?.computer ?? (application === null ? setup.setupEvents.at(-1)?.computer ?? null : null), retryable: true } } : current
     },
     [application, dependencies, preferences, operationError, finishing, setup],
   )
   useEffect(() => {
     if (!onboardingDraft || completed) return
     void source.verifySetupIdentities({
-      machineConfiguration: { schemaVersion: 1, machines: onboardingDraft.machines },
+      computerConfiguration: { schemaVersion: 1, configurations: onboardingDraft.configurations },
       github: {
         connectionState: application?.github.state ?? "disconnected",
-        workspaces: onboardingDraft.machines.map(({ name }) => ({
-          workspace: name,
+        computers: onboardingDraft.configurations.map(({ name }) => ({
+          computer: name,
           repositories: [],
-          identity: Object.hasOwn(onboardingDraft.workspaceIdentities, name)
-            ? onboardingDraft.workspaceIdentities[name] : { name: "", email: "", apply: false },
+          identity: Object.hasOwn(onboardingDraft.computerIdentities, name)
+            ? onboardingDraft.computerIdentities[name] : { name: "", email: "", apply: false },
         })),
       },
     })
@@ -164,12 +164,12 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
 
   // The committed list the production source derives changes from, read when submitting.
   const committed = () => source.getSnapshot?.().source ?? application
-  const configurationSubmission = (request: SetupMachineConfigurationRequest, options?: OnboardingSubmissionOptions): Submission => ({
+  const configurationSubmission = (request: SetupComputerConfigurationRequest, options?: OnboardingSubmissionOptions): Submission => ({
     isFinishing: false,
     run: (current, confirmed = options) => {
-      const configuration = current?.machineConfiguration ?? request
-      assertConfirmedDeletions(committed(), configuration.machines, confirmed)
-      return source.configureMachines(configuration)
+      const configuration = current?.computerConfiguration ?? request
+      assertConfirmedDeletions(committed(), configuration.configurations, confirmed)
+      return source.configureConfigurations(configuration)
     },
   })
 
@@ -214,36 +214,36 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     githubConnectionState={application?.github.state ?? "disconnected"}
     operationError={setup.error}
     repositoryOptions={application?.github.repositoryCatalog}
-    repositoryPolicies={application?.github.workspaces}
+    repositoryPolicies={application?.github.computers}
     tokenConnected={application?.github.personalToken?.state === "connected"}
     onRetryDependencies={dependencies.retry}
     actions={{
       submitStep: (step, request, options) => {
         submit({ isFinishing: false, run: (current = request, confirmed = options) => {
-          assertConfirmedDeletions(committed(), current.machineConfiguration.machines, confirmed)
+          assertConfirmedDeletions(committed(), current.computerConfiguration.configurations, confirmed)
           return source.submitSetupStep(step, current)
         } })
       },
-      startWorkspace: (workspace) => source.applicationActions.startWorkspace(workspace),
+      startComputer: (computer) => source.applicationActions.startComputer(computer),
       refreshSetupState: () => { void source.refresh() },
       connectGitHub: () => source.applicationActions.connectGitHub?.(),
       cancelGitHubConnection: () => source.applicationActions.cancelGitHubConnection?.(),
       reopenGitHubAuthorization: () => source.applicationActions.reopenGitHubAuthorization?.(),
-      saveMachineConfiguration: (request, options) => {
+      saveComputerConfiguration: (request, options) => {
         submit(configurationSubmission(request, options))
       },
-      retryWorkspaceSetup: (request, options) => {
+      retryComputerSetup: (request, options) => {
         if (finishing) return
         const previous = lastSubmission.current
         if (previous) submit(previous, request, options)
-        else if (application?.sandboxConfigurationOperation?.status === "failed") {
-          submit(configurationSubmission(application.sandboxConfigurationOperation.candidate), request, options)
+        else if (application?.computerConfigurationOperation?.status === "failed") {
+          submit(configurationSubmission(application.computerConfigurationOperation.candidate), request, options)
         }
       },
       finishSetup: (request, options) => {
         if (finishing) return
         submit({ isFinishing: true, run: async (current = request, confirmed = options) => {
-          assertConfirmedDeletions(committed(), current.machineConfiguration.machines, confirmed)
+          assertConfirmedDeletions(committed(), current.computerConfiguration.configurations, confirmed)
           await source.finishSetup(current, async () => {
             await updateSettings({ ...current.applications, onboardingComplete: true })
             const error = store.getSnapshot().saveError

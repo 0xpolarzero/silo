@@ -6,14 +6,14 @@ import { toast } from "sonner"
 import { setupFakeTimerUser } from "@/test/fake-timer-user"
 import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import type { ApplicationActions, ApplicationSource, GitHubWorkspaceOperation } from "../model/application-source"
+import type { ApplicationActions, ApplicationSource, GitHubComputerOperation } from "../model/application-source"
 import { GitHubPage } from "./github-page"
 
 const base = applicationSourceForScenario("complete")
-const workspace = base.workspaces.find((w) => !w.device)!.machine.name
+const computer = base.computers.find((w) => !w.device)!.configuration.name
 
-function sourceWith(operations: GitHubWorkspaceOperation[], revision = 1): ApplicationSource {
-  return { ...base, github: { ...base.github, state: "connected", account: "taylor", policyRevision: revision, workspaceOperations: operations } }
+function sourceWith(operations: GitHubComputerOperation[], revision = 1): ApplicationSource {
+  return { ...base, github: { ...base.github, state: "connected", account: "taylor", policyRevision: revision, computerOperations: operations } }
 }
 
 function page(source: ApplicationSource, actions: Partial<ApplicationActions> = {}) {
@@ -36,7 +36,7 @@ describe("GitHub operation notifications", () => {
     const actions = { setGitHubAccessEnabled: vi.fn() }
     const view = render(page(sourceWith([]), actions))
     await startUserChange(user, actions)
-    view.rerender(page(sourceWith([{ workspace, status: "applying", message: "Applying repository access…" }], 2), actions))
+    view.rerender(page(sourceWith([{ computer, status: "applying", message: "Applying repository access…" }], 2), actions))
     await advanceTime(0)
     expect(screen.getByText("Applying repository access…")).toBeInTheDocument()
     expect(document.querySelector("[role=status][aria-live=polite].border-border")).toBeNull()
@@ -47,8 +47,8 @@ describe("GitHub operation notifications", () => {
     const actions = { setGitHubAccessEnabled: vi.fn() }
     const view = render(page(sourceWith([]), actions))
     await startUserChange(user, actions)
-    view.rerender(page(sourceWith([{ workspace, status: "applying", message: "Applying repository access…" }], 2), actions))
-    view.rerender(page(sourceWith([{ workspace, status: "succeeded", message: "Repository access applied." }], 3), actions))
+    view.rerender(page(sourceWith([{ computer, status: "applying", message: "Applying repository access…" }], 2), actions))
+    view.rerender(page(sourceWith([{ computer, status: "succeeded", message: "Repository access applied." }], 3), actions))
     await advanceTime(0)
     expect(screen.getByText("GitHub settings applied")).toBeInTheDocument()
     await advanceTime(4_500)
@@ -60,8 +60,8 @@ describe("GitHub operation notifications", () => {
 
   it("never notifies for background applying then succeeded", async () => {
     const view = render(page(sourceWith([])))
-    view.rerender(page(sourceWith([{ workspace, status: "applying", message: "Applying GitHub settings." }], 2)))
-    view.rerender(page(sourceWith([{ workspace, status: "succeeded", message: "GitHub access verified." }], 3)))
+    view.rerender(page(sourceWith([{ computer, status: "applying", message: "Applying GitHub settings." }], 2)))
+    view.rerender(page(sourceWith([{ computer, status: "succeeded", message: "GitHub access verified." }], 3)))
     await advanceTime(300)
     expect(screen.queryByText("GitHub settings applied")).not.toBeInTheDocument()
     expect(screen.queryByText("Applying GitHub settings.")).not.toBeInTheDocument()
@@ -73,28 +73,28 @@ describe("GitHub operation notifications", () => {
     const actions = { retryGitHubConfiguration: retry, setGitHubAccessEnabled: vi.fn() }
     const view = render(page(sourceWith([]), actions))
     await startUserChange(user, actions)
-    view.rerender(page(sourceWith([{ workspace, status: "applying", message: "Applying repository access…" }]), actions))
-    view.rerender(page(sourceWith([{ workspace, status: "failed", message: "runtime output", canRetry: true }], 2), actions))
+    view.rerender(page(sourceWith([{ computer, status: "applying", message: "Applying repository access…" }]), actions))
+    view.rerender(page(sourceWith([{ computer, status: "failed", message: "runtime output", canRetry: true }], 2), actions))
     await advanceTime(0)
     expect(screen.getByText("GitHub settings could not be applied.")).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: new RegExp(`not applied for ${workspace}`, "i") })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: new RegExp(`not applied for ${computer}`, "i") })).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent("runtime output")
     await user.click(screen.getByRole("button", { name: "Retry" }))
-    expect(retry).toHaveBeenCalledExactlyOnceWith(workspace)
+    expect(retry).toHaveBeenCalledExactlyOnceWith(computer)
     await waitFor(() => expect(screen.getAllByText("Retrying GitHub access…").length).toBeGreaterThan(0))
   })
 
   it("shows only the inline label for a background failure", async () => {
-    const view = render(page(sourceWith([{ workspace, status: "succeeded", message: "GitHub access verified." }])))
-    view.rerender(page(sourceWith([{ workspace, status: "failed", message: "background failure", canRetry: true }], 2)))
+    const view = render(page(sourceWith([{ computer, status: "succeeded", message: "GitHub access verified." }])))
+    view.rerender(page(sourceWith([{ computer, status: "failed", message: "background failure", canRetry: true }], 2)))
     await advanceTime(300)
-    expect(screen.getByRole("button", { name: new RegExp(`not applied for ${workspace}`, "i") })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: new RegExp(`not applied for ${computer}`, "i") })).toBeInTheDocument()
     expect(screen.queryByText("GitHub settings could not be applied.")).not.toBeInTheDocument()
   })
 
   it("shows only the inline label for a failure already present on load", () => {
-    render(page(sourceWith([{ workspace, status: "failed", message: "old failure", canRetry: true }])))
-    expect(screen.getByRole("button", { name: new RegExp(`not applied for ${workspace}`, "i") })).toBeInTheDocument()
+    render(page(sourceWith([{ computer, status: "failed", message: "old failure", canRetry: true }])))
+    expect(screen.getByRole("button", { name: new RegExp(`not applied for ${computer}`, "i") })).toBeInTheDocument()
     expect(screen.queryByText("GitHub settings could not be applied.")).not.toBeInTheDocument()
   })
 })

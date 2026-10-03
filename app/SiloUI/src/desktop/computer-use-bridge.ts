@@ -1,7 +1,7 @@
 import { createContext, useContext, useSyncExternalStore } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { parseRemoteWorkspaceTarget } from "@/features/application/model/connections"
+import { parseRemoteComputerTarget } from "@/features/application/model/connections"
 import { chatGptAppStatusSchema, parseChatGptAppStatus, parseLinuxDesktopState, type ChatGptAppStatus, type ComputerUseApproval, type LinuxDesktopState } from "./linux-desktop-state"
 
 /** What built-in computer use needs from its host: the native commands in production,
@@ -9,9 +9,9 @@ import { chatGptAppStatusSchema, parseChatGptAppStatus, parseLinuxDesktopState, 
  * by itself; the commands only read its status and ask it to try again. They take the host
  * id of a remote device (omitted: this device). */
 export interface ComputerUseBackend {
-  readDesktopState(workspace: string): Promise<unknown>
-  setApproval(workspace: string, mode: ComputerUseApproval): Promise<unknown>
-  setup(workspace: string): Promise<unknown>
+  readDesktopState(computer: string): Promise<unknown>
+  setApproval(computer: string, mode: ComputerUseApproval): Promise<unknown>
+  setup(computer: string): Promise<unknown>
   chatGptStatus(device?: string): Promise<unknown>
   /** Asks the device to download the app again now. Resolves at once; progress follows from the status. */
   retry(device?: string): Promise<unknown>
@@ -20,9 +20,9 @@ export interface ComputerUseBackend {
 }
 
 export const nativeComputerUseBackend: ComputerUseBackend = {
-  readDesktopState: workspace => invoke("read_desktop_state", { workspace }),
-  setApproval: (workspace, mode) => invoke("set_computer_use_approval", { workspace, mode }),
-  setup: workspace => invoke("desktop_action", { workspace, action: "setup-computer-use" }),
+  readDesktopState: computer => invoke("read_desktop_state", { computer }),
+  setApproval: (computer, mode) => invoke("set_computer_use_approval", { computer, mode }),
+  setup: computer => invoke("desktop_action", { computer, action: "setup-computer-use" }),
   chatGptStatus: device => invoke("chatgpt_app_status", { device }),
   retry: device => invoke("chatgpt_app_retry", { device }),
   listenStatus: handler => listen("chatgpt-app-status", event => handler(event.payload)),
@@ -55,9 +55,9 @@ export interface ChatGptAppStore {
 }
 
 export interface ComputerUseBridge {
-  readState(workspace: string): Promise<LinuxDesktopState>
-  setApproval(workspace: string, mode: ComputerUseApproval): Promise<LinuxDesktopState>
-  setup(workspace: string): Promise<LinuxDesktopState>
+  readState(computer: string): Promise<LinuxDesktopState>
+  setApproval(computer: string, mode: ComputerUseApproval): Promise<LinuxDesktopState>
+  setup(computer: string): Promise<LinuxDesktopState>
   /** The ChatGPT app store of one device: this one (omitted) or the remote device with that device id. */
   chatGptFor(device?: string): ChatGptAppStore
 }
@@ -70,10 +70,10 @@ const REMOTE_IDLE_POLL_MS = 15000
 const REMOTE_FAILURE_POLL_MAX_MS = 30000
 const working = (status: ChatGptAppStatus | null) => status?.state === "downloading" || status?.state === "verifying" || status?.state === "extracting" || status?.state === "idle"
 
-/** The device id of the device that owns a sandbox workspace target, undefined for a local sandbox. */
-export function deviceOfWorkspace(workspace: string | undefined): string | undefined {
-  if (!workspace) return undefined
-  try { return parseRemoteWorkspaceTarget(workspace)?.deviceId } catch { return undefined }
+/** The device id of the device that owns a computer computer target, undefined for a local computer. */
+export function deviceOfComputer(computer: string | undefined): string | undefined {
+  if (!computer) return undefined
+  try { return parseRemoteComputerTarget(computer)?.deviceId } catch { return undefined }
 }
 
 function createChatGptAppStore(backend: ComputerUseBackend, device: string | undefined, pollMs = { busy: REMOTE_BUSY_POLL_MS, idle: REMOTE_IDLE_POLL_MS }): ChatGptAppStore {
@@ -202,9 +202,9 @@ function createChatGptAppStore(backend: ComputerUseBackend, device: string | und
 export function createComputerUseBridge(backend: ComputerUseBackend, pollMs?: { busy: number; idle: number }): ComputerUseBridge {
   const stores = new Map<string, ChatGptAppStore>()
   return {
-    readState: async workspace => parseLinuxDesktopState(await backend.readDesktopState(workspace)),
-    setApproval: async (workspace, mode) => parseLinuxDesktopState(await backend.setApproval(workspace, mode)),
-    setup: async workspace => parseLinuxDesktopState(await backend.setup(workspace)),
+    readState: async computer => parseLinuxDesktopState(await backend.readDesktopState(computer)),
+    setApproval: async (computer, mode) => parseLinuxDesktopState(await backend.setApproval(computer, mode)),
+    setup: async computer => parseLinuxDesktopState(await backend.setup(computer)),
     chatGptFor(device) {
       const key = device || LOCAL
       let store = stores.get(key)

@@ -4,10 +4,10 @@ import { applicationPathSchema } from "./application-preferences"
 export const settingSchemas = {
   theme: z.enum(["system", "dark", "light"]),
   launchAtLogin: z.boolean(),
-  startWorkspacesAtLaunch: z.boolean(),
-  startupWorkspaceIds: z.array(z.string().min(1).max(256)).max(256),
-  /** This device's order for the sandbox list, local and remote, by `sandboxOrderKey`. */
-  sandboxOrder: z.array(z.string().min(1).max(512)).max(1024),
+  startComputersAtLaunch: z.boolean(),
+  startupComputerIds: z.array(z.string().min(1).max(256)).max(256),
+  /** This device's order for the computer list, local and remote, by `computerOrderKey`. */
+  computerOrder: z.array(z.string().min(1).max(512)).max(1024),
   terminal: z.string().min(1).max(256),
   editor: z.string().min(1).max(256),
   browser: z.string().min(1).max(256),
@@ -18,7 +18,7 @@ export const settingSchemas = {
   editorUseSystemDefault: z.boolean(),
   browserUseSystemDefault: z.boolean(),
   reduceMotion: z.boolean(),
-  /** Whether sandboxes created or imported on this device start with agents allowed to use the desktop without asking. */
+  /** Whether computers created or imported on this device start with agents allowed to use the desktop without asking. */
   computerUseAutoApproval: z.boolean(),
   notificationsEnabled: z.boolean(),
   notifyFailures: z.boolean(),
@@ -38,9 +38,9 @@ export type SettingsPatch = Partial<Settings>
 export const defaultSettings: Settings = {
   theme: "system",
   launchAtLogin: true,
-  startWorkspacesAtLaunch: false,
-  startupWorkspaceIds: [],
-  sandboxOrder: [],
+  startComputersAtLaunch: false,
+  startupComputerIds: [],
+  computerOrder: [],
   terminal: "Terminal",
   editor: "Visual Studio Code",
   browser: "Safari",

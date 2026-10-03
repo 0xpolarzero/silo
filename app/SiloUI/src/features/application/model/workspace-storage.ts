@@ -10,9 +10,9 @@ export const workspaceStorageStateSchema = z.object({
   })).max(50).default([]),
   /** Host allocation of the workspace disk and its layers; null when Silo could not find it. */
   workspaceHostBytes: bytes.nullable(),
-  /** Host allocation of the sandbox's runtime disks; null when Silo could not find them. */
+  /** Host allocation of the computer's runtime disks; null when Silo could not find them. */
   runtimeHostBytes: bytes.nullable(),
-  /** Host space the sandbox's checkpoints use; null when it could not be measured. */
+  /** Host space the computer's checkpoints use; null when it could not be measured. */
   checkpointHostBytes: bytes.nullable().default(null),
   checkpointCount: z.number().int().nonnegative().default(0),
   workspaceUsedBytes: bytes.nullable(),

@@ -10,7 +10,7 @@ export const siloPreflightCheckSchema = z.object({
   remediation: z.string().nullable(),
 }).strict()
 
-const siloBootstrapWorkspaceSchema = z.object({
+const siloBootstrapComputerSchema = z.object({
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
   cpu: z.number().int().min(1).max(255),
   cpuCeiling: z.number().int().min(1).max(255),
@@ -18,27 +18,27 @@ const siloBootstrapWorkspaceSchema = z.object({
   memoryCeilingGiB: z.number().int().min(1).max(4_294_967_295),
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
   runtimeStorageGiB: z.number().int().min(1).max(4_194_303),
-}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "The two disks together exceed 4,194,303 GiB. Reduce a disk size.", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpu <= workspace.cpuCeiling, {
+}).strict().refine((computer) => computer.workspaceStorageGiB + computer.runtimeStorageGiB <= 4_194_303, { message: "The two disks together exceed 4,194,303 GiB. Reduce a disk size.", path: ["workspaceStorageGiB"] }).refine((computer) => computer.cpu <= computer.cpuCeiling, {
   message: "cpu must not exceed cpuCeiling",
-}).refine((workspace) => workspace.memoryGiB <= workspace.memoryCeilingGiB, {
+}).refine((computer) => computer.memoryGiB <= computer.memoryCeilingGiB, {
   message: "memoryGiB must not exceed memoryCeilingGiB",
 })
 
 export const siloBootstrapConfigurationSchema = z.object({
   schemaVersion: z.literal(1),
-  workspaces: z.array(siloBootstrapWorkspaceSchema).min(1).max(64),
+  computers: z.array(siloBootstrapComputerSchema).min(1).max(64),
 }).strict().refine((configuration) => {
-  const names = configuration.workspaces.map(({ name }) => name)
+  const names = configuration.computers.map(({ name }) => name)
   return new Set(names).size === names.length
-}, { message: "Sandbox names must be unique." })
+}, { message: "Computer names must be unique." })
 
 const desktopConfigurationSchema = z.object({
-  startWithSandbox: z.boolean(),
+  startWithComputer: z.boolean(),
   // Reported for VMs whose desktop is built into the image (v4). Read-only: the desktop always starts.
   builtIn: z.boolean().optional(),
 }).strict()
 
-export const setupMachineConfigurationSchema = z.object({
+export const setupComputerConfigurationSchema = z.object({
   id: z.uuid(),
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
   cpus: z.number().int().min(1).max(255),
@@ -48,29 +48,29 @@ export const setupMachineConfigurationSchema = z.object({
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
   runtimeStorageGiB: z.number().int().min(1).max(4_194_303),
   desktop: desktopConfigurationSchema.optional(),
-}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "The two disks together exceed 4,194,303 GiB. Reduce a disk size.", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpus <= workspace.maxCPUs, {
+}).strict().refine((computer) => computer.workspaceStorageGiB + computer.runtimeStorageGiB <= 4_194_303, { message: "The two disks together exceed 4,194,303 GiB. Reduce a disk size.", path: ["workspaceStorageGiB"] }).refine((computer) => computer.cpus <= computer.maxCPUs, {
   message: "cpus must not exceed maxCPUs",
-}).refine((workspace) => workspace.memoryGiB <= workspace.maxMemoryGiB, {
+}).refine((computer) => computer.memoryGiB <= computer.maxMemoryGiB, {
   message: "memoryGiB must not exceed maxMemoryGiB",
 })
 
-export const setupMachineConfigurationRequestSchema = z.object({
+export const setupComputerConfigurationRequestSchema = z.object({
   schemaVersion: z.literal(1),
-  machines: z.array(setupMachineConfigurationSchema).max(64),
+  configurations: z.array(setupComputerConfigurationSchema).max(64),
 }).strict().refine((configuration) => {
-  const names = configuration.machines.map(({ name }) => name.toLowerCase())
+  const names = configuration.configurations.map(({ name }) => name.toLowerCase())
   return new Set(names).size === names.length
-}, { message: "Sandbox names must be unique." }).refine((configuration) => {
-  const ids = configuration.machines.map(({ id }) => id)
+}, { message: "Computer names must be unique." }).refine((configuration) => {
+  const ids = configuration.configurations.map(({ id }) => id)
   return new Set(ids).size === ids.length
-}, { message: "Sandbox IDs must be unique." })
+}, { message: "Computer IDs must be unique." })
 
 const siloBootstrapPhaseSchema = z.enum([
   "welcome",
   "preflight",
   "toolchain",
   "deviceIntegration",
-  "workspaces",
+  "computers",
   "github",
   "identity",
   "complete",
@@ -82,7 +82,7 @@ export const siloBootstrapStateSchema = z.object({
   updatedAt: z.number(),
   lastError: z.string().optional(),
   completedPhases: z.array(siloBootstrapPhaseSchema),
-  workspaceConfigurations: z.array(setupMachineConfigurationSchema).optional(),
+  computerConfigurations: z.array(setupComputerConfigurationSchema).optional(),
   phaseDurations: z.record(z.string(), z.number().nonnegative()),
 }).strict()
 
@@ -92,7 +92,7 @@ export const siloProgressEventSchema = z.object({
   requestId: z.string().trim().min(1),
   phase: z.string().trim().min(1),
   step: z.string().optional(),
-  workspace: z.string().optional(),
+  computer: z.string().optional(),
   revision: z.string().regex(/^[0-9a-f]{64}$/).optional(),
   fraction: z.number().min(0).max(1).optional(),
   message: z.string(),
@@ -122,12 +122,12 @@ export const siloProtocolErrorSchema = z.object({
   code: z.string().min(1),
   message: z.string().min(1),
   recovery: z.string().nullable(),
-  workspace: z.string().nullable(),
+  computer: z.string().nullable(),
   retryable: z.boolean(),
 }).strict()
 
 const githubRepositoryPolicySchema = z.object({
-  workspace: z.string().min(1),
+  computer: z.string().min(1),
   repositoryID: z.number().int(),
   fullName: z.string().min(1),
   ownerID: z.number().int(),
@@ -136,16 +136,16 @@ const githubRepositoryPolicySchema = z.object({
   mode: z.enum(["read-only", "read-write"]),
 }).strict()
 
-export const githubWorkspacePolicySchema = z.object({
-  workspace: z.string().min(1),
+export const githubComputerPolicySchema = z.object({
+  computer: z.string().min(1),
   repositories: z.array(githubRepositoryPolicySchema),
 }).strict().refine((policy) => (
-  policy.repositories.every((repository) => repository.workspace === policy.workspace)
-), { message: "Repository sandboxes must match the sandbox access policy." })
+  policy.repositories.every((repository) => repository.computer === policy.computer)
+), { message: "Repository computers must match the computer access policy." })
 
 export const setupQueueItemIdSchema = z.enum([
-  "workspaceRun",
-  "workspaceVerify",
+  "computerRun",
+  "computerVerify",
   "githubRun",
   "githubVerify",
   "identityRun",
@@ -155,8 +155,8 @@ export const setupQueueItemIdSchema = z.enum([
 
 export type SiloPreflightCheck = z.infer<typeof siloPreflightCheckSchema>
 export type SiloBootstrapConfiguration = z.infer<typeof siloBootstrapConfigurationSchema>
-export type SetupMachineConfiguration = z.infer<typeof setupMachineConfigurationSchema>
-export type SetupMachineConfigurationRequest = z.infer<typeof setupMachineConfigurationRequestSchema>
+export type SetupComputerConfiguration = z.infer<typeof setupComputerConfigurationSchema>
+export type SetupComputerConfigurationRequest = z.infer<typeof setupComputerConfigurationRequestSchema>
 export type SiloProgressEvent = z.infer<typeof siloProgressEventSchema>
 export type SiloBootstrapResult = z.infer<typeof siloBootstrapResultSchema>
 export type SiloProtocolError = z.infer<typeof siloProtocolErrorSchema>

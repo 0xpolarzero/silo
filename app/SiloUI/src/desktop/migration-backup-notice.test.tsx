@@ -17,7 +17,7 @@ function setup(options: PreUpgradeBackupFixtureOptions = {}) {
 describe("migration complete: pre-upgrade backup", () => {
   it("tells the user the backup was kept, how big it is and the date it is deleted, before opening Silo", async () => {
     const { backup, user } = setup()
-    expect(await screen.findByRole("heading", { name: "Your sandboxes were updated" })).toBeVisible()
+    expect(await screen.findByRole("heading", { name: "Your computers were updated" })).toBeVisible()
     expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
     expect(screen.getByRole("heading", { name: "Pre-upgrade backup" })).toBeVisible()
     expect(await screen.findByText("12.40 GiB")).toBeVisible()
@@ -37,7 +37,7 @@ describe("migration complete: pre-upgrade backup", () => {
   it("shows the notice only until it was acknowledged, without measuring on later launches", async () => {
     const { backup } = setup({ noticePending: false })
     expect(await screen.findByText("Normal application")).toBeVisible()
-    expect(screen.queryByRole("heading", { name: "Your sandboxes were updated" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Your computers were updated" })).not.toBeInTheDocument()
     // Opening Silo at every launch must not walk the backup.
     expect(backup.calls).toEqual(["read"])
   })
@@ -64,7 +64,7 @@ describe("migration complete: pre-upgrade backup", () => {
     await waitFor(() => expect(read).toHaveBeenCalled())
     expect(screen.getByText("Opening Silo…")).toBeInTheDocument()
     expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
-    expect(screen.queryByRole("heading", { name: "Your sandboxes were updated" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "Your computers were updated" })).not.toBeInTheDocument()
     await act(async () => finish(null))
     expect(await screen.findByText("Normal application")).toBeVisible()
   })
@@ -105,7 +105,7 @@ describe("migration complete: pre-upgrade backup", () => {
 
   it("keeps the screen when a change is reported while it is open", async () => {
     const { backup, user } = setup()
-    await screen.findByRole("heading", { name: "Your sandboxes were updated" })
+    await screen.findByRole("heading", { name: "Your computers were updated" })
     // Another deletion (the automatic one) reports a change: the notice says so, it does not vanish.
     await act(async () => { await backup.remove() })
     expect(await screen.findByText("The pre-upgrade backup was deleted.")).toBeVisible()
@@ -125,9 +125,9 @@ describe("migration complete: pre-upgrade backup", () => {
 
   it("is not offered while the migration is unfinished or failed", async () => {
     const backup = createFixturePreUpgradeBackup()
-    const migration = { ...createFixtureMigrationBackend(backup), read: async () => ({ status: "running" as const, stage: "Converting sandbox 1 of 2", logs: [], migratedCount: 0, failedCount: 0, totalCount: 2, canContinue: false }) }
+    const migration = { ...createFixtureMigrationBackend(backup), read: async () => ({ status: "running" as const, stage: "Converting computer 1 of 2", logs: [], migratedCount: 0, failedCount: 0, totalCount: 2, canContinue: false }) }
     render(<RuntimeMigrationBoundary backend={migration}><p>Normal application</p></RuntimeMigrationBoundary>)
-    expect(await screen.findByText("Updating your sandboxes")).toBeVisible()
+    expect(await screen.findByText("Updating your computers")).toBeVisible()
     expect(backup.calls).toEqual([])
   })
 })
@@ -148,9 +148,9 @@ describe("migration complete: result of an export or import the upgrade interrup
 
   it("tells the user what became of an interrupted import on the screen about the backup", async () => {
     setupResult("interrupted-import")
-    expect(await screen.findByRole("heading", { name: "Your sandboxes were updated" })).toBeVisible()
+    expect(await screen.findByRole("heading", { name: "Your computers were updated" })).toBeVisible()
     const result = await screen.findByRole("region", { name: "Import interrupted before the upgrade" })
-    expect(result).toHaveTextContent("Silo closed before this import finished. No sandbox was added. Import the file again.")
+    expect(result).toHaveTextContent("Silo closed before this import finished. No computer was added. Import the file again.")
     // Beside the backup, not instead of it.
     expect(screen.getByRole("heading", { name: "Pre-upgrade backup" })).toBeVisible()
     expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
@@ -227,9 +227,9 @@ describe("migration complete: result of an export or import the upgrade interrup
     }
     const backup = createFixturePreUpgradeBackup()
     render(<RuntimeMigrationBoundary backend={createFixtureMigrationBackend(backup, transfer)}><p>Normal application</p></RuntimeMigrationBoundary>)
-    await screen.findByRole("heading", { name: "Your sandboxes were updated" })
+    await screen.findByRole("heading", { name: "Your computers were updated" })
     expect(screen.queryByRole("region", { name: "Import interrupted" })).not.toBeInTheDocument()
-    result = { id: "op-1", operation: "restore", outcome: "failed", title: "Import interrupted", message: "Silo closed before this import finished.", detail: "No sandbox was added. Import the file again." }
+    result = { id: "op-1", operation: "restore", outcome: "failed", title: "Import interrupted", message: "Silo closed before this import finished.", detail: "No computer was added. Import the file again." }
     await act(async () => refresh())
     expect(await screen.findByRole("region", { name: "Import interrupted" })).toBeVisible()
   })
@@ -278,7 +278,7 @@ describe("migration complete: result of an export or import the upgrade interrup
     const transfer = createFixtureUnseenResult("interrupted-import")
     transfer.read = async () => null
     const { user } = setupResult("interrupted-import", {}, transfer)
-    await screen.findByRole("heading", { name: "Your sandboxes were updated" })
+    await screen.findByRole("heading", { name: "Your computers were updated" })
     expect(screen.queryByRole("region", { name: /interrupted/ })).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Open Silo" }))
     expect(await screen.findByText("Normal application")).toBeVisible()

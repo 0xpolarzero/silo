@@ -21,7 +21,7 @@ function message(cause: unknown) {
 }
 
 /**
- * Shown once after a migration that converted every sandbox, before the application: Silo kept the
+ * Shown once after a migration that converted every computer, before the application: Silo kept the
  * previous storage as a backup, how big it is, and the date it deletes it. The application opens at
  * once when there is nothing to report or the backup cannot be read; this never blocks Silo.
  *
@@ -64,7 +64,7 @@ function BackupNotice({ state, result, onContinue }: { state: PreUpgradeBackupSt
       <div className="flex items-start gap-3">
         <CircleCheck aria-hidden="true" className="mt-0.5 size-5 text-emerald-600 dark:text-emerald-400" />
         <div>
-          <h1 className="text-lg font-semibold">Your sandboxes were updated</h1>
+          <h1 className="text-lg font-semibold">Your computers were updated</h1>
           <p className="mt-1 text-sm text-muted-foreground">Silo kept a pre-upgrade backup of their previous storage, in case something looks wrong.</p>
         </div>
       </div>

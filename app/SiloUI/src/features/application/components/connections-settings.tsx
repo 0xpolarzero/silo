@@ -39,7 +39,7 @@ export function ConnectDeviceForm({ connect, authorize, setupKey, onClose }: { s
     <label className="grid gap-1 text-xs">Device address<Input technical autoFocus aria-label="Device address" placeholder="user@device or SSH alias" value={address} disabled={busy} onChange={event => setAddress(event.target.value)} /></label>
     <p className="text-xs text-muted-foreground">Open Silo on that device and enable remote management. Uses your existing SSH keys and configuration.</p>
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-    {error.includes(alreadySaved) && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(async () => { await connect(address.trim(), { replaceAddress: true }); if (mounted.current) onClose() }) }}>Use this address</Button><p className="text-xs text-muted-foreground">Only if that device now uses this address. Its sandboxes and connections stay as they are.</p></div>}
+    {error.includes(alreadySaved) && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(async () => { await connect(address.trim(), { replaceAddress: true }); if (mounted.current) onClose() }) }}>Use this address</Button><p className="text-xs text-muted-foreground">Only if that device now uses this address. Its computers and connections stay as they are.</p></div>}
     {error && !error.includes(alreadySaved) && authorize && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => authorize(address.trim()), "authorize") }}>{operation === "authorize" ? "Opening Terminal…" : "Authorize SSH in Terminal…"}</Button><p className="text-xs text-muted-foreground">Confirm the device’s fingerprint and unlock your SSH key, then connect again.</p></div>}
     {error && !error.includes(alreadySaved) && setupKey && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => setupKey(address.trim()), "setupKey") }}>{operation === "setupKey" ? "Setting up SSH key…" : "Set up Silo SSH key…"}</Button><p className="text-xs text-muted-foreground">Adds Silo’s public SSH key to your account on the other device. You may be asked for its password. Then connect again.</p></div>}
     <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button><Button size="sm" disabled={busy || !address.trim()}>{operation === "connect" ? "Connecting…" : "Connect"}</Button></div>
@@ -126,13 +126,13 @@ function ComputerUseProblems({ source, active }: { source: ApplicationSource; ac
   </section>
 }
 
-function NewSandboxApprovalSetting() {
+function NewComputerApprovalSetting() {
   const { settings, updateSettings } = useSettings()
   if (!useComputerUseBridge()) return null
   return <section aria-label="Computer use" className="grid gap-3">
     <h2 className="text-xs font-medium">Computer use</h2>
     <div className="rounded-lg border p-3">
-      <div className="flex items-center justify-between gap-4"><div><label htmlFor="computer-use-auto-approval" className="text-xs font-medium">Allow agents to use the device without asking in new sandboxes</label><p className="text-xs text-muted-foreground">Claude Code, Codex and similar agents stop asking before using the sandbox’s desktop. Not a security boundary.</p></div><Switch id="computer-use-auto-approval" checked={settings.computerUseAutoApproval} onCheckedChange={enabled => { void updateSettings({ computerUseAutoApproval: enabled }) }} /></div>
+      <div className="flex items-center justify-between gap-4"><div><label htmlFor="computer-use-auto-approval" className="text-xs font-medium">Allow agents to use the device without asking in new computers</label><p className="text-xs text-muted-foreground">Claude Code, Codex and similar agents stop asking before using the computer’s desktop. Not a security boundary.</p></div><Switch id="computer-use-auto-approval" checked={settings.computerUseAutoApproval} onCheckedChange={enabled => { void updateSettings({ computerUseAutoApproval: enabled }) }} /></div>
     </div>
   </section>
 }
@@ -140,7 +140,7 @@ function NewSandboxApprovalSetting() {
 export function ConnectionsSettings({ source, actions, active = true }: { source: ApplicationSource; actions: ApplicationActions; active?: boolean }) {
   return <div className="grid gap-6">
     {actions.connectDevice && <DevicesSection source={source} actions={actions} />}
-    <NewSandboxApprovalSetting />
+    <NewComputerApprovalSetting />
     <ComputerUseProblems source={source} active={active} />
   </div>
 }
@@ -181,11 +181,11 @@ function DevicesSection({ source, actions }: { source: ApplicationSource; action
   return <section aria-label="Devices" className="grid gap-3">
     <h2 className="text-xs font-medium">Devices</h2>
     <div className="grid gap-3 rounded-lg border p-3">
-      <div className="flex items-center justify-between gap-4"><div><label htmlFor="remote-management" className="text-xs font-medium">Allow remote management</label><p className="text-xs text-muted-foreground">Let devices with SSH access to your account manage these sandboxes while Silo is running.</p><p className="text-xs text-muted-foreground">Quit stops local sandboxes and disconnects remote sessions.</p></div><Switch id="remote-management" checked={source.connections?.enabled ?? false} disabled={busy || !source.connections || !actions.setConnectionsEnabled} onCheckedChange={enabled => { void perform("remote-management", () => actions.setConnectionsEnabled!(enabled)) }} /></div>
+      <div className="flex items-center justify-between gap-4"><div><label htmlFor="remote-management" className="text-xs font-medium">Allow remote management</label><p className="text-xs text-muted-foreground">Let devices with SSH access to your account manage these computers while Silo is running.</p><p className="text-xs text-muted-foreground">Quit stops local computers and disconnects remote sessions.</p></div><Switch id="remote-management" checked={source.connections?.enabled ?? false} disabled={busy || !source.connections || !actions.setConnectionsEnabled} onCheckedChange={enabled => { void perform("remote-management", () => actions.setConnectionsEnabled!(enabled)) }} /></div>
       {source.connections?.error && <p role="alert" className="text-xs text-destructive">{source.connections.error}</p>}
       {source.connections?.enabled && <p className="text-xs text-muted-foreground">Enable Remote Login on macOS or the SSH server on Linux so other devices can connect.</p>}
       {source.connections?.enabled && <ManagementAddresses management={source.connections} />}
-      {source.devices?.map(device => <div key={device.id} className="flex items-center justify-between gap-3 border-t pt-3"><div className="min-w-0 [overflow-wrap:anywhere]"><p className="truncate text-xs font-medium" title={device.name}>{device.name}</p><p className="text-xs text-muted-foreground">{device.busy ? "Updating…" : device.connected ? "Connected" : "Offline · last known status"} · {device.address}</p>{device.error && <p className="text-xs text-destructive">{device.error}</p>}<p className="text-xs text-muted-foreground">Removing the connection leaves sandboxes on {device.name} unchanged.</p></div><Button size="xs" variant="ghost" disabled={busy || !removeDevice} aria-label={`Remove connection to ${device.name}`} onClick={() => { if (removeDevice) void perform(`device:${device.id}`, () => removeDevice(device.id)) }}>Remove connection</Button></div>)}
+      {source.devices?.map(device => <div key={device.id} className="flex items-center justify-between gap-3 border-t pt-3"><div className="min-w-0 [overflow-wrap:anywhere]"><p className="truncate text-xs font-medium" title={device.name}>{device.name}</p><p className="text-xs text-muted-foreground">{device.busy ? "Updating…" : device.connected ? "Connected" : "Offline · last known status"} · {device.address}</p>{device.error && <p className="text-xs text-destructive">{device.error}</p>}<p className="text-xs text-muted-foreground">Removing the connection leaves computers on {device.name} unchanged.</p></div><Button size="xs" variant="ghost" disabled={busy || !removeDevice} aria-label={`Remove connection to ${device.name}`} onClick={() => { if (removeDevice) void perform(`device:${device.id}`, () => removeDevice(device.id)) }}>Remove connection</Button></div>)}
       {!connecting && <Button ref={connectButton} size="sm" variant="outline" className="justify-self-start" onClick={() => setConnecting(true)}>Connect device…</Button>}
       {connecting && <ConnectDeviceForm connect={actions.connectDevice} authorize={actions.authorizeDevice} setupKey={actions.setupDeviceKey} onClose={closeConnectionForm} />}
       {source.devicesError && <p role="alert" className="text-xs text-destructive">{source.devicesError}</p>}

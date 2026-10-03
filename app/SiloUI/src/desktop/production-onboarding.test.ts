@@ -8,56 +8,56 @@ import { productionOnboardingSource } from "./production-onboarding"
 
 const application = applicationSourceForScenario("running")
 describe("production onboarding", () => {
-  it("enables Finish after an empty sandbox configuration is saved and verified", () => {
-    const emptyApplication = { ...application, workspaces: [] }
-    const setup = { setupCandidate: { schemaVersion: 1, machines: [] }, setupQueue: [
-      { id: "workspaceRun", status: "succeeded" }, { id: "workspaceVerify", status: "succeeded" },
+  it("enables Finish after an empty computer configuration is saved and verified", () => {
+    const emptyApplication = { ...application, computers: [] }
+    const setup = { setupCandidate: { schemaVersion: 1, configurations: [] }, setupQueue: [
+      { id: "computerRun", status: "succeeded" }, { id: "computerVerify", status: "succeeded" },
     ], setupEvents: [] } as unknown as ProductionSnapshot
     const dependencies = { checks: onboardingScenarios.complete.preflightChecks, retry: vi.fn() }
     const source = productionOnboardingSource(emptyApplication, dependencies, application.preferences, setup)
-    expect(source.machineConfigurations).toEqual([])
+    expect(source.computerConfigurations).toEqual([])
     expect(projectOnboarding(source, "disconnected").finishEnabled).toBe(true)
     const pending = { ...setup, setupQueue: setup.setupQueue.map((item) => ({ ...item, status: "running" as const })) }
     expect(productionOnboardingSource(emptyApplication, dependencies, application.preferences, pending).readyToFinish).toBe(false)
   })
 
-  it("projects only live dependency and machine state", () => {
+  it("projects only live dependency and configuration state", () => {
     const checks = [{ id: "system-os", title: "Supported OS", status: "pass" as const, detail: "macOS", remediation: null }]
     const source = productionOnboardingSource(application, { checks, retry: vi.fn() }, application.preferences)
     expect(source.preflightChecks).toBe(checks)
-    expect(source.machineConfigurations).toEqual(application.workspaces.map(({ machine }) => machine))
-    expect(source.bootstrapResult?.message).toBe("Sandbox configuration verified.")
+    expect(source.computerConfigurations).toEqual(application.computers.map(({ configuration }) => configuration))
+    expect(source.bootstrapResult?.message).toBe("Computer configuration verified.")
     expect(source.bootstrapState.completedPhases).not.toContain("identity")
     expect(source.bootstrapState.completedPhases).not.toContain("github")
     expect(source.readyToFinish).toBe(true)
   })
 
   it("never adopts remote VMs into local setup or counts them as configured", () => {
-    const remote = { ...application.workspaces[0], device: { id: "office", vmId: "remote-vm", name: "Office", address: "owner@office", connected: true }, machine: { ...application.workspaces[0].machine, id: "silo-remote:office:remote-vm", name: "remote-build" } }
-    const source = productionOnboardingSource({ ...application, workspaces: [remote] }, { checks: [], retry: vi.fn() }, application.preferences)
-    expect(source.machineConfigurations).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "remote-build" })]))
+    const remote = { ...application.computers[0], device: { id: "office", computerId: "remote-computer", name: "Office", address: "owner@office", connected: true }, configuration: { ...application.computers[0].configuration, id: "silo-remote:office:remote-computer", name: "remote-build" } }
+    const source = productionOnboardingSource({ ...application, computers: [remote] }, { checks: [], retry: vi.fn() }, application.preferences)
+    expect(source.computerConfigurations).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "remote-build" })]))
     expect(source.readyToFinish).toBe(false)
-    const mixed = productionOnboardingSource({ ...application, workspaces: [...application.workspaces, remote] }, { checks: [], retry: vi.fn() }, application.preferences)
-    expect(mixed.machineConfigurations).toEqual(application.workspaces.map(({ machine }) => machine))
+    const mixed = productionOnboardingSource({ ...application, computers: [...application.computers, remote] }, { checks: [], retry: vi.fn() }, application.preferences)
+    expect(mixed.computerConfigurations).toEqual(application.computers.map(({ configuration }) => configuration))
   })
 
   it("offers only dev on a fresh install without claiming it has been created", () => {
-    const source = productionOnboardingSource({ ...application, workspaces: [] }, { checks: [], retry: vi.fn() }, application.preferences)
-    expect(source.machineConfigurations).toEqual([expect.objectContaining({ name: "dev", cpus: 8, memoryGiB: 32, workspaceStorageGiB: 120, runtimeStorageGiB: 100 })])
+    const source = productionOnboardingSource({ ...application, computers: [] }, { checks: [], retry: vi.fn() }, application.preferences)
+    expect(source.computerConfigurations).toEqual([expect.objectContaining({ name: "dev", cpus: 8, memoryGiB: 32, workspaceStorageGiB: 120, runtimeStorageGiB: 100 })])
     expect(source.readyToFinish).toBe(false)
     expect(source.bootstrapResult).toBeNull()
     expect(source.progressEvents).toEqual([])
   })
 
   it("enables Finish after a real VM is configured without inventing progress events", () => {
-    const native = { ...application, workspaces: [application.workspaces[0]] }
+    const native = { ...application, computers: [application.computers[0]] }
     const dependencies = { checks: onboardingScenarios.complete.preflightChecks, retry: vi.fn() }
     const current = productionOnboardingSource(native, dependencies, application.preferences)
     const view = projectOnboarding(current, "disconnected")
     expect(view.finishEnabled).toBe(true)
-    expect(view.workspaceProgress.workspaces[0].status).toBe("ready")
-    expect(view.workspaceProgress.completedOperations).toBe(2)
-    expect(view.workspaceProgress.totalOperations).toBe(2)
+    expect(view.computerProgress.computers[0].status).toBe("ready")
+    expect(view.computerProgress.completedOperations).toBe(2)
+    expect(view.computerProgress.totalOperations).toBe(2)
     expect(current.progressEvents).toEqual([])
     expect(projectOnboarding(productionOnboardingSource(null, dependencies, application.preferences), "disconnected").finishEnabled).toBe(false)
   })
@@ -66,48 +66,48 @@ describe("production onboarding", () => {
     const checks = [{ id: "runtime-microsandbox", title: "MicroSandbox", status: "failed" as const, detail: "Bundled runtime missing", remediation: null }]
     const source = productionOnboardingSource(null, { checks, retry: vi.fn() }, application.preferences)
     expect(source.preflightChecks).toBe(checks)
-    expect(source.machineConfigurations.map(({ name }) => name)).toEqual(["dev"])
+    expect(source.computerConfigurations.map(({ name }) => name)).toEqual(["dev"])
     expect(source.bootstrapResult).toBeNull()
   })
 
-  it("names why Finish is unavailable when a created sandbox failed, is unconfirmed or is starting", () => {
+  it("names why Finish is unavailable when a created computer failed, is unconfirmed or is starting", () => {
     const dependencies = { checks: onboardingScenarios.complete.preflightChecks, retry: vi.fn() }
-    const [dev, other] = application.workspaces
-    const withDev = (changes: Partial<typeof dev>) => ({ ...application, workspaces: [{ ...dev, ...changes }, other] })
+    const [dev, other] = application.computers
+    const withDev = (changes: Partial<typeof dev>) => ({ ...application, computers: [{ ...dev, ...changes }, other] })
     const failed = productionOnboardingSource(withDev({ state: "failed", stateDetail: "Failed", lifecycleFailure: "Start failed: not enough memory" }), dependencies, application.preferences)
     expect(failed.readyToFinish).toBe(false)
-    expect(failed.finishBlocker).toEqual({ workspace: dev.machine.name, action: "start", message: `${dev.machine.name} is not running: Start failed: not enough memory. Start it to finish setup.` })
+    expect(failed.finishBlocker).toEqual({ computer: dev.configuration.name, action: "start", message: `${dev.configuration.name} is not running: Start failed: not enough memory. Start it to finish setup.` })
     const stale = productionOnboardingSource(withDev({ freshness: "stale" }), dependencies, application.preferences)
-    expect(stale.finishBlocker).toMatchObject({ workspace: dev.machine.name, action: "refresh" })
+    expect(stale.finishBlocker).toMatchObject({ computer: dev.configuration.name, action: "refresh" })
     const starting = productionOnboardingSource(withDev({ state: "starting" }), dependencies, application.preferences)
-    expect(starting.finishBlocker).toMatchObject({ workspace: dev.machine.name, action: null, message: `Waiting for ${dev.machine.name} to start…` })
+    expect(starting.finishBlocker).toMatchObject({ computer: dev.configuration.name, action: null, message: `Waiting for ${dev.configuration.name} to start…` })
     expect(projectOnboarding(failed, "disconnected").finishBlocker).toEqual(failed.finishBlocker)
     // Nothing blocks a configured device, and a running setup explains itself.
     expect(productionOnboardingSource(application, dependencies, application.preferences).finishBlocker).toBeNull()
-    const applying = { ...withDev({ state: "starting" }), sandboxConfigurationOperation: { id: "a", status: "applying", candidate: { schemaVersion: 1, machines: [] }, progressEvents: [], result: null, error: null } } as typeof application
+    const applying = { ...withDev({ state: "starting" }), computerConfigurationOperation: { id: "a", status: "applying", candidate: { schemaVersion: 1, configurations: [] }, progressEvents: [], result: null, error: null } } as typeof application
     expect(productionOnboardingSource(applying, dependencies, application.preferences).finishBlocker).toBeNull()
   })
 
   it("seeds from real local state, and marks the saved list or defaults as a placeholder before it", () => {
     const dependencies = { checks: [], retry: vi.fn() }
-    const machines = application.workspaces.map(({ machine }) => machine)
+    const configurations = application.computers.map(({ configuration }) => configuration)
     const snapshot = (extra: Partial<ProductionSnapshot>) => ({ setupQueue: [], setupEvents: [], error: null, ...extra }) as unknown as ProductionSnapshot
     const loaded = productionOnboardingSource(application, dependencies, application.preferences, snapshot({}))
-    expect(loaded).toMatchObject({ machinesAuthoritative: true, existingMachines: machines, machineConfigurations: machines })
+    expect(loaded).toMatchObject({ configurationsAuthoritative: true, existingConfigurations: configurations, computerConfigurations: configurations })
 
-    const beforeLoad = productionOnboardingSource(null, dependencies, application.preferences, snapshot({ savedMachines: [machines[1]] }))
-    expect(beforeLoad).toMatchObject({ machinesAuthoritative: false, existingMachines: [], machineConfigurations: [machines[1]] })
+    const beforeLoad = productionOnboardingSource(null, dependencies, application.preferences, snapshot({ savedConfigurations: [configurations[1]] }))
+    expect(beforeLoad).toMatchObject({ configurationsAuthoritative: false, existingConfigurations: [], computerConfigurations: [configurations[1]] })
 
-    // While this device's sandboxes update, the shell has no local rows: not an empty device.
-    const shell = { ...application, workspaces: [] }
+    // While this device's computers update, the shell has no local rows: not an empty device.
+    const shell = { ...application, computers: [] }
     const updating = productionOnboardingSource(shell, dependencies, application.preferences, snapshot({ localUpdating: true }))
-    expect(updating.machinesAuthoritative).toBe(false)
+    expect(updating.configurationsAuthoritative).toBe(false)
     const unreadable = productionOnboardingSource(shell, dependencies, application.preferences, snapshot({ error: "Silo could not read application state" }))
-    expect(unreadable.machinesAuthoritative).toBe(false)
-    expect(unreadable.machineConfigurations.map(({ name }) => name)).toEqual(["dev"])
+    expect(unreadable.configurationsAuthoritative).toBe(false)
+    expect(unreadable.computerConfigurations.map(({ name }) => name)).toEqual(["dev"])
 
-    // A loaded device with no sandboxes offers the default, as setup of this device.
-    expect(productionOnboardingSource(shell, dependencies, application.preferences, snapshot({})).machinesAuthoritative).toBe(true)
+    // A loaded device with no computers offers the default, as setup of this device.
+    expect(productionOnboardingSource(shell, dependencies, application.preferences, snapshot({})).configurationsAuthoritative).toBe(true)
   })
 
 })

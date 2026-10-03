@@ -49,9 +49,9 @@ function message(cause: unknown) {
 }
 
 function issueUrl(state: RuntimeMigrationState) {
-  const title = "Silo sandbox migration failed"
+  const title = "Silo computer migration failed"
   const body = [
-    "Silo sandbox migration failed while upgrading the runtime.",
+    "Silo computer migration failed while upgrading the runtime.",
     `Stage: ${state.stage}`,
     `Migrated: ${state.migratedCount} of ${state.totalCount}; failed: ${state.failedCount}.`,
     "Please describe what happened. Attach logs only after checking them for private data.",
@@ -124,8 +124,8 @@ export function RuntimeMigrationBoundary({ children, backend = nativeBackend }: 
       <div className="flex items-start gap-3">
         {failed || error ? <AlertCircle aria-hidden="true" className="mt-0.5 size-5 text-destructive" /> : <LoaderCircle aria-hidden="true" className="mt-0.5 size-5 animate-spin motion-reduce:animate-none" />}
         <div>
-          <h1 className="text-lg font-semibold">{failed ? "Some sandboxes could not be migrated" : error ? "Migration status is unavailable" : "Updating your sandboxes"}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{state?.stage ?? "Checking saved sandboxes…"}</p>
+          <h1 className="text-lg font-semibold">{failed ? "Some computers could not be migrated" : error ? "Migration status is unavailable" : "Updating your computers"}</h1>
+          <p className="mt-1 text-sm text-muted-foreground">{state?.stage ?? "Checking saved computers…"}</p>
         </div>
       </div>
       {state && <p role="status" className="text-xs text-muted-foreground">{state.migratedCount} of {state.totalCount} migrated{state.failedCount ? ` · ${state.failedCount} failed` : ""}</p>}
@@ -136,12 +136,12 @@ export function RuntimeMigrationBoundary({ children, backend = nativeBackend }: 
         {showLogs && <div className="p-3"><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px]" aria-live="polite">{state.logs.length ? state.logs.join("\n") : "Waiting for migration output…"}</pre>{state.logPath && <p className="mt-2 break-all text-[11px] text-muted-foreground">Full log: {state.logPath}</p>}</div>}
       </section>}
       {failed && state && <div className="space-y-3 rounded-md border border-amber-500/30 bg-amber-500/[.05] p-3 text-xs">
-        <p>Review the logs and retry. You can back up your work yourself before continuing. Continuing leaves unmigrated originals in place; affected sandboxes may be unavailable in the new runtime.</p>
-        <label className="flex items-start gap-2"><input type="checkbox" className="mt-0.5" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} /><span>I understand that failed sandboxes have not been converted and will remain unavailable until recovered.</span></label>
+        <p>Review the logs and retry. You can back up your work yourself before continuing. Continuing leaves unmigrated originals in place; affected computers may be unavailable in the new runtime.</p>
+        <label className="flex items-start gap-2"><input type="checkbox" className="mt-0.5" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} /><span>I understand that failed computers have not been converted and will remain unavailable until recovered.</span></label>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" disabled={busy} onClick={() => void run(backend.retry, true)}>Retry migration</Button>
           {issue && <Button size="sm" variant="outline" asChild><a href={issue} target="_blank" rel="noopener noreferrer">Prepare GitHub issue</a></Button>}
-          <Button size="sm" variant="outline" disabled={busy || !acknowledged || !state.canContinue} onClick={() => void run(backend.continueAfterFailure)}>Continue with available sandboxes</Button>
+          <Button size="sm" variant="outline" disabled={busy || !acknowledged || !state.canContinue} onClick={() => void run(backend.continueAfterFailure)}>Continue with available computers</Button>
         </div>
       </div>}
     </main>

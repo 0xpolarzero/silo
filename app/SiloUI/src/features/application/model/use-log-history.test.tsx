@@ -5,10 +5,10 @@ import { fixtureLogPage, type LogPage, type LogQuery } from "./logs"
 import { useLogHistory } from "./use-log-history"
 
 function fixture() {
-  const workspace = structuredClone(applicationSourceForScenario("running").workspaces[0])
-  workspace.logs = ["10", "09", "08", "07"].map(hour => ({ occurredAt: `2026-09-18T${hour}:00:00Z`, line: `record ${hour}` }))
-  const loader = vi.fn(async (request: LogQuery) => fixtureLogPage(workspace, { ...request, limit: 2 }))
-  return { workspace, loader, options: { workspaces: [workspace], loader, active: true, query: "", source: "", since: "", until: "", invalidRange: false } }
+  const computer = structuredClone(applicationSourceForScenario("running").computers[0])
+  computer.logs = ["10", "09", "08", "07"].map(hour => ({ occurredAt: `2026-09-18T${hour}:00:00Z`, line: `record ${hour}` }))
+  const loader = vi.fn(async (request: LogQuery) => fixtureLogPage(computer, { ...request, limit: 2 }))
+  return { computer, loader, options: { computers: [computer], loader, active: true, query: "", source: "", since: "", until: "", invalidRange: false } }
 }
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -19,23 +19,23 @@ function deferred<T>() {
 afterEach(() => vi.useRealTimers())
 
 describe("cached log history", () => {
-  it.each([false, true])("names the owning devices for equally named sandbox failures (older page: %s)", async older => {
-    const { options, workspace } = fixture()
-    const remote = { ...workspace, machine: { ...workspace.machine, id: "remote" }, device: { id: "office", name: "Office Mac", address: "owner@office", connected: true, vmId: "vm-1" } }
-    options.workspaces = [workspace, remote]
+  it.each([false, true])("names the owning devices for equally named computer failures (older page: %s)", async older => {
+    const { options, computer } = fixture()
+    const remote = { ...computer, configuration: { ...computer.configuration, id: "remote" }, device: { id: "office", name: "Office Mac", address: "owner@office", connected: true, computerId: "vm-1" } }
+    options.computers = [computer, remote]
     let fail = !older
     options.loader = vi.fn(async request => {
       if (fail) throw new Error("Connection lost")
-      return fixtureLogPage(request.deviceId ? remote : workspace, { ...request, limit: 2 })
+      return fixtureLogPage(request.deviceId ? remote : computer, { ...request, limit: 2 })
     })
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     if (older) { fail = true; await act(() => view.result.current.loadOlder()) }
-    expect(view.result.current.error).toBe(`${workspace.machine.name} (This device): Connection lost; ${workspace.machine.name} (Office Mac): Connection lost`)
+    expect(view.result.current.error).toBe(`${computer.configuration.name} (This device): Connection lost; ${computer.configuration.name} (Office Mac): Connection lost`)
   })
 
   it.each([false, true])("preserves a structured failure message and retries the failed read (older page: %s)", async older => {
-    const { options, workspace, loader } = fixture()
+    const { options, computer, loader } = fixture()
     const message = "The connection was lost. Reconnect this device, then retry."
     if (!older) loader.mockRejectedValueOnce({ code: "internal", message })
     const view = renderHook(() => useLogHistory(options))
@@ -44,36 +44,36 @@ describe("cached log history", () => {
       loader.mockRejectedValueOnce({ code: "internal", message })
       await act(() => view.result.current.loadOlder())
     }
-    expect(view.result.current.error).toBe(`${workspace.machine.name}: ${message}`)
+    expect(view.result.current.error).toBe(`${computer.configuration.name}: ${message}`)
     await act(() => view.result.current.retry())
     expect(view.result.current.error).toBe("")
     expect(view.result.current.rows).toHaveLength(older ? 4 : 2)
   })
 
-  it("does not reorder log entries when workspace presentation refreshes", async () => {
-    const { options, workspace } = fixture()
-    const page = fixtureLogPage(workspace, { sandboxId: workspace.machine.id })
+  it("does not reorder log entries when computer presentation refreshes", async () => {
+    const { options, computer } = fixture()
+    const page = fixtureLogPage(computer, { computerId: computer.configuration.id })
     const reads = vi.fn(() => page.entries[0].occurredAt)
     const occurredAt = page.entries[0].occurredAt
     reads.mockImplementation(() => occurredAt)
     Object.defineProperty(page.entries[0], "occurredAt", { get: reads })
     options.loader = vi.fn(async () => page)
-    const view = renderHook(({ workspaces }) => useLogHistory({ ...options, workspaces }), { initialProps: { workspaces: [workspace] } })
+    const view = renderHook(({ computers }) => useLogHistory({ ...options, computers }), { initialProps: { computers: [computer] } })
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     reads.mockClear()
-    const renamed = { ...workspace, machine: { ...workspace.machine, name: "Renamed sandbox" } }
-    view.rerender({ workspaces: [renamed] })
-    expect(view.result.current.rows[0].workspace.machine.name).toBe("Renamed sandbox")
+    const renamed = { ...computer, configuration: { ...computer.configuration, name: "Renamed computer" } }
+    view.rerender({ computers: [renamed] })
+    expect(view.result.current.rows[0].computer.configuration.name).toBe("Renamed computer")
     expect(reads).not.toHaveBeenCalled()
     expect(options.loader).toHaveBeenCalledOnce()
   })
 
   it("pages through 50,000 records while retaining at most 5,000, including across navigation", async () => {
-    const { options, workspace } = fixture()
+    const { options, computer } = fixture()
     options.loader = vi.fn(async request => {
       const offset = Number(request.cursor ?? 0)
       return {
-        entries: Array.from({ length: Math.min(200, 50_000 - offset) }, (_, index) => ({ id: String(offset + index), line: `record ${offset + index}`, occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), sandboxId: workspace.machine.id, deviceId: "local", source: "output" })),
+        entries: Array.from({ length: Math.min(200, 50_000 - offset) }, (_, index) => ({ id: String(offset + index), line: `record ${offset + index}`, occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), computerId: computer.configuration.id, deviceId: "local", source: "output" })),
         nextCursor: offset + 200 < 50_000 ? String(offset + 200) : null,
         totalMatches: 50_000, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
       }
@@ -89,7 +89,7 @@ describe("cached log history", () => {
       if (page === 24) {
         act(() => {
           view.result.current.setScrollTop(5000 * 52 - 520)
-          view.result.current.setExpandedRows(() => new Map([[JSON.stringify(["local", workspace.machine.id, "0"]), 172]]))
+          view.result.current.setExpandedRows(() => new Map([[JSON.stringify(["local", computer.configuration.id, "0"]), 172]]))
         })
       }
       if (page === 25) {
@@ -113,9 +113,9 @@ describe("cached log history", () => {
   })
 
   it("bounds retained log text before reaching the record limit", async () => {
-    const { options, workspace } = fixture()
-    workspace.logs = Array.from({ length: 100 }, (_, index) => ({ line: "x".repeat(64 * 1024), occurredAt: new Date(1700000000000 + index * 1000).toISOString() }))
-    options.loader = vi.fn(async request => fixtureLogPage(workspace, { ...request, limit: 10 }))
+    const { options, computer } = fixture()
+    computer.logs = Array.from({ length: 100 }, (_, index) => ({ line: "x".repeat(64 * 1024), occurredAt: new Date(1700000000000 + index * 1000).toISOString() }))
+    options.loader = vi.fn(async request => fixtureLogPage(computer, { ...request, limit: 10 }))
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     const seen = new Set<string>()
@@ -129,15 +129,15 @@ describe("cached log history", () => {
   })
 
   it.each([false, true])("keeps quiet-owner records buffered while a busy owner's bounded window advances (timestamp ties: %s)", async sameTime => {
-    const { options, workspace } = fixture()
-    const quiet = { ...workspace, machine: { ...workspace.machine, id: "quiet" } }
-    options.workspaces = [workspace, quiet]
+    const { options, computer } = fixture()
+    const quiet = { ...computer, configuration: { ...computer.configuration, id: "quiet" } }
+    options.computers = [computer, quiet]
     options.loader = vi.fn(async request => {
       const offset = Number(request.cursor ?? 0)
-      const quietOwner = request.sandboxId === "quiet"
+      const quietOwner = request.computerId === "quiet"
       const total = quietOwner ? 1000 : 6000
       return {
-        entries: Array.from({ length: Math.min(200, total - offset) }, (_, index) => ({ id: sameTime ? String(7000 - offset - index - (quietOwner ? 6000 : 0)).padStart(6, "0") : `${request.sandboxId}:${offset + index}`, line: "record", occurredAt: new Date(1700000000000 - (sameTime ? 0 : offset + index + (quietOwner ? 6000 : 0)) * 1000).toISOString(), sandboxId: request.sandboxId, deviceId: "local", source: "output" })),
+        entries: Array.from({ length: Math.min(200, total - offset) }, (_, index) => ({ id: sameTime ? String(7000 - offset - index - (quietOwner ? 6000 : 0)).padStart(6, "0") : `${request.computerId}:${offset + index}`, line: "record", occurredAt: new Date(1700000000000 - (sameTime ? 0 : offset + index + (quietOwner ? 6000 : 0)) * 1000).toISOString(), computerId: request.computerId, deviceId: "local", source: "output" })),
         nextCursor: offset + 200 < total ? String(offset + 200) : null,
         totalMatches: total, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
       }
@@ -149,18 +149,18 @@ describe("cached log history", () => {
       await act(() => view.result.current.loadOlder())
       expect(view.result.current.results.reduce((sum, result) => sum + result.page.entries.length, 0)).toBeLessThanOrEqual(5000)
       for (const { entry } of view.result.current.rows) seen.add(entry.id)
-      if (page < 28) expect(options.loader.mock.calls.filter(([request]) => request.sandboxId === "quiet")).toHaveLength(1)
+      if (page < 28) expect(options.loader.mock.calls.filter(([request]) => request.computerId === "quiet")).toHaveLength(1)
     }
     expect(view.result.current.hasOlder).toBe(false)
     expect(seen.size).toBe(7000)
   })
 
   it("rejects a cursor cycle after its original records have left the window", async () => {
-    const { options, workspace } = fixture()
+    const { options, computer } = fixture()
     options.loader = vi.fn(async request => {
       const offset = Number(request.cursor ?? 0)
       return {
-        entries: [{ id: String(offset), line: "record", occurredAt: new Date(1700000000000 - offset * 1000).toISOString(), sandboxId: workspace.machine.id, deviceId: "local", source: "output" }],
+        entries: [{ id: String(offset), line: "record", occurredAt: new Date(1700000000000 - offset * 1000).toISOString(), computerId: computer.configuration.id, deviceId: "local", source: "output" }],
         nextCursor: String(offset + 1), totalMatches: 10_000, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
       }
     })
@@ -168,11 +168,11 @@ describe("cached log history", () => {
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     options.loader.mockImplementation(async request => {
       const offset = Number(request.cursor ?? 0)
-      return { ...fixtureLogPage(workspace, request), entries: Array.from({ length: 200 }, (_, index) => ({ id: String(offset + index), line: "record", occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), sandboxId: workspace.machine.id, deviceId: "local", source: "output" })), nextCursor: String(offset + 200) }
+      return { ...fixtureLogPage(computer, request), entries: Array.from({ length: 200 }, (_, index) => ({ id: String(offset + index), line: "record", occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), computerId: computer.configuration.id, deviceId: "local", source: "output" })), nextCursor: String(offset + 200) }
     })
     for (let page = 0; page < 70; page++) await act(() => view.result.current.loadOlder())
     expect(view.result.current.rows.some(row => row.entry.id === "0")).toBe(false)
-    const cycle = { ...fixtureLogPage(workspace, { sandboxId: workspace.machine.id }), entries: [{ id: "0", line: "old cycle", occurredAt: new Date(1700000000000).toISOString(), sandboxId: workspace.machine.id, deviceId: "local", source: "output" }], nextCursor: "1" }
+    const cycle = { ...fixtureLogPage(computer, { computerId: computer.configuration.id }), entries: [{ id: "0", line: "old cycle", occurredAt: new Date(1700000000000).toISOString(), computerId: computer.configuration.id, deviceId: "local", source: "output" }], nextCursor: "1" }
     options.loader.mockResolvedValueOnce(cycle)
     await act(() => view.result.current.loadOlder())
     expect(view.result.current.hasOlder).toBe(false)
@@ -180,8 +180,8 @@ describe("cached log history", () => {
   })
 
   it("discards a single oversized record and retains the query and older cursor", async () => {
-    const { options, workspace } = fixture()
-    const page = fixtureLogPage(workspace, { sandboxId: workspace.machine.id, limit: 2 })
+    const { options, computer } = fixture()
+    const page = fixtureLogPage(computer, { computerId: computer.configuration.id, limit: 2 })
     page.entries[0].line = "x".repeat(4 * 1024 * 1024)
     options.loader = vi.fn(async () => page)
     const view = renderHook(() => useLogHistory(options))
@@ -215,7 +215,7 @@ describe("cached log history", () => {
   })
 
   it("deduplicates an unfinished initial request across unmount and remount", async () => {
-    const { options, workspace } = fixture()
+    const { options, computer } = fixture()
     const pending = deferred<LogPage>()
     options.loader = vi.fn(() => pending.promise)
     const first = renderHook(() => useLogHistory(options))
@@ -223,18 +223,18 @@ describe("cached log history", () => {
     first.unmount()
     const second = renderHook(() => useLogHistory(options))
     expect(options.loader).toHaveBeenCalledTimes(1)
-    await act(async () => pending.resolve(fixtureLogPage(workspace, { sandboxId: workspace.machine.id })))
+    await act(async () => pending.resolve(fixtureLogPage(computer, { computerId: computer.configuration.id })))
     expect(second.result.current.rows).toHaveLength(4)
   })
 
   it("caches filters independently and ignores late responses from a previous query", async () => {
-    const { options, workspace } = fixture()
+    const { options, computer } = fixture()
     const pending = deferred<LogPage>()
-    options.loader = vi.fn(request => request.query === "slow" ? pending.promise : Promise.resolve(fixtureLogPage(workspace, request)))
+    options.loader = vi.fn(request => request.query === "slow" ? pending.promise : Promise.resolve(fixtureLogPage(computer, request)))
     const view = renderHook(({ query }) => useLogHistory({ ...options, query }), { initialProps: { query: "slow" } })
     view.rerender({ query: "record 08" })
     await waitFor(() => expect(view.result.current.rows).toHaveLength(1))
-    await act(async () => pending.resolve(fixtureLogPage(workspace, { sandboxId: workspace.machine.id })))
+    await act(async () => pending.resolve(fixtureLogPage(computer, { computerId: computer.configuration.id })))
     expect(view.result.current.rows[0].entry.line).toBe("record 08")
     view.rerender({ query: "slow" })
     expect(view.result.current.rows).toHaveLength(4)
@@ -242,7 +242,7 @@ describe("cached log history", () => {
   })
 
   it("keeps loaded records visible during refresh and does not refresh on activation", async () => {
-    const { options, workspace, loader } = fixture()
+    const { options, computer, loader } = fixture()
     const view = renderHook(({ active }) => useLogHistory({ ...options, active }), { initialProps: { active: true } })
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     view.rerender({ active: false })
@@ -256,38 +256,38 @@ describe("cached log history", () => {
     expect(view.result.current.rows).toHaveLength(2)
     expect(view.result.current.busy).toBe(true)
     expect(view.result.current.scrollTop).toBe(520)
-    await act(async () => { pending.resolve(fixtureLogPage(workspace, { sandboxId: workspace.machine.id })); await refresh })
+    await act(async () => { pending.resolve(fixtureLogPage(computer, { computerId: computer.configuration.id })); await refresh })
     expect(view.result.current.rows).toHaveLength(4)
     expect(view.result.current.scrollTop).toBe(0)
   })
 
   it("retains healthy owners and successful older pages while retrying only a failed older cursor", async () => {
-    const { options, workspace } = fixture()
-    const remote = { ...workspace, machine: { ...workspace.machine, id: "remote", name: "remote sandbox" } }
+    const { options, computer } = fixture()
+    const remote = { ...computer, configuration: { ...computer.configuration, id: "remote", name: "remote computer" } }
     let fail = true
-    options.workspaces = [workspace, remote]
+    options.computers = [computer, remote]
     options.loader = vi.fn(async request => {
-      if (request.sandboxId === "remote" && request.cursor && fail) throw new Error("Offline")
-      return fixtureLogPage(request.sandboxId === "remote" ? remote : workspace, { ...request, limit: 2 })
+      if (request.computerId === "remote" && request.cursor && fail) throw new Error("Offline")
+      return fixtureLogPage(request.computerId === "remote" ? remote : computer, { ...request, limit: 2 })
     })
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     await act(() => view.result.current.loadOlder())
     expect(view.result.current.results.map(result => result.page.entries.length)).toEqual([4, 2])
-    expect(view.result.current.error).toContain("remote sandbox: Offline")
+    expect(view.result.current.error).toContain("remote computer: Offline")
     fail = false
     await act(() => view.result.current.retry())
     expect(options.loader).toHaveBeenCalledTimes(5)
-    expect(options.loader).toHaveBeenLastCalledWith(expect.objectContaining({ sandboxId: "remote", cursor: "2" }))
+    expect(options.loader).toHaveBeenLastCalledWith(expect.objectContaining({ computerId: "remote", cursor: "2" }))
     expect(view.result.current.rows).toHaveLength(8)
     expect(view.result.current.error).toBe("")
   })
 
   it("buffers older quiet-owner records until all unfinished owners reach them", async () => {
-    const { options, workspace } = fixture()
-    const quiet = { ...workspace, machine: { ...workspace.machine, id: "quiet" }, logs: [{ occurredAt: "2026-09-18T06:00:00Z", line: "quiet 06" }] }
-    options.workspaces = [workspace, quiet]
-    options.loader = vi.fn(async request => fixtureLogPage(request.sandboxId === "quiet" ? quiet : workspace, { ...request, limit: 2 }))
+    const { options, computer } = fixture()
+    const quiet = { ...computer, configuration: { ...computer.configuration, id: "quiet" }, logs: [{ occurredAt: "2026-09-18T06:00:00Z", line: "quiet 06" }] }
+    options.computers = [computer, quiet]
+    options.loader = vi.fn(async request => fixtureLogPage(request.computerId === "quiet" ? quiet : computer, { ...request, limit: 2 }))
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     expect(view.result.current.rows.map(row => row.entry.line)).toEqual(["record 10", "record 09"])
@@ -296,18 +296,18 @@ describe("cached log history", () => {
   })
 
   it("preserves loaded history, scroll and an unavailable owner's error when later paging succeeds", async () => {
-    const { options, workspace } = fixture()
-    const offline = { ...workspace, machine: { ...workspace.machine, id: "offline", name: "offline sandbox" } }
-    options.workspaces = [workspace, offline]
+    const { options, computer } = fixture()
+    const offline = { ...computer, configuration: { ...computer.configuration, id: "offline", name: "offline computer" } }
+    options.computers = [computer, offline]
     options.loader = vi.fn(async request => {
-      if (request.sandboxId === "offline") throw new Error("Disconnected")
-      return fixtureLogPage(workspace, { ...request, limit: 2 })
+      if (request.computerId === "offline") throw new Error("Disconnected")
+      return fixtureLogPage(computer, { ...request, limit: 2 })
     })
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     await act(() => view.result.current.loadOlder())
     expect(view.result.current.rows).toHaveLength(4)
-    expect(view.result.current.error).toContain("offline sandbox: Disconnected")
+    expect(view.result.current.error).toContain("offline computer: Disconnected")
     act(() => view.result.current.setScrollTop(100))
     options.loader.mockRejectedValue(new Error("All disconnected"))
     await act(() => view.result.current.refresh())
@@ -317,7 +317,7 @@ describe("cached log history", () => {
   })
 
   it("deduplicates concurrent paging and stops a repeated cursor", async () => {
-    const { options, workspace, loader } = fixture()
+    const { options, computer, loader } = fixture()
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     const pending = deferred<LogPage>()
@@ -325,7 +325,7 @@ describe("cached log history", () => {
     let older!: Promise<void>
     act(() => { older = view.result.current.loadOlder(); void view.result.current.loadOlder() })
     expect(loader).toHaveBeenCalledTimes(2)
-    await act(async () => { pending.resolve({ ...fixtureLogPage(workspace, { sandboxId: workspace.machine.id, cursor: "2" }), nextCursor: "2" }); await older })
+    await act(async () => { pending.resolve({ ...fixtureLogPage(computer, { computerId: computer.configuration.id, cursor: "2" }), nextCursor: "2" }); await older })
     expect(view.result.current.rows).toHaveLength(4)
     expect(view.result.current.hasOlder).toBe(false)
     expect(view.result.current.error).toContain("did not advance")
@@ -334,10 +334,10 @@ describe("cached log history", () => {
   })
 
   it("refreshes on Retry when a new cursor adds no unique records", async () => {
-    const { options, workspace, loader } = fixture()
+    const { options, computer, loader } = fixture()
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
-    const firstPage = fixtureLogPage(workspace, { sandboxId: workspace.machine.id, limit: 2 })
+    const firstPage = fixtureLogPage(computer, { computerId: computer.configuration.id, limit: 2 })
     loader.mockResolvedValueOnce({ ...firstPage, nextCursor: "different-cursor" })
 
     await act(() => view.result.current.loadOlder())
@@ -346,7 +346,7 @@ describe("cached log history", () => {
     expect(view.result.current.rows).toHaveLength(2)
     expect(view.result.current.hasOlder).toBe(false)
     expect(view.result.current.error).toContain("Log history did not advance. Refresh to continue.")
-    loader.mockResolvedValueOnce(fixtureLogPage(workspace, { sandboxId: workspace.machine.id }))
+    loader.mockResolvedValueOnce(fixtureLogPage(computer, { computerId: computer.configuration.id }))
 
     await act(() => view.result.current.retry())
 
@@ -418,8 +418,8 @@ describe("cached log history", () => {
   })
 
   it("bounds the combined text of inactive histories", async () => {
-    const { options, workspace, loader } = fixture()
-    workspace.logs = Array.from({ length: 40 }, (_, index) => ({ line: "x".repeat(64 * 1024), occurredAt: new Date(1700000000000 + index * 1000).toISOString() }))
+    const { options, computer, loader } = fixture()
+    computer.logs = Array.from({ length: 40 }, (_, index) => ({ line: "x".repeat(64 * 1024), occurredAt: new Date(1700000000000 + index * 1000).toISOString() }))
     const first = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(first.result.current.ready).toBe(true))
     for (let page = 1; page < 20; page++) await act(() => first.result.current.loadOlder())

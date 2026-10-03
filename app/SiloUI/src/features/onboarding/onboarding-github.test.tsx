@@ -11,8 +11,8 @@ import { onboardingScenarios, repositoryFixtures } from "@/fixtures/scenarios"
 
 function renderScenario(name: keyof typeof onboardingScenarios = "running", githubState?: GitHubConnectionState) {
   return render(<OnboardingPreview source={onboardingScenarios[name]} initialGitHubConnectionState={githubState} repositoryOptions={repositoryFixtures} actions={{
-    saveMachineConfiguration: vi.fn(),
-    retryWorkspaceSetup: vi.fn(),
+    saveComputerConfiguration: vi.fn(),
+    retryComputerSetup: vi.fn(),
     finishSetup: vi.fn(),
   }} />)
 }
@@ -23,13 +23,13 @@ function expectHiddenPanelHeading(name: string) {
   expect(heading.parentElement?.tagName).toBe("SECTION")
 }
 
-it("uses singular sandbox labels in the review of one sandbox", async () => {
+it("uses singular computer labels in the review of one computer", async () => {
   const user = userEvent.setup()
-  const source = { ...onboardingScenarios.complete, machineConfigurations: [onboardingScenarios.complete.machineConfigurations[0]], githubPolicies: [] }
+  const source = { ...onboardingScenarios.complete, computerConfigurations: [onboardingScenarios.complete.computerConfigurations[0]], githubPolicies: [] }
   render(<OnboardingPreview source={source} initialGitHubConnectionState="connected" />)
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  expect(screen.getByText(/^Taylor Example/).textContent).toBe("Taylor Example <taylor@example.com> → all 1 sandbox")
-  expect(screen.getByText(/^0 repositories across/).textContent).toBe("0 repositories across 0 of 1 sandbox · 0 repositories allowing GitHub changes")
+  expect(screen.getByText(/^Taylor Example/).textContent).toBe("Taylor Example <taylor@example.com> → all 1 computer")
+  expect(screen.getByText(/^0 repositories across/).textContent).toBe("0 repositories across 0 of 1 computer · 0 repositories allowing GitHub changes")
 })
 
 
@@ -49,7 +49,7 @@ it("continues from disconnected GitHub without marking it complete", async () =>
   await user.click(within(githubFooter).getByRole("button", { name: "Continue" }))
   expectHiddenPanelHeading("Review setup")
   expect(screen.getByText("GitHub not connected")).toBeVisible()
-  expect(screen.getByText("Taylor Example <taylor@example.com> → all 3 sandboxes")).toBeVisible()
+  expect(screen.getByText("Taylor Example <taylor@example.com> → all 3 computers")).toBeVisible()
 })
 
 
@@ -63,8 +63,8 @@ it("finishes without submitting saved repository selections when GitHub is skipp
   expect(finishSetup).toHaveBeenCalledOnce()
   const request = finishSetup.mock.calls[0][0]
   expect(request.github.connectionState).toBe("disconnected")
-  expect(request.github.workspaces.every(({ repositories }: { repositories: unknown[] }) => repositories.length === 0)).toBe(true)
-  expect(request.github.workspaces[0].identity).toMatchObject({ name: "Taylor Example", email: "taylor@example.com", apply: true })
+  expect(request.github.computers.every(({ repositories }: { repositories: unknown[] }) => repositories.length === 0)).toBe(true)
+  expect(request.github.computers[0].identity).toMatchObject({ name: "Taylor Example", email: "taylor@example.com", apply: true })
 })
 
 
@@ -100,7 +100,7 @@ it("continues with zero repository access and keeps connected GitHub complete", 
   await user.click(continueButton)
 
   expectHiddenPanelHeading("Review setup")
-  expect(screen.getByText("0 repositories across 0 of 3 sandboxes · 0 repositories allowing GitHub changes")).toBeVisible()
+  expect(screen.getByText("0 repositories across 0 of 3 computers · 0 repositories allowing GitHub changes")).toBeVisible()
 })
 
 
@@ -155,8 +155,8 @@ it("derives the default GitHub state and repository catalog from the native sour
     }],
   }
   render(<OnboardingPreview source={source} actions={{
-    saveMachineConfiguration: vi.fn(),
-    retryWorkspaceSetup: vi.fn(),
+    saveComputerConfiguration: vi.fn(),
+    retryComputerSetup: vi.fn(),
     finishSetup: vi.fn(),
   }} />)
 
@@ -178,11 +178,11 @@ it("searches, adds multiple repositories, prevents duplicates, and retains push 
   renderScenario("running", "connected")
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
 
-  expect(screen.getByRole("region", { name: "Sandbox Git identity and repository access" })).toBeVisible()
-  expect(screen.queryByRole("heading", { name: "Sandbox Git identity and repository access" })).not.toBeInTheDocument()
+  expect(screen.getByRole("region", { name: "Computer Git identity and repository access" })).toBeVisible()
+  expect(screen.queryByRole("heading", { name: "Computer Git identity and repository access" })).not.toBeInTheDocument()
   expect(screen.queryByText("Selected repositories always allow local writes and commits.")).not.toBeInTheDocument()
-  for (const workspace of ["dev", "playgrounds", "personal"]) {
-    expect(screen.getByLabelText(`Add repository to ${workspace}`)).toHaveAttribute("role", "combobox")
+  for (const computer of ["dev", "playgrounds", "personal"]) {
+    expect(screen.getByLabelText(`Add repository to ${computer}`)).toHaveAttribute("role", "combobox")
   }
   expect(screen.queryByText(/read only|read-write/i)).not.toBeInTheDocument()
 
@@ -214,12 +214,12 @@ it("searches, adds multiple repositories, prevents duplicates, and retains push 
   expect(within(retained).getByRole("checkbox", { name: "Allow GitHub changes for acme/platform-tools" })).toBeChecked()
 
   await user.click(screen.getByRole("tab", { name: /Review/ }))
-  expect(screen.getByText("3 repositories across 2 of 3 sandboxes · 1 repository allowing GitHub changes")).toBeVisible()
+  expect(screen.getByText("3 repositories across 2 of 3 computers · 1 repository allowing GitHub changes")).toBeVisible()
   expect(screen.getByText("Taylor Example <taylor@example.com> → dev, personal; Morgan Example <taylor@example.com> → playgrounds")).toBeVisible()
 })
 
 
-it("collapses GitHub sandbox sections independently", async () => {
+it("collapses GitHub computer sections independently", async () => {
   const user = userEvent.setup()
   renderScenario("running", "connected")
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
@@ -238,7 +238,7 @@ it("treats repository names as case-insensitive when preventing duplicates", asy
     source={onboardingScenarios.running}
     initialGitHubConnectionState="connected"
     repositoryOptions={["ACME/SILO", "acme/silo", "acme/design-system"]}
-    actions={{ saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }}
+    actions={{ saveComputerConfiguration: vi.fn(), retryComputerSetup: vi.fn(), finishSetup: vi.fn() }}
   />)
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
 
@@ -263,7 +263,7 @@ it("removes repositories and keeps the review summary truthful", async () => {
   expect(screen.queryByRole("table", { name: "Selected repositories for dev" })).not.toBeInTheDocument()
   await user.click(screen.getByRole("tab", { name: /Review/ }))
 
-  expect(screen.getByText("0 repositories across 0 of 3 sandboxes · 0 repositories allowing GitHub changes")).toBeVisible()
+  expect(screen.getByText("0 repositories across 0 of 3 computers · 0 repositories allowing GitHub changes")).toBeVisible()
 })
 
 
@@ -279,11 +279,11 @@ it("exposes the Allow GitHub changes explanation to keyboard users", async () =>
   await user.tab({ shift: true })
 
   expect(tooltipTrigger).toHaveFocus()
-  expect(await screen.findByRole("tooltip")).toHaveTextContent("Allow Git pushes and GitHub changes, such as issues and pull requests, from this sandbox.")
+  expect(await screen.findByRole("tooltip")).toHaveTextContent("Allow Git pushes and GitHub changes, such as issues and pull requests, from this computer.")
 })
 
 
-it("prefills and enables every workspace identity from the optional host identity", async () => {
+it("prefills and enables every computer identity from the optional host identity", async () => {
   const user = userEvent.setup()
   renderScenario("running", "disconnected")
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
@@ -303,7 +303,7 @@ it("prefills and enables every workspace identity from the optional host identit
   const identityTooltipTrigger = within(devIdentity).getByLabelText("About Git identity for dev")
   act(() => identityTooltipTrigger.focus())
   expect(identityTooltipTrigger).toHaveFocus()
-  expect(await screen.findByRole("tooltip")).toHaveTextContent("Name and email used for Git commits in this sandbox.")
+  expect(await screen.findByRole("tooltip")).toHaveTextContent("Name and email used for Git commits in this computer.")
   expect(screen.queryByText("Git name")).not.toBeInTheDocument()
   expect(screen.queryByText("Git email")).not.toBeInTheDocument()
   expect(screen.getByLabelText("Git name for personal")).toHaveValue("Taylor Example")
@@ -317,8 +317,8 @@ it("uses one custom tooltip for each Git identity Reset control", async () => {
   renderScenario("running", "disconnected")
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
 
-  for (const workspace of ["dev", "playgrounds", "personal"]) {
-    const name = `Reset Git identity for ${workspace}`
+  for (const computer of ["dev", "playgrounds", "personal"]) {
+    const name = `Reset Git identity for ${computer}`
     const reset = screen.getByRole("button", { name })
     const trigger = reset.parentElement
     expect(trigger).not.toBeNull()
@@ -343,7 +343,7 @@ it("uses one custom tooltip for each Git identity Reset control", async () => {
 })
 
 
-it("keeps workspace identity edits and apply choices independent and resets one workspace", async () => {
+it("keeps computer identity edits and apply choices independent and resets one computer", async () => {
   const user = userEvent.setup()
   renderScenario("running", "connected")
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
@@ -377,7 +377,7 @@ it("starts blank and leaves Reset safely unavailable without a host identity", a
   render(<OnboardingPreview
     source={{ ...onboardingScenarios.running, currentDeviceGitIdentity: null }}
     initialGitHubConnectionState="disconnected"
-    actions={{ saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }}
+    actions={{ saveComputerConfiguration: vi.fn(), retryComputerSetup: vi.fn(), finishSetup: vi.fn() }}
   />)
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
 

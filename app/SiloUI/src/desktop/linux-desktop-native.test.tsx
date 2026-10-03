@@ -23,18 +23,18 @@ it("opens a stopped VM viewer without starting the VM and only starts after the 
   invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: false, state: "vm-stopped" }
     : command === "desktop_action" ? { installed: true, autoStart: false, state: "running" } : undefined)
   const user = userEvent.setup()
-  render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
-  await screen.findByRole("button", { name: "Start sandbox and desktop" })
+  render(<NativeLinuxDesktopViewer computer="owner/vm-id" name="dev · Remote" />)
+  await screen.findByRole("button", { name: "Start computer and desktop" })
   expect(invoke.mock.calls.some(([command]) => command === "desktop_action" || command === "desktop_viewer_attach")).toBe(false)
-  await user.click(screen.getByRole("button", { name: "Start sandbox and desktop" }))
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", { workspace: "owner/vm-id", x: 0, y: 44, width: 1000, height: 600, viewportHeight: window.innerHeight }))
-  expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "owner/vm-id", action: "start" })
+  await user.click(screen.getByRole("button", { name: "Start computer and desktop" }))
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", { computer: "owner/vm-id", x: 0, y: 44, width: 1000, height: 600, viewportHeight: window.innerHeight }))
+  expect(invoke).toHaveBeenCalledWith("desktop_action", { computer: "owner/vm-id", action: "start" })
 })
 
 it("resizes the native view and detaches on close without stopping its session", async () => {
   invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "running" } : undefined)
-  const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
+  const view = render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ computer: "dev" })))
   invoke.mockClear()
   await act(async () => { resize?.() })
   expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ width: 1000, height: 600 }))
@@ -49,14 +49,14 @@ it("keeps a transport failure visible when subsequent guest health checks succee
     if (command === "desktop_viewer_attach") throw new Error("Desktop connection unavailable")
   })
   const user = userEvent.setup()
-  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   expect(await screen.findByRole("alert")).toHaveTextContent("Desktop connection unavailable")
   await user.click(screen.getByRole("button", { name: "Reconnect" }))
   await waitFor(() => expect(invoke.mock.calls.filter(([command]) => command === "read_desktop_state").length).toBeGreaterThan(1))
   expect(screen.getByRole("alert")).toHaveTextContent("Desktop connection unavailable")
 })
 
-it("hides an obsolete attachment error when the sandbox stops", async () => {
+it("hides an obsolete attachment error when the computer stops", async () => {
   vi.useFakeTimers()
   let stopped = false
   invoke.mockImplementation(async command => {
@@ -65,13 +65,13 @@ it("hides an obsolete attachment error when the sandbox stops", async () => {
     }
     if (command === "desktop_viewer_attach") throw new Error("Desktop connection unavailable")
   })
-  const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  const view = render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   try {
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(screen.getByRole("alert")).toHaveTextContent("Desktop connection unavailable")
     stopped = true
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-    expect(screen.getByRole("button", { name: "Start sandbox" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Start computer" })).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Reconnect" })).not.toBeInTheDocument()
     expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
@@ -89,7 +89,7 @@ it("backs off failed desktop health reads, resets after recovery, and stops on c
   })
   const reads = () => invoke.mock.calls.filter(([command]) => command === "read_desktop_state").length
   const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }) }
-  const view = render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
+  const view = render(<NativeLinuxDesktopViewer computer="owner/vm-id" name="dev · Remote" />)
   try {
     await advance(0)
     expect(reads()).toBe(1)
@@ -126,7 +126,7 @@ it("reattaches a retired transport when the device recovers with unchanged guest
     if (command === "desktop_viewer_attach") connected = true
     if (command === "desktop_viewer_detach") connected = false
   })
-  const view = render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
+  const view = render(<NativeLinuxDesktopViewer computer="owner/vm-id" name="dev · Remote" />)
   try {
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(connected).toBe(true)
@@ -151,7 +151,7 @@ it("finishes an in-flight attachment before detaching on close", async () => {
     if (command === "read_desktop_state") return { installed: true, autoStart: true, state: "running" }
     if (command === "desktop_viewer_attach") await new Promise<void>(resolve => { completeAttachment = resolve })
   })
-  const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  const view = render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   await waitFor(() => expect(completeAttachment).toBeDefined())
   invoke.mockClear()
   // Resizes arriving during the pending attachment must not survive the close.
@@ -170,7 +170,7 @@ it("reconnects by detaching the previous child before attaching a fresh one", as
     if (command === "desktop_viewer_attach" && fail) throw new Error("Connection lost")
   })
   const user = userEvent.setup()
-  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   await screen.findByRole("alert")
   invoke.mockClear()
   fail = false
@@ -184,12 +184,12 @@ it("updates the native inset when the viewport changes even if display bounds ar
   let viewportHeight = 788
   vi.spyOn(window, "innerHeight", "get").mockImplementation(() => viewportHeight)
   invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "running" } : undefined)
-  const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  const view = render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ viewportHeight: 788 })))
   invoke.mockClear()
   viewportHeight = 820
   await act(async () => { window.dispatchEvent(new Event("resize")) })
-  expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", { workspace: "dev", x: 0, y: 44, width: 1000, height: 600, viewportHeight: 820 })
+  expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", { computer: "dev", x: 0, y: 44, width: 1000, height: 600, viewportHeight: 820 })
   view.unmount()
   await act(async () => { window.dispatchEvent(new Event("resize")) })
   expect(invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach")).toHaveLength(1)
@@ -198,7 +198,7 @@ it("updates the native inset when the viewport changes even if display bounds ar
 it("uses a native dropdown without reconnecting or resizing the guest", async () => {
   invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "running" } : undefined)
   const user = userEvent.setup()
-  const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  const view = render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   await screen.findByRole("button", { name: "Desktop actions" })
   await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.anything()))
   invoke.mockClear()
@@ -214,7 +214,7 @@ it("uses a native dropdown without reconnecting or resizing the guest", async ()
   act(() => items[1].action())
   expect(invoke).not.toHaveBeenCalled()
   await user.click(screen.getByRole("button", { name: "Stop desktop" }))
-  expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "stop" })
+  expect(invoke).toHaveBeenCalledWith("desktop_action", { computer: "dev", action: "stop" })
   view.unmount()
   expect(nativeMenu.close).toHaveBeenCalledOnce()
 })
@@ -223,7 +223,7 @@ it("does not turn a guest status error into a tool failure", async () => {
   invoke.mockImplementation(async command => {
     if (command === "read_desktop_state") throw new Error("Device disconnected")
   })
-  render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
+  render(<NativeLinuxDesktopViewer computer="owner/vm-id" name="dev · Remote" />)
   expect(await screen.findByRole("alert")).toHaveTextContent("Device disconnected")
   expect(screen.queryByRole("button", { name: /agent tools/ })).not.toBeInTheDocument()
 })
@@ -241,11 +241,11 @@ it("recovers a failed stream without restarting the live desktop session", async
     return undefined
   })
   const user = userEvent.setup()
-  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
   expect(screen.getByRole("alert")).toHaveTextContent("Display disconnected")
   await user.click(screen.getByRole("button", { name: "Reconnect display" }))
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "restart-streamer" }))
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { computer: "dev", action: "restart-streamer" }))
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Connecting display"))
   // The backend refuses to connect until the stream runs; don't attach early.
   expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
@@ -259,7 +259,7 @@ it("attaches once the stream becomes ready", async () => {
   } : undefined)
   vi.useFakeTimers()
   try {
-    render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+    render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(screen.getByLabelText("Linux desktop display")).toBeVisible()
     expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
@@ -267,7 +267,7 @@ it("attaches once the stream becomes ready", async () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(4_999) })
     expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
     await act(async () => { await vi.advanceTimersByTimeAsync(1) })
-    expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" }))
+    expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ computer: "dev" }))
   } finally { vi.useRealTimers() }
 })
 
@@ -276,10 +276,10 @@ it("keeps the desktop usable when the guest reports a failed or unknown diagnost
     installed: true, autoStart: true, state: "running", backend: "selkies", sessionState: "running", streamState: "running",
     lcuState: "failed", lcuReadiness: "failed", lcuReason: 42,
   } : undefined)
-  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
   expect(screen.queryByText(/Desktop unavailable/)).not.toBeInTheDocument()
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ computer: "dev" })))
 })
 
 it("offers an explicit stopped-only desktop update without starting or attaching it", async () => {
@@ -295,12 +295,12 @@ it("offers an explicit stopped-only desktop update without starting or attaching
     return undefined
   })
   const user = userEvent.setup()
-  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   expect(await screen.findByRole("button", { name: "Update desktop" })).toBeVisible()
   expect(screen.queryByRole("button", { name: "Start desktop" })).not.toBeInTheDocument()
   expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
   await user.click(screen.getByRole("button", { name: "Update desktop" }))
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "update-streamer" }))
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { computer: "dev", action: "update-streamer" }))
   expect(await screen.findByRole("button", { name: "Start desktop" })).toBeVisible()
   expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
   expect(invoke.mock.calls.some(([command, args]) => command === "desktop_action" && args?.action === "start")).toBe(false)
@@ -319,12 +319,12 @@ it("keeps a healthy stopped legacy desktop startable and makes migration optiona
     return undefined
   })
   const user = userEvent.setup()
-  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   expect(await screen.findByRole("button", { name: "Start desktop" })).toBeVisible()
   expect(screen.getByRole("button", { name: "Update desktop" })).toBeVisible()
   expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
   await user.click(screen.getByRole("button", { name: "Start desktop" }))
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "start" }))
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_action", { computer: "dev", action: "start" }))
   expect(invoke.mock.calls.some(([command, args]) => command === "desktop_action" && args?.action === "update-streamer")).toBe(false)
 })
 
@@ -334,11 +334,11 @@ it("keeps a running desktop healthy when the LCU runtime prerequisite is missing
     sessionState: "running", streamState: "running", lcuState: "needs-runtime",
     lcuReason: "chatgpt-app-required",
   } : undefined)
-  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
   expect(await screen.findByText(/LCU requires the official ChatGPT app/)).toBeVisible()
   expect(screen.getByRole("button", { name: "Set up LCU" })).toBeEnabled()
-  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ computer: "dev" })))
   expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
 })
 
@@ -356,14 +356,14 @@ it("runs explicit LCU setup in a live session even when its display stream faile
     return undefined
   })
   const user = userEvent.setup()
-  render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
   expect(await screen.findByRole("button", { name: "Set up LCU" })).toBeEnabled()
   // A failed stream cannot be attached; the session stays usable for setup.
   const attachmentCount = 0
   await user.click(screen.getByRole("button", { name: "Set up LCU" }))
   expect(await screen.findByText(/LCU requires the official ChatGPT app/)).toBeVisible()
-  expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "dev", action: "setup-lcu" })
+  expect(invoke).toHaveBeenCalledWith("desktop_action", { computer: "dev", action: "setup-lcu" })
   expect(screen.getByLabelText("Linux desktop display")).toBeVisible()
   expect(invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach")).toHaveLength(attachmentCount)
   expect(invoke.mock.calls.some(([command, action]) => command === "desktop_action" &&
@@ -374,7 +374,7 @@ it("pauses viewer health polling when hidden and refreshes once on return", asyn
   vi.useFakeTimers()
   const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
   invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "vm-stopped" } : undefined)
-  const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  const view = render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   const reads = () => invoke.mock.calls.filter(([command]) => command === "read_desktop_state")
   try {
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })

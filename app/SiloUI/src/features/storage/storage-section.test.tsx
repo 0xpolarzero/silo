@@ -76,7 +76,7 @@ describe("Settings, General: Storage", () => {
     expect(await screen.findByText("Delete the pre-upgrade backup permanently?")).toBeVisible()
     await screen.findByText(/frees up to 12\.40 GiB/)
     expect(screen.getByText(/can't be undone/)).toBeVisible()
-    expect(screen.getByText(/current sandboxes aren't affected/)).toBeVisible()
+    expect(screen.getByText(/current computers aren't affected/)).toBeVisible()
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(screen.queryByText("Delete the pre-upgrade backup permanently?")).not.toBeInTheDocument()
     expect(backend.calls).not.toContain("remove")
