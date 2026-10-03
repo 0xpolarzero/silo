@@ -1,20 +1,20 @@
-# Sandbox action failures
+# Computer action failures
 
-A failed start can leave MicroSandbox in `Stopped`. That state describes the VM,
+A failed start can leave MicroSandbox in `Stopped`. That state describes the computer,
 not the result of the user's request. Silo keeps these two facts separate.
 
 The lifecycle journal retains a filtered runtime explanation alongside the
-failure summary. New events include the machine ID so a replacement VM with the
-same name does not inherit the previous VM's error. The latest failed lifecycle
+failure summary. New events include the computer ID so a replacement computer with the
+same name does not inherit the previous computer's error. The latest failed lifecycle
 event is projected into `lifecycleFailure` in application snapshots. A successful
 subsequent lifecycle action clears that projection. Legacy events without a
-machine ID remain visible in Activity. Journal retention is capped at 200 events
+computer ID remain visible in Activity. Journal retention is capped at 200 events
 and 1 MiB; a diagnostic is limited to 8,192 characters.
 
-The desktop bridge retains local action rejections per machine until a successful
+The desktop bridge retains local action rejections per computer until a successful
 lifecycle retry, including rejections before a journal event could be saved.
-Refreshes do not discard these messages or disable unrelated VMs. Overview shows
-the error immediately below the affected sandbox while preserving its observed
+Refreshes do not discard these messages or disable unrelated computers. Overview shows
+the error immediately below the affected computer while preserving its observed
 runtime state and retry controls. Activity preserves diagnostic line breaks.
 
 MicroSandbox writes early boot failures atomically to `logs/boot-error.json`.
@@ -36,9 +36,9 @@ to query these files.
 
 Deterministic Rust tests cover diagnostic preservation and filtering, durable
 failure projection, boot timestamps, search, context, and pagination. Frontend
-tests cover immediate Overview feedback, refresh persistence, unaffected VMs,
+tests cover immediate Overview feedback, refresh persistence, unaffected computers,
 and successful retries. These tests use temporary files and fixtures; they do
-not prove live VM startup or the signing policy of a packaged app.
+not prove live computer startup or the signing policy of a packaged app.
 
 On 2026-09-22, the focused frontend run passed 187 tests across the bridge,
 Overview, application integration, and Logs. Typecheck and lint passed. The

@@ -1,6 +1,6 @@
 # Test dependencies, export and import in the real app
 
-The native app at `app/SiloUI` uses real VM state and operations. It has no fixture launch flags, fake operation
+The native app at `app/SiloUI` uses real computer state and operations. It has no fixture launch flags, fake operation
 results or settings-directory overrides.
 
 ## Build and launch
@@ -21,15 +21,15 @@ open 'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app'
 Before launching, inspect any running instance and verify its executable path
 and ownership. Use the exact rebuilt Dev bundle above; its executable is
 `Silo Dev.app/Contents/MacOS/silo-ui` and its identifier is `org.silo.dev`.
-Do not interrupt the user's app or VMs. Quitting a test-owned Dev instance
-stops its local VMs, so use only disposable state for this walkthrough.
+Do not interrupt the user's app or computers. Quitting a test-owned Dev instance
+stops its local computers, so use only disposable state for this walkthrough.
 
 The first build downloads pinned build inputs and compiles the patched runtime.
 It requires Rust 1.94.0. Users of the finished app need none of those build tools.
 The debug build already uses the development channel, with separate app data,
 credentials, runtime aliases and remote bridge names. See
 [build channels](SiloUI-BUILD-CHANNELS.md). Use deterministic frontend fixtures
-for UI-only checks and disposable Dev VMs for native checks. Historical bundle
+for UI-only checks and disposable Dev computers for native checks. Historical bundle
 paths in the verification records below identify those earlier runs.
 
 ## Dependencies
@@ -48,7 +48,7 @@ On a fresh app identity, open onboarding's Dependencies step:
 
 macOS checks the declared macOS 14 floor, arm64 target and `kern.hv_support`.
 Linux checks a supported GNU/Linux target, glibc 2.34 or later, access to
-`/dev/kvm` and KVM API version 12. It never creates a VM to probe support.
+`/dev/kvm` and KVM API version 12. It never creates a computer to probe support.
 Both validate bundled files and bounded version commands. Failed, unsupported,
 unreadable and timed-out results cannot pass.
 
@@ -67,35 +67,35 @@ reports this boundary; `to_string_lossy` replaces invalid bytes and can name a
 different file. Native path-conversion regressions exercise synthetic Unix
 paths, not a live desktop picker.
 
-## VM configuration
+## Computer configuration
 
-Use disposable VMs for this walkthrough.
+Use disposable computers for this walkthrough.
 
-1. Configure a VM with distinct runtime and workspace storage sizes. Save it.
-   Creation produces a stopped VM with separate root and `/workspace` disks.
+1. Configure a computer with distinct runtime and workspace storage sizes. Save it.
+   Creation produces a stopped computer with separate root and `/workspace` disks.
 2. Start it, then stop it. The displayed state must follow the runtime result.
    A failure must remain visible; it must not become Stopped or Running by default.
 3. During onboarding, set a Git name/email and finish. These are saved to the
-   VM's environment and verified before completion. Application preferences
+   computer's environment and verified before completion. Application preferences
    persist after quitting and reopening Silo.
-4. CPU/RAM limits come from the host. Unknown measurements fail explicitly.
+4. CPU/RAM limits come from the device. Unknown measurements fail explicitly.
    Startup memory pressure uses the approved advisory; it is not an invented
    universal minimum. Disk failures report the real operation error.
 
 GitHub authentication and host Push are implemented separately; see
 [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md). Repository selection
-controls access, and tools inside the VM clone repositories through that access.
+controls access, and tools inside the computer clone repositories through that access.
 This walkthrough's storage checks do not verify GitHub authorization or pushing.
 
-## Export a sandbox
+## Export a computer
 
-The Backup page was removed. Each local sandbox is exported on its own, and
+The Backup page was removed. Each local computer is exported on its own, and
 progress and results appear as a background notification.
 
-1. Open a disposable local sandbox's menu (in the sandbox list or on its page)
+1. Open a disposable local computer's menu (in the computer list or on its page)
    and choose **Export…**, then choose a destination folder through the native
-   folder picker. Remote sandboxes offer no Export.
-2. Export starts as soon as the folder is chosen. A running sandbox keeps
+   folder picker. Remote computers offer no Export.
+2. Export starts as soon as the folder is chosen. A running computer keeps
    running. The notification shows the capture and verification phases.
 3. Success, **Exported**, must name a real `.silo-backup` export file in the
    chosen folder, with its size. **Show in Finder** (**Show in folder** on Linux)
@@ -108,7 +108,7 @@ progress and results appear as a background notification.
 
 ## Export a checkpoint
 
-1. Open the sandbox's page, then its **Checkpoints** tab. Create a checkpoint if
+1. Open the computer's page, then its **Checkpoints** tab. Create a checkpoint if
    none exists.
 2. Choose **Export…** from a checkpoint's menu and pick a folder. The
    notification reads **Exporting checkpoint “name”**, then **Checkpoint
@@ -117,21 +117,21 @@ progress and results appear as a background notification.
 
 ## Import an export file
 
-1. In the sandbox list choose **Add → Import sandbox…** (or **File → Import
-   Sandbox…**) and select the export file through the native picker.
+1. In the computer list choose **Add → Import computer…** (or **File → Import
+   Computer…**) and select the export file through the native picker.
 2. Silo checks the file before asking anything. An invalid or damaged file shows
    **This export cannot be imported** with its reason and creates nothing.
-3. The review shows the file's size and sandbox. The suggested name is
+3. The review shows the file's size and computer. The suggested name is
    `<source>-imported`; a name you type is retained. An existing name must be
-   rejected without changing that sandbox.
+   rejected without changing that computer.
 4. Choose **Import**. The notification ends with **Imported name**, "Stopped and
-   verified.", and **Open**. The result is a new stopped sandbox. Start it and
+   verified.", and **Open**. The result is a new stopped computer. Start it and
    confirm both root and `/workspace` files survived. Configured storage sizes
    and Git identity must also survive. Running programs, memory and checkpoint
    history are not imported.
-5. The source sandbox and earlier export files remain intact. A failed or
-   cancelled import removes only its newly created sandbox and disk, never
-   another sandbox with the same name.
+5. The source computer and earlier export files remain intact. A failed or
+   cancelled import removes only its newly created computer and disk, never
+   another computer with the same name.
 
 ## Automated live regression
 
@@ -140,11 +140,11 @@ The ignored Rust test
 production create, identity, export and import functions with disposable paths.
 `real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk` covers
 checkpoint export the same way.
-It requires prepared guest-image resources, the built app and a working host
+It requires prepared guest-image resources, the built app and a working
 hypervisor. Configure native tests through the [release guide's local setup](SiloUI-RELEASES.md#local-setup).
 Use the bundled Dev runtime,
 which Tauri signs with the Hypervisor entitlement; the raw build-cache executable
-cannot boot a macOS VM:
+cannot boot a computer on macOS:
 
 ```sh
 SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures \
@@ -158,10 +158,10 @@ cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked \
 These variables exist only in the compiled test harness, not the application.
 The test writes distinct root/workspace markers, exports, and deletes the
 isolated original runtime/cache/volumes. It imports into different runtime
-homes, first empty and then already containing an independently created VM.
-It verifies that import saves a pending sandbox without creating or starting a
-runtime VM. It then uses the app's explicit Start path, verifies files and identity,
-and checks that the existing VM and its cached disks remain intact. It cleans up its own VMs. It never uses existing user VM data.
+homes, first empty and then already containing an independently created computer.
+It verifies that import saves a pending computer without creating or starting a
+runtime computer. It then uses the app's explicit Start path, verifies files and identity,
+and checks that the existing computer and its cached disks remain intact. It cleans up its own computers. It never uses existing user computer data.
 
 ## Coverage limits
 
@@ -169,7 +169,7 @@ The original checks recorded below used macOS. Unit tests cover failure mapping,
 archive traversal/integrity, cancellation, name collisions and resource handling.
 Later Linux runs are recorded in [Linux verification](SiloUI-LINUX-VERIFICATION.md)
 and [Linux acceptance](research/silo-linux-acceptance-2026-09-25.md), with exact
-packages, runtime versions and host limits. Those dated runs do not qualify the
+packages, runtime versions and device limits. Those dated runs do not qualify the
 current HEAD or every platform; verify the intended package and workflow before release.
 An ad-hoc debug signature is not notarization or release-signing verification.
 
@@ -177,7 +177,7 @@ An ad-hoc debug signature is not notarization or release-signing verification.
 
 Silo saves the new import's native checkpoint group before invoking `snapshot load`.
 Recovery removes indexed members of that group, including an import interrupted
-before sandbox settings were saved. A failed cleanup keeps that ownership journal
+before computer settings were saved. A failed cleanup keeps that ownership journal
 for another launch. Other groups and completed imports remain intact.
 
 The current [import-stage patch](../app/SiloUI/patches/microsandbox-import-stage-id-0.7.6.patch)
@@ -186,7 +186,7 @@ starts, then passes its suffix as the stage ID. The loader uses
 `snapshots/.msb-snapshot-load-<id>` and `cache/tmp/snapshot-load-<id>` under the
 selected runtime home. [Launch recovery](../app/SiloUI/src-tauri/src/backup_controller/recovery.rs)
 removes only that journaled group's indexed members and its two stage roots,
-including after a crash before sandbox identity allocation. Cleanup respects the
+including after a crash before computer identity allocation. Cleanup respects the
 existing worker lock, rejects symlinked stage paths, and retains the journal on failure.
 
 The older [MicroSandbox 0.7.2 archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs#L263)
@@ -198,7 +198,7 @@ for the recorded patch qualification and its limits.
 
 ## Recorded evidence, 2026-09-08
 
-This record predates the per-sandbox Export and Import flow: it describes the
+This record predates the per-computer Export and Import flow: it describes the
 removed Backup page, whose backups and restores are now exports and imports.
 
 The production `Silo.app` built successfully and passed
@@ -257,18 +257,18 @@ operation error rather than hiding the outcome.
 
 ## Continue and the setup queue
 
-1. Reopen a saved draft on Sandboxes. Before submission, the footer says
+1. Reopen a saved draft on Computers. Before submission, the footer says
    **Not started**, and the draft determines the operation count. Merely opening
-   the app does not create its VMs.
+   the app does not create its computers.
 2. Click Continue. The exact displayed configuration enters the queue and starts.
    Returning and clicking Continue again must not duplicate an identical job.
-3. During creation, the Sandboxes panel shows the actual VM and operation, an
+3. During creation, the Computers panel shows the actual computer and operation, an
    elapsed timer and native activity. Navigation remains responsive.
-4. Continue from GitHub submits the selected identities after VM creation.
-   Review shows status on each sandbox and the Git author card, with unsubmitted
+4. Continue from GitHub submits the selected identities after computer creation.
+   Review shows status on each computer and the Git author card, with unsubmitted
    work labelled **Not started**. There is no separate Setup operations list.
    Finish persists completion only after prerequisites succeed.
-5. A failed request keeps its error and Retry. The failed VM must not retain an
+5. A failed request keeps its error and Retry. The failed computer must not retain an
    In progress badge. Retry uses the latest submitted draft. Quit waits for
    submitted native work before completing the settings shutdown handshake.
 
@@ -276,13 +276,13 @@ To check optional GitHub setup, leave GitHub disconnected and continue to Review
 Saved repository choices remain in the draft but are excluded from submission
 until GitHub is connected. Git author choices still apply. Click Finish: setup
 must complete without a repository-setup error. With GitHub connected, setup
-saves the selected/all repository policy and waits for each sandbox to acknowledge
+saves the selected/all repository policy and waits for each computer to acknowledge
 that access before marking completion. A failed or replaced policy keeps setup
 incomplete. The [production setup adapter](../app/SiloUI/src/desktop/production-source.ts)
 and its [fixture tests](../app/SiloUI/src/desktop/production-setup.test.ts) cover this
 acknowledgement; they do not prove live GitHub access.
 
-On Review, each verified sandbox must show **Complete**, matching its Sandboxes
+On Review, each verified computer must show **Complete**, matching its Computers
 row. Git author shows **Complete** only after saving and verification succeed;
 pending and failed work retain their actual status. Errors may wrap, while
 normal card captions remain one line. Use Edit to return to each source step
@@ -298,23 +298,23 @@ directory: `review-inline-validation.jpg` and `review-finish-disconnected.jpg`.
 
 ## Live activity
 
-1. Open onboarding's Sandboxes step and expand Live activity. After restarting
+1. Open onboarding's Computers step and expand Live activity. After restarting
    Silo, it displays the latest recorded attempt; it does not rerun setup.
-2. Continue with existing sandboxes. Return to Sandboxes: activity must include
-   timestamped verification for each VM and an explicit completed outcome.
-3. When adding a VM, activity must identify disk preparation, image resolution,
+2. Continue with existing computers. Return to Computers: activity must include
+   timestamped verification for each computer and an explicit completed outcome.
+3. When adding a computer, activity must identify disk preparation, image resolution,
    download, image checks/preparation, configuration saving and verification.
    Downloaded bytes are real; a total is shown only when every layer size is
    known. Cached images need not produce a download. A quiet create reports its
    last stage and elapsed time every five seconds.
-4. An actual failure must end with an error, affected VM and recovery guidance.
+4. An actual failure must end with an error, affected computer and recovery guidance.
    Warnings represent nonfatal conditions. Copy activity must copy the same safe
-   text shown on screen, without raw registry URLs, credentials or host paths.
+   text shown on screen, without raw registry URLs, credentials or device paths.
 5. Quit and relaunch. The recorded outcome and diagnostics remain available.
    A recorded unfinished attempt is labelled interrupted, never completed.
    A history read/write failure is explicit and does not invent history.
 
-Do not interrupt a user's VM operation merely to produce a screenshot. Native
+Do not interrupt a user's computer operation merely to produce a screenshot. Native
 tests cover interrupted/corrupt histories, missing storage, safe failure
 categories, streamed output and exit-event delivery. Tests use temporary storage;
 there is no production fixture switch or debug activity feed.
@@ -335,24 +335,24 @@ Three tests extracted verbatim from the patched upstream encoder passed.
 Typecheck, lint, desktop bundling and signature verification passed. Linux
 native execution was not tested on this macOS host.
 
-## Host Git and jj identity
+## Device Git and jj identity
 
 ### Automatic startup and notifications
 
 Use the existing completion screen or Settings controls; there is no test mode
 or extra production control for these features.
 
-1. With onboarding complete, enable Start sandboxes at launch and select a local
-   VM. Quit Silo normally and reopen it. Only selected local VMs should start;
-   already-running VMs must not restart. Opening/closing the status panel,
+1. With onboarding complete, enable Start computers at launch and select a local
+   computer. Quit Silo normally and reopen it. Only selected local computers should start;
+   already-running computers must not restart. Opening/closing the status panel,
    focusing the main window or refreshing state must not start them again.
-2. Disable automatic startup and relaunch. Stopped VMs must stay stopped.
+2. Disable automatic startup and relaunch. Stopped computers must stay stopped.
    Incomplete onboarding must never trigger automatic startup. Missing or remote
-   selections must not create a replacement VM or be reported as started.
+   selections must not create a replacement computer or be reported as started.
 3. Enable notifications and the desired categories through the existing UI.
    When the OS already grants permission, genuine state changes and failures
    should produce the corresponding notifications. Opening Silo must not announce
-   every VM's initial state; repeated reads must not duplicate an alert.
+   every computer's initial state; repeated reads must not duplicate an alert.
 4. Disable all notifications or an individual category and repeat the relevant
    event. That category must remain silent. Denied OS permission must not trigger
    an automatic permission prompt. Use the existing Enable notifications control
@@ -361,7 +361,7 @@ or extra production control for these features.
    health reads and backup results. Do not corrupt user data to manufacture an
    alert. Notification text must not include raw command output, credentials or
    archive paths. A notification delivery failure must not undo a successful
-   sandbox operation or backup.
+   computer operation or backup.
 
 Native verification on 2026-09-09 used the normal production debug bundle,
 `src-tauri/target/debug/bundle/macos/Silo.app`, with saved startup selections dev
@@ -385,14 +385,14 @@ passed. The build log is `/tmp/silo-startup-notifications-build.log`.
 
 1. Apply the Git author on GitHub, then open Review and confirm **Complete**.
    Quit and reopen Silo before finishing onboarding. The same author must regain
-   **Complete** after a read-only check of the saved VM configuration. Opening
-   onboarding must not create a VM or rewrite its identity.
+   **Complete** after a read-only check of the saved computer configuration. Opening
+   onboarding must not create a computer or rewrite its identity.
 2. Change an author without submitting it. Review must not claim that the new
    value is complete. Continue applies and verifies that value normally.
-3. Regression tests cover failed sandbox submissions, failed identity submissions
+3. Regression tests cover failed computer submissions, failed identity submissions
    and failed final settings saves. **Retry** must repeat the failed submission,
-   not replace it with sandbox configuration. Do not damage a real installation
-   or change host permissions to manufacture these failures manually.
+   not replace it with computer configuration. Do not damage a real installation
+   or change device permissions to manufacture these failures manually.
 4. Leave GitHub disconnected and click **Finish**. After the settings save
    succeeds, the existing **Setup complete** screen must remain visible with
    login and notification options. **Open Silo** enters the main app.
@@ -405,7 +405,7 @@ this flow does not download replacement app components.
 ### Dependency recovery
 
 Missing or damaged bundled files explain how to reinstall from the original
-download or package manager while keeping app data. Host failures give the
+download or package manager while keeping app data. Device failures give the
 specific OS, architecture or Linux KVM requirement. Timeouts and bridge failures
 offer Retry checks, then reopening Silo, without claiming reinstall is needed.
 The main app exposes the same checks through its existing System issue or load
@@ -436,11 +436,11 @@ logs for this run are `/tmp/silo-onboarding-fixes-build.log` and
 `/tmp/silo-onboarding-fixes-tests.log`.
 
 Open GitHub in onboarding: untouched author fields should use the configured
-host Git name/email, or a complete jj pair if Git has none. Without either,
-fields remain empty and manual entry remains available. Edit one sandbox's
+device Git name/email, or a complete jj pair if Git has none. Without either,
+fields remain empty and manual entry remains available. Edit one computer's
 identity and navigate away/back: it must retain that edit. Reset uses the
-detected host pair. Continue applies/verifies Git and jj identity variables in
-stopped VMs; the host configuration is read-only.
+detected device pair. Continue applies/verifies Git and jj identity variables in
+stopped computers; the device configuration is read-only.
 
 Native verification replaced the old example draft with the detected Git author
 and applied it successfully to all three existing stopped sandboxes. Review

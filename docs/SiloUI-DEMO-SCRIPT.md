@@ -125,7 +125,7 @@ Private interactive forms use controlled, seekable adapters. macOS chrome,
 notifications, editor, browser, and terminal are illustrations. No backend,
 Keychain, VM, SSH, or external service is called.
 
-Implementation references: [remote ownership](SiloUI-REMOTE-COMPUTERS.md),
+Implementation references: [remote ownership](SiloUI-CONNECTIONS.md),
 [GitHub page](../app/SiloUI/src/features/application/pages/github-page.tsx),
 [secrets](SiloUI-SECRETS.md),
 [sandbox export and import](../app/SiloUI/src/features/application/components/sandbox-transfer.tsx),

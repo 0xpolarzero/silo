@@ -4,7 +4,7 @@ Silo ships one recommended Ubuntu 24.04 image for the app's CPU architecture.
 curl, Git, Git LFS, gh, CA certificates and Silo's credential helper are installed while
 building that image. The v3 image also bundles sudo, Python 3 and
 OpenSSH's SFTP server for offline working-account provisioning. Silo creates
-the working account when it creates a VM; no Silo working account, token,
+the working account when it creates a computer; no Silo working account, token,
 identity or user data enters the image.
 Additional supported Ubuntu releases can be provided as prepared downloads later;
 there is no version picker or arbitrary-image compatibility promise in this change.
@@ -123,14 +123,14 @@ App builds reuse the publication, not a fresh apt installation.
 After publication, review both attached manifests and copy them into the lock's
 `images.arm64` and `images.amd64` entries. Verify both archives against those
 manifests before committing the lock. Updating a lock does not update existing
-VMs; restored backups also retain their guest systems.
+computers; restored backups also retain their guest systems.
 
 ## Guest image v3 publication
 
 This records the earlier v3 publication and account verification. The
 [current lock](../app/SiloUI/guest-image/image-lock.json) pins v4, described below.
 The v3 recipe added `sudo`, `python3` and `openssh-sftp-server`. Account setup
-uses these tools locally and refuses an image missing them. New-VM creation
+uses these tools locally and refuses an image missing them. New computer creation
 must not download or repair packages to establish the working account. At v3
 publication, the optional desktop used separate package and KasmVNC downloads;
 the [current desktop recipe](SiloUI-DESKTOP.md) uses Selkies.
@@ -165,7 +165,7 @@ The GUI was not launched, and Linux/KVM execution remains untested.
 [`guest-ubuntu-24.04-v4` release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v4),
 built from source commit `aae2ed939339cb559d81915b4e8df8a150cb8a90` (its
 `source-commit.txt`), and `guest-image/image-lock.json` pins it: both manifests are
-copied into the lock, and new sandboxes use the image with the built-in desktop.
+copied into the lock, and new computers use the image with the built-in desktop.
 Compressed archives are 414,843,188 bytes (ARM64) and 423,476,714 bytes (x86-64).
 That release predates attaching `src-tauri/guest/lcu-lock.json`, which the image
 build consumes; the publication workflow now attaches it, so later releases include
@@ -197,12 +197,12 @@ SFTP server) and adds, in one further layer:
   keeps it unextracted as `/usr/local/share/silo/lcu/lcu-<version>-linux-<arch>.tar.gz`
   (5.6 MB); the lock is a bind mount, never a `COPY`. The marker lists the
   `lcu-archive` capability. `verifyGuestImage` re-checks the archive hash against
-  the lock and that `/opt/lcu`, `/usr/lib/chatgpt` and `/opt/silo` do not exist. A VM
+  the lock and that `/opt/lcu`, `/usr/lib/chatgpt` and `/opt/silo` do not exist. A computer
   installs the archive against the mounted app at boot
   ([built-in computer use](SiloUI-DESKTOP.md#built-in-computer-use)); if the lock is
-  bumped without a new image the VM downloads and verifies the new archive instead
+  bumped without a new image the computer downloads and verifies the new archive instead
   (needs network once). The published `ubuntu-24.04-v4` image contains LCU 0.8.1 while
-  Silo pins 0.8.8, installed in the VM at setup; images built from the current lock
+  Silo pins 0.8.8, installed in the computer at setup; images built from the current lock
   stage the lock's version.
 - **Accessibility defaults.** `gsettings-desktop-schemas`, the dconf stack,
   `/etc/dconf/profile/user` (`user-db:user`, `system-db:local`) and

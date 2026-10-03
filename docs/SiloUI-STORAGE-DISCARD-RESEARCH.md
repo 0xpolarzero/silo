@@ -55,14 +55,14 @@ Two script tests verify source integrity and exact lockfile preservation.
 
 ## Existing worker processes
 
-A new CLI executable does not prove that a VM already running in another process
+A new CLI executable does not prove that a computer already running in another process
 uses the corrected storage implementation. Replacing an executable at the same
 path leaves existing processes running their old mapped code.
 
 The patched CLI advertises `--silo-storage-protocol` version `1`; runtime builds
 validate the marker. Patched `inspect --format json` also exposes an opaque
 `runtime_instance_id` consisting of the active database run ID and start time.
-The identifier is null outside a running local VM or when the active row no
+The identifier is null outside a running local computer or when the active row no
 longer matches the handle's PID. Silo can stamp this identifier only after an
 explicit start using the verified runtime and compare it before reclaiming.
 Existing workers without a verified start require a restart.

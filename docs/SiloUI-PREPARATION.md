@@ -1,11 +1,11 @@
 # Background preparation
 
-At launch Silo prepares what each computer needs before sandboxes work well, without
-blocking the app or holding the computer-wide operation gate:
+At launch Silo prepares what each device needs before computers work well, without
+blocking the app or holding the device-wide operation gate:
 
 | Item | Owner | What it does |
 | --- | --- | --- |
-| VM image | `src-tauri/src/preparation.rs`, `guest_image.rs` | Imports the bundled image into the runtime cache (about a minute, first launch of a release only). |
+| Computer image | `src-tauri/src/preparation.rs`, `guest_image.rs` | Imports the bundled image into the runtime cache (about a minute, first launch of a release only). |
 | LCU archive | `preparation.rs` | Downloads the archive pinned in `src-tauri/guest/lcu-lock.json` for the guest architecture, verifies its SHA-256 and publishes it read-only. |
 | ChatGPT for Linux | `chatgpt_app.rs` | Unchanged. Its status is shown beside the other two. |
 
@@ -15,7 +15,7 @@ Evidence for the design is in
 ## Behavior
 
 - `preparation::start` runs once from the startup task, after the image cache repair and before any
-  sandbox starts. Each item runs on its own thread; an item that is already prepared becomes `ready`
+  computer starts. Each item runs on its own thread; an item that is already prepared becomes `ready`
   with a metadata check only (the bundled archive is not hashed when the image is already cached).
 - Every item is one `Job`: at most one run at a time. `ensure_image` and `ensure_lcu` join a run in
   flight, return at once when the item is ready, and otherwise run it. A joiner of a failed run gets
@@ -51,4 +51,4 @@ that needs an item can show a "waiting for" step. In the browser preview, `?prep
 Rust: `cargo test --locked preparation` (job fast path, joining, failure and retry, LCU verify, publish and
 garbage collection with an injected downloader), the loopback download of unknown size in
 `chatgpt_app`, and the fast-path ordering in `guest_image`. Frontend: `preparation.test.tsx` and
-`preparation-toast.test.tsx`. These use fixtures and prove no live import, download or VM behavior.
+`preparation-toast.test.tsx`. These use fixtures and prove no live import, download or computer behavior.

@@ -2,15 +2,15 @@
 
 2026-09-14. Implemented as an alternate connection alongside the existing GitHub
 App OAuth flow. A user can connect either method or both, including different
-accounts, and choose one method per local VM in the GitHub page.
+accounts, and choose one method per local computer in the GitHub page.
 
 ## Behavior
 
-- Existing VM policies default to OAuth. New policies also default to OAuth.
+- Existing computer policies default to OAuth. New policies also default to OAuth.
 - The personal-token connection accepts classic and fine-grained tokens. Silo
   validates the token with GitHub's read-only `/user` endpoint before saving it.
   Validation does not require any existing repositories.
-- Each VM offers mutually exclusive Use GitHub OAuth and Use token options.
+- Each computer offers mutually exclusive Use GitHub OAuth and Use token options.
   Each option is enabled only when that connection is connected. Losing a
   connection preserves the selected method; it never falls back to the other.
 - Token mode uses the token's full permissions. OAuth repository and read/write
@@ -43,10 +43,10 @@ TLS. Bodies, queries and unrelated headers are not substituted. Unsupported
 hosts and malformed/mixed profiles fail closed. Tokens do not enter OAuth child
 issuance or revocation ledgers. Host Push honors the selected method too.
 
-The updated CLI checks the running VM's token-profile capability before sending
-a personal-token update. A VM running an older proxy must be restarted once;
+The updated CLI checks the running computer's token-profile capability before sending
+a personal-token update. A computer running an older proxy must be restarted once;
 Silo does not report a successful attachment to an incompatible proxy. Changing
-connections in a compatible running VM uses the existing live secret update and
+connections in a compatible running computer uses the existing live secret update and
 connection invalidation mechanism.
 
 ## Verification
@@ -74,7 +74,7 @@ The pinned runtime patch is also applied to a fresh cached source archive under
 Rust 1.94.0. Its network tests run against the actual patched source; the CLI,
 SDK and runtime compile with the shipped net/ssh feature combination.
 Browser layout/interaction checks use synthetic OAuth and token accounts.
-No real token, live VM or packaged Silo bundle was exercised. Live repository
+No real token, live computer or packaged Silo bundle was exercised. Live repository
 creation and secure-store integration require a subsequent authorized live test.
 
 ## Primary references

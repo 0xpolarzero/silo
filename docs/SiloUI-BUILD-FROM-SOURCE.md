@@ -32,7 +32,7 @@ sudo apt install -y build-essential pkg-config libwebkit2gtk-4.1-dev \
 
 Linux Debian packages declare `gstreamer1.0-libav` and `openssh-client` as runtime dependencies (RPM packages declare `openssh-clients`): the desktop viewer and editor handoff run `ssh` and `ssh-keygen`. AppImages bundle the GStreamer media framework from the Ubuntu build host, including the installed H.264 decoder plugin, but use the system OpenSSH client.
 
-Linux needs a working desktop credential store implementing Secret Service, such as GNOME Keyring, for GitHub login. Running local VMs also requires hardware virtualization and access to `/dev/kvm`; compilation alone does not establish that KVM works. See [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/) for OS setup details.
+Linux needs a working desktop credential store implementing Secret Service, such as GNOME Keyring, for GitHub login. Running local computers also requires hardware virtualization and access to `/dev/kvm`; compilation alone does not establish that KVM works. See [Tauri's platform prerequisites](https://v2.tauri.app/start/prerequisites/) for OS setup details.
 
 ## 2. Get the source
 
@@ -64,7 +64,7 @@ Fill in these settings:
 | Webhook → Active | Uncheck it; leave the webhook URL empty. |
 | Where can this GitHub App be installed? | **Only on this account** for your personal repositories. |
 
-The callback is a temporary listener on the computer running Silo. Silo supplies its port when opening the browser; do not copy a port or authorization URL from a previous login attempt into the registration. This portless registration was exercised in Silo's [live OAuth audit](SiloUI-OAUTH-RELEASE-AUDIT.md#live-pkce-reproduction).
+The callback is a temporary listener on the device running Silo. Silo supplies its port when opening the browser; do not copy a port or authorization URL from a previous login attempt into the registration. This portless registration was exercised in Silo's [live OAuth audit](SiloUI-OAUTH-RELEASE-AUDIT.md#live-pkce-reproduction).
 
 Under **Repository permissions**, choose the access you need:
 
@@ -74,9 +74,9 @@ Under **Repository permissions**, choose the access you need:
 | Also push commits | **Contents: Read & write** instead |
 | Push changes to GitHub Actions workflow files | Also **Workflows: Read & write** |
 | Work with issues or pull requests | Also **Issues** and/or **Pull requests**, with Read-only or Read & write as needed |
-| Use other GitHub features from a VM | Enable their corresponding repository permissions, such as Actions or Packages. |
+| Use other GitHub features from a computer | Enable their corresponding repository permissions, such as Actions or Packages. |
 
-Leave **Account**, **Organization**, and **Enterprise** permissions at **No access**. Silo currently accepts repository permissions only. GitHub includes mandatory read-only Metadata access. The App's permissions are the maximum Silo can grant: each VM starts read-only, and enabling changes in Silo cannot exceed what you approved here.
+Leave **Account**, **Organization**, and **Enterprise** permissions at **No access**. Silo currently accepts repository permissions only. GitHub includes mandatory read-only Metadata access. The App's permissions are the maximum Silo can grant: each computer starts read-only, and enabling changes in Silo cannot exceed what you approved here.
 
 Click **Create GitHub App**. Creating it does not yet install it on your repositories; Silo will guide you through installation when you connect. GitHub's [registration guide](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app) explains the form in more detail.
 
@@ -121,7 +121,7 @@ To run the native app while developing:
 npm --prefix app/SiloUI run desktop
 ```
 
-This prepares the runtime and opens Silo Dev, a separate build channel (`org.silo.dev`) with its own data, Keychain items and remote-management identity, so it never touches an installed Silo. `npm --prefix app/SiloUI run dev:import-production-settings` copies your installed Silo's configuration (not sandboxes) into it; see [build channels](SiloUI-BUILD-CHANNELS.md). Keep the terminal running. `npm --prefix app/SiloUI run dev` starts only the frontend server. The main page requires the native app; it cannot run VMs or complete GitHub setup in a browser. For an interactive browser demo with sample data, use the [website preview](../website/README.md#run).
+This prepares the runtime and opens Silo Dev, a separate build channel (`org.silo.dev`) with its own data, Keychain items and Connections identity, so it never touches an installed Silo. `npm --prefix app/SiloUI run dev:import-production-settings` copies your installed Silo's configuration (not computers) into it; see [build channels](SiloUI-BUILD-CHANNELS.md). Keep the terminal running. `npm --prefix app/SiloUI run dev` starts only the frontend server. The main page requires the native app; it cannot run computers or complete GitHub setup in a browser. For an interactive browser demo with sample data, use the [website preview](../website/README.md#run).
 
 For an optimized app you can launch without the development terminal, use the command for your platform. These are production-channel builds (`org.silo.preview`) and share data with an installed Silo. These commands disable updater artifact signing, so you do not need the project's release signing keys.
 
@@ -148,17 +148,17 @@ Open `app/SiloUI/src-tauri/target/release/bundle/appimage/` and launch the gener
 ## 6. Connect and use your repositories
 
 1. In the app you just built, choose **Connect GitHub** during setup or from its GitHub settings.
-2. In the browser on that same computer, sign in with the account that owns your private App. Confirm that GitHub shows **your App's name**.
+2. In the browser on that same device, sign in with the account that owns your private App. Confirm that GitHub shows **your App's name**.
 3. Authorize it. If it is not installed yet, Silo opens the installation page; choose **Only select repositories** and select the repositories you want available.
-4. Return to Silo. Choose repositories for each VM, then enable **Allow GitHub changes** only where needed. Clone over HTTPS inside the VM; Silo supplies credentials automatically.
+4. Return to Silo. Choose repositories for each computer, then enable **Allow GitHub changes** only where needed. Clone over HTTPS inside the computer; Silo supplies credentials automatically.
 
 Development builds (`npm run desktop`, `desktop:build:debug`, or any `--debug`
-build) use **Silo Dev** (`org.silo.dev`) with separate VMs, settings and credentials.
+build) use **Silo Dev** (`org.silo.dev`) with separate computers, settings and credentials.
 Optimized production-channel builds use **Silo** (`org.silo.preview`) and share
 data with official builds. If you use that channel and previously connected an
 official build, disconnect that connection before connecting your own App.
 Before launching another production build, quit the existing Silo instance
-safely; Quit stops its local VMs. See [build channels](SiloUI-BUILD-CHANNELS.md).
+safely; Quit stops its local computers. See [build channels](SiloUI-BUILD-CHANNELS.md).
 
 ## Updating and troubleshooting your build
 
@@ -175,8 +175,8 @@ Do not install an official Silo update over this build: it would replace your co
 | --- | --- |
 | Build reports missing or invalid GitHub configuration | Check all three values in `github-build.local.json`, including accidental whitespace and old environment overrides. Rebuild after editing. |
 | GitHub authorization page returns 404 | Check the compiled client ID and App visibility. A private personal App only allows its owner to sign in. |
-| Browser cannot return to Silo | Keep Silo running, use the browser on the same computer, check the callback setting above, then cancel and start a fresh connection. |
+| Browser cannot return to Silo | Keep Silo running, use the browser on the same device, check the callback setting above, then cancel and start a fresh connection. |
 | Repository is missing | Add it to your App installation in GitHub settings; organization approval may be required. Refresh the repository list in Silo. |
-| Reads work but writes fail | Check both the GitHub App's permissions and that VM's **Allow GitHub changes** setting. Approve updated installation permissions on GitHub if you changed them. |
+| Reads work but writes fail | Check both the GitHub App's permissions and that computer's **Allow GitHub changes** setting. Approve updated installation permissions on GitHub if you changed them. |
 
 The React/TypeScript frontend and Rust/Tauri backend live in [`app/SiloUI`](../app/SiloUI). For tests, distribution signing, and maintainer releases, see the [development and release guide](SiloUI-RELEASES.md). Browse the [documentation index](README.md) for implementation details.

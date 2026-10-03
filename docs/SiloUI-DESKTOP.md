@@ -1,10 +1,10 @@
 # Optional Linux desktop
 
-For sandboxes created before guest image v4, Silo can install an Xfce desktop into
-the same Ubuntu 24.04 sandbox used for terminal work. Creation opt-in and later
+For computers created before guest image v4, Silo can install an Xfce desktop into
+the same Ubuntu 24.04 computer used for terminal work. Creation opt-in and later
 installation use the same recipe. The desktop is optional there; no removal
-operation is provided. Sandboxes from v4 on have the desktop built in; see
-[Guest image v4](#guest-image-v4-the-desktop-is-part-of-the-vm).
+operation is provided. Computers from v4 on have the desktop built in; see
+[Guest image v4](#guest-image-v4-the-desktop-is-part-of-the-computer).
 
 ## Lifecycle
 
@@ -18,12 +18,12 @@ requires a separate directory sync to persist the renamed entry. No new storage
 dependency is required. Fixture tests inject both sync failures and inspect
 the data and permissions at each boundary; they do not simulate a power loss.
 
-`Start desktop with sandbox` defaults on. A managed VM boot starts the installed
+`Start desktop with computer` defaults on. A managed computer boot starts the installed
 desktop when that setting is enabled. Switching it off leaves a running desktop
-alone. Switching it on starts the desktop immediately when the VM is running.
-Manual mode leaves the desktop stopped after VM boot until explicitly started.
+alone. Switching it on starts the desktop immediately when the computer is running.
+Manual mode leaves the desktop stopped after computer boot until explicitly started.
 Closing a viewer disconnects only the view. Desktop stop closes graphical
-applications, preserving independent terminal jobs; VM stop ends both.
+applications, preserving independent terminal jobs; computer stop ends both.
 An explicit desktop stop in automatic mode lasts for the current boot.
 
 The guest helper is `/usr/local/bin/silo-desktop`, with `status`, `start`, `stop`,
@@ -37,7 +37,7 @@ start (Xvfb, PulseAudio, Xfce) the same way: up to three attempts, each tearing
 down what the previous one started, with 1 s and 2 s of backoff; only then is the
 session `failed`, and `silo-desktop start` (or a new boot) starts it again.
 
-`/run` is part of the VM's disk, so a restart, a restore or an imported disk still
+`/run` is part of the computer's disk, so a restart, a restore or an imported disk still
 carries the last session's runtime files. The first helper call of a new boot
 (detected by the boot ID marker) empties `/run/silo-desktop/user`, and every
 session start removes a PulseAudio `pid` file and `native` socket whose session is
@@ -45,9 +45,9 @@ not alive in this boot. Without this, a new boot whose PulseAudio got the same p
 as the previous boot's (boots are nearly deterministic) made PulseAudio exit with
 "Daemon already running", the whole session ended `failed` (nothing retried it) and
 computer use reported "The Linux desktop was not running". Reproduced on the first
-restart of a built-in VM; intermittent on restart and on import.
+restart of a built-in computer; intermittent on restart and on import.
 
-## Guest image v4: the desktop is part of the VM
+## Guest image v4: the desktop is part of the computer
 
 Guest images from v4 on (published and pinned in the image lock; see
 [guest images](SiloUI-GUEST-IMAGES.md)) already contain the Xfce packages, Selkies
@@ -57,15 +57,15 @@ the text default. The image describes itself in
 `/usr/local/share/silo/guest-image.json` (`schemaVersion`, `version`,
 `capabilities`, `streamerVersion`).
 
-- **Host.** A new VM saved without a desktop setting gets one with
-  `Start desktop with sandbox` on when the bundled image is v4 or later
+- **Host.** A new computer saved without a desktop setting gets one with
+  `Start desktop with computer` on when the bundled image is v4 or later
   (`desktop::default_new_vm_desktops`, applied when the configuration is saved),
   and `desktop.builtIn: true`. Creation then runs the same install action as the
-  explicit flow, so no user step is needed. A new built-in VM always starts its
-  desktop with the sandbox, including when duplicated settings requested manual
+  explicit flow, so no user step is needed. A new built-in computer always starts its
+  desktop with the computer, including when duplicated settings requested manual
   startup. `builtIn` is Silo's to decide: a value in a saved
-  configuration is ignored (an existing VM keeps what it had, a VM on an older
-  image is never built in). Existing VMs and VMs on older images keep the
+  configuration is ignored (an existing computer keeps what it had, a computer on an older
+  image is never built in). Existing computers and computers on older images keep the
   explicit "Add Linux desktop" flow.
 - **Guest.** `setup-desktop.sh install` reads the marker and verifies the
   capability, the Selkies version, `/usr/bin/selkies`, every package in
@@ -94,7 +94,7 @@ the text default. The image describes itself in
 
 ## Built-in computer use
 
-A VM created from a v4 or later image (`desktop.builtIn`) has agent computer use
+A computer created from a v4 or later image (`desktop.builtIn`) has agent computer use
 ready with no setup. Implementation: `src-tauri/src/computer_use.rs`,
 `guest/silo-computer-use.py`, image recipe in `guest-image/Dockerfile`; the
 mounted app is described in [ChatGPT app](SiloUI-CHATGPT-APP.md) and the design
@@ -106,40 +106,40 @@ a receipt only after both syncs succeed, following the same
 [Linux durability requirement](https://man7.org/linux/man-pages/man2/fsync.2.html)
 as desktop preferences. Failure-injection tests inspect the complete receipt
 and permissions before publication and reject success after a directory-sync
-error. They use temporary paths without running a VM.
+error. They use temporary paths without running a computer.
 
 - **Image.** The pinned LCU archive (`guest/lcu-lock.json`, SHA-256 verified at
   build) is staged unextracted in `/usr/local/share/silo/lcu/`. LCU itself and
   any OpenAI file are not in the image.
-- **Mount.** The computer's published ChatGPT folder is mounted read-only at
+- **Mount.** This device's published ChatGPT folder is mounted read-only at
   `/opt/silo/chatgpt` (see the ChatGPT app doc; restores pass it again).
 - **During creation.** "Created" means ready: the first start is only a start.
-  The create toast shows one line and a bar. Before it takes the computer-wide
+  The create toast shows one line and a bar. Before it takes the device-wide
   operation gate, creation waits (`creation_inputs.rs`) for the background VM image
   import ("Waiting for the VM image", `preparation::ensure_image`) and, for a
-  built-in VM, for ChatGPT for Linux ("Downloading ChatGPT for Linux · 62%", from
+  built-in computer, for ChatGPT for Linux ("Downloading ChatGPT for Linux · 62%", from
   the `chatgpt-app-status` cache). The waits hold no gate, so lifecycle operations
   and Quit are never queued behind them, and Quit ends them. If the download fails,
   the toast shows the reason with **Retry** and **Finish without computer use**;
-  the latter creates the VM without the apply and computer use finishes at first
-  start as for any VM. After the desktop configuration boot, creation runs the
+  the latter creates the computer without the apply and computer use finishes at first
+  start as for any computer. After the desktop configuration boot, creation runs the
   apply once more in a deliberate temporary boot with the desktop session up
   ("Setting up the desktop and computer use", approval mode, then the usual stop).
-  If that fails the VM is still created and the Created toast says computer use
+  If that fails the computer is still created and the Created toast says computer use
   finishes at first start; the boot apply retries as always.
 - **LCU archive mount.** When Silo holds the verified pinned LCU archive
-  (`preparation::lcu_folder()`), new VMs also get it read-only at `/opt/silo/lcu`;
+  (`preparation::lcu_folder()`), new computers also get it read-only at `/opt/silo/lcu`;
   the helper prefers that copy (hash must match the lock), then the staged image
-  copy, then the download. Existing VMs are unchanged.
+  copy, then the download. Existing computers are unchanged.
 - **After every boot** (`prepare_booted`, so start and restore) Silo pushes
   `/usr/local/libexec/silo-computer-use`, `/var/lib/silo-computer-use/pinned.json`
   (the tested app/LCU pair) and runs `silo-computer-use apply --boot --approval
-  <mode>` to completion on a host background thread, inside the VM's operation turn
+  <mode>` to completion on a host background thread, inside the computer's operation turn
   and within a bound; the boot never waits for it or fails because of it, and a stop,
   delete or Quit cancels it. Pushing
   the helper each time keeps it current with Silo, which the image cannot. The same
-  runs when the app becomes ready while the VM runs (after the automatic
-  download), so a VM created before the app was published gains computer use
+  runs when the app becomes ready while the computer runs (after the automatic
+  download), so a computer created before the app was published gains computer use
   without a restart.
 - **`apply`** is idempotent and does nothing when the receipt matches the pinned
   pair and shows the approval mode applied completely. Otherwise: require the read-only mount and the
@@ -151,7 +151,7 @@ error. They use temporary paths without running a VM.
   --session direct --yes --approval ask|auto` as `silo` (LCU before 0.8.8 lacks the
   flag: the helper detects that from `lcu setup --help` and uses `--agent auto`); read `lcu status --json`; wait for the
   desktop session (bounded: 300 s after a boot, else 90 s; after a boot a session
-  that is `failed` or `stopped` while the desktop starts with the VM is started
+  that is `failed` or `stopped` while the desktop starts with the computer is started
   again with `silo-desktop start`, up to three times with 2, 4 and 8 s of backoff,
   before the setup fails with `desktop-session-not-running`) and run
   `lcu-session --user silo -- lcu doctor
@@ -168,66 +168,66 @@ error. They use temporary paths without running a VM.
   exists, with the saved approval, and is a quiet no-op otherwise (see the
   [research](research/lcu-agent-preregistration-2026-10-03.md)). The helper runs it at the
   end of every `apply` (every boot and app-ready, also when nothing else changed). While the
-  VM runs, the guest has no init system (no systemd, no inotify tools in the image), so
+  computer runs, the guest has no init system (no systemd, no inotify tools in the image), so
   `apply` starts `silo-computer-use watch` (one instance under a lock) that checks the
   agents' install directories (`~/.local/bin`, `~/.bun/bin`, `~/.cargo/bin`,
   `~/.npm-global/bin`, `/usr/local/bin`) every 5 s while an agent is pending and runs
   `silo-computer-use reconcile` when a pending binary appears. It ends when nothing is
   pending. `/etc/profile.d/silo-computer-use.sh` is a fallback for the `silo` account's login
   shells. Reconcile is skipped while an `apply` holds the helper lock (that run reconciles).
-- **Approval.** Per VM in `<storage>/computer-use/<id>.json`: the mode the user chose
+- **Approval.** Per computer in `<storage>/computer-use/<id>.json`: the mode the user chose
   (default `ask`), the last mode applied and the last attempt. The host applies changes
-  itself, one at a time per VM, on a background thread (see the
+  itself, one at a time per computer, on a background thread (see the
   [approval design](SiloUI-COMPUTER-USE-PLAN.md#approval-design-2026-10-02)); a stopped
-  VM picks a changed mode up at its next boot. `ask` removes only LCU's own harness
+  computer picks a changed mode up at its next boot. `ask` removes only LCU's own harness
   entries, `auto` adds them (Claude Code `permissions.allow`, Codex
   `default_tools_approval_mode`); native app permissions and the original runtime's own
   approvals are unchanged. The switch configures the agents' approval prompts and is not
-  a security boundary inside the sandbox: agents there have root. A fork starts with its
+  a security boundary inside the computer: agents there have root. A fork starts with its
   source's mode; an import starts with `ask`.
-- **Desktop state.** `read_desktop_state` adds `computerUse` for built-in VMs,
+- **Desktop state.** `read_desktop_state` adds `computerUse` for built-in computers,
   also while stopped (`state: "vm-stopped"` keeps the approval and the last
   versions seen): `state` (`unavailable`, `preparing`,
   `installing`, `ready`, `failed`), `reason`, `compatibility` (`tested`,
   `untested`, `unknown`), `warning`, `approval`, `appliedApproval`, `approvalApply`,
   `approvalApplyReason`, `appVersion`, `runtimeVersion`, `lcuVersion`, `agents`. The running read costs one guest command that also
   returns the helper's `status`, which only reads the receipt. The legacy `lcu*`
-  fields stay for VMs created before v4.
-- **Commands.** `set_computer_use_approval { workspace, mode: "ask" | "auto" }`
-  stores the mode and, when the VM runs, starts applying it in the background and
+  fields stay for computers created before v4.
+- **Commands.** `set_computer_use_approval { computer, mode: "ask" | "auto" }`
+  stores the mode and, when the computer runs, starts applying it in the background and
   returns at once (`approvalApply: pending`); the `setup-computer-use`
   desktop action reruns `lcu setup` (the panel's "Try again" after a failed setup; it
-  works for every v4 VM, whether or not the desktop is reachable). Both route to the owning
-  computer. An older Silo there answers "Update Silo on that computer to use
+  works for every v4 computer, whether or not the desktop is reachable). Both route to the owning
+  device. An older Silo there answers "Update Silo on that device to use
   computer use."
 
-Legacy VMs: `setup-lcu` keeps working for VMs created before v4 with the 0.4.0
-lock (`guest/lcu-legacy-lock.json`); it is refused for built-in VMs.
+Legacy computers: `setup-lcu` keeps working for computers created before v4 with the 0.4.0
+lock (`guest/lcu-legacy-lock.json`); it is refused for built-in computers.
 Its receipt writer uses the same file-sync, replacement and directory-sync
 sequence as desktop preferences. Failed file synchronization preserves the
 previous receipt, and failed directory synchronization rejects completion.
 Tests inject both failures and verify cleanup and retry using temporary paths.
 
-LCU installation on VMs created before v4 is separate and unchanged.
+LCU installation on computers created before v4 is separate and unchanged.
 
 ## Applications and external tools
 
-VMs use `silo`, with home `/home/silo`, for terminal, SSH, editor and desktop
+Computers use `silo`, with home `/home/silo`, for terminal, SSH, editor and desktop
 work, with passwordless sudo for administration. Installing the desktop later
-reuses that account and preserves existing workspace files. Older VMs move to
-it at their next start ([older VMs](SiloUI-WORKING-ACCOUNT-MIGRATION.md)).
+reuses that account and preserves existing workspace files. Older computers move to
+it at their next start ([older computers](SiloUI-WORKING-ACCOUNT-MIGRATION.md)).
 Adding a desktop never changes accounts or file ownership.
 
-Run graphical programs as the VM's desktop user with `DISPLAY=:1` and
+Run graphical programs as the computer's desktop user with `DISPLAY=:1` and
 `XAUTHORITY` pointing to `.Xauthority` in that user's home. The session provides
 D-Bus and an accessibility bus. Root-owned files retain ordinary Linux access
-rules, including on new VMs when files were deliberately created with sudo.
+rules, including on new computers when files were deliberately created with sudo.
 Conflicting pre-existing VNC configuration is reported before installation,
 rather than overwritten. See [working accounts](SiloUI-WORKING-ACCOUNT.md).
 
-On VMs created before v4, adding a desktop does not install agent tools;
+On computers created before v4, adding a desktop does not install agent tools;
 [LCU](SiloUI-COMPUTER-USE-PLAN.md) setup remains an explicit action on a running
-VM. Built-in desktops use the [automatic computer-use setup](#built-in-computer-use)
+computer. Built-in desktops use the [automatic computer-use setup](#built-in-computer-use)
 after boot; the [boot handler](../app/SiloUI/src-tauri/src/runtime.rs) schedules
 it, and [desktop actions](../app/SiloUI/src-tauri/src/desktop.rs) keep legacy
 `setup-lcu` separate from built-in `setup-computer-use`.

@@ -1,6 +1,6 @@
 # Silo 0.4.4 GitHub authentication investigation
 
-2026-09-14. Investigation of a report from another machine: GitHub connected,
+2026-09-14. Investigation of a report from another device: GitHub connected,
 All repositories selected, fake credentials receive GitHub HTTP 401, but the
 Silo placeholder causes curl error 52 for GET /user and Git info/refs.
 
@@ -9,8 +9,8 @@ Silo placeholder causes curl error 52 for GET /user and Git info/refs.
 Tag `v0.4.4` resolves to `9ce02908787c55dbd5f5b0101e32ebdeb637d084`.
 `git diff v0.4.4 -- app/SiloUI/src-tauri/src/github.rs
 app/SiloUI/src-tauri/src/runtime.rs app/SiloUI/patches` was empty.
-The other machine's persisted status, runtime credential profile, and logs were
-not inspected. No live VM or packaged application was launched or modified.
+The other device's persisted status, runtime credential profile, and logs were
+not inspected. No live computer or packaged application was launched or modified.
 No real credentials were read. The report is supplied evidence, not a locally
 reproduced network trace.
 
@@ -27,20 +27,20 @@ produces `{"version":1,"owners":[]}`. The apply loop can attach this disabled
 profile and report "GitHub access verified."
 
 This is a concrete path matching the report. It is not proof that the other
-machine has an empty catalog. Sign-in checks whether an installation exists,
+device has an empty catalog. Sign-in checks whether an installation exists,
 not whether that installation supplies at least one accessible repository.
 Catalog refresh also accepts an empty list.
 
-### Success indicators do not establish usable VM access
+### Success indicators do not establish usable computer access
 
 [`public_snapshot`](../app/SiloUI/src-tauri/src/github.rs#L529) derives Connected
-from the observed account credential expiration, independently of VM grants.
+from the observed account credential expiration, independently of computer grants.
 That distinction is valid, but Connected plus the All repositories checkbox
-cannot diagnose whether the VM has credentials.
+cannot diagnose whether the computer has credentials.
 
 The stronger false-success defect is in [`apply`](../app/SiloUI/src-tauri/src/github.rs#L676):
 "GitHub access verified" means reconciliation finished without error. It does
-not perform an authenticated VM request. It can report success with no grants.
+not perform an authenticated computer request. It can report success with no grants.
 
 ### Proxy denial becomes an unexplained connection drop
 
@@ -71,9 +71,9 @@ skips attachment when desired grants equal that higher-level cache.
 A concrete sequence to cover in a regression is: A applied successfully; update
 to B fails after boot cache removal; user restores A while its grants are still
 unexpired. Desired grants equal ACTIVE A, so attachment is skipped and success
-can be reported although the boot cache remains empty. A later VM start uses
+can be reported although the boot cache remains empty. A later computer start uses
 the disabled default. This sequence is statically identified, not executed in
-the isolated tests below and not established as the other machine's trigger.
+the isolated tests below and not established as the other device's trigger.
 
 ## Deterministic verification
 
@@ -99,8 +99,8 @@ network reproduction. Generated harness/build output stays under ignored target.
 
 ## Next diagnostic action
 
-Obtain the affected VM's workspace operation/error, cached repository count,
-and refresh deadline from the other host's Silo status. These are the minimum
+Obtain the affected computer's operation/error, cached repository count,
+and refresh deadline from the other device's Silo status. These are the minimum
 missing facts to distinguish the reproduced empty-catalog path from credential
 renewal/attachment failure. Do this before restarting, which changes evidence.
 Do not place a PAT in the guest to work around the failure.

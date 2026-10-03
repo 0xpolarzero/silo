@@ -3,8 +3,8 @@
 Status: implemented, 2026-09-28. Silo contains the separate guest
 session/stream lifecycle, recovery and stopped-update actions, Tauri proxy fixes,
 the Selkies first-frame fix, the LCU setup/status helper, and frontend
-status/actions. Final verification passed on a disposable scratch VM, including
-the ARM64 first-frame check, LCU doctor and x86 native input; the VM was stopped
+status/actions. Final verification passed on a disposable scratch computer, including
+the ARM64 first-frame check, LCU doctor and x86 native input; the computer was stopped
 afterwards. The [probe evidence](research/desktop-viewer-probe-2026-09-27.md)
 records exact results and remaining limits.
 This plan
@@ -19,8 +19,8 @@ and agent behavior, follow [Linux desktop](SiloUI-DESKTOP.md) and the later
 
 ## Outcome and boundaries
 
-Keep Tauri. Give each VM one persistent Xfce/X11 desktop, attach Selkies to it,
-and present the same viewer for local and remote VMs. LCU runs inside the guest
+Keep Tauri. Give each computer one persistent Xfce/X11 desktop, attach Selkies to it,
+and present the same viewer for local and remote computers. LCU runs inside the guest
 and acts on that desktop directly. Closing, resizing or reconnecting a viewer
 must not change the desktop's geometry, apps or lifetime.
 
@@ -33,7 +33,7 @@ Passive viewing means that connecting sends no unsolicited desktop mutations,
 not that the human has lost permission to type or click.
 
 This work preserves the existing optional-desktop installation, working account,
-automatic/manual startup, local/remote ownership and explicit VM shutdown
+automatic/manual startup, local/remote ownership and explicit computer shutdown
 semantics. No Electron runtime, new VM engine, desktop environment replacement,
 public relay service or general remote-desktop framework is required.
 
@@ -64,7 +64,7 @@ are not additional deliverables.
 ## Architecture to implement
 
 ```text
-VM: existing silo account and persistent filesystem
+Computer: existing silo account and persistent filesystem
   silo-desktop lifecycle
     ├─ virtual X11 display, fixed initial geometry and X authorization
     ├─ D-Bus + Xfce + applications
@@ -101,11 +101,11 @@ Report that failure truthfully and retain the explicit desktop restart action.
 Create one disposable, reproducible qualification harness under
 `app/SiloUI/scripts/`, with generated artifacts under the existing ignored
 `src-tauri/target/verification/` directory. It must operate on explicit scratch
-VM identities, record all pinned versions, and leave unrelated VMs/processes
+computer identities, record all pinned versions, and leave unrelated computers/processes
 untouched. Do not use a browser-only demonstration as acceptance.
 
-1. Record the current KasmVNC control on the same applications, VM resources,
-   host and network: cold/warm attach, input-to-visible-update latency, static
+1. Record the current KasmVNC control on the same applications, computer resources,
+   device and network: cold/warm attach, input-to-visible-update latency, static
    text, scrolling/video, CPU, memory and transferred bytes.
 2. Install the architecture-matched Selkies 2.0.0 Ubuntu 24.04 package, verifying
    its hash. Start display, Xfce/D-Bus and audio independently. Run Selkies as
@@ -117,7 +117,7 @@ untouched. Do not use a browser-only demonstration as acceptance.
 4. Perform an independently checked edit/save through LCU in the guest, before
    a viewer opens, while it observes, after it closes and across streamer
    failure/restart. Keep an unsaved editor buffer open during the lifecycle test.
-5. Repeat the compatibility slice on all three supported host builds and both
+5. Repeat the compatibility slice on all three supported device builds and both
    guest architectures, including a connection through another physical owner.
 
 **Exit:** real keyboard/pointer input, readable text, media playback and recovery
@@ -146,7 +146,7 @@ lock manifest following the existing pinned-runtime pattern.
   of the desktop or agent processes.
 - Keep the initial endpoint at guest port 6901, which `connection_local()`
   currently validates, and bind Selkies to guest loopback. The active viewer
-  uses SSH forwarding directly to guest loopback for local and remote VMs;
+  uses SSH forwarding directly to guest loopback for local and remote computers;
   `network::desktop_endpoint()` currently has no call sites. Verify the exact
   forwarding route in the spike instead of adding a public guest listener.
 - Separate public `sessionState` and `streamState`, retaining compatible legacy
@@ -173,7 +173,7 @@ Change [desktop_viewer.rs](../app/SiloUI/src-tauri/src/desktop_viewer.rs),
 [remote_access.rs](../app/SiloUI/src-tauri/src/remote_access.rs) and the public
 status projection in [desktop.rs](../app/SiloUI/src-tauri/src/desktop.rs).
 
-Keep the existing stable VM identity checks, remote-owner SSH bridge, loopback
+Keep the existing stable computer identity checks, remote-owner SSH bridge, loopback
 cookie, origin restrictions and lack of privileged Tauri capabilities in guest
 content. Keep local viewing independent of internet access. Reuse the shipped
 Selkies web client; use its supported configuration hooks before writing custom
@@ -185,7 +185,7 @@ of HTTP methods. Inspect the actual Selkies request/response contract before
 extending it: main client, media/control WebSockets, authentication, redirects,
 workers, WASM and any permitted clipboard operation. Preserve required media
 headers. Test against the real upstream service, including rejected origins,
-expired/replaced connections and wrong-VM access. Add only demonstrated missing
+expired/replaced connections and wrong-computer access. Add only demonstrated missing
 HTTP behavior; do not create a new proxy subsystem.
 
 Keep the existing authorized human-input path and upstream Basic authentication
@@ -207,7 +207,7 @@ Change [linux-desktop-viewer.tsx](../app/SiloUI/src/desktop/linux-desktop-viewer
 [linux-desktop-menu.tsx](../app/SiloUI/src/desktop/linux-desktop-menu.tsx) and their
 existing fixture/tests. Build fixture states while Delivery 2 is in progress.
 
-Keep the current dedicated viewer, VM identity, fullscreen and overflow menu.
+Keep the current dedicated viewer, computer identity, fullscreen and overflow menu.
 Human input works directly without takeover language, agent status controls,
 an interaction-mode toggle or a confirmation workflow. Preserve fit-to-window and
 native-size viewing; window resizing/fullscreen only changes local presentation.
@@ -217,7 +217,7 @@ Distinguish these states with one appropriate action:
 
 | State | Presentation/action |
 | --- | --- |
-| VM or desktop stopped | Existing explicit start action |
+| Computer or desktop stopped | Existing explicit start action |
 | Desktop running, viewer connecting | Connecting indication, no desktop restart |
 | Stream disconnected, desktop still running | Reconnect; retain a clearly marked stale frame or placeholder, never an apparently live frozen screen |
 | Stream service failed | Restart stream; explain that applications remain running |
@@ -294,19 +294,19 @@ Changing the desktop viewer must not rewrite all harness settings.
 An active KasmVNC X server cannot be replaced by Xvfb while preserving arbitrary
 open X11 application connections. Do not promise a live display migration.
 
-1. New scratch VMs receive recipe 2 after Delivery 1 passes. Existing VMs retain
+1. New scratch computers receive recipe 2 after Delivery 1 passes. Existing computers retain
    their active Kasm session and receipt. Keep the two concrete implementations
    during migration; do not build a plugin abstraction for hypothetical backends.
 2. Stage verified packages/configuration without replacing the running display.
    Activate the new recipe only at an explicit desktop update/restart or an
-   authorized VM restart. Explain that desktop applications close. Opening or
+   authorized computer restart. Explain that desktop applications close. Opening or
    closing the viewer must never trigger migration.
 3. Retain the previous working recipe, configuration and required packages until
    the new recipe is verified. Recovery switches the selected recipe back at a
    stopped-desktop boundary. It does not recover unsaved application state or
    make arbitrary apt transactions reversible.
 4. Exercise interrupted download/install, wrong hashes, disk exhaustion, stale
-   sockets, conflicting custom configuration, VM stop during install, owner
+   sockets, conflicting custom configuration, computer stop during install, owner
    disconnect and old/new owner-controller combinations. Preserve terminal/SSH
    access and a truthful retryable installation state.
 5. Audit the actual Selkies package and codec dependency inventory, license
@@ -321,21 +321,21 @@ open X11 application connections. Do not promise a live display migration.
 
 ## Verification matrix and measurement rules
 
-| Host client | Required local guest | Required remote coverage |
+| Device client | Required local guest | Required remote coverage |
 | --- | --- | --- |
 | Apple Silicon, macOS 14 minimum and current supported OS | ARM64 Ubuntu 24.04 | ARM64 and x86-64 guests on separate owners |
 | Linux x86-64, Ubuntu 24.04-compatible | x86-64 Ubuntu 24.04, real KVM | ARM64 and x86-64 guests on separate owners |
 | Linux ARM64, Ubuntu 24.04-compatible | ARM64 Ubuntu 24.04, real KVM | ARM64 and x86-64 guests on separate owners |
 
-Record Linux display session type and exercise X11 and Wayland host sessions
+Record Linux display session type and exercise X11 and Wayland device sessions
 where supported by the application. The guest remains X11. Record actual
 WebKitGTK/WKWebView, codec, GPU/CPU path and package versions. Emulation and
 cross-compilation are useful development checks, not substitutes for live
 qualification on the release architectures.
 
 Mandatory behavior checks: no-view LCU operation; connect/close/reconnect;
-streamer crash; desktop-stop/VM-stop boundaries; geometry/DPI/keymap/clipboard
-unchanged by observation; second observer; wrong-origin/wrong-VM rejection;
+streamer crash; desktop-stop/computer-stop boundaries; geometry/DPI/keymap/clipboard
+unchanged by observation; second observer; wrong-origin/wrong-computer rejection;
 real keyboard layouts, modifiers, dead keys, Unicode/IME, scrolling, focus,
 HiDPI/fullscreen; audio activation/recovery; remote loss and reconnect. Concurrent
 human/agent input is permitted, so tests must not expect either to acquire a
@@ -350,7 +350,7 @@ Record cold/warm attach, median/p95 input-to-frame latency, frame drops, CPU,
 bandwidth and text quality at equal resolution and comparable quality.
 
 Freeze numeric resource/latency budgets after measuring the existing baseline
-on the minimum target machines, before tuning the candidate. Store those budgets
+on the minimum target devices, before tuning the candidate. Store those budgets
 with the reproducible benchmark. No absolute performance numbers in this plan
 are presented as measured. Selection requires a documented quality/performance
 benefit or removal of the coupled-lifecycle failure, with explicit accounting

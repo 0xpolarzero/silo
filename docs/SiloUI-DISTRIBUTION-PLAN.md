@@ -8,7 +8,7 @@ before the owner's review of the completed release.
 ## Implementation and ownership
 
 - Native updater: trusted configuration, download/signature verification,
-  operation exclusion, confirmed VM shutdown, durable exact-ID restart recovery.
+  operation exclusion, confirmed computer shutdown, durable exact-ID restart recovery.
 - Application UI: compact General Updates card, default-on automatic checks,
   explicit download/install, real progress, actionable errors and confirmation.
 - Packaging: complete versioned draft, matching checksums/signatures/feed,
@@ -23,9 +23,9 @@ before the owner's review of the completed release.
 | Authenticity | Correct signature installs; wrong key or modified bytes refuse installation. |
 | Version selection | Current/older versions do not install; missing platform and malformed feeds report failure. |
 | Downloads | Offline/timeout/truncated response is recoverable; current installation stays usable. |
-| Installation | Read-only destination and insufficient space fail before VM shutdown or replacement. |
+| Installation | Read-only destination and insufficient space fail before computer shutdown or replacement. |
 | Runtime safety | Active operations block installation; new operations cannot race confirmed shutdown. |
-| Relaunch | Previously running exact VM IDs resume; stopped VMs remain stopped; interrupted shutdown/install is recoverable. |
+| Relaunch | Previously running exact computer IDs resume; stopped computers remain stopped; interrupted shutdown/install is recoverable. |
 | Data | Settings, accounts, secret references, root/workspace data and backups survive the upgrade. |
 | macOS | Downloaded ad-hoc DMG first launch and next-version upgrade exercised, including Keychain/login prompts and bundled helper execution. |
 | AppImage | Both architectures boot the installed app, resolve packaged tools, and update the actual AppImage path. |
@@ -51,7 +51,7 @@ Signing follow-up: MicroSandbox's checked-in `msb-entitlements.plist` already
 disables library validation; this establishes its configuration, not the authors'
 reason or that alternatives are impossible. Apple's macOS 14 library constraints
 offer a narrower OS-enforced loading policy. The isolated ad-hoc tests and real
-VM proof now pass on macOS 26.5; see [the evidence and limits](SiloUI-LIBRARY-CONSTRAINTS.md).
+computer proof now pass on macOS 26.5; see [the evidence and limits](SiloUI-LIBRARY-CONSTRAINTS.md).
 Minimum-OS testing and production packaging remain outstanding. This establishes
 a library-load boundary, not Developer ID-equivalent publisher authentication.
 Do not claim a checksum before launch is equivalent to OS enforcement at load time.

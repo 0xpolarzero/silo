@@ -159,7 +159,7 @@ own App, replace all three values. The example contains Silo's two public identi
 | `SILO_GITHUB_CLIENT_SECRET` | Client secret from the GitHub App settings; never commit the value |
 
 These identify Silo's GitHub App, not a user's password or personal access token.
-They do not alter saved accounts, repository selections, or sandbox Git identity.
+They do not alter saved accounts, repository selections, or computer Git identity.
 The client secret is embedded in the desktop executable and is extractable; it
 is not a confidential boundary in a distributed desktop app. Keep the source
 file and verbose Cargo build output private. Cargo's ignored build outputs also
@@ -188,7 +188,7 @@ release-mode packages on Linux. macOS DMG and updater artifacts are produced
 by the release workflow, after VM signature finalization. Platform resource
 preparation runs before native compilation and needs network access on a cold
 cache. Install Rust 1.94.0 (`rustup toolchain install 1.94.0`) for the pinned
-MicroSandbox source build, plus the host's Tauri prerequisites.
+MicroSandbox source build, plus the device's Tauri prerequisites.
 
 The Rust `build.rs` loads the file relative to the crate, so it also covers
 direct `cargo build`, `cargo test`, and direct Tauri CLI invocations from other
@@ -295,7 +295,7 @@ ad hoc signed disposable binaries; the Linux discovery run skips these
 platform-specific cases. CI also explicitly runs Debian package lifecycle
 tests as root on its disposable Ubuntu runner, after ordinary non-root discovery.
 Local discovery keeps the lifecycle opt-in disabled because those tests install
-packages and write system APT paths. The jobs do not run the ignored live VM tests.
+packages and write system APT paths. The jobs do not run the ignored live computer tests.
 The link check includes first-party source documentation, guest notices and
 changesets. A coverage regression compares its globs with tracked Markdown,
 excluding documentation in the partial upstream vendor tree.
@@ -318,7 +318,7 @@ version as a comment (`scripts/test_workflow_pins.py` enforces it).
 `.github/dependabot.yml` proposes updated SHAs in one weekly pull request.
 
 Native tests require the configuration described above. Frontend fixtures and
-unit tests do not prove installed-app behavior, live VM health, or two-computer
+unit tests do not prove installed-app behavior, live computer health, or two-device
 operation. Keep opt-in live tests separate from ordinary tests.
 
 ### Clippy baseline (K-19)
@@ -381,7 +381,7 @@ Supported packages:
 | Linux x86-64 | AppImage and Debian package | Signed AppImage replacement; Debian through authenticated APT |
 | Linux ARM64 | AppImage and Debian package | Signed AppImage replacement; Debian through authenticated APT |
 
-Linux builds target Ubuntu 24.04-compatible systems and require KVM for VMs.
+Linux builds target Ubuntu 24.04-compatible systems and require KVM for computers.
 AppImage bundles application libraries but does not make glibc or GPU support
 universal. Debian upgrades use authenticated APT from Silo or the system package
 manager and never replace package-owned binaries in place. See
@@ -390,7 +390,7 @@ Intel macOS and Windows are unsupported.
 Linux packages keep runtime/Git helpers in `/usr/libexec/silo/tools`; they never
 overwrite system Git in `/usr/bin`. AppImage keeps its helpers inside the image.
 The guest image, native runtime, host Git/LFS tools and notices are packaged with
-the application; existing VM disks are not release assets.
+the application; existing computer disks are not release assets.
 
 ### Signing setup
 
@@ -500,28 +500,28 @@ that can hold the full validity window; do not shorten retention silently.
 
 - Clean install from actual downloaded DMG, AppImage and Debian package.
 - Real signed version-to-version update and app relaunch; preserved settings,
-  account, secrets, VM disks and previous running state.
+  account, secrets, computer disks and previous running state.
 - Invalid signature, interrupted/offline download, low disk space, read-only
   installation directory and interrupted installation.
 - macOS quarantine first launch, signature verification and Keychain behavior
   after upgrading an ad-hoc signed app.
 - AppImage extraction, library resolution, tray/notifications/desktop integration
   on both architectures; package-manager upgrade for Debian installations.
-- Built-in computer use qualified on real Linux hosts, one x86-64 and one ARM64
+- Built-in computer use qualified on real Linux devices, one x86-64 and one ARM64
   with KVM, using the release's own Linux packages (the release workflows cannot
-  run VMs). On each host, run the opt-in live tests
+  run VMs). On each device, run the opt-in live tests
   `backup_controller::tests::live_built_in_computer_use_sets_up_and_survives_export_and_import`
   and `live_built_in_desktop_boots_repeatedly` with the v4 guest image, a
   published ChatGPT app and the packaged `msb`; see
   [ChatGPT app](SiloUI-CHATGPT-APP.md#integration-2026-10-02) for the inputs
   and `SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures`. Then confirm in the
-  installed package, with throwaway `e2e-*` sandboxes: a fresh boot, a
+  installed package, with throwaway `e2e-*` computers: a fresh boot, a
   stop and start, a checkpoint restore, an export and import, and LCU readiness
-  (`computerUse` is `ready` and `lcu doctor` passes) after each. Record the host,
+  (`computerUse` is `ready` and `lcu doctor` passes) after each. Record the device,
   architecture, package version, commands and results with the release evidence.
   Without it, built-in computer use is not claimed for that architecture.
 - No public-release claim until these checks have real evidence. Unit/build
-  success does not substitute for clean installation or VM execution.
+  success does not substitute for clean installation or computer execution.
 
 ## Primary references
 
@@ -749,7 +749,7 @@ exit, and checks that `waitpid` reports no unreaped child.
 
 ### Disk-space diagnostic units
 
-Low-space messages for update installation, bundled VM image preparation, and
+Low-space messages for update installation, bundled computer image preparation, and
 ChatGPT app downloads express their existing binary byte calculations as MiB.
 [NIST's binary-prefix definitions](https://physics.nist.gov/cuu/Units/binary.html)
 distinguish one MiB (1,048,576 bytes) from one MB (1,000,000 bytes). The previous MB

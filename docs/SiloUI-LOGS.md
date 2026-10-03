@@ -1,14 +1,14 @@
 # Retained logs
 
-Silo searches the retained history on the computer that owns each sandbox.
+Silo searches the retained history on the device that owns each computer.
 The 200-record page size limits one response, not the search range. Application
-state refreshes no longer fetch log tails for every sandbox.
+state refreshes no longer fetch log tails for every computer.
 
 ## Retention
 
 The bundled runtime retains execution, runtime and kernel output for at most
 seven days with independent 125 MiB budgets for host-written execution records
-and guest console output per sandbox (250 MiB total). Runtime and kernel console
+and guest console output per computer (250 MiB total). Runtime and kernel console
 segments share the console budget. It removes the oldest segments within each
 budget when either its size limit or the age limit is reached. Segments rotate
 at 10 MiB or one day.
@@ -16,22 +16,22 @@ Expiration uses the segment's first-write time, so newer records in an old
 segment can expire up to a day early. The limits apply to raw runtime files;
 they do not establish a minimum guaranteed investigation window.
 
-Running sandboxes enforce retention in their runtime. Silo also cleans up logs
-for sandboxes confirmed stopped. Cleanup does not start a VM. An old runtime
+Running computers enforce retention in their runtime. Silo also cleans up logs
+for computers confirmed stopped. Cleanup does not start a computer. An old runtime
 process must restart onto the updated bundled runtime to use the new writer.
-Idle running sandboxes check expiration every minute.
+Idle running computers check expiration every minute.
 
-Logs belong to the sandbox's runtime directory. An exported file is a separate
+Logs belong to the computer's runtime directory. An exported file is a separate
 user-owned copy and is not removed by log retention. Lifecycle, setup and secret
 Activity journals remain separate from diagnostic logs and retain their existing
 count limits.
 
 ## Search and investigation
 
-Select sandboxes in Logs, enter text, and add optional source or date filters.
+Select computers in Logs, enter text, and add optional source or date filters.
 No date range applies by default. Filter chips can be removed individually or
 reset with Clear; opening or cancelling the date editor leaves the search unchanged. Search runs against retained files, including rotated segments and stopped
-sandboxes. The view reports matching record counts. Older
+computers. The view reports matching record counts. Older
 records load automatically as the viewport approaches the end of the list.
 Rows render only around the viewport, with overscan, and short pages fill the
 available space. Follow refreshes the latest results; pause before browsing
@@ -44,7 +44,7 @@ The first request shows skeleton rows inside the table. Refreshing keeps the
 previous rows visible until the new response arrives. Returning to Logs restores
 the loaded pages, expanded rows and vertical scroll position from an in-memory session cache;
 use Refresh or Follow to fetch the latest records. Cache keys include the data
-source, computer/sandbox identities, search and filters. Inactive views expire
+source, device/computer identities, search and filters. Inactive views expire
 after ten minutes and share limits of eight views and 8 MiB of estimated log text.
 Each active view retains at most 5,000 records and 8 MiB of estimated record text
 and metadata. Paging advances this window toward older records and removes newer
@@ -55,9 +55,9 @@ exceed the window budget can omit records from the list; narrow the search or
 export to read them. These limits bound retained frontend history, not native
 indexes or responses in flight. Cached log text is never written to browser storage.
 
-The sandbox badge preserves its state dot and adds the existing remote-VM server
-icon when its owner is another computer. Hovering or focusing the badge shows
-the computer name; local badges show "This computer". Computer ownership has no
+The computer badge preserves its state dot and adds the existing remote-computer server
+icon when its owner is another device. Hovering or focusing the badge shows
+the device name; local badges show "This device". Device ownership has no
 separate column, leaving more room for the log message. Source remains a separate
 column. Narrow windows scroll horizontally instead of cropping metadata. Copy
 and the rotating disclosure chevron occupy the trailing actions column. Expanded
@@ -67,10 +67,10 @@ scroll anchor, deduplicates concurrent requests, and stops on an error or a
 non-advancing cursor. Retry repeats failed page requests; Refresh starts a new
 snapshot.
 
-Each record preserves computer and sandbox identity, timestamp, source and
+Each record preserves device and computer identity, timestamp, source and
 execution session when available. Legacy runtime and kernel lines without
 timestamps use the file timestamp and are marked as estimated. Unavailable
-computers and expired pagination snapshots produce explicit errors, not invented
+devices and expired pagination snapshots produce explicit errors, not invented
 log entries. New writes do not shift an existing page sequence.
 Search snapshots expire after 30 minutes without use and can be evicted under
 memory pressure. Refresh to begin a new snapshot. Search indexes store record
@@ -93,17 +93,17 @@ begin new searches. Pagination reads the cached snapshot selected by its cursor;
 it does not start a new search or perform Follow. The
 [query adapter](../app/SiloUI/src-tauri/src/runtime_logs.rs) returns cached pages
 before indexing new records, and its pagination regression preserves the original
-record set across append and rotation. Hosts running an older Silo ignore the
+record set across append and rotation. Devices running an older Silo ignore the
 follow token and run a full query.
 
 A malformed execution record, an unreadable boot failure, or any record over
-1 MiB no longer fails every query and export for the sandbox (review finding
+1 MiB no longer fails every query and export for the computer (review finding
 F-08). Malformed records appear as placeholders with the file time, marked
 estimated; console records over 1 MiB keep their first 64 KiB and end with
 "[record over 1 MiB truncated]"; execution records over 1 MiB become a
 placeholder. The view and export coverage report `unreadableRecords`. Times
 parsed from kernel console text are chosen by the guest, so those records carry
-`guestTimestamp` and the view labels them "time reported by the sandbox".
+`guestTimestamp` and the view labels them "time reported by the computer".
 Guest console floods cannot evict host-written execution records: each group
 has its own 125 MiB retention budget. Execution floods cannot evict console
 records either. Retention runs in the pinned runtime patch, whose
@@ -118,10 +118,10 @@ such a directory on Linux.
 Copy copies the records currently fetched, with identifying context.
 Export… saves all matching pages through the native save dialog as JSON
 Lines. It includes coverage metadata and complete record identities. Export
-queries each sandbox as a separate snapshot. Cancellation or a failed page leaves
+queries each computer as a separate snapshot. Cancellation or a failed page leaves
 the selected destination untouched and removes partial output.
-If a selected remote computer cannot serve logs, export asks you to update Silo
-on that computer and leaves the destination untouched.
+If a selected remote device cannot serve logs, export asks you to update Silo
+on that device and leaves the destination untouched.
 
 The display and export use marker-based sensitive-output filtering. PEM block
 state crosses records within each stream and execution session. Search scans
@@ -162,7 +162,7 @@ that arbitrary secrets are removed. Review exports before sharing them.
 - [Query adapter](../app/SiloUI/src-tauri/src/runtime_logs.rs): local retained
   files, search, pagination, surrounding records and remote owner routing.
 - [Retention policy](../app/SiloUI/src-tauri/src/log_retention.rs): segment age,
-  independent execution/console byte budgets and stopped-sandbox cleanup.
+  independent execution/console byte budgets and stopped-computer cleanup.
 - [Runtime patch](../app/SiloUI/patches/microsandbox-log-retention-desktop-start-0.7.6.patch):
   execution, runtime and kernel writers.
 - [Logs view](../app/SiloUI/src/features/application/pages/logs-page.tsx):
@@ -183,9 +183,9 @@ including when a hidden panel becomes visible. Scroll and resize checks share a
 request guard, so they cannot issue the same page concurrently.
 
 Chronological ordering depends on immutable history results, independently of
-sandbox names and state refreshes, following React's
+computer names and state refreshes, following React's
 [useMemo dependency contract](https://react.dev/reference/react/useMemo).
-Workspace presentation updates still reach the rows. Copy formats the current
+Computer presentation updates still reach the rows. Copy formats the current
 window only when clicked, and per-row Copy formats only that record. Paging
 requests only the owners at the newest unread frontier, so quieter owners' older
 pages stay buffered until they can appear in chronological order. Each owner

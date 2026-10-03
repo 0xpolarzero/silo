@@ -1,7 +1,7 @@
 # SiloUI Files
 
 Implemented 2026-09-09. Files browses `/workspace` through the bundled runtime.
-The existing repository panel, sandbox filters, pane layout and folder rows remain.
+The existing repository panel, computer filters, pane layout and folder rows remain.
 No content editor, upload, download, deletion, recursive search or automatic boot
 is included.
 
@@ -15,7 +15,7 @@ is included.
   loaded pages succeed. First loads and pagination use skeleton rows. Failures
   show compact safe messages and Retry; pagination failures preserve current rows.
 - Expanded folders refresh every ten seconds while Files is visible, and on window
-  focus or visibility restoration. Collapsed/hidden folders do not poll. VM state
+  focus or visibility restoration. Collapsed/hidden folders do not poll. computer state
   or freshness changes invalidate cached data and discard obsolete responses.
 - The frontend retains at most 128 inactive directory records. Native listings have
   a 20,000-entry, 1 MiB output and 2 MiB estimated allocation limit. Its cache holds
@@ -24,7 +24,7 @@ is included.
 
 ## Native boundary
 
-`list_workspace_directory(workspace, path, offset, snapshotId)` checks managed VM
+`list_computer_directory(computer, path, offset, snapshotId)` checks managed computer
 ownership and running state. Paths are validated and passed as positional arguments,
 never interpolated into shell source. GNU find lists one level with NUL-separated
 records; names containing spaces, Unicode or newlines retain their identity.
@@ -32,7 +32,7 @@ The guest script checks physical directory paths and lists links without followi
 them. This is not a security boundary against a malicious guest concurrently moving
 its directories. Non-UTF8 filenames fail safely rather than becoming lossy paths.
 
-The existing `msb exec` can automatically start stopped VMs. A small bundled patch
+The existing `msb exec` can automatically start stopped computers. A small bundled patch
 adds `--no-start`, using the SDK's connect-only path. Silo bypasses its own temporary
 boot wrapper for this mode and releases the GitHub update lock before reading.
 Guest execution has a five-second timeout, with an eight-second outer limit; the
@@ -58,13 +58,13 @@ Relevant pinned upstream source:
 
 ## Test in Silo
 
-1. Start a VM normally and open Sandboxes > Files. Expand folders under its name.
+1. Start a computer normally and open Computers > Files. Expand folders under its name.
 2. Collapse and reopen a folder: cached rows should appear immediately.
-3. Create a file using your terminal in that VM's `/workspace`. Return to Silo;
+3. Create a file using your terminal in that computer's `/workspace`. Return to Silo;
    the expanded folder refreshes on focus, or within ten seconds while visible.
 4. Use a folder with more than 200 entries: Load more appends rows with skeletons
    during loading. Collapse folders or switch tabs to stop their background refresh.
-5. Stop the VM normally and open Files: it explains that the VM needs starting.
+5. Stop the computer normally and open Files: it explains that the computer needs starting.
    Browsing alone must never start it.
 
 Final native verification: 223 ordinary tests passed, with five opt-in live tests
@@ -85,5 +85,5 @@ Rust handler registration alone does not grant access. See
 [Tauri capabilities](https://v2.tauri.app/security/capabilities/).
 The [native permission regression](../app/SiloUI/src/test/native-permissions.test.ts)
 checks registration, manifest entries and capability grants, including a snapshot
-of non-main grants. Verify a rebuilt Dev app against a disposable running VM
+of non-main grants. Verify a rebuilt Dev app against a disposable running computer
 separately; mocked invokes cannot prove native access.

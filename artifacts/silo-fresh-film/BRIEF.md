@@ -20,7 +20,7 @@ Allowed local product sources:
 - Root `AGENTS.md`.
 - `app/SiloUI/src/`: production UI, brand mark, tokens, components and fixtures.
 - `app/SiloUI/docs/silo-help.html`: product help.
-- `docs/SiloUI-REMOTE-COMPUTERS.md`: remote ownership and access facts.
+- `docs/SiloUI-CONNECTIONS.md`: remote ownership and access facts.
 - `docs/SiloUI-LUDA.md`: optional Linux desktop and guest agent tools.
 - Targeted `app/SiloUI/src-tauri/src/` reads if necessary to settle a product fact.
 - `../lcu/`, only for authentic computer-use cursor or product behavior if needed.

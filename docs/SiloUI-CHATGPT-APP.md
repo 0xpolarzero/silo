@@ -1,20 +1,20 @@
-# Pinned ChatGPT app on each computer
+# Pinned ChatGPT app on each device
 
 Implements section 4 of the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
 Code: `app/SiloUI/src-tauri/src/chatgpt_app.rs` (this folder) and
-`chatgpt_app/auto.rs` (the background worker), `computer_use.rs` (VM integration);
-lock: `app/SiloUI/src-tauri/guest/chatgpt-app-lock.json`. Every computer, remote
+`chatgpt_app/auto.rs` (the background worker), `computer_use.rs` (computer integration);
+lock: `app/SiloUI/src-tauri/guest/chatgpt-app-lock.json`. Every device, remote
 ones included, prepares its own copy. [Linux desktop](SiloUI-DESKTOP.md#built-in-computer-use)
-describes what a VM does with the folder.
+describes what a computer does with the folder.
 
 ## Behavior
 
 The LCU computer-use runtime needs the official ChatGPT Linux app. Silo never
 publishes OpenAI files. There is no consent step (owner decision 2026-10-02):
-every computer running Silo downloads the pinned `.deb` from OpenAI by itself, in
-the background, and keeps one read-only copy that all its VMs mount. The only
-disclosure is one sentence in the bundled help and in Settings, Computers, which shows it only in the "Computer use components" section that appears when a computer's download failed or its status cannot be read: "Silo downloads
-ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux
+every device running Silo downloads the pinned `.deb` from OpenAI by itself, in
+the background, and keeps one read-only copy that all its computers mount. The only
+disclosure is one sentence in the bundled help and in Settings, Connections, which shows it only in the "Computer use components" section that appears when a device's download failed or its status cannot be read: "Silo downloads
+ChatGPT for Linux from OpenAI so agents in your computers can use the Linux
 desktop." Guest architecture equals host architecture, so
 the Debian architecture is `arm64` on Apple Silicon and Arm Linux, `amd64` on
 x86-64.
@@ -59,19 +59,19 @@ call.
 `collect_garbage(root, lock, arch, in_use)` removes `published/<version>-<arch>`
 folders (and their records) that are neither pinned nor in `in_use` (folder
 names), stale staging directories and downloads of other versions. The app runs
-it at start and after an update is prepared, and only while no VM runs: all VMs
+it at start and after an update is prepared, and only while no computer runs: all computers
 mount the whole `published/` folder and a running guest may still use the
 previous version until its next boot sync.
 
 `ensure_published_dir(root)` creates the root and an empty `published/` (mode
 0755, so the guest's working account can enter the mount), moves a tree an
 earlier build published directly under the root into `published/` (it is
-verified like any other before use) and returns the canonical path VMs mount.
+verified like any other before use) and returns the canonical path computers mount.
 The app calls it at start, so the folder exists before the download finishes.
 
 ## Filesystem safety
 
-Another process, a previous run or a hostile VM share could leave links or
+Another process, a previous run or a hostile computer share could leave links or
 folders in the storage directory, so nothing is trusted by path:
 
 - The storage root must be a real directory (never a symlink) owned by the
@@ -126,7 +126,7 @@ mtime, mode, names, links or shape is caught on the next call. An
 attacker who can edit the tree can also edit the record and the cache is not
 a defense against that; the record binds the tree to the lock and detects
 accidents, partial writes, stale or hand-made folders and tampering by
-processes that do not also rewrite the record. Mounting is read-only, so a VM
+processes that do not also rewrite the record. Mounting is read-only, so a computer
 cannot change it. Verification runs on whichever thread calls `ensure` or
 `current_status`; the first full check of a process takes a few seconds in a
 release build (see Verification), so UI code should not call it on the render
@@ -146,7 +146,7 @@ published/<version>-<debarch>/
 ```
 
 Each `published/<version>-<debarch>` folder holds what dpkg would place in
-`/usr/lib/chatgpt`: `ChatGPT`, `resources/…`. `published/` is what VMs mount
+`/usr/lib/chatgpt`: `ChatGPT`, `resources/…`. `published/` is what computers mount
 read-only at `/opt/silo/chatgpt`; it holds only verified trees and is
 garbage collected, which keeps MicroSandbox's first `statfs` walk of the mount
 small (#1701/#1702). Records, staging and downloads stay outside it. A `consent.json` left by an
@@ -164,7 +164,7 @@ Linux; the unpacking tools inherit it). The worker loops: run `ensure` (which
 itself retries a broken connection 5 times with 2 to 16 s backoff and resumes the
 `.part` file), then
 
-- ready: sync running built-in VMs at once and collect garbage; stop;
+- ready: sync running built-in computers at once and collect garbage; stop;
 - retryable failure (network, firewall, disk space): wait 30 s, 1, 2, 5, 10, 30
   min, then hourly, and try again; the failure stays the reported status
   meanwhile (the clear "firewall or network filter may be holding Silo's
@@ -173,7 +173,7 @@ itself retries a broken connection 5 times with 2 to 16 s backoff and resumes th
   pinned version): stop; **Retry** starts a new worker.
 
 Retry (`chatgpt_app_retry`, below) wakes a waiting worker, which restarts the
-schedule, or starts a worker. Nothing waits for the download: VM creation, start
+schedule, or starts a worker. Nothing waits for the download: computer creation, start
 and restore only need the (possibly empty) `published/` folder. Silo does not
 detect metered networks; an offline or filtered connection costs only the later
 retries. The status survives as the in-process cache until the next attempt and
@@ -185,31 +185,31 @@ is recomputed from disk at every start.
 `downloading {receivedBytes,totalBytes}`, `verifying`, `extracting`,
 `ready {path,version}`, `failed {reason,retryable}`. The reporter is called
 from the worker thread (downloads throttled to 4 per second). The controller
-adds `unknown` for a computer whose status it cannot read.
+adds `unknown` for a device whose status it cannot read.
 
 ### Commands
 
-Both take an optional `computer`: the host id of a remote computer (omitted: this
-computer). A sandbox target is rejected; there is no placeholder sandbox routing.
+Both take an optional `device`: the id of a remote device (omitted: this
+device). A computer target is rejected; there is no placeholder computer routing.
 
-- `chatgpt_app_status { computer? }` returns the status. It never blocks the UI
+- `chatgpt_app_status { device? }` returns the status. It never blocks the UI
   thread and never re-verifies in the render path: reads use a cache filled at app
   start and by progress events; the first full digest of a process runs on a
-  background thread at start. For a remote computer it calls the bridge method
+  background thread at start. For a remote device it calls the bridge method
   `chatgpt.status`; an owner whose Silo lacks computer use answers `{"state":
   "unknown"}` (not an error), and the frontend maps any state it does not know,
   such as an older Silo's `notConsented`, to `unknown`.
-- `chatgpt_app_retry { computer? }` asks that computer to try now (bridge method
-  `chatgpt.retry`, a change, computer level) and returns its status at once; the
+- `chatgpt_app_retry { device? }` asks that device to try now (bridge method
+  `chatgpt.retry`, a change, device level) and returns its status at once; the
   owner downloads. An older owner reports it unsupported.
 
-`chatgpt-app-status` events carry this computer's status for the UI (`computer:
-null`); a remote computer has no events and is polled by the frontend (3 s while
+`chatgpt-app-status` events carry this device's status for the UI (`device:
+null`); a remote device has no events and is polled by the frontend (3 s while
 it works, 15 s otherwise). Removed on 2026-10-02: `chatgpt_app_accept_notice`,
 `chatgpt_app_prepare`, bridge methods `chatgpt.accept` and `chatgpt.prepare`,
 `consent.json` and the `notConsented` state.
 
-When preparing finishes with `ready`, running built-in VMs on this computer set
+When preparing finishes with `ready`, running built-in computers on this device set
 computer use up at once (see below); stopped ones do it when they start.
 
 ## Extraction and validation
@@ -313,15 +313,15 @@ is a test-profile artifact only.
 The mount, guest flow and commands are in `computer_use.rs`; the guest side in
 `guest/silo-computer-use.py`; the image side in `guest-image/Dockerfile`.
 
-- **Mount.** A VM created from a v4 or later image (`desktop.builtIn`) is
+- **Mount.** A computer created from a v4 or later image (`desktop.builtIn`) is
   created with `-v <canonical published dir>:/opt/silo/chatgpt:ro`; creation
-  fails if Silo has no such folder rather than make a VM that can never get
+  fails if Silo has no such folder rather than make a computer that can never get
   computer use. Every restore (import, transfer, checkpoint restore and fork)
   passes the same `-v` again, because MicroSandbox never carries host mounts in
-  disk snapshots, and checks that the restored VM reports a read-only `Bind`
+  disk snapshots, and checks that the restored computer reports a read-only `Bind`
   mount at that path. Exports drop the mount from the saved configuration (its
-  host path means nothing elsewhere); `desktop.builtIn` in the VM settings is
-  what makes the importing computer mount its own folder. Pre-v4 VMs never get
+  host path means nothing elsewhere); `desktop.builtIn` in the computer configuration is
+  what makes the importing device mount its own folder. Pre-v4 computers never get
   the mount.
 - **Guest.** Silo pushes the helper and the pinned pair into the guest and runs
   `apply` after every boot and when the app becomes ready, on a host background
@@ -341,4 +341,4 @@ and waits for the producer before returning the spawn error. Dropping a Rust
 [`Child`](https://doc.rust-lang.org/std/process/struct.Child.html) neither stops
 nor reaps it. The synthetic `tar_pipeline_reaps_the_producer_when_the_consumer_cannot_start`
 regression forces a missing consumer executable and verifies `waitpid` returns
-`ECHILD` for the producer. It uses a disposable child, without packages or VMs.
+`ECHILD` for the producer. It uses a disposable child, without packages or computers.

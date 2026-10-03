@@ -12,7 +12,7 @@ not prove the WebKit UI, desktop services, or hardware virtualization works.
 | Hardware | `python3 scripts/test-linux-runtime.py` | Real KVM creation, bundled image import/cache reuse, guest tools/identity, backup/restore data round trips, live secret changes and interrupted restart recovery. |
 
 Run from `app/SiloUI`. Hardware tests use temporary Silo runtime directories and
-synthetic secret material. They do not touch existing sandboxes. Desktop tests
+synthetic secret material. They do not touch existing computers. Desktop tests
 use a temporary HOME, temporary XDG directories and a private D-Bus session;
 their saved settings fixture is a file owned by the test, with no hooks or
 fixtures in the application UI.
@@ -55,7 +55,7 @@ The AMD64 CI job requires real KVM tests after successful build and desktop
 checks. ARM64 hosted runners have no `/dev/kvm`, so that CI hardware step is
 explicitly skipped; the separate local Lima hardware evidence below covers
 ARM64. The hardware script itself exits nonzero when KVM is unavailable,
-rather than marking an unexercised VM workflow successful.
+rather than marking an unexercised computer workflow successful.
 
 ## Coverage limits
 
@@ -221,7 +221,7 @@ PATH="$HOME/.cargo/bin:$PATH" sh scripts/test-linux-gnome.sh
 The launcher creates temporary XDG state and a private D-Bus session. GNOME runs
 as a nested compositor with software rendering; Silo explicitly uses its native
 Wayland socket. It removes its own processes and private portal mount after the
-run. Existing desktop sessions, app data and sandboxes remain untouched.
+run. Existing desktop sessions, app data and computers remain untouched.
 
 Evidence is under `test-results/linux/gnome-wayland/`: `desktop.json` records
 all sixteen passes, `gnome-services.json` records the five service assertions,

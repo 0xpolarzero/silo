@@ -54,7 +54,7 @@ Ordered source patch pins (all `-0.7.6.patch`; "Feature" is a Silo-specific capa
 
 The former ninth patch (`microsandbox-preserve-basic-auth`, an independent Basic Auth substitution policy plus `query_params` normalization) was dropped for 0.7.4 and stays dropped; the rationale is in [MicroSandbox 0.7.4 upgrade](#microsandbox-074-upgrade). Its 2026-09-27 verification (isolated `adopt-disk` on a copied catalog preserving `headers=true`, `basic_auth=true`, `query=false`, `body=false`) applies to the 0.7.2 runtime only.
 
-The `secret-values-stdin` patch keeps secret values out of the runtime's environment (review items B-19/D-45 and B-28). Upstream 0.7.2 and 0.7.4 resolve every secret source of kind `env` from the `msb` process environment, which other processes of the same user can read, and which passes names chosen for secrets (for example `SSLKEYLOGFILE`) to the host runtime; its alternative `store` source kind is declared but unimplemented ("store-backed secret sources are not supported yet"). With `MSB_SECRET_VALUES_STDIN=1`, the patched CLI reads one bounded JSON object of source values from standard input before any thread starts, removes the flag so the sandbox process does not inherit it, and resolves `env` sources only from those values; the host environment is then never consulted, so a missing value fails closed. Without the flag, behaviour is unchanged. Silo sets the flag for every runtime command and sends the GitHub access profile (`SILO_GITHUB`) and the sandbox's assigned secrets this way, never as environment variables. The patch adds the `--silo-secret-values-protocol` probe, which the build requires. It changes the three places that read an `env` source (the network resolver, live secret rotation in `modify`, and the restore pre-check). On 2026-09-30 the ten-patch macOS CLI built (release, `net,ssh,embed-binaries`); the new `secret_values` unit test, the CLI probe test and the network resolver tests passed, and a smoke test of the built binary accepted a valid document, rejected malformed and oversized ones, and ignored standard input without the flag. It has not been exercised with a live VM on macOS or Linux, and the SDK's `modify` tests were not run.
+The `secret-values-stdin` patch keeps secret values out of the runtime's environment (review items B-19/D-45 and B-28). Upstream 0.7.2 and 0.7.4 resolve every secret source of kind `env` from the `msb` process environment, which other processes of the same user can read, and which passes names chosen for secrets (for example `SSLKEYLOGFILE`) to the host runtime; its alternative `store` source kind is declared but unimplemented ("store-backed secret sources are not supported yet"). With `MSB_SECRET_VALUES_STDIN=1`, the patched CLI reads one bounded JSON object of source values from standard input before any thread starts, removes the flag so the sandbox process does not inherit it, and resolves `env` sources only from those values; the device environment is then never consulted, so a missing value fails closed. Without the flag, behaviour is unchanged. Silo sets the flag for every runtime command and sends the GitHub access profile (`SILO_GITHUB`) and the computer's assigned secrets this way, never as environment variables. The patch adds the `--silo-secret-values-protocol` probe, which the build requires. It changes the three places that read an `env` source (the network resolver, live secret rotation in `modify`, and the restore pre-check). On 2026-09-30 the ten-patch macOS CLI built (release, `net,ssh,embed-binaries`); the new `secret_values` unit test, the CLI probe test and the network resolver tests passed, and a smoke test of the built binary accepted a valid document, rejected malformed and oversized ones, and ignored standard input without the flag. It has not been exercised with a live VM on macOS or Linux, and the SDK's `modify` tests were not run.
 
 The v0.7.2 release added, and v0.7.4 and v0.7.6 keep, the supported snapshot/restore surface used by Silo. The build checks `create --mount-owned`, `create --no-start`, `create --progress-json`, `exec --no-stdin`, snapshot creation, `restore --cow-mem` (0.7.6's name for `--forked`), the seven exact Silo protocol probes, and managed SSH. The CLI is built with `net,ssh,embed-binaries` so the verified `agentd` payload is included. Silo no longer carries the 0.6.17-only Imago storage override; the pinned Imago source of v0.7.2 and v0.7.4 preserves logical disk length during discard.
 
@@ -402,14 +402,14 @@ Git and dugite-native use GPL-2.0. Git LFS uses MIT plus its recorded component 
 
 The native implementation supports two push routes:
 
-- When VM pushes are enabled, tools in the VM may push through Silo-controlled GitHub access. GitHub credentials remain on the host.
-- When VM pushes are disabled, guest pushes stay blocked. The user may select commits and click Push in Silo, which pushes from the host.
+- When computer pushes are enabled, tools in the computer may push through Silo-controlled GitHub access. GitHub credentials remain on the host.
+- When computer pushes are disabled, guest pushes stay blocked. The user may select commits and click Push in Silo, which pushes from the host.
 
-App Push never grants standing push permission to the VM. It uses the bundled Git and Git LFS, standard Git transfers, only required committed Git/LFS data, and incremental transfer where the protocol supports it. The [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md#native-implementation) describes credential forwarding and host Push. The current [host adapter](../app/SiloUI/src-tauri/src/host_push.rs) checks authority before pushing the confirmed branch and commit through isolated bundled Git.
+App Push never grants standing push permission to the computer. It uses the bundled Git and Git LFS, standard Git transfers, only required committed Git/LFS data, and incremental transfer where the protocol supports it. The [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md#native-implementation) describes credential forwarding and host Push. The current [host adapter](../app/SiloUI/src-tauri/src/host_push.rs) checks authority before pushing the confirmed branch and commit through isolated bundled Git.
 
 ## Resource and VM backup UX recommendation (2026-09-08)
 
-Historical recommendation against MicroSandbox 0.6.17, not current export behavior. The later implementation supports checkpoints and exports while a sandbox runs; see [checkpoint qualification](SiloUI-CHECKPOINTS-PLAN.md) and [export and import testing](SiloUI-DEPENDENCIES-BACKUP-TESTING.md#export-a-sandbox). The original recommendation follows.
+Historical recommendation against MicroSandbox 0.6.17, not current export behavior. The later implementation supports checkpoints and exports while a computer runs; see [checkpoint qualification](SiloUI-CHECKPOINTS-PLAN.md) and [export and import testing](SiloUI-DEPENDENCIES-BACKUP-TESTING.md#export-a-computer). The original recommendation follows.
 
 - Onboarding should show genuine compatibility and packaged-runtime checks. There is no measured basis for a universal 16 GiB RAM or 20 GiB free-space gate. Check capacity when creating, starting, backing up, or restoring a selected VM. Show an actionable shortage at that operation; do not add a permanent capacity checklist or invent a minimum when no defensible requirement exists.
 - RAM admission must account for the selected VM and host pressure, rather than treating unused RAM as the available budget. [Apple documents memory pressure](https://support.apple.com/guide/activity-monitor/view-memory-usage-actmntr1004/mac) as a combination of free, cached and wired memory and swap activity; Linux documents `MemAvailable` as an estimate accounting for reclaimable memory in [procfs](https://docs.kernel.org/filesystems/proc.html). Performance estimates warrant warnings, not unsupported hard minimums. Runtime overhead and any reserve still require measurement.
@@ -508,7 +508,7 @@ The package includes the upstream MIT license, compiler runtime license, and
 license/notice files for the external modules actually linked for that guest
 architecture. The Go compiler is a build dependency, not an application runtime
 dependency. The helper is copied to an operation-specific guest temporary directory;
-existing sandboxes need no image rebuild.
+existing computers need no image rebuild.
 
 The upstream server uses a conventional `lfs/objects` tree and does not resolve
 `lfs.storage` or linked-worktree configuration itself. Silo asks guest Git LFS for
@@ -524,7 +524,7 @@ objects. Pure SSH fetch can exit successfully with server-side objects absent;
 fetch success alone does not establish completeness. On two historical 6 MB
 versions, a cold source transfer used 12,001,358 protocol bytes; a repeat with an
 existing host cache used 275 bytes. Local timings were 0.209 s and 0.157 s. These
-measurements establish cache bandwidth savings, not live VM or SSH-network latency.
+measurements establish cache bandwidth savings, not live computer or SSH-network latency.
 
 B-28 source mapping: each general secret keeps its guest name and placeholder,
 but the CLI records an opaque `SILO_SECRET_<number>` source. The number is the
@@ -560,7 +560,7 @@ code or changing lifecycle status. Source files remain intact.
 The pinned [MicroSandbox reconciliation source](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/sandbox/mod.rs)
 checks process ownership before marking a stale run Crashed. Its
 `test_reconcile_sandbox_runtime_state_marks_dead_processes_crashed` regression
-and the adoption patch's fixture tests exercise this boundary without a VM.
+and the adoption patch's fixture tests exercise this boundary without a computer.
 Silo's migration regression requires exactly inspect, adopt-disk and inspect.
 These tests do not qualify live migration or a packaged app.
 
@@ -620,8 +620,8 @@ Three launch paths had reached the old home through `runtime_paths`, which
 resolved to `runtime/` until `runtime-generation.json` existed. The storage
 monitor ran its periodic inspection whenever migration blocked operations (its
 branch was inverted). The main window's data source starts polling outside the
-migration screen, so `read_network_state` inspected every saved VM every ten
-seconds. Quit listed managed VMs before stopping them. An empty window with no
+migration screen, so `read_network_state` inspected every saved computer every ten
+seconds. Quit listed managed computers before stopping them. An empty window with no
 frontend still modified the database at launch.
 
 `runtime::runtime_paths` is now the only way to name a runtime, and it refuses
@@ -629,7 +629,7 @@ with "Finish the Silo runtime migration before using sandboxes." unless the
 migration is `complete` or `not-required`; a record that needs manual repair
 refuses too. The staged conversion uses `runtime::migration_runtime_paths`, which
 names only `runtime-checkpoints-converted`. Callers that merely look for running
-VMs (Quit, update checks, update preparation, health checks) treat the refusal as
+computers (Quit, update checks, update preparation, health checks) treat the refusal as
 "nothing is running", so a failed migration cannot stop Quit or an update.
 An interrupted export or import must settle before the migration may start
 (E-50), so its recovery and the backup service, which keeps its runtime command
@@ -654,7 +654,7 @@ two steps, and the first never writes to the previous generation:
    the journal records its result ("Export/Import interrupted before the upgrade", or
    cancelled) and stays in place for the export and import page.
 2. **What only the runtime can remove waits for the converted storage.** An export
-   capture (`pending_capture`), a loaded import group or the sandbox identity of an
+   capture (`pending_capture`), a loaded import group or the computer identity of an
    unfinished import (`group`, `id`) are in the previous generation, so the migration
    copies them into the converted generation with everything else. Giving them up
    would waste that space and could make a later import under the same name fail, so
@@ -927,13 +927,13 @@ and [Tokio's blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.
 
 ### Editor connections after the migration (2026-10-01)
 
-"Open in editor" writes one SSH entry per sandbox into `<runtime home>/ssh/*.conf`
+"Open in editor" writes one SSH entry per computer into `<runtime home>/ssh/*.conf`
 and prepends `Include "<runtime home>/ssh/*.conf"` to the user's `~/.ssh/config`.
 The runtime home is the alias `~/.silo/<hash of the storage path>`, so the previous
 and the converted generation have different ones. The migration copies `ssh/`
 verbatim, so each copied entry still named the previous home in its `ProxyCommand`
 (`MSB_HOME`), `IdentityFile` and `UserKnownHostsFile`, and the user's file included
-only the previous home until the user opened the sandbox from Silo again. An
+only the previous home until the user opened the computer from Silo again. An
 editor that reconnects by itself (a restored VS Code window) therefore ran `msb
 ssh serve` against the pre-upgrade copy: it started the stale sandbox outside the
 migration guard, an upgraded `msb` opened that database and changed it in place,

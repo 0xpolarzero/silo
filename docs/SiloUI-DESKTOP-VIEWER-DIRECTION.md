@@ -2,7 +2,7 @@
 
 Selected direction, 2026-09-27. This supersedes the split local-native/remote-
 streamed recommendation in the [research synthesis](SiloUI-DESKTOP-EXPERIENCE-RESEARCH.md).
-Silo implements this direction as of 2026-09-28; final scratch-VM
+Silo implements this direction as of 2026-09-28; final scratch-computer
 verification passed.
 See the
 [implementation plan](SiloUI-DETACHED-DESKTOP-IMPLEMENTATION-PLAN.md) and
@@ -15,29 +15,29 @@ sequence is in the [implementation plan](SiloUI-DETACHED-DESKTOP-IMPLEMENTATION-
 
 ## Decision
 
-**Use the same streamed desktop viewer on every host, for local and remote
-VMs. The desktop belongs to the VM; the viewer attaches to it.**
+**Use the same streamed desktop viewer on every device, for local and remote
+computers. The desktop belongs to the computer; the viewer attaches to it.**
 
 The target stack is:
 
 - **Guest session:** Xfce on an independently supervised X11 virtual display,
   initially Xvfb, with its own audio and desktop processes. Use the same guest
-  recipe on ARM64 and x86-64. The VM's desktop service owns this session.
+  recipe on ARM64 and x86-64. The computer's desktop service owns this session.
 - **Capture and streaming:** Selkies 2.0, installed as a native package and
   attached to that existing display/audio session. Supervise it separately.
 - **Host viewer:** one shared client based on Selkies' maintained web client,
   embedded in Silo's existing Tauri webview on macOS and Linux. Keep the
   guest-facing webview restricted. Do not add Electron or bundled Chromium.
 - **Connection:** Selkies WebSockets through authenticated local forwarding;
-  on a remote computer, carry the same endpoint through authenticated SSH.
+  for a remote computer, carry the same endpoint through authenticated SSH.
   Local viewing needs no internet or hosted relay. Both locations use the same
   protocol and user interface.
 
 The viewer owns presentation, playback, and authorized interaction.
-It does not own the VM, compositor, desktop applications, or streaming-service
+It does not own the computer, compositor, desktop applications, or streaming-service
 lifetime. Closing or crashing the view must not trigger their shutdown. This
 is a lifecycle boundary, not a requirement for another application runtime.
-Silo's explicit Quit/VM-stop policy is a separate operation.
+Silo's explicit Quit/computer-stop policy is a separate operation.
 
 The earlier draft introduced Electron to standardize the browser engine.
 That recommendation lacked a reproduced Tauri compatibility failure and a
@@ -53,15 +53,15 @@ integration boundary this design selects.
 
 ## The same path on each platform
 
-| Supported host | Local VM | Remote VM |
+| Supported device | Local computer | Remote computer |
 | --- | --- | --- |
 | Apple Silicon macOS 14+ | Tauri/WKWebView; local authenticated forwarding to guest Selkies | Same viewer and stream through SSH |
 | Linux x86-64, Ubuntu 24.04-compatible | Tauri/WebKitGTK; local authenticated forwarding to guest Selkies | Same viewer and stream through SSH |
 | Linux ARM64, Ubuntu 24.04-compatible | Tauri/WebKitGTK; local authenticated forwarding to guest Selkies | Same viewer and stream through SSH |
 
-The host's architecture selects its viewer binary. The guest's architecture
-selects its packages. The network stream does not require the host and remote
-guest to share an architecture. A Wayland Linux host can view an X11 guest;
+The device's architecture selects its viewer binary. The guest's architecture
+selects its packages. The network stream does not require the device and remote
+guest to share an architecture. A Wayland Linux device can view an X11 guest;
 these are separate display systems.
 
 [Tauri documents](https://v2.tauri.app/reference/webview-versions/) WKWebView on
@@ -70,7 +70,7 @@ with a Tauri child webview in
 [`desktop_viewer.rs`](../app/SiloUI/src-tauri/src/desktop_viewer.rs).
 This proves an existing embedding boundary, not Selkies compatibility.
 Qualify Selkies' exact codec/decoder path, audio, input and reconnect behavior
-on minimum and current supported host environments. A browser API appearing
+on minimum and current supported device environments. A browser API appearing
 in documentation does not establish codec availability or hardware decoding.
 
 Selkies publishes architecture-matched native guest packages. Package
@@ -79,7 +79,7 @@ availability is not successful Silo qualification on every combination.
 ## Computer use bypasses the human viewer
 
 ```text
-Inside each VM:
+Inside each computer:
   Agent backend -> LCU -> the guest's Linux desktop and applications
                             |
                             +-> Selkies -> Tauri viewer -> human observer
@@ -90,7 +90,7 @@ Optional human control:
 
 LCU reads the guest's accessibility state/screenshots and operates its desktop
 directly. It does not inspect or click Silo's viewer. Install and launch it
-inside the VM under the desktop account, attached to the same X11 display and
+inside the computer under the desktop account, attached to the same X11 display and
 D-Bus session. Its session launcher discovers an existing Xfce session; direct
 mode needs `DISPLAY`, `DBUS_SESSION_BUS_ADDRESS` and any required `XAUTHORITY`.
 It does not start the desktop. See the pinned
@@ -102,7 +102,7 @@ guest installation and maintained harness adapters differ from the old LCU
 prototype. The implementation plan treats those prerequisites separately from
 the Tauri viewer and the currently shipped Luda recipe.
 
-The model can be remote; the desktop tool execution belongs inside the VM.
+The model can be remote; the desktop tool execution belongs inside the computer.
 An ordinary host-side SSH command does not automatically load guest MCP tools.
 Opening, closing, resizing or reconnecting the human view must not be a
 prerequisite for an agent action. The streamer shows the resulting application
@@ -141,7 +141,7 @@ do not promise zero CPU or zero timing impact on a running task.
 | Observe an agent | Stream the same session the agent operates; observation neither claims control nor pauses the agent |
 | Type or click | Forward intentional human input without pausing, revoking or coordinating the agent; concurrent input is the human's responsibility |
 | Additional viewing connections | No competing resize or clipboard synchronization; a separate public read-only sharing product is outside this plan |
-| Stop desktop or VM | Use the explicit lifecycle command and show its consequences; this is not a viewer disconnect |
+| Stop desktop or computer | Use the explicit lifecycle command and show its consequences; this is not a viewer disconnect |
 
 An explicitly delegated agent task retains authorization until revoked or
 completed; do not insert repeated permission prompts. Supported agents operate
@@ -169,11 +169,11 @@ Repair reusable gaps upstream before shipping.
 | Guest with a supported encoder | Use hardware encoding within the same service when detected and qualified; host GPU presence alone is insufficient |
 | Clipboard and files | Deliberate controller operations with direction and completion feedback; observing does not overwrite either clipboard |
 | Audio | Playback from the same session; microphone/camera require a separate activation |
-| Multiple views or displays | Reuse the current per-VM viewer; no automatic guest display creation/removal on window open or close |
-| VM checkpoints | Reconnect after the VM's supported restore operation; independently verify guest devices and process state. Viewer reconnect is not a checkpoint |
+| Multiple views or displays | Reuse the current per-computer viewer; no automatic guest display creation/removal on window open or close |
+| Computer checkpoints | Reconnect after the computer's supported restore operation; independently verify guest devices and process state. Viewer reconnect is not a checkpoint |
 
 "All use cases" here means Silo's supported Linux GUI, human/agent, local/remote
-and host-platform workflows. It does not assert that every guest desktop,
+and device-platform workflows. It does not assert that every guest desktop,
 3D application, HDR mode, USB peripheral, IME or codec is already qualified.
 Encoding support also does not supply a GPU to applications inside a VM.
 
@@ -184,7 +184,7 @@ viewer, RDP client and gaming client. This pays local encoding overhead in
 exchange for one session contract, one client implementation and one set of interaction
 semantics. If this single route cannot meet the local latency/resource budget,
 the decision must be revisited with measurements. Do not disguise that failure
-by silently shipping different feature sets on different hosts.
+by silently shipping different feature sets on different devices.
 
 Keeping Tauri avoids adding a second application runtime. An open webview,
 decoder and frame buffers still consume host memory; capture and encoding
@@ -211,7 +211,7 @@ for the selected initial WebSocket route.
 ## Release and trust boundaries
 
 Pin Selkies, the guest display/desktop/audio packages and application
-dependencies. Record the host webview/codec versions in qualification results;
+dependencies. Record the device webview/codec versions in qualification results;
 system webview updates are outside the application's package pin. Record
 component updates, reproducible artifacts and rollback.
 Selkies 2.0 is newly released; the existing Kasm implementation remains the
@@ -241,7 +241,7 @@ the same independently checked saved result in each case. Check that observer
 window resizing never changes the guest geometry used by LCU. Viewing or
 using human input must never pause or reconfigure the agent.
 
-Run this exact artifact on the three supported host builds, locally and over
+Run this exact artifact on the three supported device builds, locally and over
 SSH. Apply the implementation plan's behavior and resource gates. Verify
 keyboard layouts/IME and codec negotiation in the actual
 WKWebView/WebKitGTK environments; passing in an external browser is not proof

@@ -8,18 +8,18 @@ Backup-page behavior and build details below describe that snapshot unless a
 section states a later date. For current runtime pins and qualification limits,
 see [runtime packaging](SiloUI-RUNTIME-PACKAGING.md) and
 [`runtime-inputs.json`](../app/SiloUI/runtime-inputs.json). The current UI uses
-per-sandbox Export and Import; see [bundled help](../app/SiloUI/docs/silo-help.html).
+per-computer Export and Import; see [bundled help](../app/SiloUI/docs/silo-help.html).
 
 ## Bundled runtime
 
 Silo bundles MicroSandbox, libkrunfw, Git and Git LFS. Backup compression and
 archive reading are compiled into Silo and MicroSandbox; users need no `tar`,
 `gtar` or `zstd` commands. Git LFS supports repositories that use LFS; it is not
-used for VM backups or Git identity. Guest tools belong to the VM image.
+used for computer backups or Git identity. Guest tools belong to the guest image.
 
 Tauri's [sidecar](https://v2.tauri.app/develop/sidecar/) and
 [resource](https://v2.tauri.app/develop/resources/) layouts determine packaged
-paths. No host `msb` fallback is allowed. Source, patch, agent, library and build
+paths. No system `msb` fallback is allowed. Source, patch, agent, library and build
 inputs are pinned by the preparation script and recorded in its manifest.
 On macOS, Tauri signs the runtime sidecar with the Hypervisor entitlement.
 The existing ad-hoc debug build disables hardened runtime because ad-hoc
@@ -34,8 +34,8 @@ The upstream CLI only offered `run --from-snapshot`, which starts guest programs
 The checked-in patch adds `create --from-snapshot`, using the existing SDK
 snapshot preparation with startup disabled. It persists the Created state,
 retains root-disk capacity, and permits cleanup without pretending a guest ran.
-Silo also uses an explicit `create --no-start` flag for new image-based VMs.
-Creation and restore therefore leave VMs stopped; neither boots guest programs
+Silo also uses an explicit `create --no-start` flag for new image-based computers.
+Creation and restore therefore leave computers stopped; neither boots guest programs
 just to prepare storage or apply Git identity.
 
 The pinned [image client](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/crates/image/lib/registry/client.rs#L577)
@@ -47,12 +47,12 @@ metadata before publication, so older malformed cache entries cannot produce a
 new unusable archive. Integrity validation is never relaxed.
 
 Silo retains the existing internal application identifier to preserve settings,
-VM data, permissions and login registration. The visible application name is
+computer data, permissions and login registration. The visible application name is
 Silo. Native entry points have no fixture queries or test environment overrides.
 Fixtures remain reachable only from tests and explicit preview modules.
 
 Silo uses a verified, private short symlink for `MSB_HOME` so macOS Unix socket
-paths fit their 103-byte limit. The actual VM data stays in Application Support.
+paths fit their 103-byte limit. The actual computer data stays in Application Support.
 The alias is unique to the app data directory; existing unrelated paths are
 rejected. The default Ubuntu image uses the explicit Docker registry hostname
 (`registry-1.docker.io/library/ubuntu:24.04`), which was used for the live test.
@@ -61,12 +61,12 @@ a special cache or credential workaround.
 
 ## Storage and resource limits
 
-Each VM has a managed OCI root disk sized by **runtime storage** and a separate
+Each computer has a managed OCI root disk sized by **runtime storage** and a separate
 ext4 disk at `/workspace` sized by **workspace storage**. Both capacities are
 real, independent limits. Creation formats the workspace disk using the pinned
-Rust filesystem library; it needs no host formatting command.
+Rust filesystem library; it needs no device formatting command.
 
-Silo uses actual host CPU and RAM capacity for configuration limits and reports
+Silo uses actual device CPU and RAM capacity for configuration limits and reports
 unavailable measurements as errors. Startup pressure is advisory. There is no
 arbitrary global RAM/disk minimum. Compressed backup size cannot predict restore
 space reliably, so unknown estimates are omitted. Write failures, including a
@@ -75,8 +75,8 @@ full destination, fail the operation and trigger cleanup.
 ## Backup and restore
 
 The pinned [snapshot contract](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/docs/sdk/typescript/snapshots.mdx)
-requires stopped VMs and captures disk state, not memory or running programs.
-Silo stops selected running VMs, captures root and workspace storage plus VM
+requires stopped computers and captures disk state, not memory or running programs.
+Silo stops selected running computers, captures root and workspace storage plus computer
 configuration, then attempts to restart those previously running. Restart failure
 is reported separately from archive success.
 
@@ -88,8 +88,8 @@ are validated before publication or restore. Unsupported external mounts and
 runtime settings must fail instead of being silently omitted.
 
 Archives publish atomically without replacing an existing file. Cancellation
-removes temporary output. Restore asks which VM to restore from a multi-VM
-archive, validates the new name, and creates a new stopped VM. Existing VMs are
+removes temporary output. Restore asks which computer to restore from a multi-computer
+archive, validates the new name, and creates a new stopped computer. Existing computers are
 never restore targets. Archives record guest CPU architecture; a different or
 unsupported CPU architecture is rejected before restore. Same-architecture
 macOS/Linux transfers are not blocked by OS name. Root and workspace capacity and saved identity survive.
@@ -99,7 +99,7 @@ turns into an empty successful history. Native file selection uses the [Tauri di
 
 Git identity uses the pinned [`modify --env` command](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/crates/cli/lib/commands/modify.rs)
 to persist Git author and committer environment variables, then reads them back.
-This requires neither booting the VM nor installing Git inside it. Repository
+This requires neither booting the computer nor installing Git inside it. Repository
 cloning and GitHub authentication are separate work; unimplemented requests
 cannot report completion.
 
@@ -115,10 +115,10 @@ the desktop environment or remote viewer. Its
 states that snapshots initially share data blocks, are not independent backups,
 and exclude nested subvolumes unless those are snapshotted separately.
 
-Btrfs support alone therefore does not establish a whole-sandbox rollback
+Btrfs support alone therefore does not establish a whole-computer rollback
 guarantee. Recovery needs a defined disk scope, a captured checkpoint, and a
-tested restore path. Silo's existing stopped-VM disk backup and restore above
-does not require a Btrfs guest filesystem. It restores a new stopped VM rather
+tested restore path. Silo's existing stopped-computer disk backup and restore above
+does not require a Btrfs guest filesystem. It restores a new stopped computer rather
 than rewinding a running one. Neither filesystem rollback nor Silo's disk
 restore reverses external effects such as an email sent or a remote API update.
 This documentation comparison did not exercise a live backup or restore.
@@ -159,13 +159,13 @@ explicitly prohibits calling blocking pickers on the main thread.
 ## Portable image descriptors
 
 The native restore walkthrough found that upstream archived VMDK descriptors
-contain absolute source-host paths. Importing them verbatim either conflicts
+contain absolute source-device paths. Importing them verbatim either conflicts
 with the destination's descriptor for the same image or retains unusable paths.
 The [upstream descriptor writer](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/crates/image/lib/stitch/vmdk.rs)
 confirms those paths are canonicalized during image conversion. Restore must
 rebuild the descriptor from validated image extents at destination paths, while
 retaining integrity checks for the underlying image content and never replacing
-files used by an existing VM. Live verification uses different source and
+files used by an existing computer. Live verification uses different source and
 destination runtime homes to expose this portability boundary.
 
 Cache publication also uses atomic no-overwrite installation. If another process
@@ -176,14 +176,14 @@ relocated descriptor, existing descriptor preservation, and publication races.
 ## Setup submission and progress
 
 A saved onboarding draft is not a submitted runtime operation. Continue on
-Sandboxes submits that exact configuration; Continue on GitHub submits identity
-work after its machine configuration. Equal submissions reuse the same job.
+Computers submits that exact configuration; Continue on GitHub submits identity
+work after its computer configuration. Equal submissions reuse the same job.
 Changed submissions run in order, and an older completion cannot hide later
-queued work. Unsupported repository setup fails explicitly before changing VMs.
+queued work. Unsupported repository setup fails explicitly before changing computers.
 Finish queues final settings persistence after its prerequisites succeed.
 
 The production source exposes explicit idle, queued, running, succeeded and
-failed states. Native configuration emits correlated per-VM events immediately
+failed states. Native configuration emits correlated per-computer events immediately
 before and after actual configuration, verification and removal. A completed
 verification event cannot be emitted after an error. These native commands and
 state reads run off the UI thread using Tauri's existing blocking-worker pattern.
@@ -198,15 +198,15 @@ already reports layer bytes and preparation stages, but its
 hides progress when stderr is not a terminal. Silo now bundles a narrow
 `create --progress-json` patch: allowlisted stage names and numeric counts go to
 stderr; normal JSON command results remain on stdout. No image URL, digest,
-credential or host path is included. Byte updates are throttled to one per
+credential or device path is included. Byte updates are throttled to one per
 second while phase boundaries and completion are retained. A total is exposed
-only when all layer sizes are known. Completed bytes never establish VM success.
+only when all layer sizes are known. Completed bytes never establish computer success.
 
 The native setup runner consumes that stream, records disk/configuration checks,
 and sends small updates through the existing
 [Tauri event mechanism](https://v2.tauri.app/develop/calling-frontend/).
 Quiet creates repeat the last real stage with elapsed time every five seconds.
-Errors include the failing VM, a safe reason and recovery guidance; runtime
+Errors include the failing computer, a safe reason and recovery guidance; runtime
 exit codes are retained. Unknown raw stderr is not copied to the activity panel.
 Warnings cover actual unavailable memory checks and activity-storage failures.
 
@@ -219,7 +219,7 @@ history from a different attempt when a current command finishes. A failure
 before native activity storage opens still receives an explicit in-session
 failure message. Copy uses the same filtered text shown in the existing panel.
 
-## Host author defaults
+## Device author defaults
 
 Production reads a complete name/email pair from the installed Git using
 [`git config --global --includes --get`](https://git-scm.com/docs/git-config).
@@ -228,24 +228,24 @@ checkout's repository identity. If either value is unavailable, it reads a
 complete pair through [`jj config get`](https://docs.jj-vcs.dev/latest/config/).
 It never combines fields from different tools or guesses from the login name.
 Both reads run outside a repository, have bounded output and a two-second
-timeout, and never change host configuration. Missing/failed reads leave manual
+timeout, and never change device configuration. Missing/failed reads leave manual
 entry available. GUI executable lookup includes standard user and Homebrew
 installation directories.
 
-Onboarding fills only untouched empty identities when host detection arrives;
+Onboarding fills only untouched empty identities when device detection arrives;
 manual edits and disabled Apply choices remain intact. Mutation responses that
-omit host identity retain the detected value until the next authoritative read.
-The existing sandbox identity action also sets and verifies `JJ_USER` and
+omit device identity retain the detected value until the next authoritative read.
+The existing computer identity action also sets and verifies `JJ_USER` and
 `JJ_EMAIL`, the [Jujutsu identity environment variables](https://docs.jj-vcs.dev/latest/cli-reference/#jj-metaedit),
 alongside Git author/committer values. This does not install jj or change the
-host's Git/jj configuration. Example identities remain isolated to fixtures;
+device's Git/jj configuration. Example identities remain isolated to fixtures;
 there is no production fallback name or email.
 
 ## Dependency recovery (2026-09-09)
 
 Dependency checks remain read-only. Missing, incompatible or damaged bundled
 components direct the user to reinstall Silo through the original download or
-package manager while keeping app data. `RuntimePaths` stores VM data under
+package manager while keeping app data. `RuntimePaths` stores computer data under
 Tauri's app data directory, separate from bundled executables and resources;
 settings use that same app data directory. Replacing app files does not require
 removing either data directory. No automatic download, repair or privilege
@@ -257,13 +257,13 @@ damage and must not recommend reinstalling. Unreadable bundled files explain
 read/run permissions. A skipped Git LFS check directs the user to the preceding
 Git failure rather than inventing a second diagnosis.
 
-Host failures describe the host action: update an unsupported OS/distribution,
+Device failures describe the device action: update an unsupported OS/distribution,
 enable virtualization/KVM, or grant the current user access to `/dev/kvm` and
 sign out and back in. Linux uses a read/write device open plus
-`KVM_GET_API_VERSION`, never VM creation. The [kernel API documentation](https://docs.kernel.org/virt/kvm/api.html)
+`KVM_GET_API_VERSION`, never computer creation. The [kernel API documentation](https://docs.kernel.org/virt/kvm/api.html)
 requires API 12. [Ubuntu's virtualization documentation](https://ubuntu.com/server/docs/how-to/virtualisation/libvirt/)
 confirms that hardware virtualization can require enabling in firmware settings.
-These are host requirements, so reinstalling Silo cannot resolve them. Commands
+These are device requirements, so reinstalling Silo cannot resolve them. Commands
 that change groups or install distribution packages are intentionally not guessed
 across all Linux distributions.
 
@@ -274,7 +274,7 @@ old glibc, missing KVM and denied KVM access; store tests verify bridge and time
 recovery never recommends reinstalling. Linux failure mappings run as pure tests
 on macOS; this is not live Linux hardware verification.
 
-## Start selected sandboxes when Silo launches (2026-09-09)
+## Start selected computers when Silo launches (2026-09-09)
 
 Native app setup starts a blocking worker once per process. It reads the same
 validated persisted settings store as the UI and requires both completed
@@ -283,16 +283,16 @@ IDs, once each, in saved order. An empty selection starts nothing. Refreshing or
 reopening a webview cannot repeat startup: Tauri's [`Builder::setup`](https://docs.rs/tauri/latest/tauri/struct.Builder.html#method.setup)
 accepts a `FnOnce` hook on the native app builder, unlike a webview page-load hook.
 
-Each selected local VM must already exist and belong to Silo. Running VMs are
-left running; stopped VMs use the existing lifecycle resource checks and start
-command, then are inspected to verify Running. Missing, SSH, inconsistent, or
+Each selected local computer must already exist and belong to Silo. Running computers are
+left running; stopped computers use the existing lifecycle resource checks and start
+command, then are inspected to verify Running. Missing, inconsistent, or
 failed selections do not create or repair anything. Remaining selections are
 still attempted, and one existing error dialog lists failures, even if system
 notifications are disabled. Real state refreshes after each attempt.
 
 Quit cancels remaining selections and waits for the current bounded native start
 before exit. Startup does not alter the saved preference or selected IDs. Tests
-use temporary metadata and a fake process runner, never a user's VMs. Focused
+use temporary metadata and a fake process runner, never a user's computers. Focused
 checks: `cargo test --manifest-path src-tauri/Cargo.toml launch_` and
 `cargo test --manifest-path src-tauri/Cargo.toml startup::tests` from `app/SiloUI`.
 
@@ -313,21 +313,21 @@ never requests permission, changes preferences, or changes an operation's result
   app's desktop-entry hint. No shell command or extra executable is needed. The
   notification daemon controls desktop policy and suppression; the standard does
   not expose per-application permission authorization or a standard permission prompt.
-- Sandbox action, identity setup, and sandbox configuration failures notify once
+- Computer action, identity setup, and computer configuration failures notify once
   from the command's final result, including failures before work begins. Startup
   failures use the same action category. There is no cooldown that hides a distinct
   failed retry. Notifications contain fixed safe recovery text, never raw errors,
   paths, credentials, or Git author values.
 - Backup and restore report failed results and backup restart-required results.
   Explicit cancellation and successful backup/restore results remain silent.
-- A background thread inspects real local sandbox state every 30 seconds with a
+- A background thread inspects real local computer state every 30 seconds with a
   five-second total command budget. It never holds the mutation lock during reads,
   skips active mutations, and discards reads if a mutation remains active or saved
-  metadata changed. It does not start VMs. Existing runtime paths must already exist.
-  The first observation and newly discovered sandbox baselines are silent; subsequent
+  metadata changed. It does not start computers. Existing runtime paths must already exist.
+  The first observation and newly discovered computer baselines are silent; subsequent
   actual state/health-check transitions produce one grouped notification with up to
-  three validated sandbox names and states. Unchanged observations do not repeat.
-  Remote SSH placeholders are excluded. Disabling notifications still advances the
+  three validated computer names and states. Unchanged observations do not repeat.
+  Remote computers are excluded. Disabling notifications still advances the
   baseline, so reenabling does not replay old problems.
 
 Primary references:
@@ -338,15 +338,15 @@ Primary references:
 - [Freedesktop desktop-entry hint](https://specifications.freedesktop.org/notification/latest/hints.html)
 
 Native policy tests cover master/category preferences, denied/unknown permission
-states, silent first/unchanged/new-sandbox observations, actual state transitions,
+states, silent first/unchanged/new-computer observations, actual state transitions,
 bounded grouped messages, and backup failure/partial-restart/cancellation routing.
 No test sends a synthetic OS notification or changes the user's notification settings.
-Linux delivery requires live Linux desktop verification; the current host is macOS.
+Linux delivery requires live Linux desktop verification; the current device is macOS.
 
-Startup recognizes MicroSandbox `Created` as an existing, startable VM as well as
+Startup recognizes MicroSandbox `Created` as an existing, startable computer as well as
 `Stopped`. The pinned [sandbox status enum](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/crates/db/lib/entity/sandbox.rs)
 defines `Created` as created but not yet started; Silo's `--no-start` preparation
-uses this state and displays it as Stopped. Crashed VMs require a manual start;
+uses this state and displays it as Stopped. Crashed computers require a manual start;
 launch does not perform automatic crash recovery. The startup regression covers
 both Created and Stopped before verifying Running.
 
@@ -354,16 +354,16 @@ both Created and Stopped before verifying Running.
 GitHub access now has a separate [implementation plan](SiloUI-GITHUB-IMPLEMENTATION.md).
 The previous GitHub transport proposals were removed.
 
-## Existing VM edits (2026-09-09)
+## Existing computer edits (2026-09-09)
 
-Existing VM names and both disk sizes remain visible but cannot be edited.
+Existing computer names and both disk sizes remain visible but cannot be edited.
 Storage fields explain on hover or keyboard focus: “To use a different disk
-size, create a new VM and transfer your data.” New and duplicated configurations
-retain editable names and storage. Completed onboarding VM rows use the same
+size, create a new computer and transfer your data.” New and duplicated configurations
+retain editable names and storage. Completed onboarding computer rows use the same
 restrictions.
 
-CPU and memory limits/ceilings remain editable. A running VM's editor says
-“Stop VM and save”. Native configuration updates stop a running VM, inspect it
+CPU and memory limits/ceilings remain editable. A running computer's editor says
+“Stop and save”. Native configuration updates stop a running computer, inspect it
 again, and refuse to modify settings unless it is stopped. Saving does not start
 it again. Existing rename and disk-size validation remains in the backend.
 
@@ -382,7 +382,7 @@ changed during this UI check; the running-VM stop/save path has automated covera
 ## Interrupted backup and restore (2026-09-10)
 
 A private, atomically replaced `backup-operation.json` records the confirmed
-request before work starts. It stores the archive path, sandbox identities,
+request before work starts. It stores the archive path, computer identities,
 previously running guests, restore ownership, cancellation and final result.
 No credential material belongs in this journal. Unreadable or newer journals are
 preserved and disable backup actions instead of guessing that work succeeded.
@@ -390,7 +390,7 @@ preserved and disable backup actions instead of guessing that work succeeded.
 Relaunch displays the existing progress card while checking the checkpoint.
 Backup recovery restores previously running guests using current GitHub/secret
 settings, verifies an already published archive, or restarts the capture/copy.
-Restore recovery accepts a committed VM only after checking its exact machine ID,
+Restore recovery accepts a committed computer only after checking its exact computer ID,
 state and disks. Incomplete storage is removed only when its durable owner marker
 matches the saved operation; restore then replays from the verified archive.
 Cancellation is durable and completes recovery/cleanup instead of replaying work.
@@ -406,33 +406,33 @@ exact result and cannot erase a later operation.
 Stop, snapshot and stopped-create commands inherit an OS file lock. Recovery waits for
 that lock with a bounded timeout before reading or removing their output, even
 when the original app process was killed. Start commands do not inherit the lock,
-because their VM daemon intentionally survives. These are documented
+because their computer daemon intentionally survives. These are documented
 [macOS flock semantics](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/flock.2.html)
 and [Linux flock semantics](https://man7.org/linux/man-pages/man2/flock.2.html).
 The bundled MicroSandbox patch makes `create --from-snapshot` stop before boot;
 this is the only create form the backup service uses.
 
 Startup waits for pending backup recovery before configuration/lifecycle recovery
-and optional automatic starts. Waiting for another sandbox mutation is
+and optional automatic starts. Waiting for another computer mutation is
 cancellable. If cleanup cannot prove ownership or finish safely, the journal stays
 pending, Backup actions are unavailable, and the existing error card explains
 that relaunch will retry; dismissing a message cannot discard that checkpoint.
 
-### Standalone VM actions after app interruption (2026-09-10)
+### Standalone computer actions after app interruption (2026-09-10)
 
-Start, Stop and Restart now save the exact Silo VM ID, requested action, phase and
-original activity event before running the command. Journals are per VM so a
-failed request does not block unrelated sandboxes. Recovery verifies both saved
+Start, Stop and Restart now save the exact Silo computer ID, requested action, phase and
+original activity event before running the command. Journals are per computer so a
+failed request does not block unrelated computers. Recovery verifies both saved
 metadata and the runtime's `silo.machine-id`; it does not act on a replacement
-that reused a name. Successful deletion retires only that VM's pending action.
+that reused a name. Successful deletion retires only that computer's pending action.
 
 Restart is a verified Stop followed by a persisted Start phase. Exiting after
-Stop resumes Start; exiting after Start verifies the already-running VM instead
-of restarting again. A failed Stop is not successful just because a VM crashed.
+Stop resumes Start; exiting after Start verifies the already-running computer instead
+of restarting again. A failed Stop is not successful just because a computer crashed.
 The existing activity entry is updated when recovery completes. Explicit Stops
 recovered during launch are excluded from automatic starts for that launch.
 
-Startup waits for backup/restore recovery, then configuration recovery, then VM
+Startup waits for backup/restore recovery, then configuration recovery, then computer
 action recovery, before applying normal automatic-start preferences. No new UI
 was added. Pending work uses existing status, activity and error surfaces.
 
@@ -442,7 +442,7 @@ runtime lifecycle lock. Silo waits for transitional states and rechecks identity
 and terminal state even if a surviving start wins a duplicate command. It does
 not pass Silo's configuration-worker lock into detached Start, where the daemon
 could retain it indefinitely. An outside program deliberately stopping/starting
-the same VM before a pending Stop checkpoint is reconciled is outside exactly-once
+the same computer before a pending Stop checkpoint is reconciled is outside exactly-once
 guarantees: the saved desired state is enforced again.
 
 Proof: the opt-in `lifecycle_recovery_survives_real_worker_exit_without_repeating_restart`

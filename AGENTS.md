@@ -18,18 +18,19 @@ the requirement.
 ## Source and layout
 
 - `app/SiloUI/src/`: UI, production data sources, deterministic fixtures, and frontend tests.
-- `app/SiloUI/src-tauri/src/`: runtime management, remote computers, native integrations, and backend tests.
+- `app/SiloUI/src-tauri/src/`: runtime management, connections to other devices, native integrations, and backend tests.
 - `app/SiloUI/src-tauri/`: guest scripts, runtime inputs, capabilities, and Tauri packaging configuration.
 - `app/SiloUI/scripts/`: runtime preparation and release tooling.
 - `app/SiloUI/docs/`: bundled application help.
 - `docs/README.md`: index of implementation documentation, research, and proposals.
+- `docs/SiloUI-VOCABULARY.md`: the product terms (computer, device, Connections, workspace, sandboxed) that UI, code, saved data and documentation use.
 - `docs/SiloUI-RELEASES.md`: authoritative build configuration and release procedure.
 
 Preserve bundled MicroSandbox and Git tools, guest scripts, the Rust vendor patch, and the `silo-remote` SSH bridge. They are part of the current app. Generated `node_modules`, `dist`, Cargo `target`, binaries, and runtime resources are ignored build output; never commit them or private local configuration.
 
 ## Setup and commands
 
-Use Node.js 24, Python 3.11 or newer, Rust, and the host's Tauri prerequisites. Runtime preparation (`npm --prefix app/SiloUI run runtime:prepare`, also run by `desktop`) requires Rust 1.94.0 for the pinned MicroSandbox build, Go 1.25, and network access on a cold cache. Supported packages target Apple Silicon macOS 14+ and Linux x86-64/ARM64 on Ubuntu 24.04-compatible systems; Linux VMs require KVM.
+Use Node.js 24, Python 3.11 or newer, Rust, and the device's Tauri prerequisites. Runtime preparation (`npm --prefix app/SiloUI run runtime:prepare`, also run by `desktop`) requires Rust 1.94.0 for the pinned MicroSandbox build, Go 1.25, and network access on a cold cache. Supported packages target Apple Silicon macOS 14+ and Linux x86-64/ARM64 on Ubuntu 24.04-compatible systems; Linux VMs require KVM.
 
 Native builds and Rust tests require GitHub App configuration. Follow `docs/SiloUI-RELEASES.md#local-setup`; do not print `github-build.local.json`, signing credentials, or verbose build output containing configuration. For native unit tests only, the release guide permits explicit synthetic GitHub configuration. Never distribute those test executables.
 
@@ -73,7 +74,7 @@ Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. On macOS, t
 
 Only two builds exist and they never share state: production (`org.silo.preview`,
 "Silo": `desktop:build`, releases) and development (`org.silo.dev`, "Silo Dev":
-`npm run desktop`, `desktop:build:debug`, any `--debug` build). Every host name
+`npm run desktop`, `desktop:build:debug`, any `--debug` build). Every device-specific name
 (home dir, Keychain services, remote bridge link, editor profile) comes from
 `src-tauri/src/channel.rs`; never hard-code one. Production names must never change.
 See `docs/SiloUI-BUILD-CHANNELS.md`.
@@ -82,12 +83,12 @@ See `docs/SiloUI-BUILD-CHANNELS.md`.
 
 - Use the Dev build (`Silo Dev`) for development and automation. Never drive, launch for testing, or modify the production app, its data, Keychain items, `~/.silo`, `~/.local/bin/silo-remote`, or VS Code `Silo` profile. Tests use temp HOMEs and fixtures. The owner runs `npm --prefix app/SiloUI run dev:import-production-settings`; agents must not run it against real data.
 - Rebuild before inspecting a packaged change. Launch the exact bundle path with `open`, not an arbitrary installed copy with `open -a Silo`.
-- Before a manual launch, inspect any existing instance and verify its executable path and ownership. Do not interrupt the user's running app or VMs as routine test cleanup.
-- Closing the window leaves the app running. Graceful Quit stops Silo-owned local VMs; it does not stop remote VMs. A shutdown failure leaves the app open. Account for these side effects before exercising Quit against real state.
+- Before a manual launch, inspect any existing instance and verify its executable path and ownership. Do not interrupt the user's running app or computers as routine test cleanup.
+- Closing the window leaves the app running. Graceful Quit stops Silo-owned local computers; it does not stop computers on other devices. A shutdown failure leaves the app open. Account for these side effects before exercising Quit against real state.
 - Use deterministic frontend fixtures for UI-only checks. Use semantic roles and identifiers instead of screen coordinates where available. Native UI automation requires an interactive session and the applicable OS permissions; do not reset permissions globally or dismiss unfamiliar security dialogs.
 - Verify process identity before attaching a debugger. Prefer graceful cleanup of processes started for the test; never use `pkill`, `killall`, guessed PIDs, or routine `kill -9`.
-- Keep generated evidence under an ignored directory such as `app/SiloUI/src-tauri/target/verification/`. Keep private system logs in a temporary local path and do not publish credentials, VM data, or unredacted logs. Preserve the exact failing output before rerunning.
-- Report commands, results, the exact inspected bundle, and whether data was fixture or live. A frontend test proves UI behavior against its supplied data; a build proves compilation and packaging. Neither proves live VM health, two-computer management, installed-app behavior, or release readiness.
+- Keep generated evidence under an ignored directory such as `app/SiloUI/src-tauri/target/verification/`. Keep private system logs in a temporary local path and do not publish credentials, computer data, or unredacted logs. Preserve the exact failing output before rerunning.
+- Report commands, results, the exact inspected bundle, and whether data was fixture or live. A frontend test proves UI behavior against its supplied data; a build proves compilation and packaging. Neither proves live computer health, two-device management, installed-app behavior, or release readiness.
 
 ## SiloUI release notes
 

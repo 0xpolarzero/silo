@@ -2,37 +2,37 @@
 
 Status: approved 2026-10-01; the backend integration (sections 3 to 5) is implemented
 and verified live (2026-10-02, see the evidence in [ChatGPT app](SiloUI-CHATGPT-APP.md#integration-2026-10-02)). This replaces the optional,
-per-VM desktop installation described in [Linux desktop](SiloUI-DESKTOP.md)
-for new VMs, and replaces Luda with [LCU](https://github.com/0xpolarzero/lcu).
+per-computer desktop installation described in [Linux desktop](SiloUI-DESKTOP.md)
+for new computers, and replaces Luda with [LCU](https://github.com/0xpolarzero/lcu).
 
 ## Goal
 
-A new VM has a Linux desktop and agent computer use ready with no setup: a
-user creates a VM, starts an agent (Claude Code, Codex, Pi, OMP or Hermes), and
+A new computer has a Linux desktop and agent computer use ready with no setup: a
+user creates a computer, starts an agent (Claude Code, Codex, Pi, OMP or Hermes), and
 the agent can use the desktop immediately. The only prompts are the harness's
-own approvals, which a per-VM switch can turn off for computer use. That switch
+own approvals, which a per-computer switch can turn off for computer use. That switch
 configures the agents' approval prompts; it is a convenience, not a security
 boundary (see [Approval](#approval-design-2026-10-02)).
 
 ## Decisions
 
-- The desktop is part of every new VM, baked into a published v4 guest image.
-  It starts with the VM because LCU needs a running Xfce session.
-- Silo never publishes OpenAI files. Every computer that runs Silo downloads
+- The desktop is part of every new computer, baked into a published v4 guest image.
+  It starts with the computer because LCU needs a running Xfce session.
+- Silo never publishes OpenAI files. Every device that runs Silo downloads
   the official ChatGPT Linux `.deb` from OpenAI by itself, in the background,
-  and keeps one read-only copy shared by all VMs on that computer. Owner
+  and keeps one read-only copy shared by all computers on that device. Owner
   decision 2026-10-02: no consent prompt, notice or setting. The app tells the
-  user in one sentence (bundled help) and shows a failed computer, with Retry,
-  in a Settings, Computers section that is otherwise absent. Downloading never blocks creating or
-  starting a VM; a failure retries with backoff and can be retried by hand.
+  user in one sentence (bundled help) and shows a failed device, with Retry,
+  in a Settings, Connections section that is otherwise absent. Downloading never blocks creating or
+  starting a computer; a failure retries with backoff and can be retried by hand.
 - Silo pins a tested pair: an LCU release and a ChatGPT app version with
   per-architecture SHA-256. The owner updates the pair by hand after testing.
   No automatic tracking of new ChatGPT releases.
 - The pinned app copy is private to LCU: mounted read-only at a Silo path, not
   `/usr/lib/chatgpt`, not installed through dpkg, with no apt source and no
-  launcher. A user who wants ChatGPT in a VM installs it normally; that copy
+  launcher. A user who wants ChatGPT in a computer installs it normally; that copy
   never affects LCU.
-- Per-VM approvals switch, off (ask) by default, driven by the host and never
+- Per-computer approvals switch, off (ask) by default, driven by the host and never
   defended against the guest (see [Approval](#approval-design-2026-10-02)).
 
 ## Evidence (2026-10-01)
@@ -42,7 +42,7 @@ and were reproduced by parallel investigations; the summaries below are the
 facts the plan depends on.
 
 - **Shared storage.** MicroSandbox 0.7.4 stores an image once in a
-  content-addressed cache; each VM adds a sparse overlay disk (about 4 MB when
+  content-addressed cache; each computer adds a sparse overlay disk (about 4 MB when
   created). A read-only host directory mount (`-v DIR:GUEST:ro`) is enforced
   by the host: writes fail with EROFS even after a guest remount. About 215
   test boots with Silo-like sizing and the 1.5 GB app mounted showed no hangs.
@@ -121,16 +121,16 @@ absolute).
 - Desktop recipe (Xfce, Selkies 2.0.0) installed at image build.
 - ChatGPT runtime dependencies and LCU system packages, so LCU installs with
   `--skip-system --offline`.
-- Pinned LCU release archive, hash-checked, staged for installation in the VM
+- Pinned LCU release archive, hash-checked, staged for installation in the computer
   (done: `guest/lcu-lock.json`, `/usr/local/share/silo/lcu/`). The published v4 image
-  stages LCU 0.8.1; Silo now pins LCU 0.8.8 (below), which a VM downloads and
+  stages LCU 0.8.1; Silo now pins LCU 0.8.8 (below), which a computer downloads and
   verifies at setup until a new image stages it.
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
 - GNOME Text Editor as the `text/plain` default instead of Mousepad.
 - Build with bind mounts, never `COPY` of a package that is later deleted.
 
-### 4. ChatGPT app on each computer
+### 4. ChatGPT app on each device
 
 - Lock: app version, per-architecture SHA-256 and runtime version, plus the
   LCU version and SHA-256.
@@ -141,59 +141,59 @@ absolute).
   escaping paths and links leaving the tree. One immutable folder per version
   in a per-channel Silo data directory; publish atomically; delete the `.deb`.
 - Pass canonical paths to MicroSandbox.
-- Every computer does this itself at its own start, remote ones included; a
-  controller never prepares an app for another computer.
+- Every device does this itself at its own start, remote ones included; a
+  controller never prepares an app for another device.
 
 Done: lock (`lcuVersion` 0.8.8), download, verification, extraction and
 publication under `<app data>/chatgpt/published/`, started automatically at app
 start with retries (2026-10-02, replacing the one-time notice), cached status
-reads and a computer-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
+reads and a device-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
 
-### 5. VM integration
+### 5. Computer integration
 
 Done (see [built-in computer use](SiloUI-DESKTOP.md#built-in-computer-use)):
 mount at creation and on every restore (verified), boot and app-ready sync,
 approval modes, `setup-computer-use`, `computerUse` desktop state, garbage
 collection of unused versions. Decisions: the guest step is pushed and started
 by the host after every boot (`prepare_booted`) and when the app becomes ready
-while VMs run, rather than by a guest boot hook, so the helper always matches
-Silo; garbage collection runs at start and after a prepare, only while no VM
-runs, and holds the computer-wide operation gate (which every VM start takes)
+while computers run, rather than by a guest boot hook, so the helper always matches
+Silo; garbage collection runs at start and after a prepare, only while no computer
+runs, and holds the device-wide operation gate (which every computer start takes)
 from the inventory through the deletion, skipping when any operation is active or a download holds the storage lock (it never waits for either); a skipped pass stays pending and is retried every two minutes until it ran.
 Running the helper happens on a host background thread, never inside Start: it
-first checks the VM is still the same running instance, then reads the approval
-policy inside the VM's operation turn.
+first checks the computer is still the same running instance, then reads the approval
+policy inside the computer's operation turn.
 
-- New VMs are created with a stable per-computer folder mounted read-only at
+- New computers are created with a stable per-device folder mounted read-only at
   `/opt/silo/chatgpt`. That folder holds only verified, published version
   folders (staging, downloads and records live elsewhere) and is garbage
   collected, which keeps the first-statfs walk (#1701/#1702) small. It exists,
-  possibly empty, before any VM starts, so a VM created before the automatic
+  possibly empty, before any computer starts, so a computer created before the automatic
   download finished gains computer use later, and a pinned-version change
-  reaches existing VMs at their next boot.
+  reaches existing computers at their next boot.
 - Creation finishes everything, so the first start is only a start. It waits, outside
-  the computer-wide operation gate (a held gate stalls lifecycle operations and Quit),
+  the device-wide operation gate (a held gate stalls lifecycle operations and Quit),
   for the background image import and the ChatGPT download, then after the desktop
   configuration boot runs the apply once in a temporary boot with the session up. A
   failed apply or a "Finish without computer use" choice leaves it to the first boot
-  apply and says so in the Created toast. New VMs also get the verified LCU archive
+  apply and says so in the Created toast. New computers also get the verified LCU archive
   read-only at `/opt/silo/lcu` when Silo holds it; the helper prefers it over the
   staged and downloaded copies.
 - At boot, a guest helper (`apply`) installs LCU against the mounted app when the
-  pinned pair changes, runs `lcu setup --agent all --allow-missing`, and applies the VM's approval
+  pinned pair changes, runs `lcu setup --agent all --allow-missing`, and applies the computer's approval
   mode. All supported agents are registered automatically, including ones installed
   later: pending agents are registered by `lcu setup --reconcile` at every boot and
-  `apply`, by a small guest watcher while the VM runs, and by a login hook (see
+  `apply`, by a small guest watcher while the computer runs, and by a login hook (see
   [Agents installed later](SiloUI-DESKTOP.md); no user action).
 - Export, import and transfer pass the mount again on restore and verify it.
-- Changing the pinned version updates a VM at its next start.
-- Remove app versions no VM references.
-- VMs created before v4 keep their desktops; computer use requires a new VM.
+- Changing the pinned version updates a computer at its next start.
+- Remove app versions no computer references.
+- Computers created before v4 keep their desktops; computer use requires a new computer.
 
 ### 6. Remove Luda and simplify
 
 Remove the Luda recipe, status fields, repair action and documentation. New
-VMs no longer offer "add a desktop"; keep only the minimal path existing VMs
+Computers no longer offer "add a desktop"; keep only the minimal path existing computers
 need.
 
 ### 7. Upstream reports
@@ -280,12 +280,12 @@ Findings left open:
 
 Backend (Rust, guest scripts) and frontend implement this together.
 
-- Host storage: `<app data>/chatgpt/` keeps `.lock`, downloads, staging and
+- Device storage: `<app data>/chatgpt/` keeps `.lock`, downloads, staging and
   publication records; verified trees are published under
-  `<app data>/chatgpt/published/<version>-<debarch>/`. VMs mount
+  `<app data>/chatgpt/published/<version>-<debarch>/`. Computers mount
   `published/` read-only at `/opt/silo/chatgpt`; the guest uses
   `/opt/silo/chatgpt/<pinned version>-<debarch>` passed by the host.
-- Preparation is automatic and per computer. At app start, off the UI thread and
+- Preparation is automatic and per device. At app start, off the UI thread and
   at low priority (utility QoS on macOS, nice 10 on Linux), the app reads the
   status and, unless the pinned version is published, waits 10 s and runs the
   download in one background worker (never two at once: an in-process slot plus
@@ -293,54 +293,54 @@ Backend (Rust, guest scripts) and frontend implement this together.
   retried after 30 s, 1, 2, 5, 10, 30 min, then hourly, until it succeeds or the
   app quits; a failure retrying cannot fix (checksum mismatch, or HTTP 404/410 for the pinned
   version; a 401/403 refusal by a proxy or filter is retried) stops the worker until Retry. Offline or metered
-  connections only mean later attempts: nothing waits for the download, and VM
+  connections only mean later attempts: nothing waits for the download, and computer
   creation, start and restore never depend on it (the mount folder exists,
   possibly empty). When the app becomes ready the worker syncs running built-in
-  VMs at once (`computer_use::app_ready`) and collects unused versions.
-- Commands (Tauri): `chatgpt_app_status { computer? }` and
-  `chatgpt_app_retry { computer? }`, where `computer` is a remote computer's
-  host id (omitted: this computer; a sandbox target is rejected). Retry wakes a
+  computers at once (`computer_use::app_ready`) and collects unused versions.
+- Commands (Tauri): `chatgpt_app_status { device? }` and
+  `chatgpt_app_retry { device? }`, where `device` is a remote device's
+  id (omitted: this device; a computer target is rejected). Retry wakes a
   waiting worker or starts one, and returns the status at once. Removed:
   `chatgpt_app_accept_notice`, `chatgpt_app_prepare`, the consent file and the
-  consent state. Events: `chatgpt-app-status` carries this computer's status
-  object (`computer: null`); a remote computer has no events, the controller
+  consent state. Events: `chatgpt-app-status` carries this device's status
+  object (`device: null`); a remote device has no events, the controller
   reads `chatgpt.status` (about every 3 s while it works, 15 s otherwise).
-  Also `set_computer_use_approval { workspace, mode: "ask" | "auto" }`
+  Also `set_computer_use_approval { computer, mode: "ask" | "auto" }`
   returning the desktop state, and the `desktop_action` action
   `setup-computer-use`, which reruns LCU setup (the panel's Try again after a failed setup).
-- Bridge methods: `chatgpt.status` (read), `chatgpt.retry` (change, no VM id),
-  `computer.approval`. Removed: `chatgpt.accept`, `chatgpt.prepare` and the
-  placeholder `silo-remote:<host>:<nil-uuid>` routing. An owner on an older Silo
+- Bridge methods: `chatgpt.status` (read), `chatgpt.retry` (change, no computer id),
+  `computerUse.approval`. Removed: `chatgpt.accept`, `chatgpt.prepare` and the
+  placeholder `silo-remote:<deviceId>:<nil-uuid>` routing. An owner on an older Silo
   answers `chatgpt.retry` as unsupported and `chatgpt.status` with its own
   consent-era states; the controller reads the owner's handshake capabilities
-  (cached for a minute) and shows a computer without `chatgpt.retry` as `unknown`
+  (cached for a minute) and shows a device without `chatgpt.retry` as `unknown`
   without asking its status, not as an error (`chatgpt_app_status` maps "unsupported" to `{"state":"unknown"}`,
   and the frontend maps any state it does not know to `unknown`).
-- `desktop.builtIn: boolean` in a VM's saved/reported `desktop` object marks a VM
+- `desktop.builtIn: boolean` in a computer's saved/reported `desktop` object marks a computer
   created from a v4 image. Silo decides it; a written value is ignored.
 - App status object, tagged by `state`: `idle` (waiting to download),
   `downloading { receivedBytes, totalBytes }`, `verifying`, `extracting`,
   `ready { path, version }`, `failed { reason, retryable }`. The controller
-  adds `unknown` for a computer whose status it cannot read.
+  adds `unknown` for a device whose status it cannot read.
 - Desktop state (`read_desktop_state`) gains an optional `computerUse` object
-  for v4 VMs: `state` (`unavailable`, `preparing`, `installing`, `ready`,
+  for v4 computers: `state` (`unavailable`, `preparing`, `installing`, `ready`,
   `failed`; `preparing` covers waiting, downloading and a failure Silo retries
   by itself, with the reason; `failed` is a final failure), `reason`, `cause`
-  (present only with `app-download`: the failure is the host's ChatGPT download,
-  which Retry in Settings → Computers or on the sandbox's page restarts; setting up
+  (present only with `app-download`: the failure is the device's ChatGPT download,
+  which Retry in Settings → Connections or on the computer's page restarts; setting up
   the guest cannot fix it; absent for a guest setup failure), `compatibility` (`tested`,
   `untested`, `unknown`, from `lcu status --json`), `warning`, `approval`
   (`ask`, `auto`, or `unknown` when the saved policy file exists but cannot be read:
   the user's choice, shown by the switch), `appliedApproval` (`ask`, `auto`, or
   `unknown`: the last mode the host applied completely, `unknown` before any was;
-  independent of the app download and of the VM running), `approvalApply`
+  independent of the app download and of the computer running), `approvalApply`
   (`applied`, `pending`, `failed` or `partial`: how applying `approval` stands, from
   the host's own record of the last attempt) and `approvalApplyReason` (words for the
   user, only with `failed` or `partial`), `appVersion`, `runtimeVersion`, `lcuVersion`,
   `agents`. An older Silo omits `approvalApply`, which readers take as `applied`.
-  The legacy `lcu*` fields remain for VMs created before v4.
-- Per-VM approval is the host's: see [Approval](#approval-design-2026-10-02) for the
-  contract (desired mode, last attempt, one apply at a time per VM, cancellable,
+  The legacy `lcu*` fields remain for computers created before v4.
+- Per-computer approval is the host's: see [Approval](#approval-design-2026-10-02) for the
+  contract (desired mode, last attempt, one apply at a time per computer, cancellable,
   bounded). The guest helper is a plain executor: `silo-computer-use apply --approval
   ask|auto [--force] [--boot]` installs what is missing, runs `lcu setup --agent all --allow-missing ... --approval
   <mode>` (`--agent auto` before LCU 0.8.8) and `lcu setup --reconcile`, waits for the desktop session and runs `lcu doctor`, then prints its
@@ -350,11 +350,11 @@ Backend (Rust, guest scripts) and frontend implement this together.
 
 ## Approval design (2026-10-02)
 
-The per-VM "Allow without asking" switch is a convenience, not a security boundary.
-Agents in the VM have root and can edit their own harness settings
+The per-computer "Allow without asking" switch is a convenience, not a security boundary.
+Agents in the computer have root and can edit their own harness settings
 (`~/.claude/settings.json`, Codex's `config.toml`) directly, so no amount of
 bookkeeping on the guest's disk could make the switch binding. An earlier design (a
-random policy generation and a monotonic revision per VM, passed to the guest, which
+random policy generation and a monotonic revision per computer, passed to the guest, which
 accepted or ignored requests by them, with forgery detection on the host and a record of
 "applied" derived from the guest's own report) defended against forged guest state. It was
 the source of a stream of race bugs and protected nothing a guest could not undo, so it was
@@ -379,8 +379,8 @@ replaced by a model in which the host drives the guest and the guest cannot veto
   retain their strict outcome parser. Fixture tests cover the unfamiliar outcome,
   save/reload, legacy policy defaults and unknown approval modes.
 - **Applying.** Every apply runs on a host thread (never inside Start, never on the UI
-  thread) that takes the VM's operation turn: the per-VM lock that already serializes all
-  work on one VM. Inside the turn it re-checks that the VM is the same recorded machine
+  thread) that takes the computer's operation turn: the per-computer lock that already serializes all
+  work on one computer. Inside the turn it re-checks that the computer is the same recorded computer
   and the same running instance, reads the *current* desired mode, and runs the helper
   synchronously within a bound (15 minutes plus a minute of host allowance), never
   detached. Because the mode is read when the turn arrives, a queued apply can never write
@@ -389,35 +389,35 @@ replaced by a model in which the host drives the guest and the guest cannot veto
   applied and applies again until they agree, so a choice made while the helper ran is never
   left pending. A user change returns at once; the state says `pending` until the apply
   ends. The boot sync stays on its own background thread, so Start is never blocked.
-- **Cancellation.** The turn is cancellable. A queued stop, restart or delete of that VM (a delete is
-  computer-wide, so the operation gate records which VMs it removes), or a
-  computer-wide shutdown (Quit or an update, which has no VM id), cancels the running
-  helper at once; the setup action behind the panel's Try again has the same watcher. A queued start (the VM is already running), a dismissed error and any other work wait for the turn like any other operation on that VM. A
+- **Cancellation.** The turn is cancellable. A queued stop, restart or delete of that computer (a delete is
+  device-wide, so the operation gate records which computers it removes), or a
+  device-wide shutdown (Quit or an update, which has no computer id), cancels the running
+  helper at once; the setup action behind the panel's Try again has the same watcher. A queued start (the computer is already running), a dismissed error and any other work wait for the turn like any other operation on that computer. A
   cancelled or timed-out apply is recorded as a failed attempt (`cancelled`, `timed-out`)
   and nothing is assumed rolled back; the next boot or app start tries again.
 - **When it runs.** After every boot and when the app becomes ready (the helper does the
   install, setup and readiness check, and is cheap when nothing changed), when the user
-  changes the switch of a running VM and at app start for each running VM whose last
+  changes the switch of a running computer and at app start for each running computer whose last
   attempt is missing, failed, partial, cut short or for another mode than the desired one.
   The host never reads the guest to decide. A run that finds the ChatGPT app not there yet
   is not an attempt: the apply stays pending until the app is ready.
-- **Imports, transfers and forks.** An import or transfer starts from this computer's
+- **Imports, transfers and forks.** An import or transfer starts from this device's
   initial mode (the `computerUseAutoApproval` app setting, ask unless turned on) with no
-  attempt on record, whatever policy an earlier VM of that id had, so its first boot
-  applies it over the configuration the imported disk carries. A newly created VM starts
-  the same way; for one created on a connected computer the controller sets its own
-  setting's mode afterwards with `computer.approval` (an older Silo there keeps its own). A fork
+  attempt on record, whatever policy an earlier computer of that id had, so its first boot
+  applies it over the configuration the imported disk carries. A newly created computer starts
+  the same way; for one created on a connected device the controller sets its own
+  setting's mode afterwards with `computerUse.approval` (an older Silo there keeps its own). A fork
   inherits its source's desired mode with no attempt on record, so its own first boot
   applies it.
 - **Reporting.** `approval` is the desired mode; `appliedApproval` the last mode applied
-  completely (never hidden by the app download state or by the VM being stopped);
+  completely (never hidden by the app download state or by the computer being stopped);
   `approvalApply` is `pending` while an apply is scheduled or running or no attempt for the
   desired mode exists yet, and otherwise the last attempt's outcome. A failed or partial
   attempt stays visible until a later one applies completely, even when the user chooses
   the previously applied mode again.
 - **Panel.** The switch shows the desired mode. `pending` shows "Applying…" (for a stopped
-  VM, "Applied when the sandbox starts." when a different mode was applied before). After
-  choosing ask the panel warns "Some agents in this sandbox may still act without asking"
+  computer, "Applied when the computer starts." when a different mode was applied before). After
+  choosing ask the panel warns "Some agents in this computer may still act without asking"
   when the previous applied mode was `auto`, the result is `partial`, or the apply `failed`
   and nothing says ask is in place; a failed or partial result also gives the host's
   reason. After a command error the panel reads the state again instead of restoring the
@@ -426,7 +426,7 @@ replaced by a model in which the host drives the guest and the guest cannot veto
 - **Why not more.** Defending the switch would need a boundary the guest cannot cross
   (a host-side MCP gate), which is a different product decision. The documentation and the
   panel say once that the switch configures the agents' approval prompts and is not a
-  security boundary inside the sandbox.
+  security boundary inside the computer.
 
 ### LCU 0.8.2 pin (2026-10-02)
 
@@ -439,11 +439,11 @@ identical between v0.8.1 and v0.8.2, so the v4 image's package set is unaffected
 
 The published `ubuntu-24.04-v4` image still stages the LCU 0.8.1 archive. The guest
 helper (`silo-computer-use.py`, `archive_path`) uses the staged archive only when its
-SHA-256 equals the lock, so on those VMs it downloads the locked URL (guest VMs have
+SHA-256 equals the lock, so on those computers it downloads the locked URL (they have
 network by default), verifies the hash and installs 0.8.2 in place over an existing
 0.8.1 install (`installed_for` compares `lcu_version`) at the next boot or sync.
 Offline consequence: until a new image stages 0.8.2, computer use setup needs
-network once per VM (the earlier install keeps running meanwhile). Guest tests cover
+network once per computer (the earlier install keeps running meanwhile). Guest tests cover
 mismatch, download, install and upgrade of an existing install.
 
 Live check (macOS arm64, Silo main plus this pin, MicroSandbox 0.7.6 `msb` ad-hoc signed with
@@ -469,7 +469,7 @@ tries the HTTPS-only download up to five times, waiting 5, 10, 20 and 40 s betwe
 `/var/log/silo-computer-use.log`. A hash mismatch is never retried (`lcu-archive-mismatch`).
 When the attempts run out the helper reports `lcu-archive-unavailable`, the one failure code
 the host treats as retryable: `apply_with` in `computer_use.rs` waits 1, 5 and 15 minutes
-(each wait outside the VM's operation turn, then a normal serialized apply) while the same
+(each wait outside the computer's operation turn, then a normal serialized apply) while the same
 running instance is up. During a wait the state is `preparing` ("Could not download LCU
 (network). Silo tries again automatically."); a boot, a switch change, a manual setup, a
 stop/restart or a deletion cancels it. After the last retry the failure stays until the next
@@ -551,7 +551,7 @@ both Linux archives (arm64 `f6ada7fc...b943b9`, x64 `bc4997cd...29add4fa`). The 
 section above stays as the record of the 0.8.2 pin; everything it says about the staged
 v4 archive applies unchanged: the published `ubuntu-24.04-v4` image still stages LCU 0.8.1,
 the helper finds that the staged archive does not match the lock, downloads the locked 0.8.3
-URL, verifies it and installs it in place at setup (network needed once per VM).
+URL, verifies it and installs it in place at setup (network needed once per computer).
 
 `scripts/install.py` is byte-identical between v0.8.2 and v0.8.3, so `SYSTEM_PACKAGES` is
 unchanged and the v4 image lacks nothing. 0.8.3's toolkit detection runs `xprop` for

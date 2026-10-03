@@ -113,7 +113,7 @@ Current evidence: [runtime/backup](../SiloUI-RUNTIME-BACKUP-FINDINGS.md),
 [backup live verification](../SiloUI-DEPENDENCIES-BACKUP-TESTING.md),
 [desktop](../SiloUI-DESKTOP.md), [secrets](../SiloUI-SECRETS.md),
 [GitHub](../SiloUI-GITHUB-IMPLEMENTATION.md), [network](../SiloUI-NETWORK-PLAN.md),
-[editor](../SiloUI-EDITOR-HANDOFF.md), [remote ownership](../SiloUI-REMOTE-COMPUTERS.md).
+[editor](../SiloUI-EDITOR-HANDOFF.md), [remote ownership](../SiloUI-CONNECTIONS.md).
 E2B execution evidence: [current matrix](e2b-qualification-gates-2026-09-23.md),
 [work log](e2b-qualification-worklog-2026-09-23.md),
 [two-computer run](e2b-gate-h-two-computer-2026-09-24.md).

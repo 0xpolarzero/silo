@@ -4,7 +4,7 @@ The native material correction below supersedes the original production implemen
 
 Browser-only design experiment, 2026-09-21. Run `npm --prefix app/SiloUI run dev -- --port 1421` and open `http://localhost:1421/glass.html`.
 
-The separate HTML entry renders Silo's existing `FixtureApp` and applies scoped CSS. It is not imported by the production entry or included in the default Vite build. All sandbox data and actions are fixtures. No native bundle was built or inspected. This internal preview does not change shipped behavior and needs no release changeset.
+The separate HTML entry renders Silo's existing `FixtureApp` and applies scoped CSS. It is not imported by the production entry or included in the default Vite build. All computer data and actions are fixtures. No native bundle was built or inspected. This internal preview does not change shipped behavior and needs no release changeset.
 
 ## Design
 
@@ -109,7 +109,7 @@ Primary API references checked against the local macOS 26 SDK:
 - [Apple contentView](https://developer.apple.com/documentation/appkit/nsglasseffectview/contentview): the webview belongs inside the glass view’s content, not an unrelated sibling above it.
 - [Tauri window-vibrancy native implementation](https://github.com/tauri-apps/window-vibrancy/blob/dev/src/macos/liquid_glass.rs) provides prior art for the public AppKit integration.
 
-Verification uses `src-tauri/examples/material_preview.rs`, a native window hosting production components with deterministic fixture data and no Silo services. Start the frontend on port 1422, then run `cargo run --manifest-path app/SiloUI/src-tauri/Cargo.toml --example material_preview`. It does not acquire Silo’s runtime lock or manage VMs.
+Verification uses `src-tauri/examples/material_preview.rs`, a native window hosting production components with deterministic fixture data and no Silo services. Start the frontend on port 1422, then run `cargo run --manifest-path app/SiloUI/src-tauri/Cargo.toml --example material_preview`. It does not acquire Silo’s runtime lock or manage computers.
 
 Rust compilation and frontend typecheck/lint passed; all 112 focused application/sidebar/onboarding tests passed. The isolated fixture bundle at `src-tauri/target/verification/Silo Material Preview.app` was launched and its populated native window visually inspected on macOS 26.5. The system’s Reduce Transparency preference is enabled and was left unchanged. This proves native composition starts and the fixture renders, **not visible refraction with transparency enabled**. Full-effect visual verification, older macOS fallback execution, Linux native execution, and native GPU/memory measurements remain outstanding. The existing installed Silo and its VMs were not restarted.
 
@@ -156,7 +156,7 @@ The theme setting previously changed only the webview's CSS class. Native AppKit
 
 Primary-source evidence: the locked Tauri 2.11.5 source, `src/app.rs` (`AppHandle::set_theme`), and Tao 0.35.3, `src/platform_impl/macos/window.rs` (`set_theme`), map Light to Aqua, Dark to DarkAqua, and System to a cleared NSApplication appearance. API reference: [Tauri AppHandle::set_theme](https://docs.rs/tauri/2.11.5/tauri/struct.AppHandle.html#method.set_theme).
 
-The isolated material preview now connects the actual Theme dropdown to the production frontend theme initializer and a fixture-only native appearance command. That command logs the requested preference, app override, window appearance, and material appearance. Its permission is granted only by the example's runtime capability, for its own window and localhost fixture origin; production capabilities do not grant it. The preview uses memory settings and no Silo services or VM operations.
+The isolated material preview now connects the actual Theme dropdown to the production frontend theme initializer and a fixture-only native appearance command. That command logs the requested preference, app override, window appearance, and material appearance. Its permission is granted only by the example's runtime capability, for its own window and localhost fixture origin; production capabilities do not grant it. The preview uses memory settings and no Silo services or computer operations.
 
 Verification:
 
