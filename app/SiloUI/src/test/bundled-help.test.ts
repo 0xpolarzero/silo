@@ -74,9 +74,10 @@ it("names the macOS Settings menu for both Silo build channels", () => {
   expect(instructions?.textContent).toMatch(/Silo Dev → Settings/)
 })
 
-it("requires a running desktop as well as a running sandbox for computer-use setup", () => {
+it("says agents, including ones installed later, are set up for computer use automatically", () => {
   const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
-  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.startsWith("Set up computer use"))
-  expect(instructions?.textContent).toMatch(/sandbox and its Linux desktop are running/i)
-  expect(instructions?.textContent).toMatch(/Start.*desktop.*viewer/i)
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.startsWith("Agents are set up automatically"))
+  expect(instructions?.textContent).toMatch(/every supported agent/i)
+  expect(instructions?.textContent).toMatch(/as soon as you install them/i)
+  expect(help.body.textContent).not.toMatch(/Set up computer use for new agents/)
 })

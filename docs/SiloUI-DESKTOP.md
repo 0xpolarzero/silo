@@ -129,8 +129,9 @@ error. They use temporary paths without running a VM.
   lock, else download the locked URL and verify it; extract it to local disk
   (never the shared folder: its Node symlink dangles there); run
   `scripts/install.sh --user silo --runtime-only --skip-system --offline
-  --existing-app <folder> --yes`; run `lcu setup --agent auto --session direct
-  --yes --approval ask|auto` as `silo`; read `lcu status --json`; wait for the
+  --existing-app <folder> --yes`; run `lcu setup --agent all --allow-missing
+  --session direct --yes --approval ask|auto` as `silo` (LCU before 0.8.8 lacks the
+  flag: the helper detects that from `lcu setup --help` and uses `--agent auto`); read `lcu status --json`; wait for the
   desktop session (bounded: 300 s after a boot, else 90 s; after a boot a session
   that is `failed` or `stopped` while the desktop starts with the VM is started
   again with `silo-desktop start`, up to three times with 2, 4 and 8 s of backoff,
@@ -139,9 +140,23 @@ error. They use temporary paths without running a VM.
   --non-interactive --require-ready` as `silo`. The result is
   `/var/lib/silo-computer-use/receipt.json`; `apply` also reports this run's approval
   outcome (`applied`, `partial` when `lcu setup` configured some agents and failed for
-  others, else `failed`) from `lcu setup`'s per-agent lines; the log is
+  others, else `failed`) from `lcu setup`'s per-agent lines; agents not installed yet are
+  recorded by LCU as pending (the receipt lists `agents` and `pending`) and are not a
+  failure; the log is
   `/var/log/silo-computer-use.log`. A reinstall happens only when LCU's recorded
   app path or version differs from the pinned pair.
+- **Agents installed later.** Every supported agent is registered automatically; there is
+  no action to run. `lcu setup --reconcile` registers a pending agent once its binary
+  exists, with the saved approval, and is a quiet no-op otherwise (see the
+  [research](research/lcu-agent-preregistration-2026-10-03.md)). The helper runs it at the
+  end of every `apply` (every boot and app-ready, also when nothing else changed). While the
+  VM runs, the guest has no init system (no systemd, no inotify tools in the image), so
+  `apply` starts `silo-computer-use watch` (one instance under a lock) that checks the
+  agents' install directories (`~/.local/bin`, `~/.bun/bin`, `~/.cargo/bin`,
+  `~/.npm-global/bin`, `/usr/local/bin`) every 5 s while an agent is pending and runs
+  `silo-computer-use reconcile` when a pending binary appears. It ends when nothing is
+  pending. `/etc/profile.d/silo-computer-use.sh` is a fallback for the `silo` account's login
+  shells. Reconcile is skipped while an `apply` holds the helper lock (that run reconciles).
 - **Approval.** Per VM in `<storage>/computer-use/<id>.json`: the mode the user chose
   (default `ask`), the last mode applied and the last attempt. The host applies changes
   itself, one at a time per VM, on a background thread (see the
@@ -163,8 +178,8 @@ error. They use temporary paths without running a VM.
 - **Commands.** `set_computer_use_approval { workspace, mode: "ask" | "auto" }`
   stores the mode and, when the VM runs, starts applying it in the background and
   returns at once (`approvalApply: pending`); the `setup-computer-use`
-  desktop action reruns `lcu setup` for agents installed later (and works for
-  every v4 VM, whether or not the desktop is reachable). Both route to the owning
+  desktop action reruns `lcu setup` (the panel's "Try again" after a failed setup; it
+  works for every v4 VM, whether or not the desktop is reachable). Both route to the owning
   computer. An older Silo there answers "Update Silo on that computer to use
   computer use."
 

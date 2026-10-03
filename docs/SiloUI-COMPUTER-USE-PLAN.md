@@ -172,9 +172,11 @@ policy inside the VM's operation turn.
   download finished gains computer use later, and a pinned-version change
   reaches existing VMs at their next boot.
 - At boot, a guest helper (`apply`) installs LCU against the mounted app when the
-  pinned pair changes, runs `lcu setup --agent auto`, and applies the VM's approval
-  mode. A "Set up computer use" action reruns setup after a harness is
-  installed.
+  pinned pair changes, runs `lcu setup --agent all --allow-missing`, and applies the VM's approval
+  mode. All supported agents are registered automatically, including ones installed
+  later: pending agents are registered by `lcu setup --reconcile` at every boot and
+  `apply`, by a small guest watcher while the VM runs, and by a login hook (see
+  [Agents installed later](SiloUI-DESKTOP.md); no user action).
 - Export, import and transfer pass the mount again on restore and verify it.
 - Changing the pinned version updates a VM at its next start.
 - Remove app versions no VM references.
@@ -297,7 +299,7 @@ Backend (Rust, guest scripts) and frontend implement this together.
   reads `chatgpt.status` (about every 3 s while it works, 15 s otherwise).
   Also `set_computer_use_approval { workspace, mode: "ask" | "auto" }`
   returning the desktop state, and the `desktop_action` action
-  `setup-computer-use`, which reruns LCU setup for agents installed later.
+  `setup-computer-use`, which reruns LCU setup (the panel's Try again after a failed setup).
 - Bridge methods: `chatgpt.status` (read), `chatgpt.retry` (change, no VM id),
   `computer.approval`. Removed: `chatgpt.accept`, `chatgpt.prepare` and the
   placeholder `silo-remote:<host>:<nil-uuid>` routing. An owner on an older Silo
@@ -332,8 +334,8 @@ Backend (Rust, guest scripts) and frontend implement this together.
 - Per-VM approval is the host's: see [Approval](#approval-design-2026-10-02) for the
   contract (desired mode, last attempt, one apply at a time per VM, cancellable,
   bounded). The guest helper is a plain executor: `silo-computer-use apply --approval
-  ask|auto [--force] [--boot]` installs what is missing, runs `lcu setup ... --approval
-  <mode>`, waits for the desktop session and runs `lcu doctor`, then prints its
+  ask|auto [--force] [--boot]` installs what is missing, runs `lcu setup --agent all --allow-missing ... --approval
+  <mode>` (`--agent auto` before LCU 0.8.8) and `lcu setup --reconcile`, waits for the desktop session and runs `lcu doctor`, then prints its
   `status` plus `apply: {approval, outcome, reason}` where `outcome` is `applied`,
   `partial` or `failed`. It keeps no approval record, orders nothing and accepts every
   request; `status` reads the receipt only and never reports approval.
@@ -382,7 +384,7 @@ replaced by a model in which the host drives the guest and the guest cannot veto
 - **Cancellation.** The turn is cancellable. A queued stop, restart or delete of that VM (a delete is
   computer-wide, so the operation gate records which VMs it removes), or a
   computer-wide shutdown (Quit or an update, which has no VM id), cancels the running
-  helper at once; the manual Set up computer use action has the same watcher. A queued start (the VM is already running), a dismissed error and any other work wait for the turn like any other operation on that VM. A
+  helper at once; the setup action behind the panel's Try again has the same watcher. A queued start (the VM is already running), a dismissed error and any other work wait for the turn like any other operation on that VM. A
   cancelled or timed-out apply is recorded as a failed attempt (`cancelled`, `timed-out`)
   and nothing is assumed rolled back; the next boot or app start tries again.
 - **When it runs.** After every boot and when the app becomes ready (the helper does the

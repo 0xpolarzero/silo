@@ -10,7 +10,13 @@ nothing changed:
 * the pinned ChatGPT app folder must be mounted read-only at /opt/silo/chatgpt;
 * the pinned LCU archive (staged in the guest image, or downloaded and hash-checked)
   is extracted to local disk and installed in place against that folder;
-* `lcu setup --agent auto --session direct --yes --approval <mode>` runs as `silo`;
+* `lcu setup --agent all --allow-missing --session direct --yes --approval <mode>` runs as
+  `silo` (LCU 0.8.8 and later: every supported agent is registered, and those not installed
+  yet are recorded as pending; an older LCU falls back to `--agent auto`);
+* `lcu setup --reconcile` registers a pending agent once its binary exists. It runs at the
+  end of every `apply` (a boot included), from the `reconcile` command, from a login hook in
+  /etc/profile.d and from a small `watch` process that polls the install directories while
+  agents are pending (the guest has no init system to host a `.path` unit);
 * `lcu status --json` and `lcu doctor` (inside the desktop session) are recorded. After a
   boot the helper waits for the session (bounded) and, when the session ended up failed
   or stopped although the desktop starts with the VM, asks `silo-desktop start` for it
@@ -19,7 +25,7 @@ nothing changed:
 The result is a receipt under /var/lib/silo-computer-use that `status` projects
 for the host, and `apply` prints that status plus this run's approval outcome
 (`applied`, `partial` when `lcu setup` configured some agents and failed for others, or
-`failed`). Nothing here talks to the host or holds credentials. The approval switch
+`failed`); agents still to be installed are pending, not a failure. Nothing here talks to the host or holds credentials. The approval switch
 configures agents' own approval prompts; agents in the VM have root, so it is a
 convenience and not a security boundary, and the helper keeps no record to defend.
 """
@@ -49,6 +55,21 @@ DESKTOP = [DESKTOP_COMMAND, 'status']
 DESKTOP_CONFIG = Path('/var/lib/silo-desktop/config.json')
 USER = 'silo'
 HOME = '/home/silo'
+HELPER = '/usr/local/libexec/silo-computer-use'
+# The working account's PATH for LCU: the directories the agents' installers use.
+USER_BIN = [f'{HOME}/.local/bin', f'{HOME}/.bun/bin', f'{HOME}/.cargo/bin', f'{HOME}/.npm-global/bin',
+            '/usr/local/bin', '/usr/bin', '/bin']
+USER_PATH = ':'.join(USER_BIN)
+# Executable names of agents whose LCU id differs from them.
+EXECUTABLES = {'oh-my-pi': 'omp'}
+WATCH_LOCK = STATE / 'watch.lock'
+WATCH_INTERVAL = 5
+PROFILE_HOOK = Path('/etc/profile.d/silo-computer-use.sh')
+HOOK = '''# Registers agents installed after computer use was set up (silo-computer-use).
+if [ "$(id -un)" = silo ] && grep -q '"pending": \\["' /var/lib/silo-computer-use/receipt.json 2>/dev/null; then
+    (sudo -n /usr/local/libexec/silo-computer-use reconcile >/dev/null 2>&1 &)
+fi
+'''
 SCHEMA = 1
 APP_NAME = re.compile(r'[0-9][0-9A-Za-z.+~-]{0,63}-(arm64|amd64)')
 VERSION = re.compile(r'[0-9][0-9A-Za-z.+~-]{0,63}')
@@ -253,7 +274,7 @@ def run(argv, *, user=False, timeout=900, check=True, cwd=None, extra_env=None, 
     """Runs a command with no stdin, appending its output to the log (except a listing)."""
     if user:
         argv = ['runuser', '-u', USER, '--', 'env', f'HOME={HOME}', f'USER={USER}',
-                f'LOGNAME={USER}', *argv]
+                f'LOGNAME={USER}', f'PATH={USER_PATH}', *argv]
     environment = dict(os.environ, DEBIAN_FRONTEND='noninteractive')
     if extra_env:
         environment.update(extra_env)
@@ -368,12 +389,162 @@ def install(pinned, stage):
          '--existing-app', str(app_folder(pinned)), '--yes'], cwd=source, timeout=900)
 
 
+def lcu_supports(flag):
+    """Whether this LCU's `setup` documents `flag` (`--allow-missing` and `--reconcile`: LCU 0.8.8)."""
+    result = run([lcu_command('lcu'), 'setup', '--help'], user=True, timeout=60, check=False, quiet=True)
+    return result.returncode == 0 and flag in (result.stdout or '')
+
+
 def setup(approval):
     """Runs `lcu setup` for the working account and reports this run's outcome:
-    `(outcome, agents, reason)`, see `classify_setup`."""
-    result = run([lcu_command('lcu'), 'setup', '--agent', 'auto', '--session', 'direct', '--yes',
+    `(outcome, agents, reason)`, see `classify_setup`.
+
+    Every supported agent is registered, and one that is not installed yet is recorded as
+    pending (`--agent all --allow-missing`). An LCU without that flag registers the agents
+    it detects instead."""
+    agents = ['--agent', 'all', '--allow-missing'] if lcu_supports('--allow-missing') else ['--agent', 'auto']
+    result = run([lcu_command('lcu'), 'setup', *agents, '--session', 'direct', '--yes',
                   '--approval', approval], user=True, timeout=600, check=False)
     return classify_setup(result.returncode, result.stdout, approval)
+
+
+def pending_agents(report):
+    """The agents `lcu status --json` lists as pending (not installed yet), or None when this
+    LCU does not report them."""
+    value = report.get('pending') if isinstance(report, dict) else None
+    if not isinstance(value, list):
+        return None
+    names = []
+    for item in value:
+        name = item.get('id', item.get('name')) if isinstance(item, dict) else item
+        if isinstance(name, str) and re.fullmatch(r'[a-z0-9-]{1,32}', name) and name not in names:
+            names.append(name)
+    return sorted(names)
+
+
+def reconcile_agents(agents, pending, always):
+    """Registers the pending agents whose binary now exists (`lcu setup --reconcile`, a quiet
+    no-op otherwise). Returns the registered and the still pending agents. Without `always`
+    it runs only while something is pending."""
+    if not (always or pending) or not Path(lcu_command('lcu')).exists():
+        return agents, pending
+    if not lcu_supports('--reconcile'):
+        return agents, pending
+    result = run([lcu_command('lcu'), 'setup', '--reconcile'], user=True, timeout=600, check=False,
+                 quiet=True)
+    if result.returncode != 0:
+        log(f'lcu setup --reconcile failed: {(result.stdout or "")[-300:]}')
+        return agents, pending
+    after = pending_agents(lcu_status())
+    if after is None:
+        return agents, pending
+    return sorted(set(agents) | {name for name in pending if name not in after}), after
+
+
+def binary_installed(name, directories=None):
+    """The `os.stat_result` of the executable `name` in the agents' install directories, or None."""
+    for directory in directories or USER_BIN:
+        path = Path(directory) / name
+        if path.is_file() and os.access(path, os.X_OK):
+            return path.stat()
+    return None
+
+
+def write_hook():
+    """The login-shell fallback: a shell of the working account registers pending agents."""
+    try:
+        if PROFILE_HOOK.is_file() and PROFILE_HOOK.read_text() == HOOK:
+            return
+        PROFILE_HOOK.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix='.tmp-', dir=PROFILE_HOOK.parent)
+        with os.fdopen(fd, 'w') as output:
+            output.write(HOOK)
+            os.fchmod(output.fileno(), 0o644)
+        os.replace(temporary, PROFILE_HOOK)
+    except OSError as error:
+        log(f'could not write {PROFILE_HOOK}: {error}')
+
+
+def spawn_watcher():
+    subprocess.Popen([HELPER, 'watch'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+
+
+def watcher_running():
+    try:
+        STATE.mkdir(mode=0o755, parents=True, exist_ok=True)
+        with open(WATCH_LOCK, 'a') as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    except OSError:
+        return True
+    return False
+
+
+def ensure_triggers(pending):
+    """Keeps a pending agent from waiting for the next boot: the login hook is in place and
+    one watcher polls for the agents' binaries."""
+    write_hook()
+    if pending and not watcher_running():
+        try:
+            spawn_watcher()
+        except OSError as error:
+            log(f'could not start the watcher: {error}')
+
+
+def watch(interval=WATCH_INTERVAL, directories=None, rounds=None):
+    """Runs until nothing is pending: when a pending agent's binary appears (or is replaced),
+    runs `reconcile` once for it. Polling a few paths is cheap and needs neither an init
+    system nor inotify tools in the image. One instance holds WATCH_LOCK."""
+    STATE.mkdir(mode=0o755, parents=True, exist_ok=True)
+    attempted = {}
+    with open(WATCH_LOCK, 'a') as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        while rounds is None or rounds > 0:
+            pending = [n for n in (read_json(RECEIPT) or {}).get('pending') or [] if isinstance(n, str)]
+            if not pending:
+                return
+            for name in sorted({EXECUTABLES.get(n, n) for n in pending}):
+                info = binary_installed(name, directories)
+                identity = (info.st_ino, info.st_mtime_ns) if info else None
+                if identity and attempted.get(name) != identity:
+                    attempted[name] = identity
+                    log(f'{name} appeared; reconciling')
+                    try:
+                        subprocess.run([HELPER, 'reconcile'], stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                       check=False, timeout=900)
+                    except (OSError, subprocess.TimeoutExpired) as error:
+                        log(f'reconcile after {name} appeared failed: {error}')
+            if rounds is not None:
+                rounds -= 1
+            time.sleep(interval)
+
+
+def reconcile():
+    """The `reconcile` command: registers pending agents that are now installed and updates
+    the receipt. Skips quietly while another run holds the lock (that run reconciles)."""
+    pinned = load_pinned()
+    receipt = read_json(RECEIPT)
+    if pinned is None or not receipt or receipt.get('state') != 'ready' or not matches_pair(receipt, pinned):
+        return {'reconcile': 'skipped'}
+    STATE.mkdir(mode=0o755, parents=True, exist_ok=True)
+    with open(LOCK, 'a') as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'reconcile': 'busy'}
+        agents, pending = list(receipt.get('agents') or []), list(receipt.get('pending') or [])
+        registered, remaining = reconcile_agents(agents, pending, always=True)
+        if (registered, remaining) != (agents, pending):
+            write_json(RECEIPT, dict(receipt, agents=registered, pending=remaining, updatedAt=now()))
+    return {'reconcile': 'done', 'agents': registered, 'pending': remaining}
 
 
 AGENT_LABEL = r'([A-Z][A-Za-z ]{1,24})'
@@ -577,7 +748,13 @@ def update(pinned, mode, force, boot):
     configured = (not force and existing and existing.get('state') == 'ready'
                   and matches(existing, pinned, mode) and Path(lcu_command('lcu')).exists())
     if configured and not boot:
-        # The receipt shows `lcu setup` applied this mode completely.
+        # The receipt shows `lcu setup` applied this mode completely. An agent installed
+        # since then is still registered.
+        agents, pending = list(existing.get('agents') or []), list(existing.get('pending') or [])
+        registered, remaining = reconcile_agents(agents, pending, always=False)
+        if (registered, remaining) != (agents, pending):
+            write_json(RECEIPT, dict(existing, agents=registered, pending=remaining, updatedAt=now()))
+        ensure_triggers(remaining)
         return report(mode, 'applied')
     write_receipt(pinned, mode, 'installing')
     # Set once approval is confirmed: later failures (the readiness check) do not change it.
@@ -590,15 +767,22 @@ def update(pinned, mode, force, boot):
             configured = False
         if configured:
             outcome, agents, reason = 'applied', existing.get('agents', []), None
+            pending = list(existing.get('pending') or [])
         else:
             outcome, agents, reason = setup(mode)
+            pending = None
         if outcome == 'failed':
             raise Failure(reason)
         result = report(mode, outcome, reason)
+        if pending is None:
+            pending = pending_agents(lcu_status()) or []
+        # A setup that just ran has registered what is installed; a verified boot asks LCU.
+        agents, pending = reconcile_agents(agents, pending, always=configured)
+        ensure_triggers(pending)
         digested = digest(lcu_status())
         if not doctor(SESSION_WAIT_BOOT if boot else SESSION_WAIT, repair=boot):
             raise Failure('doctor-failed')
-        write_receipt(pinned, mode, 'ready', readiness='ready', agents=agents,
+        write_receipt(pinned, mode, 'ready', readiness='ready', agents=agents, pending=pending,
                       approvalOutcome=outcome, verifiedAt=now(), **digested)
     except Failure as failure:
         log(f'computer use setup failed: {failure.reason}: {failure}')
@@ -619,6 +803,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('status')
+    commands.add_parser('reconcile')
+    commands.add_parser('watch')
     apply_parser = commands.add_parser('apply')
     apply_parser.add_argument('--approval', choices=APPROVALS, required=True)
     apply_parser.add_argument('--force', action='store_true')
@@ -627,8 +813,16 @@ def main(argv=None):
     if os.geteuid() != 0:
         print('Run as root', file=sys.stderr)
         return 1
+    if args.command == 'watch':
+        watch()
+        return 0
     try:
-        result = status() if args.command == 'status' else apply(args.approval, args.force, args.boot)
+        if args.command == 'status':
+            result = status()
+        elif args.command == 'reconcile':
+            result = reconcile()
+        else:
+            result = apply(args.approval, args.force, args.boot)
     except Failure as failure:
         # The run could not even start (another run held the lock): still a report.
         result = {'schemaVersion': SCHEMA, 'state': 'failed', 'reason': failure.reason}
