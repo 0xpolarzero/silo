@@ -14,6 +14,7 @@ import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { ApplicationShell, type ApplicationNavigationLoading } from "@/features/application/components/application-shell"
 import { MachineEditorDraftsProvider } from "@/features/sandboxes/model/editor-drafts"
 import { ApplicationCommandMenu } from "@/features/application/components/application-command-menu"
+import { MachineConfigurationToast } from "@/features/application/components/machine-configuration-toast"
 import { OperationQueueToast } from "@/features/application/components/operation-queue-panel"
 import { QuitRequestConfirmation, type ConnectQuitConfirmation } from "@/features/application/components/quit-request-confirmation"
 import { applicationCommands, type SandboxCommandRequest } from "@/features/application/components/application-commands"
@@ -363,6 +364,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       {/* One toast reflects VM-changing operations wherever the user is, so progress and
           Cancel never vanish while the work continues. It renders nothing inline. */}
       <OperationQueueToast queue={source.operationQueue} onCancel={actions.cancelOperation} />
+      <MachineConfigurationToast operation={source.sandboxConfigurationOperation} workspaces={source.workspaces} onOpen={(id) => navigation.openSandbox(id)} />
       <QuitRequestConfirmation connect={connectQuitConfirmation} />
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (

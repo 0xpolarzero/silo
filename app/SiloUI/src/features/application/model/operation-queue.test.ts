@@ -146,7 +146,7 @@ describe("waitingStatusText", () => {
 
 describe("toastableQueue", () => {
   it("drops kinds that have their own notification, whatever their label says", () => {
-    const owned = ["lifecycle", "checkpointCapture", "checkpointRestore", "checkpointFork", "export", "import", "storageReclaim", "githubApply", "push", "portPublish", "portRemove"] as const
+    const owned = ["lifecycle", "checkpointCapture", "checkpointRestore", "checkpointFork", "export", "import", "storageReclaim", "githubApply", "push", "portPublish", "portRemove", "machineConfiguration"] as const
     const queue: OperationQueue = {
       running: owned.slice(0, 6).map((kind, index) => entry({ id: index, label: "Anything", kind })),
       waiting: owned.slice(6).map((kind, index) => entry({ id: 10 + index, label: "Anything", kind })),

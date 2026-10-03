@@ -979,6 +979,16 @@ impl RuntimeRunner for SetupRunner<'_> {
             .find(|pair| pair[0] == "--name")
             .map(|pair| pair[1].as_str())
             .unwrap_or("");
+        // The first sandbox on a computer imports the bundled image, one blocking runtime
+        // call with no progress output of its own.
+        if matches!(args, [first, second, ..] if first == "image" && second == "load") {
+            (self.publish)(machine_progress(
+                self.request_id,
+                "workspace-image-import",
+                "",
+                0,
+            ));
+        }
         let layers = Mutex::new(HashMap::<u64, u64>::new());
         let total = Mutex::new(None::<u64>);
         run_msb_with_progress(paths, args, timeout, &|value| {
@@ -3365,6 +3375,9 @@ fn machine_progress(
         ("workspace-verification", 0) => format!("Verifying {workspace}…"),
         ("workspace-verification", _) => format!("{workspace} verified."),
         ("workspace-image-preparation", _) => "Preparing the bundled VM image…".into(),
+        ("workspace-image-import", _) => {
+            "Importing the VM image (first time only, about a minute)…".into()
+        }
         ("workspace-disk-preparation", _) => format!("Preparing {workspace}'s workspace disk…"),
         ("workspace-runtime-preparation", _) => {
             format!("Preparing {workspace}'s VM image and system disk…")
@@ -3820,7 +3833,7 @@ fn read_activity(
     }
     for event in &mut events {
         event.message = match event.step.as_str() {
-            "desktop-installation" | "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-image-preparation" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
+            "desktop-installation" | "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-image-preparation" | "workspace-image-import" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
             "image-resolving" => format!("{}: Resolving the VM image…", event.workspace),
             "image-resolved" => format!("{}: VM image resolved; preparing the download…", event.workspace),
             "image-download" => format!("{}: Downloading the VM image…", event.workspace),
@@ -4055,6 +4068,7 @@ pub async fn retry_machine_configuration(
         let paths = runtime_paths(&app)?;
         // Changes the shared VM inventory/metadata; computer-wide.
         let _guard = OPERATIONS
+            .kind(operation_gate::OperationKind::MachineConfiguration)
             .computer("Retrying sandbox settings")
             .map_err(|e| e.to_string())?;
         shutdown::ensure_accepting_operations()?;
@@ -7074,6 +7088,17 @@ esac
         let _test_state = crate::test_support::global_state();
         let event = machine_progress("attempt", "workspace-image-preparation", "dev", 0);
         assert_eq!(event.message, "Preparing the bundled VM image…");
+    }
+
+    #[test]
+    fn first_time_image_import_is_reported_without_a_fraction() {
+        let _test_state = crate::test_support::global_state();
+        let event = machine_progress("attempt", "workspace-image-import", "", 0);
+        assert_eq!(
+            event.message,
+            "Importing the VM image (first time only, about a minute)…"
+        );
+        assert_eq!(event.fraction, None);
     }
 
     #[test]
