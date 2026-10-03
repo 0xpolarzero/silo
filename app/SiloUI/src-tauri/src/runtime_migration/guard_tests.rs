@@ -366,7 +366,7 @@ fn only_the_gate_can_name_a_runtime_and_only_the_migration_names_the_previous_on
                 "{relative} builds RuntimePaths; use runtime::runtime_paths, which the migration gate guards"
             );
         }
-        if relative != "runtime_migration.rs" {
+        if relative != "runtime_migration.rs" && !relative.starts_with("runtime_migration/") {
             assert!(
                 !text.contains("join(\"runtime\")") && !text.contains("runtime/machines.json"),
                 "{relative} names the previous runtime generation; only the migration may"

@@ -15,7 +15,10 @@ import { fileURLToPath } from "node:url"
 import { DEVELOPMENT, PRODUCTION } from "./channel-names.mjs"
 export { DEVELOPMENT, PRODUCTION }
 
-/** Preferences that describe the person, not the sandboxes or the OS registration. */
+/** The record of Silo's one-time saved-data vocabulary conversion, in the app data folder. */
+export const VOCABULARY_RECORD = "vocabulary-migration.json"
+
+/** Preferences that describe the person, not the computers or the OS registration. */
 export const COPIED_SETTINGS = Object.freeze([
   "theme", "onboardingComplete", "reduceMotion",
   "notificationsEnabled", "notifyHealth", "notifyActions", "notifyBackup",
@@ -39,18 +42,24 @@ Options:
 
 Copied: app preferences and onboarding completion (theme, notifications, terminal,
 editor and browser choices), the GitHub personal access token (Keychain duplicate),
-secret definitions and values (Keychain duplicate) with no sandbox assignments, and
-the list of remote computers with this computer's client SSH key that reaches them.
+secret definitions and values (Keychain duplicate) with no computer assignments, and
+the list of connected devices with this device's client SSH key that reaches them.
 
-${DEVELOPMENT.productName} always keeps its OWN remote-management identity: a new host id is generated
-(an existing one is preserved) and remote management starts switched off. Computers
-you manage will see ${DEVELOPMENT.productName} as a separate computer. The copied client key still
-reaches the production Silo on each remote computer, because that is what its
+Production may still use the saved-data names from before the computer vocabulary
+(workspaces, machines, hosts) or already use the current ones; both are read. What is
+written is always in the current names. Because ${DEVELOPMENT.productName} converts its saved data once
+per channel, the import also removes ${DEVELOPMENT.productName}'s ${VOCABULARY_RECORD} so that conversion
+runs again at the next launch and finishes whatever older files ${DEVELOPMENT.productName} still has.
+
+${DEVELOPMENT.productName} always keeps its OWN device identity: a new device id is generated
+(an existing one is preserved) and connections start switched off. Devices
+you manage will see ${DEVELOPMENT.productName} as a separate device. The copied client key still
+reaches the production Silo on each connected device, because that is what its
 authorized_keys entry runs there.
 
-Never copied: sandboxes, VMs, checkpoints, disks, backups and their history, the
-MicroSandbox home and runtime, per-sandbox network and SSH settings, launch-at-login
-and startup-sandbox choices, update preferences, and anything under ~/.ssh.
+Never copied: computers, VMs, checkpoints, disks, backups and their history, the
+MicroSandbox home and runtime, per-computer network and SSH settings, launch-at-login
+and startup-computer choices, update preferences, and anything under ~/.ssh.
 
 Production is only read. The command refuses to run while ${DEVELOPMENT.productName} is running, and
 asks before replacing anything ${DEVELOPMENT.productName} already has (previous files are kept as
@@ -139,7 +148,7 @@ export function sanitizeSettings(document) {
   return { schemaVersion: document.schemaVersion ?? 1, settings, onboardingDraft: null }
 }
 
-/** Definitions only: no sandbox assignments, pending work, errors, or activity. */
+/** Definitions only: no computer assignments, pending work, errors, or activity. */
 export function sanitizeSecrets(document) {
   const secrets = (Array.isArray(document.secrets) ? document.secrets : [])
     .filter(secret => isObject(secret) && !secret.removing && typeof secret.valueId === "string")
@@ -147,10 +156,10 @@ export function sanitizeSecrets(document) {
       id: secret.id,
       name: secret.name,
       valueId: secret.valueId,
-      workspaces: [],
+      computers: [],
       allowedDomains: Array.isArray(secret.allowedDomains) ? secret.allowedDomains : [],
       affected: [],
-      pendingWorkspaces: [],
+      pendingComputers: [],
       errors: {},
       removing: false,
     }))
@@ -161,8 +170,10 @@ function sanitizeGithubDocument(document) {
   return { revision: 0, accessEnabled: Boolean(document.accessEnabled), account: typeof document.account === "string" ? document.account : null }
 }
 
-function validHosts(config) {
-  return (Array.isArray(config.hosts) ? config.hosts : []).filter(host =>
+/** The connected devices of a remote config in either vocabulary (`devices`, earlier `hosts`). */
+function validDevices(config) {
+  const list = Array.isArray(config.devices) ? config.devices : config.hosts
+  return (Array.isArray(list) ? list : []).filter(host =>
     isObject(host) && ["id", "name", "address"].every(key => typeof host[key] === "string" && host[key] !== ""))
 }
 
@@ -284,7 +295,7 @@ export async function importProductionSettings({
   if (secrets.value && isObject(secrets.value)) {
     const definitions = sanitizeSecrets(secrets.value)
     if (definitions.secrets.length > 0) {
-      addFile(`Secret definitions (${definitions.secrets.length}, no sandbox assignments)`,
+      addFile(`Secret definitions (${definitions.secrets.length}, no computer assignments)`,
         path.join(target.data, "secrets.json"), `${JSON.stringify(definitions, null, 2)}\n`)
       const raw = keychain.read(PRODUCTION.keychain.secrets, "values")
       let vault = null
@@ -307,7 +318,7 @@ export async function importProductionSettings({
       addKeychain("GitHub OAuth login (Keychain)", "github", "account", account)
       const github = readJson(path.join(source.data, "github.json"))
       if (github.value && isObject(github.value)) {
-        addFile("GitHub connection state (no repositories or sandbox grants)", path.join(target.data, "github.json"),
+        addFile("GitHub connection state (no repositories or computer grants)", path.join(target.data, "github.json"),
           `${JSON.stringify(sanitizeGithubDocument(github.value), null, 2)}\n`)
       }
       warnings.push("The GitHub OAuth login now exists in both channels. When either refreshes it, GitHub invalidates the other's copy; reconnect there if it happens.")
@@ -316,28 +327,49 @@ export async function importProductionSettings({
     skipped.push(`GitHub OAuth login (connect GitHub in ${DEVELOPMENT.productName}, or pass --include-github-oauth)`)
   }
 
-  // Remote computers and the client key. Dev keeps its own identity.
+  // Connected devices and the client key. Dev keeps its own identity.
   const remoteSource = path.join(source.state, "desktop-remote")
   const remoteTarget = path.join(target.state, "desktop-remote")
   const remote = readJson(path.join(remoteSource, "config.json"))
   let remoteNames = []
   if (remote.value && isObject(remote.value)) {
-    const hosts = validHosts(remote.value)
-    remoteNames = hosts.map(host => host.name)
+    const devices = validDevices(remote.value)
+    remoteNames = devices.map(device => device.name)
     const existing = readJson(path.join(remoteTarget, "config.json"))
     const own = existing.value && isObject(existing.value) ? existing.value : {}
-    const hostId = typeof own.hostId === "string" && own.hostId !== "" ? own.hostId : newId()
-    if (hosts.length > 0) {
-      addFile(`Remote computers (${hosts.length}); ${DEVELOPMENT.productName} keeps its own host id and remote management stays off`,
+    const ownId = [own.deviceId, own.hostId].find(id => typeof id === "string" && id !== "")
+    const deviceId = ownId ?? newId()
+    if (devices.length > 0) {
+      addFile(`Connected devices (${devices.length}); ${DEVELOPMENT.productName} keeps its own device id and connections stay off`,
         path.join(remoteTarget, "config.json"),
-        `${JSON.stringify({ hostId, enabled: own.enabled === true, hosts }, null, 2)}\n`)
+        `${JSON.stringify({ deviceId, enabled: own.enabled === true, devices }, null, 2)}\n`)
       for (const name of ["id_ed25519", "id_ed25519.pub"]) {
         const key = path.join(remoteSource, name)
         if (fs.existsSync(key)) addFile(`Remote-management client key ${name}`, path.join(remoteTarget, name), fs.readFileSync(key), name.endsWith(".pub") ? 0o644 : 0o600)
         else if (name === "id_ed25519") warnings.push(`Production has no client SSH key yet; ${DEVELOPMENT.productName} will create its own and ask you to install it on each remote computer.`)
       }
-    } else skipped.push("Remote computers (none saved)")
-  } else skipped.push("Remote computers (none saved)")
+    } else skipped.push("Connected devices (none saved)")
+  } else skipped.push("Connected devices (none saved)")
+
+  // Dev converts its saved data once per channel. Written files use the current names, and
+  // clearing the record makes the conversion run again to finish any older Dev files.
+  const vocabularyRecord = devFile(path.join(target.data, VOCABULARY_RECORD))
+  if (actions.length > 0 && fs.existsSync(vocabularyRecord)) {
+    actions.unshift({
+      label: `Saved-data conversion record (${DEVELOPMENT.productName} runs the conversion again at its next launch)`,
+      file: vocabularyRecord,
+      overwrites: false,
+      apply() {
+        fs.rmSync(vocabularyRecord, { force: true })
+        const directory = fs.openSync(path.dirname(vocabularyRecord), "r")
+        try {
+          fs.fsyncSync(directory)
+        } finally {
+          fs.closeSync(directory)
+        }
+      },
+    })
+  }
 
   if (actions.length === 0) {
     log("Nothing to import: production has no saved configuration to copy.")

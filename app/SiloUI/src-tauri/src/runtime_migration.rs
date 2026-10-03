@@ -1134,6 +1134,9 @@ impl BackupLocations {
 mod guard_tests;
 #[cfg(test)]
 mod interrupted_tests;
+pub(crate) mod vocabulary;
+#[cfg(test)]
+mod vocabulary_tests;
 
 #[cfg(test)]
 mod tests {
