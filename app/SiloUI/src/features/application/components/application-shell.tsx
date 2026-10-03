@@ -9,13 +9,13 @@ import { Toaster } from "@/components/ui/sonner"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { ApplicationTitleBar } from "@/features/application/components/application-title-bar"
 import { useSidebarDisclosure } from "@/hooks/use-sidebar-disclosure"
-import type { ActiveRuntimeRepairPresentation, ApplicationTab, SettingsSection, WorkspaceSection } from "@/features/application/model/application-source"
+import type { ActiveRuntimeRepairPresentation, ApplicationTab, SettingsSection, ComputerSection } from "@/features/application/model/application-source"
 import { cn } from "@/lib/utils"
 import "./application-shell.css"
 
 export interface ApplicationNavigationLoading {
   tabs?: Partial<Record<ApplicationTab, boolean>>
-  workspaceSections?: Partial<Record<WorkspaceSection, boolean>>
+  computerSections?: Partial<Record<ComputerSection, boolean>>
   settingsSections?: Partial<Record<SettingsSection, boolean>>
 }
 
@@ -24,8 +24,8 @@ const primaryItems = [
   { id: "secrets", label: "Secrets", icon: KeyRound },
 ] as const
 
-const workspaceItems = [
-  { id: "overview", label: "All sandboxes", icon: LayoutDashboard },
+const computerItems = [
+  { id: "overview", label: "All computers", icon: LayoutDashboard },
   { id: "files", label: "Files", icon: File },
   { id: "logs", label: "Logs", icon: Terminal },
   { id: "network", label: "Network", icon: Network },
@@ -34,7 +34,7 @@ const workspaceItems = [
 
 const settingsItems = [
   { id: "general", label: "General", icon: SlidersHorizontal },
-  { id: "computers", label: "Computers", icon: Monitor },
+  { id: "connections", label: "Connections", icon: Monitor },
   { id: "notifications", label: "Notifications", icon: Bell },
 ] as const
 
@@ -47,13 +47,13 @@ function NavigationLoadingIndicator({ loading, collapsed }: { loading: boolean; 
   return collapsed ? spinner : <span className="grid size-5 shrink-0 place-items-center">{spinner}</span>
 }
 
-/** Sandboxes with an error or a warning; both counts are sandboxes, never individual errors. */
+/** Computers with an error or a warning; both counts are computers, never individual errors. */
 export interface SidebarAttention { errors: number; warnings: number }
 
 const countLabel = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`
-const errorsLabel = (count: number) => countLabel(count, "sandbox has an error", "sandboxes have errors")
-const warningsLabel = (count: number) => countLabel(count, "sandbox has a warning", "sandboxes have warnings")
-const attentionLabel = ({ errors, warnings }: SidebarAttention) => countLabel(errors + warnings, "sandbox needs attention", "sandboxes need attention")
+const errorsLabel = (count: number) => countLabel(count, "computer has an error", "computers have errors")
+const warningsLabel = (count: number) => countLabel(count, "computer has a warning", "computers have warnings")
+const attentionLabel = ({ errors, warnings }: SidebarAttention) => countLabel(errors + warnings, "computer needs attention", "computers need attention")
 
 /** The visual part of a collapsed menu's attention signal; its text is announced separately. */
 function AttentionMark({ attention, collapsed }: { attention: SidebarAttention; collapsed: boolean }) {
@@ -110,7 +110,7 @@ function NavigationButton({
   onClick: () => void
 }) {
   return (
-    <NavigationTooltip label={label} collapsed={collapsed} shortcut={shortcutFor(id === "workspaces" ? "go-sandboxes" : id === "settings" ? "settings" : `go-${id}`)}>
+    <NavigationTooltip label={label} collapsed={collapsed} shortcut={shortcutFor(id === "computers" ? "go-computers" : id === "settings" ? "settings" : `go-${id}`)}>
     <button
       id={`application-nav-${id}`}
       type="button"
@@ -118,7 +118,7 @@ function NavigationButton({
       data-navigation-tone={tone}
       aria-current={active ? "page" : undefined}
       aria-controls={`application-panel-${id}`}
-      aria-keyshortcuts={shortcutFor(id === "workspaces" ? "go-sandboxes" : id === "settings" ? "settings" : `go-${id}`)?.aria}
+      aria-keyshortcuts={shortcutFor(id === "computers" ? "go-computers" : id === "settings" ? "settings" : `go-${id}`)?.aria}
       aria-busy={loading || undefined}
       aria-describedby={describedBy}
       onClick={onClick}
@@ -144,7 +144,7 @@ function NavigationButton({
       <span className="sidebar-label flex-1 text-left">{label}</span>
       {hasAttention(attention) && <AttentionMark attention={attention} collapsed={collapsed} />}
       {!collapsed && <NavigationLoadingIndicator loading={loading} collapsed={false} />}
-      {!collapsed && <SidebarShortcut action={id === "workspaces" ? "go-sandboxes" : id === "settings" ? "settings" : `go-${id}`} />}
+      {!collapsed && <SidebarShortcut action={id === "computers" ? "go-computers" : id === "settings" ? "settings" : `go-${id}`} />}
     </button>
     </NavigationTooltip>
   )
@@ -163,7 +163,7 @@ function DisclosureNavigationItem({
   onToggle,
   children,
 }: {
-  id: "workspaces" | "settings"
+  id: "computers" | "settings"
   label: string
   icon: typeof Boxes
   active: boolean
@@ -226,12 +226,12 @@ function SubNavigation<Section extends string>({
   return (
     <div role="group" aria-label={label} className="sidebar-subnav relative grid grid-cols-1 gap-1">
       {items.map(({ id, label: itemLabel, icon: Icon }) => (
-        <NavigationTooltip key={id} label={itemLabel} collapsed={collapsed} shortcut={shortcutFor(id === "overview" ? "go-sandboxes" : id === "general" ? "settings" : `go-${id}`)}>
+        <NavigationTooltip key={id} label={itemLabel} collapsed={collapsed} shortcut={shortcutFor(id === "overview" ? "go-computers" : id === "general" ? "settings" : `go-${id}`)}>
         <button
           type="button"
           aria-current={active && section === id ? "page" : undefined}
           aria-busy={loading?.[id] || undefined}
-          aria-keyshortcuts={shortcutFor(id === "overview" ? "go-sandboxes" : id === "general" ? "settings" : `go-${id}`)?.aria}
+          aria-keyshortcuts={shortcutFor(id === "overview" ? "go-computers" : id === "general" ? "settings" : `go-${id}`)?.aria}
           onClick={() => onSelect(id)}
           className={cn(
             "group/sidebar-item sidebar-secondary relative flex h-8 w-full min-w-0 items-center gap-2 rounded-md text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring/70",
@@ -283,7 +283,7 @@ function SubNavigation<Section extends string>({
               </span>
             )}
           {!collapsed && <NavigationLoadingIndicator loading={loading?.[id] ?? false} collapsed={false} />}
-          {!collapsed && <SidebarShortcut action={id === "overview" ? "go-sandboxes" : id === "general" ? "settings" : `go-${id}`} />}
+          {!collapsed && <SidebarShortcut action={id === "overview" ? "go-computers" : id === "general" ? "settings" : `go-${id}`} />}
         </button>
         </NavigationTooltip>
       ))}
@@ -293,17 +293,17 @@ function SubNavigation<Section extends string>({
 
 export function ApplicationShell({
   activeTab,
-  workspaceSection,
+  computerSection,
   settingsSection,
   systemIssueStatus,
-  workspaceAttention,
+  computerAttention,
   navigationLoading,
   navigationDisabled = false,
   defaultSettingsMenuOpen = activeTab === "settings",
   toggleSidebarRequest,
   onSidebarCollapsedChange,
   onTabChange,
-  onWorkspaceSectionChange,
+  onComputerSectionChange,
   onSettingsSectionChange,
   canGoBack,
   canGoForward,
@@ -316,17 +316,17 @@ export function ApplicationShell({
   children,
 }: {
   activeTab: ApplicationTab
-  workspaceSection: WorkspaceSection
+  computerSection: ComputerSection
   settingsSection: SettingsSection
   systemIssueStatus: ActiveRuntimeRepairPresentation["status"] | null
-  workspaceAttention: SidebarAttention
+  computerAttention: SidebarAttention
   navigationLoading?: ApplicationNavigationLoading
   navigationDisabled?: boolean
   defaultSettingsMenuOpen?: boolean
   toggleSidebarRequest?: number
   onSidebarCollapsedChange?: (collapsed: boolean) => void
   onTabChange: (tab: ApplicationTab) => void
-  onWorkspaceSectionChange: (section: WorkspaceSection) => void
+  onComputerSectionChange: (section: ComputerSection) => void
   onSettingsSectionChange: (section: SettingsSection) => void
   canGoBack: boolean
   canGoForward: boolean
@@ -339,7 +339,7 @@ export function ApplicationShell({
   banner?: ReactNode
   children: ReactNode
 }) {
-  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(activeTab === "workspaces")
+  const [computerMenuOpen, setComputerMenuOpen] = useState(activeTab === "computers")
   const [settingsMenuOpen, setSettingsMenuOpen] = useState(defaultSettingsMenuOpen)
   const {
     collapsed: pinnedCollapsed,
@@ -366,7 +366,7 @@ export function ApplicationShell({
   const collapsed = pinnedCollapsed && !previewing
 
   function selectTab(tab: ApplicationTab) {
-    if (tab === "workspaces") setWorkspaceMenuOpen(true)
+    if (tab === "computers") setComputerMenuOpen(true)
     if (tab === "settings") setSettingsMenuOpen(true)
     onTabChange(tab)
   }
@@ -398,28 +398,28 @@ export function ApplicationShell({
           <div className="flex w-full flex-1 flex-col items-start gap-1">
             <div className="grid w-full grid-cols-1 gap-1">
               <DisclosureNavigationItem
-                id="workspaces"
-                label="Sandboxes"
+                id="computers"
+                label="Computers"
                 icon={Boxes}
-                active={activeTab === "workspaces"}
-                expanded={workspaceMenuOpen}
+                active={activeTab === "computers"}
+                expanded={computerMenuOpen}
                 collapsed={collapsed}
-                attention={workspaceAttention}
-                loading={Object.values(navigationLoading?.workspaceSections ?? {}).some(Boolean)}
-                onSelect={() => selectTab("workspaces")}
-                onToggle={() => setWorkspaceMenuOpen((open) => !open)}
+                attention={computerAttention}
+                loading={Object.values(navigationLoading?.computerSections ?? {}).some(Boolean)}
+                onSelect={() => selectTab("computers")}
+                onToggle={() => setComputerMenuOpen((open) => !open)}
               >
                 <SubNavigation
-                  label="Sandbox sections"
-                  items={workspaceItems}
-                  section={workspaceSection}
-                  active={activeTab === "workspaces"}
+                  label="Computer sections"
+                  items={computerItems}
+                  section={computerSection}
+                  active={activeTab === "computers"}
                   collapsed={collapsed}
-                  attention={hasAttention(workspaceAttention) ? { section: "overview", ...workspaceAttention } : null}
-                  loading={navigationLoading?.workspaceSections}
+                  attention={hasAttention(computerAttention) ? { section: "overview", ...computerAttention } : null}
+                  loading={navigationLoading?.computerSections}
                   onSelect={(section) => {
-                    onWorkspaceSectionChange(section)
-                    setWorkspaceMenuOpen(true)
+                    onComputerSectionChange(section)
+                    setComputerMenuOpen(true)
                   }}
                 />
               </DisclosureNavigationItem>
@@ -471,7 +471,7 @@ export function ApplicationShell({
         <div className="application-content relative flex min-h-0 min-w-0 flex-col">
           <div className="pointer-events-none absolute inset-x-0 top-3 z-20 mx-auto flex w-full max-w-4xl justify-center px-4 sm:px-6">{notice}</div>
           {banner}
-          <div inert={navigationDisabled || undefined} className={cn("min-h-0 min-w-0 flex-1", activeTab === "workspaces" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
+          <div inert={navigationDisabled || undefined} className={cn("min-h-0 min-w-0 flex-1", activeTab === "computers" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
         </div>
       </div>
       <Toaster reduceMotion={reduceMotion} />

@@ -10,7 +10,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke, isTauri: () => f
 vi.mock("./shutdown-boundary", () => ({ ShutdownBoundary: ({ children, pendingWork }: { children: import("react").ReactNode; pendingWork?: string }) => <>{pendingWork && <p>Quit overlay: {pendingWork}</p>}{children}</> }))
 vi.mock("./runtime-migration-boundary", () => ({ RuntimeMigrationBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
 const state = vi.hoisted(() => ({ source: {} as object | null, loading: false, error: null as string | null, checks: [] as Array<{ id: string; title: string; status: string; detail: string; remediation: string | null }>, retry: vi.fn(), setupDrain: undefined as string | undefined, localUpdating: false }))
-vi.mock("./production-source", () => ({ localUpdatingNotice: "Local sandboxes are updating.", useProductionSource: () => ({ source: state.source, backup: {}, loading: state.loading, error: state.error, setupDrain: state.setupDrain, localUpdating: state.localUpdating, savedMachines: [{ id: "saved", name: "saved-machine", kind: "ssh", host: "host", user: "user", port: 22 }] }) }))
+vi.mock("./production-source", () => ({ localUpdatingNotice: "Local computers are updating.", useProductionSource: () => ({ source: state.source, backup: {}, loading: state.loading, error: state.error, setupDrain: state.setupDrain, localUpdating: state.localUpdating, savedConfigurations: [{ id: "saved", name: "saved-computer", kind: "ssh", host: "host", user: "user", port: 22 }] }) }))
 vi.mock("./dependencies", () => ({ useDependencyStore: () => ({ checks: state.checks, retry: state.retry }) }))
 vi.mock("./production-onboarding", () => ({ ProductionOnboarding: ({ onOpenApp }: { onOpenApp: () => void }) => <button onClick={onOpenApp}>Open Silo</button> }))
 vi.mock("@/features/application/application-app", () => ({ ApplicationApp: ({ source, actions }: { source: { runtimeRepair?: { reason: string; recovery: string; checking: boolean } }; actions: { retryRuntimeChecks: () => void } }) => <div>Main app{source.runtimeRepair && <div role="alert">{source.runtimeRepair.reason}{source.runtimeRepair.recovery}<button disabled={source.runtimeRepair.checking} onClick={actions.retryRuntimeChecks}>Retry checks</button></div>}</div> }))
@@ -31,8 +31,8 @@ describe("production completion routing", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.queryByText("Silo could not load")).not.toBeInTheDocument()
     expect(screen.getByRole("navigation", { name: "Silo navigation" })).toBeVisible()
-    expect(screen.getByText("saved-machine")).toBeVisible()
-    expect(screen.getByText("Loading sandbox state")).toHaveClass("sr-only")
+    expect(screen.getByText("saved-computer")).toBeVisible()
+    expect(screen.getByText("Loading computer state")).toHaveClass("sr-only")
     expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
     expect(screen.getByRole("button", { name: "Search or jump to" })).toBeDisabled()
     expect(application.container.querySelector(".animate-pulse")).toBeNull()
@@ -40,7 +40,7 @@ describe("production completion routing", () => {
     state.source = {}
     await act(async () => { application.rerender(view()) })
     expect(screen.getByText("Main app")).toBeVisible()
-    expect(screen.queryByText("Loading sandbox state")).not.toBeInTheDocument()
+    expect(screen.queryByText("Loading computer state")).not.toBeInTheDocument()
   })
 
   it("does not disguise a real startup failure as a skeleton", () => {
@@ -121,26 +121,26 @@ describe("status panel without application state", () => {
   })
 })
 
-describe("local sandboxes updating while connected computers are shown", () => {
-  it("explains the missing local sandboxes in the main window and the tray", () => {
-    state.source = { workspaces: [], remoteComputers: [{ id: "office", connected: true }] }
+describe("local computers updating while connected devices are shown", () => {
+  it("explains the missing local computers in the main window and the tray", () => {
+    state.source = { computers: [], devices: [{ id: "office", connected: true }] }
     state.localUpdating = true
     const settings = createMemorySettingsStore({ onboardingComplete: true })
     const main = render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
     expect(screen.getByText("Main app")).toBeVisible()
-    expect(screen.getByRole("status")).toHaveTextContent("Local sandboxes are updating.")
+    expect(screen.getByRole("status")).toHaveTextContent("Local computers are updating.")
     main.unmount()
     render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={null} statusPanel /></SettingsProvider>)
-    expect(screen.getByText("Tray notice: Local sandboxes are updating.")).toBeVisible()
+    expect(screen.getByText("Tray notice: Local computers are updating.")).toBeVisible()
   })
 })
 
 describe("status panel while application state loads", () => {
-  it("shows loading instead of an empty inventory before saved sandboxes are read", () => {
+  it("shows loading instead of an empty inventory before saved computers are read", () => {
     render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><StartupLoading statusPanel /></SettingsProvider>)
-    expect(screen.getByText("Loading sandboxes…")).toBeVisible()
-    expect(screen.queryByText("No sandboxes yet")).not.toBeInTheDocument()
-    expect(screen.queryByText("Add your first sandbox in Silo.")).not.toBeInTheDocument()
+    expect(screen.getByText("Loading computers…")).toBeVisible()
+    expect(screen.queryByText("No computers yet")).not.toBeInTheDocument()
+    expect(screen.queryByText("Add your first computer in Silo.")).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Open Silo" })).toBeEnabled()
   })
 
@@ -148,8 +148,8 @@ describe("status panel while application state loads", () => {
     state.source = null
     state.loading = true
     render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={null} statusPanel /></SettingsProvider>)
-    expect(screen.getByText("Loading sandbox state")).toHaveClass("sr-only")
-    expect(screen.getByText("saved-machine")).toBeVisible()
+    expect(screen.getByText("Loading computer state")).toHaveClass("sr-only")
+    expect(screen.getByText("saved-computer")).toBeVisible()
     expect(screen.getByRole("button", { name: "Open Silo" })).toBeEnabled()
     fireEvent.click(screen.getByRole("button", { name: "Quit Silo" }))
     await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("quit_app"))
@@ -169,8 +169,8 @@ describe("production dependency recovery", () => {
     expect(source.initialize).toHaveBeenCalledOnce()
     expect(screen.queryByRole("button", { name: /repair/i })).not.toBeInTheDocument()
   })
-  it("does not block remote-only use when this computer lacks virtualization", async () => {
-    state.source = { workspaces: [], remoteComputers: [{ id: "office", connected: true }] }
+  it("does not block remote-only use when this device lacks virtualization", async () => {
+    state.source = { computers: [], devices: [{ id: "office", connected: true }] }
     state.checks = [failure]
     await act(async () => { render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>) })
     expect(screen.getByText("Main app")).toBeVisible()

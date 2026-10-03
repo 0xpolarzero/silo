@@ -5,13 +5,13 @@ import { ApplicationShell } from "./application-shell"
 
 function renderSidebar() {
   render(<ApplicationShell
-    activeTab="workspaces"
-    workspaceSection="overview"
+    activeTab="computers"
+    computerSection="overview"
     settingsSection="general"
     systemIssueStatus={null}
-    workspaceAttention={{ errors: 0, warnings: 0 }}
+    computerAttention={{ errors: 0, warnings: 0 }}
     onTabChange={vi.fn()}
-    onWorkspaceSectionChange={vi.fn()}
+    onComputerSectionChange={vi.fn()}
     onSettingsSectionChange={vi.fn()}
     canGoBack={false}
     canGoForward={false}
@@ -27,13 +27,13 @@ function renderSidebar() {
 
 function renderAttention(props: Partial<Parameters<typeof ApplicationShell>[0]> = {}) {
   render(<ApplicationShell
-    activeTab="workspaces"
-    workspaceSection="overview"
+    activeTab="computers"
+    computerSection="overview"
     settingsSection="general"
     systemIssueStatus={null}
-    workspaceAttention={{ errors: 1, warnings: 2 }}
+    computerAttention={{ errors: 1, warnings: 2 }}
     onTabChange={vi.fn()}
-    onWorkspaceSectionChange={vi.fn()}
+    onComputerSectionChange={vi.fn()}
     onSettingsSectionChange={vi.fn()}
     canGoBack={false}
     canGoForward={false}
@@ -41,48 +41,48 @@ function renderAttention(props: Partial<Parameters<typeof ApplicationShell>[0]> 
     onGoForward={vi.fn()}
     {...props}
   ><button>Page content</button></ApplicationShell>)
-  const sandboxes = () => screen.getByRole("button", { name: "Sandboxes" })
-  const mark = () => sandboxes().querySelector("[data-navigation-attention]")
-  return { sandboxes, mark }
+  const computers = () => screen.getByRole("button", { name: "Computers" })
+  const mark = () => computers().querySelector("[data-navigation-attention]")
+  return { computers, mark }
 }
 
 describe("sidebar attention", () => {
   afterEach(cleanup)
 
-  it("counts sandboxes, not errors, next to Overview", () => {
+  it("counts computers, not errors, next to Overview", () => {
     renderAttention()
-    const overview = within(screen.getByRole("button", { name: /^All sandboxes/ }))
-    expect(overview.getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
-    expect(overview.getByRole("status", { name: "2 sandboxes have warnings" })).toHaveTextContent("2")
+    const overview = within(screen.getByRole("button", { name: /^All computers/ }))
+    expect(overview.getByRole("status", { name: "1 computer has an error" })).toHaveTextContent("1")
+    expect(overview.getByRole("status", { name: "2 computers have warnings" })).toHaveTextContent("2")
   })
 
-  it("mirrors attention and section work on Sandboxes when its menu is collapsed", () => {
-    const { sandboxes, mark } = renderAttention({ navigationLoading: { workspaceSections: { files: true } } })
+  it("mirrors attention and section work on Computers when its menu is collapsed", () => {
+    const { computers, mark } = renderAttention({ navigationLoading: { computerSections: { files: true } } })
     expect(mark()).toBeNull()
-    expect(sandboxes()).not.toHaveAttribute("aria-busy")
+    expect(computers()).not.toHaveAttribute("aria-busy")
     expect(screen.queryByRole("status", { name: /need attention/ })).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Collapse Sandboxes menu" }))
-    expect(screen.queryByRole("button", { name: /^All sandboxes/ })).not.toBeInTheDocument()
-    expect(screen.getByRole("status", { name: "3 sandboxes need attention" })).toBeInTheDocument()
-    expect(sandboxes()).toHaveAccessibleDescription("3 sandboxes need attention")
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Computers menu" }))
+    expect(screen.queryByRole("button", { name: /^All computers/ })).not.toBeInTheDocument()
+    expect(screen.getByRole("status", { name: "3 computers need attention" })).toBeInTheDocument()
+    expect(computers()).toHaveAccessibleDescription("3 computers need attention")
     expect(mark()).toHaveTextContent("3")
     expect(mark()).toHaveClass("text-destructive")
-    expect(sandboxes()).toHaveAttribute("aria-busy", "true")
+    expect(computers()).toHaveAttribute("aria-busy", "true")
   })
 
   it("keeps the mirrored signal on the icon when the sidebar is collapsed too", () => {
-    const { sandboxes, mark } = renderAttention({ workspaceAttention: { errors: 0, warnings: 1 } })
-    fireEvent.click(screen.getByRole("button", { name: "Collapse Sandboxes menu" }))
+    const { computers, mark } = renderAttention({ computerAttention: { errors: 0, warnings: 1 } })
+    fireEvent.click(screen.getByRole("button", { name: "Collapse Computers menu" }))
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }))
-    expect(sandboxes()).toHaveAccessibleDescription("1 sandbox needs attention")
+    expect(computers()).toHaveAccessibleDescription("1 computer needs attention")
     expect(mark()).toHaveClass("bg-amber-500")
     expect(mark()).toBeEmptyDOMElement()
   })
 
-  it("names the collapsed-sidebar Overview dot by the sandboxes that need attention", () => {
+  it("names the collapsed-sidebar Overview dot by the computers that need attention", () => {
     renderAttention()
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }))
-    expect(within(screen.getByRole("button", { name: /^All sandboxes/ })).getByRole("status", { name: "3 sandboxes need attention" })).toHaveClass("bg-destructive")
+    expect(within(screen.getByRole("button", { name: /^All computers/ })).getByRole("status", { name: "3 computers need attention" })).toHaveClass("bg-destructive")
   })
 })
 

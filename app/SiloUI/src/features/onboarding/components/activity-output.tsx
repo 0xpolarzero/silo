@@ -10,7 +10,7 @@ function eventLine(event: SiloProgressEvent): string {
   return [
     event.timestamp === undefined ? undefined : new Date(event.timestamp).toLocaleString(),
     event.level === "error" ? "Error" : event.level === "warning" ? "Warning" : undefined,
-    event.workspace,
+    event.computer,
     event.message,
     download,
     event.elapsedSeconds === undefined ? undefined : `${Math.floor(event.elapsedSeconds)}s elapsed`,
@@ -41,7 +41,7 @@ export function ActivityOutput({ events, error, embedded = false }: { events: Si
   return <LogDisclosure
     title="Live activity"
     output={output}
-    outputLabel="Sandbox activity"
+    outputLabel="Computer activity"
     controlsLabel="Live activity controls"
     emptyMessage="No activity yet."
     embedded={embedded}

@@ -10,9 +10,9 @@ import {
   applicationSourceForScenario,
   githubManagementFixtureModeFromSearch,
   repositoryPushFixtureModeFromSearch,
-  sandboxConfigurationFixtureModeFromSearch,
+  computerConfigurationFixtureModeFromSearch,
   systemIssueFixtureModeFromSearch,
-  workspaceFixtureModeFromSearch,
+  computerFixtureModeFromSearch,
 } from "@/fixtures/application-scenarios"
 import { backupFixtureModeFromSearch } from "@/fixtures/application-backup"
 import { activityFixtureModeFromSearch, activityFixtureStepCount } from "@/fixtures/application-activity"
@@ -33,7 +33,7 @@ import { createComputerUseBridge } from "@/desktop/computer-use-bridge"
 import { ComputerUseProvider } from "@/desktop/computer-use-provider"
 import { createFixturePreparationBackend, preparationFixtureFromSearch } from "./preparation"
 import { createPreparationStore, PreparationProvider } from "@/desktop/preparation"
-import { chatGptFixtureFromSearch, computerUseFixtureFromSearch, createFixtureComputerUseBackend, withComputerUseFixture, withRemoteComputersFixture } from "./computer-use"
+import { chatGptFixtureFromSearch, computerUseFixtureFromSearch, createFixtureComputerUseBackend, withComputerUseFixture, withDevicesFixture } from "./computer-use"
 import { createFixtureUnseenResult, unseenResultFixtureModeFromSearch } from "./transfer-result-notice"
 
 export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false, settingsStore }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean; settingsStore?: SettingsStore }) {
@@ -47,8 +47,8 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const [statusBarHandoff, setStatusBarHandoff] = useState<{ source: ApplicationSource; route?: StatusBarRoute } | null>(null)
   const scenario = scenarioFromSearch(window.location.search)
   const githubState = githubStateFromSearch(window.location.search)
-  const workspaceMode = workspaceFixtureModeFromSearch(window.location.search)
-  const sandboxConfigurationMode = sandboxConfigurationFixtureModeFromSearch(window.location.search)
+  const computerMode = computerFixtureModeFromSearch(window.location.search)
+  const computerConfigurationMode = computerConfigurationFixtureModeFromSearch(window.location.search)
   const systemIssueMode = systemIssueFixtureModeFromSearch(window.location.search)
   const repositoryPushMode = repositoryPushFixtureModeFromSearch(window.location.search)
   const githubManagementMode = githubManagementFixtureModeFromSearch(window.location.search)
@@ -70,7 +70,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const migrationBackend = useMemo(() => preUpgradeBackup ? createFixtureMigrationBackend(preUpgradeBackup, unseenResult) : undefined, [preUpgradeBackup, unseenResult])
   const editorIncludeMode = editorIncludeFixtureModeFromSearch(window.location.search)
   const editorInclude = useMemo(() => editorIncludeMode ? createFixtureEditorInclude() : undefined, [editorIncludeMode])
-  const baseSource = withResourceFixture(completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode), resourceMode)
+  const baseSource = withResourceFixture(completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, computerMode, computerConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode), resourceMode)
   const computerUseMode = computerUseFixtureFromSearch(window.location.search)
   const chatGptMode = chatGptFixtureFromSearch(window.location.search)
   const chatGptRemoteMode = chatGptFixtureFromSearch(window.location.search, "chatgpt-remote")
@@ -79,7 +79,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const preparationStore = useMemo(() => preparationMode ? createPreparationStore(createFixturePreparationBackend(preparationMode)) : null, [preparationMode])
   const queuedSource = operationQueue ? { ...baseSource, operationQueue } : baseSource
   const sourceWithComputerUse = computerUseMode ? withComputerUseFixture(queuedSource, computerUseMode) : queuedSource
-  const fixtureSource = computerUseBridge ? withRemoteComputersFixture(sourceWithComputerUse) : sourceWithComputerUse
+  const fixtureSource = computerUseBridge ? withDevicesFixture(sourceWithComputerUse) : sourceWithComputerUse
 
   useEffect(() => {
     const stepCount = activityFixtureStepCount(activityMode)
@@ -111,7 +111,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
         </RuntimeMigrationBoundary>
       ) : surface === "app" ? (
         <ApplicationPreview
-          key={`${scenario}:${githubState ?? "source"}:${workspaceMode ?? "source"}:${sandboxConfigurationMode ?? "source"}:${systemIssueMode ?? "source"}:${repositoryPushMode ?? "source"}:${activityMode ?? "source"}:${githubManagementMode ?? "source"}`}
+          key={`${scenario}:${githubState ?? "source"}:${computerMode ?? "source"}:${computerConfigurationMode ?? "source"}:${systemIssueMode ?? "source"}:${repositoryPushMode ?? "source"}:${activityMode ?? "source"}:${githubManagementMode ?? "source"}`}
           backupPreviewMode={backupMode}
           initialRoute={statusBarHandoff?.route}
           source={statusBarHandoff?.source ?? fixtureSource}
@@ -122,8 +122,8 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
         />
       ) : surface === "status-bar" ? (
         <StatusBarPreview
-          fixtureKey={`${scenario}:${githubState ?? "source"}:${workspaceMode ?? "source"}:${sandboxConfigurationMode ?? "source"}:${systemIssueMode ?? "source"}:${repositoryPushMode ?? "source"}:${activityMode ?? "source"}:${githubManagementMode ?? "source"}`}
-          source={applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode)}
+          fixtureKey={`${scenario}:${githubState ?? "source"}:${computerMode ?? "source"}:${computerConfigurationMode ?? "source"}:${systemIssueMode ?? "source"}:${repositoryPushMode ?? "source"}:${activityMode ?? "source"}:${githubManagementMode ?? "source"}`}
+          source={applicationSourceForScenario(scenario, githubState, computerMode, computerConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode)}
           mode={statusBarMode}
           onOpenSilo={(snapshot, route) => {
             setStatusBarHandoff({ source: snapshot, route })

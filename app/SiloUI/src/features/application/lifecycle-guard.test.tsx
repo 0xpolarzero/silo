@@ -18,65 +18,65 @@ async function palette(user: ReturnType<typeof userEvent.setup>, search: string)
   await user.type(screen.getByRole("combobox", { name: "Search commands" }), search)
 }
 
-it("asks before the palette starts a sandbox under memory pressure, inside the palette", async () => {
+it("asks before the palette starts a computer under memory pressure, inside the palette", async () => {
   const user = userEvent.setup()
-  const startWorkspace = vi.fn()
-  render(<ApplicationPreview source={stoppedDev()} actions={{ startWorkspace }} />)
+  const startComputer = vi.fn()
+  render(<ApplicationPreview source={stoppedDev()} actions={{ startComputer }} />)
   await palette(user, "start dev")
   await user.click(screen.getByRole("option", { name: "Start dev…" }))
 
   const dialog = within(screen.getByRole("dialog", { name: "Commands" }))
-  expect(dialog.getByText("Starting dev may slow this computer")).toBeVisible()
+  expect(dialog.getByText("Starting dev may slow this device")).toBeVisible()
   expect(dialog.getByText(/can use up to 32 GiB/)).toBeVisible()
-  expect(startWorkspace).not.toHaveBeenCalled()
+  expect(startComputer).not.toHaveBeenCalled()
   await user.click(dialog.getByRole("button", { name: "Start anyway" }))
-  expect(startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
+  expect(startComputer).toHaveBeenCalledExactlyOnceWith("dev")
   expect(screen.queryByRole("dialog", { name: "Commands" })).not.toBeInTheDocument()
 })
 
 it("returns to the command list when the palette's question is cancelled", async () => {
   const user = userEvent.setup()
-  const startWorkspace = vi.fn()
-  render(<ApplicationPreview source={stoppedDev()} actions={{ startWorkspace }} />)
+  const startComputer = vi.fn()
+  render(<ApplicationPreview source={stoppedDev()} actions={{ startComputer }} />)
   await palette(user, "start dev")
   await user.click(screen.getByRole("option", { name: "Start dev…" }))
   await user.click(within(screen.getByRole("dialog", { name: "Commands" })).getByRole("button", { name: "Cancel" }))
   expect(screen.getByRole("combobox", { name: "Search commands" })).toBeVisible()
-  expect(startWorkspace).not.toHaveBeenCalled()
+  expect(startComputer).not.toHaveBeenCalled()
 })
 
 it("reports unavailable VM operations from the palette instead of calling the runtime", async () => {
   const user = userEvent.setup()
-  const startWorkspace = vi.fn()
-  render(<ApplicationPreview source={applicationSourceForScenario("running", undefined, "stopped")} nativeOperations actions={{ startWorkspace }} />)
+  const startComputer = vi.fn()
+  render(<ApplicationPreview source={applicationSourceForScenario("running", undefined, "stopped")} nativeOperations actions={{ startComputer }} />)
   await palette(user, "start dev")
   await user.click(screen.getByRole("option", { name: "Start dev" }))
-  expect(await screen.findByText("Sandbox operation unavailable")).toBeVisible()
-  expect(startWorkspace).not.toHaveBeenCalled()
+  expect(await screen.findByText("Computer operation unavailable")).toBeVisible()
+  expect(startComputer).not.toHaveBeenCalled()
 })
 
-it("asks next to the sandbox page's Start button, not at the bottom of the page", async () => {
+it("asks next to the computer page's Start button, not at the bottom of the page", async () => {
   const user = userEvent.setup()
-  const startWorkspace = vi.fn()
-  render(<ApplicationPreview source={stoppedDev()} actions={{ startWorkspace }} />)
-  await user.click(within(screen.getByRole("region", { name: "Sandboxes" })).getByRole("button", { name: "Open dev" }))
+  const startComputer = vi.fn()
+  render(<ApplicationPreview source={stoppedDev()} actions={{ startComputer }} />)
+  await user.click(within(screen.getByRole("region", { name: "Computers" })).getByRole("button", { name: "Open dev" }))
   await user.click(screen.getByRole("button", { name: "Start dev" }))
   const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
-  expect(popover.getByText("Starting dev may slow this computer")).toBeVisible()
+  expect(popover.getByText("Starting dev may slow this device")).toBeVisible()
   expect(popover.getByRole("button", { name: "Start anyway" })).toHaveFocus()
   await user.click(popover.getByRole("button", { name: "Start anyway" }))
-  expect(startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
+  expect(startComputer).toHaveBeenCalledExactlyOnceWith("dev")
 })
 
 it("exposes one guard for other surfaces such as the status panel", () => {
   const source: ApplicationSource = stoppedDev()
-  const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
-  const actions = { startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn() }
+  const dev = source.computers.find(({ configuration }) => configuration.name === "dev")!
+  const actions = { startComputer: vi.fn(), stopComputer: vi.fn(), restartComputer: vi.fn() }
   const prompt = vi.fn()
   const guard = lifecycleGuard(source, actions, { prompt, notify: vi.fn() })
   guard.request(dev, "start")
-  expect(actions.startWorkspace).not.toHaveBeenCalled()
+  expect(actions.startComputer).not.toHaveBeenCalled()
   expect(prompt).toHaveBeenCalledWith(expect.objectContaining({ confirmLabel: "Start anyway" }), expect.any(Function), dev)
   prompt.mock.calls[0][1]()
-  expect(actions.startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
+  expect(actions.startComputer).toHaveBeenCalledExactlyOnceWith("dev")
 })

@@ -11,25 +11,25 @@ it.each(["network", "ssh"] as const)("backs off failed %s owners without delayin
   const command = service === "network" ? "remote_network_state" : "remote_ssh_access_state"
   let failing = false
   const remote = (args?: Record<string, unknown>) => {
-    if (failing && args?.hostId === "broken") throw new Error("Unavailable")
-    return { workspaces: [] }
+    if (failing && args?.deviceId === "broken") throw new Error("Unavailable")
+    return { computers: [] }
   }
   const invoke = nativeBridgeMock({
     read_application_state: () => local,
     read_backup_state: () => ({ snapshotId: "fixture", availability: "available", archives: [], operation: null }),
     read_operation_queue: () => ({ running: [], waiting: [] }),
     read_setup_activity: () => [],
-    remote_host_list: () => ["broken", "healthy"].map(id => ({ id, name: id, address: `user@${id}` })),
-    remote_host_snapshot: () => local,
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
-    read_network_state: () => ({ workspaces: [] }),
-    read_ssh_access_state: () => ({ workspaces: [] }),
+    device_list: () => ["broken", "healthy"].map(id => ({ id, name: id, address: `user@${id}` })),
+    device_snapshot: () => local,
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
+    read_network_state: () => ({ computers: [] }),
+    read_ssh_access_state: () => ({ computers: [] }),
     remote_network_state: remote,
     remote_ssh_access_state: remote,
   })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   const refresh = store.applicationActions[service === "network" ? "refreshNetwork" : "refreshSshAccess"] as (options?: { background?: boolean }) => Promise<void>
-  const reads = (id: string) => invoke.mock.calls.filter(([name, args]) => name === command && args?.hostId === id).length
+  const reads = (id: string) => invoke.mock.calls.filter(([name, args]) => name === command && args?.deviceId === id).length
   try {
     await store.initialize()
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
@@ -67,10 +67,10 @@ it.each(["network", "ssh"] as const)("does not queue an immediate %s retry from 
     read_backup_state: () => ({ snapshotId: "fixture", availability: "available", archives: [], operation: null }),
     read_operation_queue: () => ({ running: [], waiting: [] }),
     read_setup_activity: () => [],
-    remote_host_list: () => [],
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
-    read_network_state: () => hold && service === "network" ? pending : { workspaces: [] },
-    read_ssh_access_state: () => hold && service === "ssh" ? pending : { workspaces: [] },
+    device_list: () => [],
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "user@laptop" }),
+    read_network_state: () => hold && service === "network" ? pending : { computers: [] },
+    read_ssh_access_state: () => hold && service === "ssh" ? pending : { computers: [] },
   })
   const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
   const refresh = store.applicationActions[service === "network" ? "refreshNetwork" : "refreshSshAccess"]!

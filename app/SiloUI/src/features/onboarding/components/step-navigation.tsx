@@ -9,7 +9,7 @@ import type { OnboardingStep, PresentationStatus } from "@/features/onboarding/m
 
 const steps = [
   { id: "dependencies", label: "Dependencies", icon: PackageCheck },
-  { id: "workspaces", label: "Sandboxes", icon: Boxes },
+  { id: "computers", label: "Computers", icon: Boxes },
   { id: "github", label: "GitHub", icon: GitFork },
   { id: "review", label: "Review", icon: ClipboardCheck },
 ] as const

@@ -14,7 +14,7 @@ function bridge(options: { failListen?: (name: string) => boolean; invoke?: (com
     if (custom) return custom
     if (command === "read_application_state") return structuredClone(source)
     if (command === "read_backup_state") return structuredClone(backup)
-    if (command === "remote_host_list") return []
+    if (command === "device_list") return []
     if (command === "read_operation_queue") return { running: [], waiting: [] }
     return undefined
   })
@@ -29,14 +29,14 @@ function bridge(options: { failListen?: (name: string) => boolean; invoke?: (com
 
 describe("production setup drain", () => {
   it("stops waiting for GitHub access when Quit drains setup and names the work meanwhile", async () => {
-    const workspace = source.workspaces[0].machine.name
-    const applying = { ...source.github, policyRevision: 3, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }
+    const computer = source.computers[0].configuration.name
+    const applying = { ...source.github, policyRevision: 3, computerOperations: [{ computer, status: "applying", message: "Applying access" }] }
     let resolveIdentity!: () => void
     const identity = new Promise<void>((resolve) => { resolveIdentity = resolve })
     const mock = bridge({ invoke: (command) => {
       if (command === "save_github_configuration" || command === "read_github_state") return Promise.resolve(structuredClone(applying))
-      if (command === "configure_workspace_identities") return identity.then(() => null)
-      if (command === "verify_workspace_identities") return Promise.resolve(false)
+      if (command === "configure_computer_identities") return identity.then(() => null)
+      if (command === "verify_computer_identities") return Promise.resolve(false)
       if (command === "read_setup_activity") return Promise.resolve([])
       return undefined
     } })
@@ -44,13 +44,13 @@ describe("production setup drain", () => {
     try {
       await store.initialize()
       const request = {
-        machineConfiguration: { schemaVersion: 1 as const, machines: source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine) },
+        computerConfiguration: { schemaVersion: 1 as const, computers: source.computers.filter(({ device }) => !device).map(({ configuration }) => configuration) },
         applications: source.preferences,
-        github: { connectionState: "connected" as const, workspaces: source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => ({ workspace: machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
+        github: { connectionState: "connected" as const, computers: source.computers.filter(({ device }) => !device).map(({ configuration }) => ({ computer: configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
       }
       const finished = store.finishSetup(request, vi.fn(async () => {}))
       void finished.catch(() => {})
-      await vi.waitFor(() => expect(mock.count("configure_workspace_identities")).toBe(1))
+      await vi.waitFor(() => expect(mock.count("configure_computer_identities")).toBe(1))
       let drained = false
       const drain = store.drainSetup().then(() => { drained = true })
       expect(store.getSnapshot().setupDrain).toBe("Finishing setup (applying Git identities, verifying GitHub access, saving setup)…")
@@ -69,23 +69,23 @@ describe("production setup drain", () => {
 
   it.each(["quit", "dispose"])("wakes a GitHub access poll that is already waiting on %s", async reason => {
     vi.useFakeTimers()
-    const workspace = source.workspaces[0].machine.name
-    const applying = { ...source.github, policyRevision: 3, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }
+    const computer = source.computers[0].configuration.name
+    const applying = { ...source.github, policyRevision: 3, computerOperations: [{ computer, status: "applying", message: "Applying access" }] }
     const mock = bridge({ invoke: (command) => {
       if (command === "save_github_configuration" || command === "read_github_state") return Promise.resolve(structuredClone(applying))
-      if (command === "configure_workspace_identities") return Promise.resolve(null)
-      if (command === "verify_workspace_identities") return Promise.resolve(false)
+      if (command === "configure_computer_identities") return Promise.resolve(null)
+      if (command === "verify_computer_identities") return Promise.resolve(false)
       if (command === "read_setup_activity") return Promise.resolve([])
       return undefined
     } })
     const store = createProductionSource(mock.bridge)
     try {
       await store.initialize()
-      const machines = source.workspaces.filter(({ computer }) => !computer).map(({ machine }) => machine)
+      const configurations = source.computers.filter(({ device }) => !device).map(({ configuration }) => configuration)
       const step = store.submitSetupStep("github", {
-        machineConfiguration: { schemaVersion: 1, machines },
+        computerConfiguration: { schemaVersion: 1, computers: configurations },
         applications: source.preferences,
-        github: { connectionState: "connected", workspaces: machines.map((machine) => ({ workspace: machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
+        github: { connectionState: "connected", computers: configurations.map((configuration) => ({ computer: configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
       })
       const outcome = expect(step).rejects.toThrow(reason === "quit" ? /Silo is quitting/ : /Silo closed/)
       await vi.advanceTimersByTimeAsync(1_200)
@@ -114,16 +114,16 @@ describe("local state updating at launch", () => {
   function updating(options: { remotes: boolean; updatingReads?: number }) {
     let updatingReads = options.updatingReads ?? Number.POSITIVE_INFINITY
     return bridge({ invoke: (command, args) => {
-      if (command === "read_application_state") return updatingReads-- > 0 ? Promise.reject({ code: "update_in_progress", message: "Sandbox settings are changing." }) : Promise.resolve(structuredClone(source))
-      if (command === "remote_host_list") return Promise.resolve(options.remotes ? [office] : [])
-      if (command === "remote_host_snapshot") return Promise.resolve(structuredClone(source))
-      if (command === "remote_management_status") return Promise.resolve({ enabled: false, hostId: "this-mac", name: "This Mac", address: "this-mac.local" })
-      if (command === "read_application_shell") return Promise.resolve({ ...structuredClone(source), workspaces: [], runtimeRepair: { status: "unavailable", reason: String(args?.error) } })
+      if (command === "read_application_state") return updatingReads-- > 0 ? Promise.reject({ code: "update_in_progress", message: "Computer settings are changing." }) : Promise.resolve(structuredClone(source))
+      if (command === "device_list") return Promise.resolve(options.remotes ? [office] : [])
+      if (command === "device_snapshot") return Promise.resolve(structuredClone(source))
+      if (command === "connections_status") return Promise.resolve({ enabled: false, deviceId: "this-mac", name: "This Mac", address: "this-mac.local" })
+      if (command === "read_application_shell") return Promise.resolve({ ...structuredClone(source), computers: [], runtimeRepair: { status: "unavailable", reason: String(args?.error) } })
       return undefined
     } })
   }
 
-  it("shows connected computers, not a skeleton, while this computer's sandboxes update", async () => {
+  it("shows connected devices, not a skeleton, while this device's computers update", async () => {
     const mock = updating({ remotes: true, updatingReads: 2 })
     const store = createProductionSource(mock.bridge)
     try {
@@ -135,20 +135,20 @@ describe("local state updating at launch", () => {
       expect(snapshot.localUpdating).toBe(true)
       // Updating is not a runtime failure, and local changes wait for it.
       expect(snapshot.source?.runtimeRepair).toBeNull()
-      expect(snapshot.source?.vmOperationsUnavailable).toMatch(/updating/)
-      expect(snapshot.source?.workspaces.length).toBeGreaterThan(0)
-      expect(snapshot.source?.workspaces.every((workspace) => workspace.computer?.id === "office")).toBe(true)
+      expect(snapshot.source?.computerOperationsUnavailable).toMatch(/updating/)
+      expect(snapshot.source?.computers.length).toBeGreaterThan(0)
+      expect(snapshot.source?.computers.every((computer) => computer.device?.id === "office")).toBe(true)
       // Still updating: the shell stays.
       await store.refresh()
       expect(store.getSnapshot().localUpdating).toBe(true)
       // The update finished: the real local state replaces the shell.
       await store.refresh()
       expect(store.getSnapshot().localUpdating).toBe(false)
-      expect(store.getSnapshot().source?.workspaces.some((workspace) => !workspace.computer)).toBe(true)
+      expect(store.getSnapshot().source?.computers.some((computer) => !computer.device)).toBe(true)
     } finally { store.dispose() }
   })
 
-  it("keeps loading without connected computers", async () => {
+  it("keeps loading without connected devices", async () => {
     const mock = updating({ remotes: false })
     const store = createProductionSource(mock.bridge)
     try {
@@ -160,20 +160,20 @@ describe("local state updating at launch", () => {
   })
 })
 
-describe("saved sandbox list for the loading skeleton", () => {
-  const machine = source.workspaces[0].machine
+describe("saved computer list for the loading skeleton", () => {
+  const configuration = source.computers[0].configuration
   it.each([
     ["an unreadable list", () => Promise.reject(new Error("configuration locked")), []],
-    ["an over-long list", () => Promise.resolve({ schemaVersion: 1, machines: Array.from({ length: 65 }, () => machine) }), Array.from({ length: 65 }, () => machine)],
-    ["a newer schema with an unknown entry", () => Promise.resolve({ schemaVersion: 2, machines: [machine, { id: "x", kind: "future" }] }), [machine]],
+    ["an over-long list", () => Promise.resolve({ schemaVersion: 1, computers: Array.from({ length: 65 }, () => configuration) }), Array.from({ length: 65 }, () => configuration)],
+    ["a newer schema with an unknown entry", () => Promise.resolve({ schemaVersion: 2, computers: [configuration, { id: "x", kind: "future" }] }), [configuration]],
   ] as const)("never fails startup on %s", async (_case, read, expected) => {
-    const mock = bridge({ invoke: (command) => command === "read_machine_configuration" ? read() : undefined })
+    const mock = bridge({ invoke: (command) => command === "read_computer_configuration" ? read() : undefined })
     const logged = vi.spyOn(console, "error").mockImplementation(() => {})
     const store = createProductionSource(mock.bridge)
     try {
       await expect(store.loadConfiguration()).resolves.toBeUndefined()
-      expect(store.getSnapshot().savedMachines).toEqual(expected)
-      if (expected.length === 0) expect(logged).toHaveBeenCalledWith("Silo saved sandboxes:", "configuration locked")
+      expect(store.getSnapshot().savedConfigurations).toEqual(expected)
+      if (expected.length === 0) expect(logged).toHaveBeenCalledWith("Silo saved computers:", "configuration locked")
     } finally { store.dispose() }
   })
 })

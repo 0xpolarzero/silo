@@ -9,7 +9,7 @@ const stateLabels: Record<ComputerUseState["state"], string> = {
 }
 export const computerUseLabel = (state: ComputerUseState["state"], cause?: ComputerUseState["cause"]) => state === "failed" && cause === "app-download" ? "Download failed" : stateLabels[state]
 
-/** The one-line state of a computer's ChatGPT app, for lists. */
+/** The one-line state of a device's ChatGPT app, for lists. */
 export function chatGptStatusText(status: ChatGptAppStatus | null) {
   switch (status?.state) {
     case "ready": return status.version ? `Ready ${status.version}` : "Ready"

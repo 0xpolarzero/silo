@@ -3,8 +3,8 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { TabsContent } from "@/components/ui/tabs"
 import { DeletionConfirmation } from "@/features/onboarding/components/deletion-confirmation"
 import { SetupComplete } from "@/features/onboarding/components/setup-complete"
-import type { ApplicationGitHubWorkspacePolicy } from "@/features/application/model/application-source"
-import type { SetupMachineConfiguration } from "@/contracts/silo"
+import type { ApplicationGitHubComputerPolicy } from "@/features/application/model/application-source"
+import type { SetupComputerConfiguration } from "@/contracts/silo"
 import { OnboardingShell } from "@/features/onboarding/components/onboarding-shell"
 import type {
   GitHubConnectionState,
@@ -12,15 +12,15 @@ import type {
   OnboardingCompletionRequest,
   OnboardingSource,
   OnboardingSubmissionOptions,
-  WorkspaceGitIdentity,
-  WorkspaceRepositorySelection,
+  ComputerGitIdentity,
+  ComputerRepositorySelection,
 } from "@/features/onboarding/model/onboarding-source"
-import { onboardingSteps, projectOnboarding, type OnboardingStep, type WorkspaceView } from "@/features/onboarding/model/onboarding-state"
-import { configurationRequest } from "@/features/onboarding/model/machine-configuration"
+import { onboardingSteps, projectOnboarding, type OnboardingStep, type ComputerView } from "@/features/onboarding/model/onboarding-state"
+import { configurationRequest } from "@/features/onboarding/model/computer-configuration"
 import { DependenciesStep } from "@/features/onboarding/steps/dependencies-step"
 import { GitHubStep } from "@/features/onboarding/steps/github-step"
 import { ReviewStep } from "@/features/onboarding/steps/review-step"
-import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
+import { ComputersStep } from "@/features/onboarding/steps/computers-step"
 import type { OnboardingDraft } from "@/features/onboarding/model/onboarding-draft"
 import { useSettings } from "@/features/preferences/settings-store"
 import { SettingsSaveNotice } from "@/features/preferences/components/settings-save-notice"
@@ -34,11 +34,11 @@ export interface OnboardingAppProps {
   completed: boolean
   presentationOnlyCompleted?: boolean
   repositoryOptions?: readonly string[]
-  repositoryPolicies?: readonly ApplicationGitHubWorkspacePolicy[]
+  repositoryPolicies?: readonly ApplicationGitHubComputerPolicy[]
   tokenConnected?: boolean
   onOpenApp?: () => void
   onRetryDependencies?: () => void
-  onConnectComputer?: () => void
+  onConnectDevice?: () => void
 }
 
 function OnboardingPanel({ step, activeStep, notice, children }: { step: OnboardingStep; activeStep: OnboardingStep; notice?: ReactNode; children: ReactNode }) {
@@ -61,7 +61,7 @@ function repositoryKey(repository: string): string {
   return repository.toLowerCase()
 }
 
-function workspaceValue<T>(values: Record<string, T> | undefined, name: string): T | undefined {
+function computerValue<T>(values: Record<string, T> | undefined, name: string): T | undefined {
   return values && Object.hasOwn(values, name) ? values[name] : undefined
 }
 
@@ -75,7 +75,7 @@ function uniqueRepositoryOptions(repositories: readonly string[]): string[] {
   })
 }
 
-function uniqueWorkspaceSelections(selections: readonly WorkspaceRepositorySelection[]): WorkspaceRepositorySelection[] {
+function uniqueComputerSelections(selections: readonly ComputerRepositorySelection[]): ComputerRepositorySelection[] {
   const seen = new Set<string>()
   return selections.filter(({ repository }) => {
     const key = repositoryKey(repository)
@@ -85,57 +85,57 @@ function uniqueWorkspaceSelections(selections: readonly WorkspaceRepositorySelec
   })
 }
 
-function initialWorkspaceSelections(source: OnboardingSource): Record<string, WorkspaceRepositorySelection[]> {
-  return Object.fromEntries(source.machineConfigurations.map(({ name }) => {
+function initialComputerSelections(source: OnboardingSource): Record<string, ComputerRepositorySelection[]> {
+  return Object.fromEntries(source.computerConfigurations.map(({ name }) => {
     const repositories = source.githubPolicies
-      .filter(({ workspace }) => workspace === name)
+      .filter(({ computer }) => computer === name)
       .flatMap(({ repositories: policyRepositories }) => policyRepositories)
-    return [name, uniqueWorkspaceSelections(repositories.map((repository) => ({
+    return [name, uniqueComputerSelections(repositories.map((repository) => ({
       repository: repository.fullName,
       allowPushes: repository.mode === "read-write",
     })))]
   }))
 }
 
-function defaultWorkspaceIdentity(source: OnboardingSource): WorkspaceGitIdentity {
-  const { name = "", email = "" } = source.currentHostGitIdentity ?? {}
+function defaultComputerIdentity(source: OnboardingSource): ComputerGitIdentity {
+  const { name = "", email = "" } = source.currentDeviceGitIdentity ?? {}
   return { name, email, apply: Boolean(name.trim() && email.trim()) }
 }
 
-function initialWorkspaceIdentities(source: OnboardingSource): Record<string, WorkspaceGitIdentity> {
-  return Object.fromEntries(source.machineConfigurations.map((workspace) => [
-    workspace.name,
-    defaultWorkspaceIdentity(source),
+function initialComputerIdentities(source: OnboardingSource): Record<string, ComputerGitIdentity> {
+  return Object.fromEntries(source.computerConfigurations.map((computer) => [
+    computer.name,
+    defaultComputerIdentity(source),
   ]))
 }
 
-function gitIdentityLabel(identity: WorkspaceGitIdentity): string {
+function gitIdentityLabel(identity: ComputerGitIdentity): string {
   return `${identity.name || "No name"} <${identity.email || "No email"}>`
 }
 
-function workspaceIdentitySummary(
-  identities: Record<string, WorkspaceGitIdentity>,
-  workspaceNames: readonly string[],
+function computerIdentitySummary(
+  identities: Record<string, ComputerGitIdentity>,
+  computerNames: readonly string[],
 ): string {
-  const appliedGroups = new Map<string, { identity: WorkspaceGitIdentity; workspaces: string[] }>()
+  const appliedGroups = new Map<string, { identity: ComputerGitIdentity; computers: string[] }>()
   const notApplied: string[] = []
 
-  for (const workspace of workspaceNames) {
-    const identity = workspaceValue(identities, workspace)
+  for (const computer of computerNames) {
+    const identity = computerValue(identities, computer)
     if (!identity?.apply) {
-      notApplied.push(workspace)
+      notApplied.push(computer)
       continue
     }
     const key = JSON.stringify([identity.name, identity.email])
     const group = appliedGroups.get(key)
-    if (group) group.workspaces.push(workspace)
-    else appliedGroups.set(key, { identity, workspaces: [workspace] })
+    if (group) group.computers.push(computer)
+    else appliedGroups.set(key, { identity, computers: [computer] })
   }
 
-  const summaries = [...appliedGroups.values()].map(({ identity, workspaces }) => {
-    const target = workspaces.length === workspaceNames.length
-      ? `all ${workspaceNames.length} ${workspaceNames.length === 1 ? "sandbox" : "sandboxes"}`
-      : workspaces.join(", ")
+  const summaries = [...appliedGroups.values()].map(({ identity, computers }) => {
+    const target = computers.length === computerNames.length
+      ? `all ${computerNames.length} ${computerNames.length === 1 ? "computer" : "computers"}`
+      : computers.join(", ")
     return `${gitIdentityLabel(identity)} → ${target}`
   })
   if (notApplied.length > 0) {
@@ -160,42 +160,42 @@ export function OnboardingApp({
   tokenConnected = false,
   onOpenApp,
   onRetryDependencies,
-  onConnectComputer,
+  onConnectDevice,
 }: OnboardingAppProps) {
   const { settings, onboardingDraft, updateSettings, updateOnboardingDraft } = useSettings(source.applicationPreferences)
   const [draft, setDraft] = useState<OnboardingDraft>(() => {
     const restored = onboardingDraft ?? {
       currentStep: "dependencies" as const,
-      machines: source.machineConfigurations.map((machine) => ({ ...machine })),
-      unfinishedMachineEditor: null,
-      workspaceRepositoryAccess: Object.fromEntries((repositoryPolicies ?? []).map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, ...(policy.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}) }])),
-      workspaceSelections: repositoryPolicies ? Object.fromEntries(repositoryPolicies.map((policy) => [policy.workspace, [...policy.repositories]])) : initialWorkspaceSelections(source),
-      workspaceIdentities: repositoryPolicies ? { ...initialWorkspaceIdentities(source), ...Object.fromEntries(repositoryPolicies.map((policy) => [policy.workspace, { ...policy.identity }])) } : initialWorkspaceIdentities(source),
+      computers: source.computerConfigurations.map((configuration) => ({ ...configuration })),
+      unfinishedComputerEditor: null,
+      computerRepositoryAccess: Object.fromEntries((repositoryPolicies ?? []).map((policy) => [policy.computer, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, ...(policy.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}) }])),
+      computerSelections: repositoryPolicies ? Object.fromEntries(repositoryPolicies.map((policy) => [policy.computer, [...policy.repositories]])) : initialComputerSelections(source),
+      computerIdentities: repositoryPolicies ? { ...initialComputerIdentities(source), ...Object.fromEntries(repositoryPolicies.map((policy) => [policy.computer, { ...policy.identity }])) } : initialComputerIdentities(source),
     }
     return completed ? { ...restored, currentStep: "review" } : restored
   })
   // A restored draft is the user's; otherwise the draft is seeded again from this
-  // computer's sandboxes once they load (a fallback seed is only a placeholder).
-  const machinesInitialized = useRef(onboardingDraft !== null || (draft.machines.length > 0 && source.machinesAuthoritative !== false))
+  // device's computers once they load (a fallback seed is only a placeholder).
+  const configurationsInitialized = useRef(onboardingDraft !== null || (draft.computers.length > 0 && source.configurationsAuthoritative !== false))
   const currentDraft = useRef(draft)
-  const editedIdentities = useRef(new Set(Object.keys(onboardingDraft?.workspaceIdentities ?? {})))
-  const editedSelections = useRef(new Set(Object.keys(onboardingDraft?.workspaceSelections ?? {})))
-  const editedRepositoryAccess = useRef(new Set(Object.keys(onboardingDraft?.workspaceRepositoryAccess ?? {})))
-  const editedAuthenticationMethods = useRef(new Set(Object.entries(onboardingDraft?.workspaceRepositoryAccess ?? {}).filter(([, access]) => access.authenticationMethod !== undefined).map(([name]) => name)))
-  const policiesInitialized = useRef(new Set(onboardingDraft ? [] : (repositoryPolicies ?? []).map(({ workspace }) => workspace)))
+  const editedIdentities = useRef(new Set(Object.keys(onboardingDraft?.computerIdentities ?? {})))
+  const editedSelections = useRef(new Set(Object.keys(onboardingDraft?.computerSelections ?? {})))
+  const editedRepositoryAccess = useRef(new Set(Object.keys(onboardingDraft?.computerRepositoryAccess ?? {})))
+  const editedAuthenticationMethods = useRef(new Set(Object.entries(onboardingDraft?.computerRepositoryAccess ?? {}).filter(([, access]) => access.authenticationMethod !== undefined).map(([name]) => name)))
+  const policiesInitialized = useRef(new Set(onboardingDraft ? [] : (repositoryPolicies ?? []).map(({ computer }) => computer)))
   const recoveryCleared = useRef(false)
-  // Existing sandboxes the user deleted with the list's own Delete confirmation.
+  // Existing computers the user deleted with the list's own Delete confirmation.
   const confirmedRemovals = useRef(new Set<string>())
-  const [pendingDeletion, setPendingDeletion] = useState<{ machines: SetupMachineConfiguration[]; run: () => void } | null>(null)
-  const { currentStep: activeStep, machines, workspaceSelections, workspaceIdentities } = draft
+  const [pendingDeletion, setPendingDeletion] = useState<{ configurations: SetupComputerConfiguration[]; run: () => void } | null>(null)
+  const { currentStep: activeStep, computers, computerSelections, computerIdentities } = draft
   const viewModel = useMemo(() => {
     const projectedSource = source.setupQueue ? {
       ...source,
-      machineConfigurations: machines,
-      bootstrapConfiguration: { ...source.bootstrapConfiguration, workspaces: machines.flatMap((machine) => machine.kind === "vm" ? [{ name: machine.name, cpu: machine.cpus, cpuCeiling: machine.maxCPUs, memoryGiB: machine.memoryGiB, memoryCeilingGiB: machine.maxMemoryGiB, workspaceStorageGiB: machine.workspaceStorageGiB, runtimeStorageGiB: machine.runtimeStorageGiB }] : []) },
+      computerConfigurations: computers,
+      bootstrapConfiguration: { ...source.bootstrapConfiguration, computers: computers.map((configuration) => ({ name: configuration.name, cpu: configuration.cpus, cpuCeiling: configuration.maxCPUs, memoryGiB: configuration.memoryGiB, memoryCeilingGiB: configuration.maxMemoryGiB, workspaceStorageGiB: configuration.workspaceStorageGiB, runtimeStorageGiB: configuration.runtimeStorageGiB })) },
     } : source
     return projectOnboarding(projectedSource, githubConnectionState)
-  }, [githubConnectionState, source, machines])
+  }, [githubConnectionState, source, computers])
   const applicationPreferences = useMemo(() => ({
     terminal: settings.terminal, editor: settings.editor, browser: settings.browser,
     terminalUseSystemDefault: settings.terminalUseSystemDefault,
@@ -216,54 +216,54 @@ export function OnboardingApp({
 
   useEffect(() => {
     const current = currentDraft.current
-    if (machinesInitialized.current || current.unfinishedMachineEditor || source.machineConfigurations.length === 0) return
-    const authoritative = source.machinesAuthoritative !== false
-    if (authoritative) machinesInitialized.current = true
-    const machines = source.machineConfigurations.map((machine) => ({ ...machine }))
-    if (JSON.stringify(machines) === JSON.stringify(current.machines)) return
-    // Keep choices already made for sandboxes that remain in the list.
-    const names = new Set(machines.map(({ name }) => name))
+    if (configurationsInitialized.current || current.unfinishedComputerEditor || source.computerConfigurations.length === 0) return
+    const authoritative = source.configurationsAuthoritative !== false
+    if (authoritative) configurationsInitialized.current = true
+    const configurations = source.computerConfigurations.map((configuration) => ({ ...configuration }))
+    if (JSON.stringify(configurations) === JSON.stringify(current.computers)) return
+    // Keep choices already made for computers that remain in the list.
+    const names = new Set(configurations.map(({ name }) => name))
     const kept = <T,>(values: Record<string, T>) => Object.fromEntries(Object.entries(values).filter(([name]) => names.has(name)))
-    const next = { ...current, machines,
-      workspaceSelections: { ...initialWorkspaceSelections(source), ...kept(current.workspaceSelections) },
-      workspaceIdentities: { ...initialWorkspaceIdentities(source), ...kept(current.workspaceIdentities) },
+    const next = { ...current, computers: configurations,
+      computerSelections: { ...initialComputerSelections(source), ...kept(current.computerSelections) },
+      computerIdentities: { ...initialComputerIdentities(source), ...kept(current.computerIdentities) },
     }
     currentDraft.current = next
     setDraft(next)
     // A placeholder seed is not saved as the user's draft.
     if (authoritative) void updateOnboardingDraft(next)
-  }, [source, draft.unfinishedMachineEditor, updateOnboardingDraft])
+  }, [source, draft.unfinishedComputerEditor, updateOnboardingDraft])
 
   useEffect(() => {
     if (completed || !repositoryPolicies) return
     const current = currentDraft.current
-    const names = new Set(current.machines.map(({ name }) => name))
+    const names = new Set(current.computers.map(({ name }) => name))
     const next = { ...current,
-      workspaceRepositoryAccess: { ...current.workspaceRepositoryAccess },
-      workspaceSelections: { ...current.workspaceSelections },
-      workspaceIdentities: { ...current.workspaceIdentities },
+      computerRepositoryAccess: { ...current.computerRepositoryAccess },
+      computerSelections: { ...current.computerSelections },
+      computerIdentities: { ...current.computerIdentities },
     }
     let changed = false
     for (const policy of repositoryPolicies) {
-      const name = policy.workspace
+      const name = policy.computer
       if (!names.has(name) || policiesInitialized.current.has(name)) continue
       policiesInitialized.current.add(name)
       if (!editedRepositoryAccess.current.has(name)) {
-        next.workspaceRepositoryAccess[name] = { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }
+        next.computerRepositoryAccess[name] = { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }
         changed = true
       }
       if (!editedAuthenticationMethods.current.has(name) && policy.authenticationMethod) {
-        next.workspaceRepositoryAccess[name] = {
-          ...next.workspaceRepositoryAccess[name], authenticationMethod: policy.authenticationMethod,
+        next.computerRepositoryAccess[name] = {
+          ...next.computerRepositoryAccess[name], authenticationMethod: policy.authenticationMethod,
         }
         changed = true
       }
       if (!editedSelections.current.has(name)) {
-        next.workspaceSelections[name] = policy.repositories.map((repository) => ({ ...repository }))
+        next.computerSelections[name] = policy.repositories.map((repository) => ({ ...repository }))
         changed = true
       }
       if (!editedIdentities.current.has(name)) {
-        next.workspaceIdentities[name] = { ...policy.identity }
+        next.computerIdentities[name] = { ...policy.identity }
         changed = true
       }
     }
@@ -271,26 +271,26 @@ export function OnboardingApp({
     currentDraft.current = next
     setDraft(next)
     void updateOnboardingDraft(next)
-  }, [completed, repositoryPolicies, machines, updateOnboardingDraft])
+  }, [completed, repositoryPolicies, computers, updateOnboardingDraft])
 
   useEffect(() => {
-    const host = source.currentHostGitIdentity
+    const host = source.currentDeviceGitIdentity
     if (completed || !host) return
     const current = currentDraft.current
-    const identities = { ...current.workspaceIdentities }
+    const identities = { ...current.computerIdentities }
     let changed = false
-    for (const { name } of current.machines) {
-      const identity = workspaceValue(identities, name)
+    for (const { name } of current.computers) {
+      const identity = computerValue(identities, name)
       if (editedIdentities.current.has(name) || (identity?.apply === false && policiesInitialized.current.has(name)) || identity?.name.trim() || identity?.email.trim()) continue
       identities[name] = { ...host, apply: Boolean(host.name.trim() && host.email.trim()) }
       changed = true
     }
     if (!changed) return
-    const next = { ...current, workspaceIdentities: identities }
+    const next = { ...current, computerIdentities: identities }
     currentDraft.current = next
     setDraft(next)
     void updateOnboardingDraft(next)
-  }, [completed, source.currentHostGitIdentity, machines, updateOnboardingDraft])
+  }, [completed, source.currentDeviceGitIdentity, computers, updateOnboardingDraft])
 
   // Completion comes from the existing action's result, never from a recovered
   // draft. A failed or unfinished completion leaves recovery data intact.
@@ -319,10 +319,10 @@ export function OnboardingApp({
     if (next) setActiveStep(next)
   }
 
-  // Existing sandboxes a submission would delete without the user having deleted them.
-  function unconfirmedDeletions(): SetupMachineConfiguration[] {
-    const kept = new Set(currentDraft.current.machines.map(({ id }) => id))
-    return (source.existingMachines ?? []).filter(({ id }) => !kept.has(id) && !confirmedRemovals.current.has(id))
+  // Existing computers a submission would delete without the user having deleted them.
+  function unconfirmedDeletions(): SetupComputerConfiguration[] {
+    const kept = new Set(currentDraft.current.computers.map(({ id }) => id))
+    return (source.existingConfigurations ?? []).filter(({ id }) => !kept.has(id) && !confirmedRemovals.current.has(id))
   }
 
   // Trailing submission arguments: the confirmed deletions, when there are any.
@@ -335,32 +335,32 @@ export function OnboardingApp({
   function submitChecked(run: () => void) {
     const missing = unconfirmedDeletions()
     if (missing.length === 0) { setPendingDeletion(null); run(); return }
-    setPendingDeletion({ machines: missing, run })
+    setPendingDeletion({ configurations: missing, run })
   }
 
-  function keepExistingMachines() {
+  function keepExistingConfigurations() {
     const pending = pendingDeletion
     if (!pending) return
     setPendingDeletion(null)
-    const existing = source.existingMachines ?? []
+    const existing = source.existingConfigurations ?? []
     const existingIds = new Set(existing.map(({ id }) => id))
-    const restoredNames = new Set(pending.machines.map(({ name }) => name.toLowerCase()))
+    const restoredNames = new Set(pending.configurations.map(({ name }) => name.toLowerCase()))
     const current = currentDraft.current
-    // A new draft sandbox reusing a restored name (typically the default seeded before
-    // the real sandboxes loaded) would collide with it, so it gives way.
-    const machines = current.machines.filter(({ id, name }) => existingIds.has(id) || !restoredNames.has(name.toLowerCase()))
-    for (const machine of pending.machines) {
-      machines.splice(Math.min(existing.findIndex(({ id }) => id === machine.id), machines.length), 0, { ...machine })
+    // A new draft computer reusing a restored name (typically the default seeded before
+    // the real computers loaded) would collide with it, so it gives way.
+    const configurations = current.computers.filter(({ id, name }) => existingIds.has(id) || !restoredNames.has(name.toLowerCase()))
+    for (const configuration of pending.configurations) {
+      configurations.splice(Math.min(existing.findIndex(({ id }) => id === configuration.id), configurations.length), 0, { ...configuration })
     }
-    const host = defaultWorkspaceIdentity(source)
-    const savedPolicies = new Map((repositoryPolicies ?? []).map((policy) => [policy.workspace, policy]))
+    const host = defaultComputerIdentity(source)
+    const savedPolicies = new Map((repositoryPolicies ?? []).map((policy) => [policy.computer, policy]))
     updateDraft({
-      machines,
-      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceSelections, name) ?? savedPolicies.get(name)?.repositories.map((repository) => ({ ...repository })) ?? []])),
-      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceIdentities, name) ?? { ...(savedPolicies.get(name)?.identity ?? host) }])),
-      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => {
+      computers: configurations,
+      computerSelections: Object.fromEntries(configurations.map(({ name }) => [name, computerValue(current.computerSelections, name) ?? savedPolicies.get(name)?.repositories.map((repository) => ({ ...repository })) ?? []])),
+      computerIdentities: Object.fromEntries(configurations.map(({ name }) => [name, computerValue(current.computerIdentities, name) ?? { ...(savedPolicies.get(name)?.identity ?? host) }])),
+      computerRepositoryAccess: Object.fromEntries(configurations.map(({ name }) => {
         const policy = savedPolicies.get(name)
-        return [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? {
+        return [name, computerValue(current.computerRepositoryAccess, name) ?? {
           repositoryMode: policy?.repositoryMode ?? "selected" as const,
           allRepositoriesAllowChanges: policy?.allRepositoriesAllowChanges ?? false,
           ...(policy?.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}),
@@ -370,49 +370,49 @@ export function OnboardingApp({
     pending.run()
   }
 
-  function deleteExistingMachines() {
+  function deleteExistingConfigurations() {
     const pending = pendingDeletion
     if (!pending) return
     setPendingDeletion(null)
-    for (const { id } of pending.machines) confirmedRemovals.current.add(id)
+    for (const { id } of pending.configurations) confirmedRemovals.current.add(id)
     pending.run()
   }
 
-  function saveMachines(updated: SetupMachineConfiguration[]) {
+  function saveConfigurations(updated: SetupComputerConfiguration[]) {
     const request = configurationRequest(updated)
-    machinesInitialized.current = true
+    configurationsInitialized.current = true
     const current = currentDraft.current
-    // The list asks before deleting a sandbox; that confirmation covers existing ones.
-    const remaining = new Set(request.machines.map(({ id }) => id))
-    for (const { id } of current.machines) if (!remaining.has(id)) confirmedRemovals.current.add(id)
-    const previousNameByID = new Map(current.machines.map(({ id, name }) => [id, name]))
-    const selections = Object.fromEntries(request.machines.map(({ id, name }) => {
+    // The list asks before deleting a computer; that confirmation covers existing ones.
+    const remaining = new Set(request.computers.map(({ id }) => id))
+    for (const { id } of current.computers) if (!remaining.has(id)) confirmedRemovals.current.add(id)
+    const previousNameByID = new Map(current.computers.map(({ id, name }) => [id, name]))
+    const selections = Object.fromEntries(request.computers.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
-      return [name, workspaceValue(current.workspaceSelections, name) ?? (previousName ? workspaceValue(current.workspaceSelections, previousName) : undefined) ?? []]
+      return [name, computerValue(current.computerSelections, name) ?? (previousName ? computerValue(current.computerSelections, previousName) : undefined) ?? []]
     }))
-    const identities = Object.fromEntries(request.machines.map(({ id, name }) => {
+    const identities = Object.fromEntries(request.computers.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
-      return [name, workspaceValue(current.workspaceIdentities, name) ?? (previousName ? workspaceValue(current.workspaceIdentities, previousName) : undefined)
-        ?? defaultWorkspaceIdentity(source)]
+      return [name, computerValue(current.computerIdentities, name) ?? (previousName ? computerValue(current.computerIdentities, previousName) : undefined)
+        ?? defaultComputerIdentity(source)]
     }))
-    const workspaceRepositoryAccess = Object.fromEntries(request.machines.map(({ id, name }) => [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? workspaceValue(current.workspaceRepositoryAccess, previousNameByID.get(id) ?? "") ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
-    updateDraft({ machines: request.machines, workspaceRepositoryAccess, workspaceSelections: selections, workspaceIdentities: identities, unfinishedMachineEditor: null })
-    submitChecked(() => actions.saveMachineConfiguration(configurationRequest(currentDraft.current.machines), ...submissionOptions()))
+    const computerRepositoryAccess = Object.fromEntries(request.computers.map(({ id, name }) => [name, computerValue(current.computerRepositoryAccess, name) ?? computerValue(current.computerRepositoryAccess, previousNameByID.get(id) ?? "") ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
+    updateDraft({ computers: request.computers, computerRepositoryAccess, computerSelections: selections, computerIdentities: identities, unfinishedComputerEditor: null })
+    submitChecked(() => actions.saveComputerConfiguration(configurationRequest(currentDraft.current.computers), ...submissionOptions()))
   }
 
-  function updateWorkspaceSelections(workspace: string, selections: WorkspaceRepositorySelection[]) {
-    editedSelections.current.add(workspace)
-    updateDraft({ workspaceSelections: { ...currentDraft.current.workspaceSelections, [workspace]: uniqueWorkspaceSelections(selections) } })
+  function updateComputerSelections(computer: string, selections: ComputerRepositorySelection[]) {
+    editedSelections.current.add(computer)
+    updateDraft({ computerSelections: { ...currentDraft.current.computerSelections, [computer]: uniqueComputerSelections(selections) } })
   }
 
-  function updateWorkspaceIdentity(workspace: string, identity: WorkspaceGitIdentity) {
-    editedIdentities.current.add(workspace)
-    updateDraft({ workspaceIdentities: { ...currentDraft.current.workspaceIdentities, [workspace]: identity } })
+  function updateComputerIdentity(computer: string, identity: ComputerGitIdentity) {
+    editedIdentities.current.add(computer)
+    updateDraft({ computerIdentities: { ...currentDraft.current.computerIdentities, [computer]: identity } })
   }
 
-  function resetWorkspaceIdentity(workspace: string) {
-    if (!source.currentHostGitIdentity) return
-    updateWorkspaceIdentity(workspace, { ...(workspaceValue(currentDraft.current.workspaceIdentities, workspace) ?? { apply: false }), ...source.currentHostGitIdentity })
+  function resetComputerIdentity(computer: string) {
+    if (!source.currentDeviceGitIdentity) return
+    updateComputerIdentity(computer, { ...(computerValue(currentDraft.current.computerIdentities, computer) ?? { apply: false }), ...source.currentDeviceGitIdentity })
   }
 
   function completionRequest(): OnboardingCompletionRequest {
@@ -420,18 +420,18 @@ export function OnboardingApp({
     // connection changes. Read the latest inputs when the user confirms.
     const { applications, githubConnectionState } = completionInputs.current
     return {
-      machineConfiguration: { schemaVersion: 1, machines: [...currentDraft.current.machines] },
+      computerConfiguration: { schemaVersion: 1, computers: [...currentDraft.current.computers] },
       applications,
       github: {
         connectionState: githubConnectionState,
-        workspaces: currentDraft.current.machines.map(({ name }) => {
-          const access = workspaceValue(currentDraft.current.workspaceRepositoryAccess, name)
+        computers: currentDraft.current.computers.map(({ name }) => {
+          const access = computerValue(currentDraft.current.computerRepositoryAccess, name)
           const useGitHub = githubConnectionState === "connected" || access?.authenticationMethod === "token"
           return {
-            workspace: name,
+            computer: name,
             ...(useGitHub ? access : undefined),
-            repositories: useGitHub ? [...(workspaceValue(currentDraft.current.workspaceSelections, name) ?? [])] : [],
-            identity: { ...(workspaceValue(currentDraft.current.workspaceIdentities, name) ?? { name: "", email: "", apply: false }) },
+            repositories: useGitHub ? [...(computerValue(currentDraft.current.computerSelections, name) ?? [])] : [],
+            identity: { ...(computerValue(currentDraft.current.computerIdentities, name) ?? { name: "", email: "", apply: false }) },
           }
         }),
       },
@@ -444,7 +444,7 @@ export function OnboardingApp({
       if (viewModel.finishEnabled) submitChecked(() => actions.finishSetup(completionRequest(), ...submissionOptions()))
       return
     }
-    if (activeStep === "workspaces" || activeStep === "github") {
+    if (activeStep === "computers" || activeStep === "github") {
       const step = activeStep
       const next = onboardingSteps[onboardingSteps.indexOf(step) + 1]
       submitChecked(() => { actions.submitStep?.(step, completionRequest(), ...submissionOptions()); setActiveStep(next) })
@@ -454,43 +454,43 @@ export function OnboardingApp({
   }
 
   // Retry rebuilds the request from the current draft, so edits since the failed
-  // attempt (identities, repository choices, sandboxes) apply.
+  // attempt (identities, repository choices, computers) apply.
   function retrySetup() {
     if (completed) return
-    submitChecked(() => actions.retryWorkspaceSetup(completionRequest(), ...submissionOptions()))
+    submitChecked(() => actions.retryComputerSetup(completionRequest(), ...submissionOptions()))
   }
 
-  const machineNames = machines.map(({ name }) => name)
-  const oauthWorkspaceNames = machineNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.authenticationMethod !== "token")
-  const tokenWorkspaceCount = machineNames.length - oauthWorkspaceNames.length
-  const allWorkspaceCount = oauthWorkspaceNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.repositoryMode === "all").length
-  const allWriteWorkspaceCount = oauthWorkspaceNames.filter((name) => {
-    const access = workspaceValue(draft.workspaceRepositoryAccess, name)
+  const computerNames = computers.map(({ name }) => name)
+  const oauthComputerNames = computerNames.filter((name) => computerValue(draft.computerRepositoryAccess, name)?.authenticationMethod !== "token")
+  const tokenComputerCount = computerNames.length - oauthComputerNames.length
+  const allComputerCount = oauthComputerNames.filter((name) => computerValue(draft.computerRepositoryAccess, name)?.repositoryMode === "all").length
+  const allWriteComputerCount = oauthComputerNames.filter((name) => {
+    const access = computerValue(draft.computerRepositoryAccess, name)
     return access?.repositoryMode === "all" && access.allRepositoriesAllowChanges
   }).length
-  const configuredWorkspaceCount = oauthWorkspaceNames.filter((name) => (workspaceValue(workspaceSelections, name) ?? []).length > 0).length
-  const repositoryCount = oauthWorkspaceNames.reduce((total, name) => total + (workspaceValue(workspaceSelections, name) ?? []).length, 0)
-  const pushEnabledRepositoryCount = oauthWorkspaceNames.reduce(
-    (total, name) => total + (workspaceValue(workspaceSelections, name) ?? []).filter(({ allowPushes }) => allowPushes).length,
+  const configuredComputerCount = oauthComputerNames.filter((name) => (computerValue(computerSelections, name) ?? []).length > 0).length
+  const repositoryCount = oauthComputerNames.reduce((total, name) => total + (computerValue(computerSelections, name) ?? []).length, 0)
+  const pushEnabledRepositoryCount = oauthComputerNames.reduce(
+    (total, name) => total + (computerValue(computerSelections, name) ?? []).filter(({ allowPushes }) => allowPushes).length,
     0,
   )
   const repositoryLabel = repositoryCount === 1 ? "repository" : "repositories"
   const pushRepositoryLabel = pushEnabledRepositoryCount === 1 ? "repository" : "repositories"
-  const oauthSummary = githubConnectionState === "connected" && (oauthWorkspaceNames.length > 0 || tokenWorkspaceCount === 0)
-    ? allWorkspaceCount > 0 ? `All authorized repositories in ${allWorkspaceCount} ${allWorkspaceCount === 1 ? "sandbox" : "sandboxes"} · ${allWriteWorkspaceCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${oauthWorkspaceNames.length} ${oauthWorkspaceNames.length === 1 ? "sandbox" : "sandboxes"} · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
+  const oauthSummary = githubConnectionState === "connected" && (oauthComputerNames.length > 0 || tokenComputerCount === 0)
+    ? allComputerCount > 0 ? `All authorized repositories in ${allComputerCount} ${allComputerCount === 1 ? "computer" : "computers"} · ${allWriteComputerCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredComputerCount} of ${oauthComputerNames.length} ${oauthComputerNames.length === 1 ? "computer" : "computers"} · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
     : null
-  const tokenSummary = tokenWorkspaceCount > 0 ? `Personal token in ${tokenWorkspaceCount} ${tokenWorkspaceCount === 1 ? "sandbox" : "sandboxes"}` : null
+  const tokenSummary = tokenComputerCount > 0 ? `Personal token in ${tokenComputerCount} ${tokenComputerCount === 1 ? "computer" : "computers"}` : null
   const githubSummary = [oauthSummary, tokenSummary].filter(Boolean).join(" · ") || "GitHub not connected"
-  const identitySummary = workspaceIdentitySummary(
-    workspaceIdentities,
-    machineNames,
+  const identitySummary = computerIdentitySummary(
+    computerIdentities,
+    computerNames,
   )
   const deletionNotice = pendingDeletion && !completed
-    ? <DeletionConfirmation machines={pendingDeletion.machines} onKeep={keepExistingMachines} onDelete={deleteExistingMachines} />
+    ? <DeletionConfirmation configurations={pendingDeletion.configurations} onKeep={keepExistingConfigurations} onDelete={deleteExistingConfigurations} />
     : null
-  const machineWorkspaceViews = machines.map((machine): WorkspaceView => (
-    viewModel.workspaceProgress.workspaces.find(({ name }) => name === machine.name)
-      ?? { name: machine.name, status: "waiting", detail: machine.kind === "ssh" ? "Remote via SSH" : "Waiting" }
+  const computerComputerViews = computers.map((configuration): ComputerView => (
+    viewModel.computerProgress.computers.find(({ name }) => name === configuration.name)
+      ?? { name: configuration.name, status: "waiting", detail: "Waiting" }
   ))
   return (
     <OnboardingShell
@@ -511,53 +511,53 @@ export function OnboardingApp({
             void updateSettings(applicationPreferenceChanges(applicationPreferences, preferences))
           }}
           onRetry={onRetryDependencies}
-          onConnectComputer={onConnectComputer}
+          onConnectDevice={onConnectDevice}
         />
       </OnboardingPanel>
-      <OnboardingPanel step="workspaces" activeStep={activeStep} notice={deletionNotice}>
-        <WorkspacesStep onConnectComputer={onConnectComputer} machines={machines} progress={viewModel.workspaceProgress} onMachinesChange={saveMachines} onRetry={retrySetup} initialEditorDraft={draft.unfinishedMachineEditor} onEditorDraftChange={(unfinishedMachineEditor) => updateDraft({ unfinishedMachineEditor })} />
+      <OnboardingPanel step="computers" activeStep={activeStep} notice={deletionNotice}>
+        <ComputersStep onConnectDevice={onConnectDevice} configurations={computers} progress={viewModel.computerProgress} onConfigurationsChange={saveConfigurations} onRetry={retrySetup} initialEditorDraft={draft.unfinishedComputerEditor} onEditorDraftChange={(unfinishedComputerEditor) => updateDraft({ unfinishedComputerEditor })} />
       </OnboardingPanel>
       <OnboardingPanel step="github" activeStep={activeStep} notice={deletionNotice}>
         <GitHubStep
           queueItems={viewModel.queueItems}
           activityEvents={source.activityEvents ?? source.progressEvents}
-          workspaces={machineWorkspaceViews}
+          computers={computerComputerViews}
           connectionState={githubConnectionState}
           tokenConnected={tokenConnected}
           notice={operationError ? <p role="alert" className="text-xs text-destructive">{operationError}</p> : undefined}
           repositoryOptions={availableRepositories}
-          workspaceSelections={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceSelections, name) ?? []]))}
-          workspaceRepositoryAccess={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(draft.workspaceRepositoryAccess, name) ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }]))}
-          onWorkspaceRepositoryAccessChange={(workspace, access) => {
-            if (access.authenticationMethod !== currentDraft.current.workspaceRepositoryAccess?.[workspace]?.authenticationMethod) editedAuthenticationMethods.current.add(workspace)
-            editedRepositoryAccess.current.add(workspace)
-            updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })
+          computerSelections={Object.fromEntries(computerNames.map((name) => [name, computerValue(computerSelections, name) ?? []]))}
+          computerRepositoryAccess={Object.fromEntries(computerNames.map((name) => [name, computerValue(draft.computerRepositoryAccess, name) ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }]))}
+          onComputerRepositoryAccessChange={(computer, access) => {
+            if (access.authenticationMethod !== currentDraft.current.computerRepositoryAccess?.[computer]?.authenticationMethod) editedAuthenticationMethods.current.add(computer)
+            editedRepositoryAccess.current.add(computer)
+            updateDraft({ computerRepositoryAccess: { ...currentDraft.current.computerRepositoryAccess, [computer]: access } })
           }}
-          workspaceIdentities={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceIdentities, name) ?? { name: "", email: "", apply: false }]))}
-          currentHostGitIdentity={source.currentHostGitIdentity}
+          computerIdentities={Object.fromEntries(computerNames.map((name) => [name, computerValue(computerIdentities, name) ?? { name: "", email: "", apply: false }]))}
+          currentDeviceGitIdentity={source.currentDeviceGitIdentity}
           onConnect={actions.connectGitHub}
           onCancelConnection={actions.cancelGitHubConnection}
           onReopenAuthorization={actions.reopenGitHubAuthorization}
-          onWorkspaceSelectionsChange={updateWorkspaceSelections}
-          onWorkspaceIdentityChange={updateWorkspaceIdentity}
-          onResetWorkspaceIdentity={resetWorkspaceIdentity}
+          onComputerSelectionsChange={updateComputerSelections}
+          onComputerIdentityChange={updateComputerIdentity}
+          onResetComputerIdentity={resetComputerIdentity}
         />
       </OnboardingPanel>
       <OnboardingPanel step="review" activeStep={activeStep} notice={deletionNotice}>
-        {completed ? <SetupComplete machines={machines} githubSummary={githubSummary} /> : <ReviewStep
+        {completed ? <SetupComplete configurations={computers} githubSummary={githubSummary} /> : <ReviewStep
           onEditStep={setActiveStep}
-          workspaceRetryable={viewModel.workspaceProgress.retryable}
+          computerRetryable={viewModel.computerProgress.retryable}
           queueItems={viewModel.queueItems}
-          workspaces={viewModel.workspaceProgress.workspaces}
-          machines={machines}
-          githubConnected={githubConnectionState === "connected" || tokenWorkspaceCount > 0}
+          computers={viewModel.computerProgress.computers}
+          configurations={computers}
+          githubConnected={githubConnectionState === "connected" || tokenComputerCount > 0}
           githubSummary={githubSummary}
           identitySummary={identitySummary}
           errorMessage={viewModel.error?.message}
           errorRecovery={viewModel.error?.recovery ?? undefined}
-          onRetryWorkspaceSetup={retrySetup}
+          onRetryComputerSetup={retrySetup}
           finishBlocker={viewModel.finishBlocker}
-          onStartWorkspace={actions.startWorkspace}
+          onStartComputer={actions.startComputer}
           onRefresh={actions.refreshSetupState}
         />}
       </OnboardingPanel>

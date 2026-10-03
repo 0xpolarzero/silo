@@ -8,12 +8,12 @@ afterEach(() => { vi.useRealTimers() })
 
 const application = applicationSourceForScenario("running")
 const request: OnboardingCompletionRequest = {
-  machineConfiguration: { schemaVersion: 1, machines: [application.workspaces[0].machine] },
+  computerConfiguration: { schemaVersion: 1, computers: [application.computers[0].configuration] },
   applications: application.preferences,
-  github: { connectionState: "disconnected", workspaces: [{ workspace: application.workspaces[0].machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } }] },
+  github: { connectionState: "disconnected", computers: [{ computer: application.computers[0].configuration.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } }] },
 }
 /** The committed state once `request` has been applied. */
-const applied = { ...application, workspaces: [application.workspaces[0]] }
+const applied = { ...application, computers: [application.computers[0]] }
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (error: Error) => void
@@ -21,9 +21,9 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 async function setup(savedActivity: SiloProgressEvent[] = [], currentApplication = application) {
-  const machines = vi.fn<() => Promise<unknown>>().mockResolvedValue(currentApplication)
+  const configurations = vi.fn<() => Promise<unknown>>().mockResolvedValue(currentApplication)
   const identities = vi.fn<() => Promise<unknown>>().mockResolvedValue(undefined)
-  const github = vi.fn<() => Promise<unknown>>().mockResolvedValue({ ...application.github, workspaceOperations: [{ workspace: request.github.workspaces[0].workspace, status: "failed", message: "Runtime did not acknowledge access", canRetry: true }] })
+  const github = vi.fn<() => Promise<unknown>>().mockResolvedValue({ ...application.github, computerOperations: [{ computer: request.github.computers[0].computer, status: "failed", message: "Runtime did not acknowledge access", canRetry: true }] })
   const events = new Map<string, (event?: { payload: unknown }) => void>()
   // The committed state follows the last applied configuration, as the runtime's does.
   let current: unknown = currentApplication
@@ -31,34 +31,34 @@ async function setup(savedActivity: SiloProgressEvent[] = [], currentApplication
     if (command === "read_application_state") return current
     if (command === "read_backup_state") return { snapshotId: "test", availability: "available", archives: [], operation: null }
     if (command === "read_setup_activity") return savedActivity
-    if (command === "change_machine_configuration" || command === "retry_machine_configuration") return machines().then((applied) => { current = applied; return applied })
-    if (command === "configure_workspace_identities") return identities()
+    if (command === "change_computer_configuration" || command === "retry_computer_configuration") return configurations().then((applied) => { current = applied; return applied })
+    if (command === "configure_computer_identities") return identities()
     if (command === "save_github_configuration" || command === "read_github_state" || command === "retry_github_configuration") return github()
     throw new Error(`Unexpected command ${command}`)
   })
   const bridge = { invoke, listen: async (name: string, handler: (event?: { payload: unknown }) => void) => { events.set(name, handler); return () => events.delete(name) } } as ProductionBridge
   const store = createProductionSource(bridge)
   await store.initialize()
-  return { store, machines, identities, github, invoke, events, emit: (payload: unknown) => events.get("silo://machine-configuration-progress")?.({ payload }) }
+  return { store, configurations, identities, github, invoke, events, emit: (payload: unknown) => events.get("silo://computer-configuration-progress")?.({ payload }) }
 }
 
 describe("production setup queue", () => {
-  it("finishes setup with zero sandboxes and persists completion", async () => {
-    const { store, invoke } = await setup([], { ...application, workspaces: [] })
-    const emptyRequest: OnboardingCompletionRequest = { ...request, machineConfiguration: { schemaVersion: 1, machines: [] }, github: { connectionState: "disconnected", workspaces: [] } }
+  it("finishes setup with zero computers and persists completion", async () => {
+    const { store, invoke } = await setup([], { ...application, computers: [] })
+    const emptyRequest: OnboardingCompletionRequest = { ...request, computerConfiguration: { schemaVersion: 1, computers: [] }, github: { connectionState: "disconnected", computers: [] } }
     const markComplete = vi.fn().mockResolvedValue(undefined)
-    await store.submitSetupStep("workspaces", emptyRequest)
+    await store.submitSetupStep("computers", emptyRequest)
     await store.finishSetup(emptyRequest, markComplete)
-    expect(invoke).toHaveBeenCalledWith("retry_machine_configuration", expect.objectContaining({ requestId: expect.any(String) }))
-    expect(invoke).toHaveBeenCalledWith("configure_workspace_identities", { identities: [] })
+    expect(invoke).toHaveBeenCalledWith("retry_computer_configuration", expect.objectContaining({ requestId: expect.any(String) }))
+    expect(invoke).toHaveBeenCalledWith("configure_computer_identities", { identities: [] })
     expect(markComplete).toHaveBeenCalledOnce()
-    expect(store.getSnapshot().source?.workspaces).toEqual([])
+    expect(store.getSnapshot().source?.computers).toEqual([])
     expect(store.getSnapshot().setupQueue.every(({ status }) => status === "succeeded")).toBe(true)
     store.dispose()
   })
 
   it("restores saved activity without treating it as new setup progress", async () => {
-    const saved: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId: "previous-attempt", phase: "workspaces", step: "setup-failed", timestamp: 1788912000000, level: "error", message: "Image download failed. Check your connection and retry.", safeForDisplay: true }
+    const saved: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId: "previous-attempt", phase: "computers", step: "setup-failed", timestamp: 1788912000000, level: "error", message: "Image download failed. Check your connection and retry.", safeForDisplay: true }
     const { store } = await setup([saved])
     expect(store.getSnapshot().setupActivity).toEqual([saved])
     expect(store.getSnapshot().setupEvents).toEqual([])
@@ -67,13 +67,13 @@ describe("production setup queue", () => {
   })
 
   it("does not replace current activity with a previous attempt after a command finishes", async () => {
-    const saved: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId: "previous-attempt", phase: "workspaces", message: "Previous attempt", safeForDisplay: true }
-    const { store, machines, invoke, emit } = await setup([saved])
+    const saved: SiloProgressEvent = { schemaVersion: 1, type: "progress", requestId: "previous-attempt", phase: "computers", message: "Previous attempt", safeForDisplay: true }
+    const { store, configurations, invoke, emit } = await setup([saved])
     const pending = deferred<unknown>()
-    machines.mockReturnValueOnce(pending.promise)
-    const job = store.submitSetupStep("workspaces", request)
-    await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
-    const requestId = invoke.mock.calls.find(([command]) => command === "change_machine_configuration")?.[1]?.requestId as string
+    configurations.mockReturnValueOnce(pending.promise)
+    const job = store.submitSetupStep("computers", request)
+    await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
+    const requestId = invoke.mock.calls.find(([command]) => command === "change_computer_configuration")?.[1]?.requestId as string
     const event: SiloProgressEvent = { ...saved, requestId, message: "Verifying dev…" }
     emit(event)
     pending.resolve(application)
@@ -84,40 +84,40 @@ describe("production setup queue", () => {
 
   it("recovers the terminal error from disk when its live event was not delivered", async () => {
     const saved: SiloProgressEvent[] = []
-    const { store, machines, invoke } = await setup(saved)
+    const { store, configurations, invoke } = await setup(saved)
     const pending = deferred<unknown>()
-    machines.mockReturnValueOnce(pending.promise)
-    const job = expect(store.submitSetupStep("workspaces", request)).rejects.toThrow("download failed")
-    await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
-    const requestId = invoke.mock.calls.find(([command]) => command === "change_machine_configuration")?.[1]?.requestId as string
-    saved.push({ schemaVersion: 1, type: "progress", requestId, phase: "workspaces", step: "setup-failed", level: "error", message: "Image download failed. Check your connection and retry.", safeForDisplay: true })
+    configurations.mockReturnValueOnce(pending.promise)
+    const job = expect(store.submitSetupStep("computers", request)).rejects.toThrow("download failed")
+    await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
+    const requestId = invoke.mock.calls.find(([command]) => command === "change_computer_configuration")?.[1]?.requestId as string
+    saved.push({ schemaVersion: 1, type: "progress", requestId, phase: "computers", step: "setup-failed", level: "error", message: "Image download failed. Check your connection and retry.", safeForDisplay: true })
     pending.reject(new Error("download failed"))
     await job
     expect(store.getSnapshot().setupActivity).toEqual(saved)
-    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "workspaceRun")?.status).toBe("failed")
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "computerRun")?.status).toBe("failed")
     store.dispose()
   })
 
   it("records a safe failure even when native setup fails before activity storage opens", async () => {
-    const { store, machines } = await setup()
-    machines.mockRejectedValueOnce(new Error("private/path token=secret"))
-    await expect(store.submitSetupStep("workspaces", request)).rejects.toThrow()
+    const { store, configurations } = await setup()
+    configurations.mockRejectedValueOnce(new Error("private/path token=secret"))
+    await expect(store.submitSetupStep("computers", request)).rejects.toThrow()
     expect(store.getSnapshot().setupActivity?.at(-1)).toMatchObject({ step: "setup-failed", level: "error", safeForDisplay: true })
     expect(JSON.stringify(store.getSnapshot().setupActivity)).not.toContain("secret")
     store.dispose()
   })
 
-  it("does not resubmit already verified sandboxes when continuing GitHub after relaunch", async () => {
-    const { store, machines, identities } = await setup()
+  it("does not resubmit already verified computers when continuing GitHub after relaunch", async () => {
+    const { store, configurations, identities } = await setup()
     const resumed = structuredClone(request)
-    resumed.machineConfiguration.machines = application.workspaces.map(({ machine }) => machine)
-    resumed.github.workspaces = application.workspaces.map(({ machine }) => ({ ...request.github.workspaces[0], workspace: machine.name }))
+    resumed.computerConfiguration.computers = application.computers.map(({ configuration }) => configuration)
+    resumed.github.computers = application.computers.map(({ configuration }) => ({ ...request.github.computers[0], computer: configuration.name }))
     const observed: string[] = []
     const unsubscribe = store.subscribe(() => {
-      observed.push(...store.getSnapshot().setupQueue.filter(({ id }) => id === "workspaceRun" || id === "workspaceVerify").map(({ status }) => status))
+      observed.push(...store.getSnapshot().setupQueue.filter(({ id }) => id === "computerRun" || id === "computerVerify").map(({ status }) => status))
     })
     await store.submitSetupStep("github", resumed)
-    expect(machines).not.toHaveBeenCalled()
+    expect(configurations).not.toHaveBeenCalled()
     expect(identities).toHaveBeenCalledOnce()
     expect(observed).not.toContain("queued")
     expect(observed).not.toContain("running")
@@ -126,56 +126,56 @@ describe("production setup queue", () => {
   })
 
   it("starts idle, coalesces duplicate Continue, and waits before applying identity", async () => {
-    const { store, machines, identities } = await setup()
+    const { store, configurations, identities } = await setup()
     expect(store.getSnapshot().setupQueue.every(({ status }) => status === "idle")).toBe(true)
     const pending = deferred<unknown>()
-    machines.mockReturnValueOnce(pending.promise)
-    const first = store.submitSetupStep("workspaces", request)
-    const duplicate = store.submitSetupStep("workspaces", structuredClone(request))
+    configurations.mockReturnValueOnce(pending.promise)
+    const first = store.submitSetupStep("computers", request)
+    const duplicate = store.submitSetupStep("computers", structuredClone(request))
     const github = store.submitSetupStep("github", request)
-    await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
     expect(identities).not.toHaveBeenCalled()
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "identityRun")?.status).toBe("queued")
     pending.resolve(application)
     await Promise.all([first, duplicate, github])
-    expect(machines).toHaveBeenCalledOnce()
+    expect(configurations).toHaveBeenCalledOnce()
     expect(identities).toHaveBeenCalledOnce()
     store.dispose()
   })
 
-  it("fails dependent work without calling identity and retries failed machine jobs", async () => {
-    const { store, machines, identities } = await setup()
+  it("fails dependent work without calling identity and retries failed configuration jobs", async () => {
+    const { store, configurations, identities } = await setup()
     const pending = deferred<unknown>()
-    machines.mockReturnValueOnce(pending.promise)
+    configurations.mockReturnValueOnce(pending.promise)
     const markComplete = vi.fn(async () => {})
     const result = expect(store.finishSetup(request, markComplete)).rejects.toThrow("disk unavailable")
-    await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
     pending.reject(new Error("disk unavailable"))
     await result
     expect(identities).not.toHaveBeenCalled()
     expect(markComplete).not.toHaveBeenCalled()
-    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "workspaceRun")?.status).toBe("failed")
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "computerRun")?.status).toBe("failed")
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "identityRun")?.status).toBe("failed")
     await store.finishSetup(request, markComplete)
-    expect(machines).toHaveBeenCalledTimes(2)
+    expect(configurations).toHaveBeenCalledTimes(2)
     expect(identities).toHaveBeenCalledOnce()
     expect(markComplete).toHaveBeenCalledOnce()
     store.dispose()
   })
 
   it("accepts correlated native progress and ignores stale or completed requests", async () => {
-    const { store, machines, invoke, emit } = await setup()
+    const { store, configurations, invoke, emit } = await setup()
     const pending = deferred<unknown>()
-    machines.mockReturnValueOnce(pending.promise)
-    const job = store.submitSetupStep("workspaces", request)
-    await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
-    const requestId = invoke.mock.calls.find(([command]) => command === "change_machine_configuration")?.[1]?.requestId
-    const event = { schemaVersion: 1, type: "progress", requestId, phase: "verification", step: "workspace-verification", workspace: request.machineConfiguration.machines[0].name, revision: "a".repeat(64), fraction: 0.5, message: "Checking VM", safeForDisplay: true }
+    configurations.mockReturnValueOnce(pending.promise)
+    const job = store.submitSetupStep("computers", request)
+    await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
+    const requestId = invoke.mock.calls.find(([command]) => command === "change_computer_configuration")?.[1]?.requestId
+    const event = { schemaVersion: 1, type: "progress", requestId, phase: "verification", step: "computer-verification", computer: request.computerConfiguration.computers[0].name, revision: "a".repeat(64), fraction: 0.5, message: "Checking VM", safeForDisplay: true }
     emit({ ...event, requestId: "old-request" })
     expect(store.getSnapshot().setupEvents).toEqual([])
     emit(event)
     expect(store.getSnapshot().setupEvents).toEqual([event])
-    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "workspaceVerify")?.status).toBe("running")
+    expect(store.getSnapshot().setupQueue.find(({ id }) => id === "computerVerify")?.status).toBe("running")
     pending.resolve(application)
     await job
     emit({ ...event, message: "Late event" })
@@ -184,8 +184,8 @@ describe("production setup queue", () => {
   })
 
   it("marks completion only after identity succeeds and retries failed identity without recreating VMs", async () => {
-    const { store, machines, identities } = await setup()
-    machines.mockResolvedValue(applied)
+    const { store, configurations, identities } = await setup()
+    configurations.mockResolvedValue(applied)
     const pending = deferred<unknown>()
     identities.mockReturnValueOnce(pending.promise)
     const markComplete = vi.fn(async () => {})
@@ -196,7 +196,7 @@ describe("production setup queue", () => {
     await result
     expect(markComplete).not.toHaveBeenCalled()
     await store.finishSetup(request, markComplete)
-    expect(machines).toHaveBeenCalledOnce()
+    expect(configurations).toHaveBeenCalledOnce()
     expect(identities).toHaveBeenCalledTimes(2)
     expect(markComplete).toHaveBeenCalledOnce()
     expect(store.getSnapshot().setupQueue.every(({ status }) => status === "succeeded")).toBe(true)
@@ -205,24 +205,24 @@ describe("production setup queue", () => {
   it("finishes with Git identity when disconnected GitHub has saved repository selections", async () => {
     const { store, identities, invoke } = await setup()
     const selected = structuredClone(request)
-    selected.github.workspaces[0].repositories = [{ repository: "owner/repo", allowPushes: false }]
+    selected.github.computers[0].repositories = [{ repository: "owner/repo", allowPushes: false }]
     const markComplete = vi.fn(async () => {})
     await store.finishSetup(selected, markComplete)
     expect(identities).toHaveBeenCalledOnce()
-    expect(invoke).toHaveBeenCalledWith("configure_workspace_identities", { identities: [{ workspace: selected.github.workspaces[0].workspace, ...selected.github.workspaces[0].identity }] })
+    expect(invoke).toHaveBeenCalledWith("configure_computer_identities", { identities: [{ computer: selected.github.computers[0].computer, ...selected.github.computers[0].identity }] })
     expect(markComplete).toHaveBeenCalledOnce()
     expect(store.getSnapshot().setupQueue.every(({ status }) => status === "succeeded")).toBe(true)
     store.dispose()
   })
 
   it("does not finish connected setup without native repository acknowledgment", async () => {
-    const { store, machines, identities } = await setup()
+    const { store, configurations, identities } = await setup()
     const selected = structuredClone(request)
     selected.github.connectionState = "connected"
-    selected.github.workspaces[0].repositories = [{ repository: "owner/repo", allowPushes: false }]
+    selected.github.computers[0].repositories = [{ repository: "owner/repo", allowPushes: false }]
     const markComplete = vi.fn(async () => {})
     await expect(store.finishSetup(selected, markComplete)).rejects.toThrow("Runtime did not acknowledge access")
-    expect(machines).toHaveBeenCalledOnce()
+    expect(configurations).toHaveBeenCalledOnce()
     expect(identities).toHaveBeenCalledOnce()
     expect(markComplete).not.toHaveBeenCalled()
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "identityVerify")?.status).toBe("succeeded")
@@ -233,18 +233,18 @@ describe("production setup queue", () => {
   it("saves and verifies only token policies when OAuth is disconnected", async () => {
     const { store, github, invoke } = await setup()
     const selected = structuredClone(request)
-    selected.machineConfiguration.machines = application.workspaces.map(({ machine }) => machine)
-    selected.github.workspaces = application.workspaces.map(({ machine }, index) => ({
-      ...request.github.workspaces[0], workspace: machine.name,
+    selected.computerConfiguration.computers = application.computers.map(({ configuration }) => configuration)
+    selected.github.computers = application.computers.map(({ configuration }, index) => ({
+      ...request.github.computers[0], computer: configuration.name,
       authenticationMethod: index === 0 ? "token" : "oauth",
       repositoryMode: "selected", allRepositoriesAllowChanges: false,
     }))
-    const policy = selected.github.workspaces[0]
-    github.mockResolvedValue({ ...application.github, workspaceOperations: [{ workspace: policy.workspace, status: "succeeded", message: "Verified" }] })
+    const policy = selected.github.computers[0]
+    github.mockResolvedValue({ ...application.github, computerOperations: [{ computer: policy.computer, status: "succeeded", message: "Verified" }] })
     try {
       await store.submitSetupStep("github", selected)
       expect(invoke).toHaveBeenCalledWith("save_github_configuration", {
-        configuration: { baseRevision: application.github.policyRevision, hostIdentity: application.github.hostIdentity ?? null, workspaces: [policy] },
+        configuration: { baseRevision: application.github.policyRevision, deviceIdentity: application.github.deviceIdentity ?? null, computers: [policy] },
       })
       expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubVerify")?.status).toBe("succeeded")
     } finally { store.dispose() }
@@ -255,9 +255,9 @@ describe("production setup queue", () => {
     const { store, github } = await setup()
     const selected = structuredClone(request)
     selected.github.connectionState = "connected"
-    const workspace = selected.github.workspaces[0].workspace
+    const computer = selected.github.computers[0].computer
     const pending = deferred<unknown>()
-    github.mockResolvedValueOnce({ ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }).mockReturnValueOnce(pending.promise)
+    github.mockResolvedValueOnce({ ...application.github, policyRevision: 7, computerOperations: [{ computer, status: "applying", message: "Applying access" }] }).mockReturnValueOnce(pending.promise)
     const markComplete = vi.fn(async () => {})
     const result = store.finishSetup(selected, markComplete)
     const outcome = status === "failed" ? expect(result).rejects.toThrow("Policy rejected") : expect(result).resolves.toBeUndefined()
@@ -268,8 +268,8 @@ describe("production setup queue", () => {
     expect(markComplete).not.toHaveBeenCalled()
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubRun")?.status).toBe("succeeded")
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubVerify")?.status).toBe("running")
-    expect(store.getSnapshot().setupActivity?.at(-1)?.message).toContain("Waiting for each sandbox")
-    pending.resolve({ ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status, message: "Policy rejected", ...(status === "failed" ? { canRetry: true } : {}) }] })
+    expect(store.getSnapshot().setupActivity?.at(-1)?.message).toContain("Waiting for each computer")
+    pending.resolve({ ...application.github, policyRevision: 7, computerOperations: [{ computer, status, message: "Policy rejected", ...(status === "failed" ? { canRetry: true } : {}) }] })
     await outcome
     expect(store.getSnapshot().setupActivity?.at(-1)).toMatchObject({ phase: "github", level: status === "failed" ? "error" : "info", safeForDisplay: true })
     expect(markComplete).toHaveBeenCalledTimes(status === "succeeded" ? 1 : 0)
@@ -278,13 +278,13 @@ describe("production setup queue", () => {
   })
 
   it("explicitly retries a failed unchanged GitHub policy without rerunning identity", async () => {
-    const { store, machines, github, identities, invoke } = await setup()
-    machines.mockResolvedValue(applied)
+    const { store, configurations, github, identities, invoke } = await setup()
+    configurations.mockResolvedValue(applied)
     const selected = structuredClone(request)
     selected.github.connectionState = "connected"
-    const workspace = selected.github.workspaces[0].workspace
-    const failed = { ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status: "failed", message: "Policy rejected", canRetry: true }] }
-    github.mockResolvedValueOnce(failed).mockResolvedValueOnce(failed).mockResolvedValueOnce({ ...application.github, policyRevision: 8, workspaceOperations: [{ workspace, status: "succeeded", message: "Applied" }] })
+    const computer = selected.github.computers[0].computer
+    const failed = { ...application.github, policyRevision: 7, computerOperations: [{ computer, status: "failed", message: "Policy rejected", canRetry: true }] }
+    github.mockResolvedValueOnce(failed).mockResolvedValueOnce(failed).mockResolvedValueOnce({ ...application.github, policyRevision: 8, computerOperations: [{ computer, status: "succeeded", message: "Applied" }] })
     const markComplete = vi.fn(async () => {})
     await expect(store.finishSetup(selected, markComplete)).rejects.toThrow("Policy rejected")
     await store.finishSetup(selected, markComplete)
@@ -299,8 +299,8 @@ describe("production setup queue", () => {
     const { store, github } = await setup()
     const selected = structuredClone(request)
     selected.github.connectionState = "connected"
-    const workspace = selected.github.workspaces[0].workspace
-    github.mockResolvedValueOnce({ ...application.github, policyRevision: 7, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }).mockResolvedValueOnce({ ...application.github, policyRevision: 8, workspaceOperations: [{ workspace, status: "succeeded", message: "Applied other settings" }] })
+    const computer = selected.github.computers[0].computer
+    github.mockResolvedValueOnce({ ...application.github, policyRevision: 7, computerOperations: [{ computer, status: "applying", message: "Applying access" }] }).mockResolvedValueOnce({ ...application.github, policyRevision: 8, computerOperations: [{ computer, status: "succeeded", message: "Applied other settings" }] })
     const markComplete = vi.fn(async () => {})
     const outcome = expect(store.finishSetup(selected, markComplete)).rejects.toThrow("GitHub settings changed during setup")
     await vi.advanceTimersByTimeAsync(0)
@@ -311,29 +311,29 @@ describe("production setup queue", () => {
     store.dispose()
   })
 
-  it("finishes connected all-repository setup only after the runtime acknowledges every sandbox", async () => {
+  it("finishes connected all-repository setup only after the runtime acknowledges every computer", async () => {
     const { store, github, invoke } = await setup()
     const selected = structuredClone(request)
     selected.github.connectionState = "connected"
-    selected.github.workspaces[0].repositoryMode = "all"
-    selected.github.workspaces[0].allRepositoriesAllowChanges = false
-    github.mockResolvedValue({ ...application.github, workspaceOperations: [{ workspace: selected.github.workspaces[0].workspace, status: "succeeded", message: "Verified" }] })
+    selected.github.computers[0].repositoryMode = "all"
+    selected.github.computers[0].allRepositoriesAllowChanges = false
+    github.mockResolvedValue({ ...application.github, computerOperations: [{ computer: selected.github.computers[0].computer, status: "succeeded", message: "Verified" }] })
     const markComplete = vi.fn(async () => {})
     await store.finishSetup(selected, markComplete)
-    // Setup saves only its sandboxes against the revision it saw and never turns access on or off (H-39).
-    expect(invoke).toHaveBeenCalledWith("save_github_configuration", { configuration: { baseRevision: application.github.policyRevision, hostIdentity: application.github.hostIdentity ?? null, workspaces: selected.github.workspaces } })
+    // Setup saves only its computers against the revision it saw and never turns access on or off (H-39).
+    expect(invoke).toHaveBeenCalledWith("save_github_configuration", { configuration: { baseRevision: application.github.policyRevision, deviceIdentity: application.github.deviceIdentity ?? null, computers: selected.github.computers } })
     expect(markComplete).toHaveBeenCalledOnce()
     store.dispose()
   })
 
   it("keeps failed completion visible and retries only completion", async () => {
-    const { store, machines, identities } = await setup()
-    machines.mockResolvedValue(applied)
+    const { store, configurations, identities } = await setup()
+    configurations.mockResolvedValue(applied)
     const markComplete = vi.fn<() => Promise<void>>().mockRejectedValueOnce(new Error("settings write failed")).mockResolvedValue(undefined)
     await expect(store.finishSetup(request, markComplete)).rejects.toThrow("settings write failed")
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "completion")).toMatchObject({ status: "failed", failure: "settings write failed" })
     await store.finishSetup(request, markComplete)
-    expect(machines).toHaveBeenCalledOnce()
+    expect(configurations).toHaveBeenCalledOnce()
     expect(identities).toHaveBeenCalledOnce()
     expect(markComplete).toHaveBeenCalledTimes(2)
     expect(store.getSnapshot().setupQueue.find(({ id }) => id === "completion")?.status).toBe("succeeded")
@@ -341,22 +341,22 @@ describe("production setup queue", () => {
   })
 
   it("drains accepted setup through completion and rejects new work while quitting", async () => {
-    const { store, machines, identities } = await setup()
-    const machine = deferred<unknown>()
+    const { store, configurations, identities } = await setup()
+    const configuration = deferred<unknown>()
     const identity = deferred<unknown>()
     const completion = deferred<void>()
-    machines.mockReturnValueOnce(machine.promise)
+    configurations.mockReturnValueOnce(configuration.promise)
     identities.mockReturnValueOnce(identity.promise)
     const markComplete = vi.fn(() => completion.promise)
     const finished = store.finishSetup(request, markComplete)
     let drained = false
     const drain = store.drainSetup().then(() => { drained = true })
-    await expect(store.submitSetupStep("workspaces", request)).rejects.toThrow("quitting")
+    await expect(store.submitSetupStep("computers", request)).rejects.toThrow("quitting")
     await expect(store.finishSetup(request, markComplete)).rejects.toThrow("quitting")
-    await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
     expect(drained).toBe(false)
     expect(markComplete).not.toHaveBeenCalled()
-    machine.resolve(application)
+    configuration.resolve(application)
     await vi.waitFor(() => expect(identities).toHaveBeenCalledOnce())
     expect(drained).toBe(false)
     expect(markComplete).not.toHaveBeenCalled()
@@ -371,45 +371,45 @@ describe("production setup queue", () => {
   })
 
   it("accepts setup again after a Quit request is cancelled", async () => {
-    const { store, machines, events } = await setup()
+    const { store, configurations, events } = await setup()
     await store.drainSetup()
-    await expect(store.submitSetupStep("workspaces", request)).rejects.toThrow("quitting")
+    await expect(store.submitSetupStep("computers", request)).rejects.toThrow("quitting")
     events.get("silo://shutdown-state-changed")?.({ payload: false })
-    await store.submitSetupStep("workspaces", request)
-    expect(machines).toHaveBeenCalledOnce()
+    await store.submitSetupStep("computers", request)
+    expect(configurations).toHaveBeenCalledOnce()
     store.dispose()
   })
 
-  it("never deletes existing sandboxes from onboarding", async () => {
+  it("never deletes existing computers from onboarding", async () => {
     const { store, invoke } = await setup()
-    const existing = application.workspaces.map(({ machine }) => machine)
+    const existing = application.computers.map(({ configuration }) => configuration)
     const replacement = { ...existing[0], id: "7f3c2a10-4b5d-4e6f-8a9b-0c1d2e3f4a5b", name: "fresh-default" }
-    const defaults: OnboardingCompletionRequest = { ...request, machineConfiguration: { schemaVersion: 1, machines: [replacement] } }
-    await expect(store.submitSetupStep("workspaces", defaults)).rejects.toThrow(/does not delete/)
+    const defaults: OnboardingCompletionRequest = { ...request, computerConfiguration: { schemaVersion: 1, computers: [replacement] } }
+    await expect(store.submitSetupStep("computers", defaults)).rejects.toThrow(/does not delete/)
     await expect(store.finishSetup(defaults, vi.fn().mockResolvedValue(undefined))).rejects.toThrow(/does not delete/)
-    expect(invoke).not.toHaveBeenCalledWith("change_machine_configuration", expect.anything())
+    expect(invoke).not.toHaveBeenCalledWith("change_computer_configuration", expect.anything())
     store.dispose()
   })
 
-  it("does not show workspace success while a changed configuration is still queued", async () => {
-    const { store, machines, identities } = await setup()
-    const machineA = deferred<unknown>()
+  it("does not show computer success while a changed configuration is still queued", async () => {
+    const { store, configurations, identities } = await setup()
+    const computerA = deferred<unknown>()
     const identityA = deferred<unknown>()
-    machines.mockReturnValueOnce(machineA.promise)
+    configurations.mockReturnValueOnce(computerA.promise)
     identities.mockReturnValueOnce(identityA.promise)
     const first = store.submitSetupStep("github", request)
-    await vi.waitFor(() => expect(machines).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(configurations).toHaveBeenCalledOnce())
     const changed = structuredClone(request)
-    changed.machineConfiguration.machines[0].name = "changed-vm"
-    const second = store.submitSetupStep("workspaces", changed)
-    machineA.resolve(application)
+    changed.computerConfiguration.computers[0].name = "changed-vm"
+    const second = store.submitSetupStep("computers", changed)
+    computerA.resolve(application)
     await vi.waitFor(() => expect(identities).toHaveBeenCalledOnce())
-    const workspaceStatuses = store.getSnapshot().setupQueue.filter(({ id }) => id === "workspaceRun" || id === "workspaceVerify").map(({ status }) => status)
+    const computerStatuses = store.getSnapshot().setupQueue.filter(({ id }) => id === "computerRun" || id === "computerVerify").map(({ status }) => status)
     identityA.resolve(undefined)
     await Promise.all([first, second])
     store.dispose()
-    expect(workspaceStatuses).not.toEqual(["succeeded", "succeeded"])
-    expect(workspaceStatuses).toContain("queued")
+    expect(computerStatuses).not.toEqual(["succeeded", "succeeded"])
+    expect(computerStatuses).toContain("queued")
   })
 
 })

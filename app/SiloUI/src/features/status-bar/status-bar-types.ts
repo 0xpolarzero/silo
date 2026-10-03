@@ -1,8 +1,8 @@
-import type { ApplicationActions, ApplicationSource, ApplicationTab, ApplicationWorkspace, SandboxDetailTab, WorkspaceSection } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationSource, ApplicationTab, ApplicationComputer, ComputerDetailTab, ComputerSection } from "@/features/application/model/application-source"
 
-/** A renderer of one sandbox's "…" menu (see `workspace-menu-items.ts`). */
-export interface WorkspaceMenuProps {
-  workspace: ApplicationWorkspace
+/** A renderer of one computer's "…" menu (see `computer-menu-items.ts`). */
+export interface ComputerMenuProps {
+  computer: ApplicationComputer
   source: ApplicationSource
   actions: StatusBarActions
   onFolders: () => void
@@ -11,16 +11,16 @@ export interface WorkspaceMenuProps {
 
 export interface StatusBarRoute {
   tab?: ApplicationTab
-  workspaceSection?: WorkspaceSection
-  workspace?: string
-  sandboxTab?: SandboxDetailTab
+  computerSection?: ComputerSection
+  computer?: string
+  computerTab?: ComputerDetailTab
 }
 
-export interface StatusBarActions extends Pick<ApplicationActions, "startWorkspace" | "stopWorkspace" | "restartWorkspace" | "openTerminal" | "pushRepository" | "listWorkspaceDirectory"> {
+export interface StatusBarActions extends Pick<ApplicationActions, "startComputer" | "stopComputer" | "restartComputer" | "openTerminal" | "pushRepository" | "listComputerDirectory"> {
   openSilo: (route?: StatusBarRoute) => void
   quit: () => void
   refresh: () => void
-  openEditor: (workspace: string, path: string) => void
-  openSite: (workspace: string, port: number) => void
-  dismissRepositoryPush: (workspace: string, repositoryPath: string) => void
+  openEditor: (computer: string, path: string) => void
+  openSite: (computer: string, port: number) => void
+  dismissRepositoryPush: (computer: string, repositoryPath: string) => void
 }

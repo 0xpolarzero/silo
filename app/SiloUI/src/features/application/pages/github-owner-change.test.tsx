@@ -21,17 +21,17 @@ it.each([false, true])("discards rejected access and its retry when dev is repla
   const retry = failure.mock.calls.find(([id]) => id === "github-apply:dev")![2]!.retry!
   if (removedFirst) {
     const removed = structuredClone(source)
-    removed.workspaces = removed.workspaces.filter(workspace => workspace.machine.name !== "dev")
-    removed.github.workspaces = removed.github.workspaces!.filter(policy => policy.workspace !== "dev")
-    removed.github.workspaceOperations = []
+    removed.computers = removed.computers.filter(computer => computer.configuration.name !== "dev")
+    removed.github.computers = removed.github.computers!.filter(policy => policy.computer !== "dev")
+    removed.github.computerOperations = []
     removed.github.policyRevision = 11
     view.rerender(page(removed))
   }
   const replacement = structuredClone(source)
-  replacement.workspaces = replacement.workspaces.map(workspace => workspace.machine.name === "dev"
-    ? { ...workspace, machine: { ...workspace.machine, id: "00000000-0000-4000-8000-000000000099" } } : workspace)
+  replacement.computers = replacement.computers.map(computer => computer.configuration.name === "dev"
+    ? { ...computer, configuration: { ...computer.configuration, id: "00000000-0000-4000-8000-000000000099" } } : computer)
   replacement.github.policyRevision = 12
-  replacement.github.workspaceOperations = []
+  replacement.github.computerOperations = []
   view.rerender(page(replacement))
   await act(async () => retry())
   expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
@@ -40,7 +40,7 @@ it.each([false, true])("discards rejected access and its retry when dev is repla
   await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument())
 })
 
-it("discards unfinished author text when the sandbox ID changes without a policy change", async () => {
+it("discards unfinished author text when the computer ID changes without a policy change", async () => {
   const user = userEvent.setup()
   const source = applicationSourceForScenario("running", "connected")
   const actions = createApplicationActionsMock()
@@ -48,9 +48,9 @@ it("discards unfinished author text when the sandbox ID changes without a policy
   await user.clear(screen.getByLabelText("Git name for dev"))
   await user.type(screen.getByLabelText("Git name for dev"), "Unfinished old author")
   const replacement = structuredClone(source)
-  replacement.workspaces = replacement.workspaces.map(workspace => workspace.machine.name === "dev"
-    ? { ...workspace, machine: { ...workspace.machine, id: "00000000-0000-4000-8000-000000000099" } } : workspace)
+  replacement.computers = replacement.computers.map(computer => computer.configuration.name === "dev"
+    ? { ...computer, configuration: { ...computer.configuration, id: "00000000-0000-4000-8000-000000000099" } } : computer)
   view.rerender(<GitHubPage source={replacement} actions={actions} />)
-  expect(screen.getByLabelText("Git name for dev")).toHaveValue(source.github.workspaces!.find(policy => policy.workspace === "dev")!.identity.name)
+  expect(screen.getByLabelText("Git name for dev")).toHaveValue(source.github.computers!.find(policy => policy.computer === "dev")!.identity.name)
   expect(actions.saveGitHubConfiguration).not.toHaveBeenCalled()
 })

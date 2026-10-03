@@ -7,7 +7,7 @@ import type { LinuxDesktopState } from "./linux-desktop-state"
 function viewer(state: LinuxDesktopState, error: string | null = null, busy = false) {
   const onAction = vi.fn()
   const onRetry = vi.fn()
-  render(<LinuxDesktopViewer name="dev · Build computer" state={state} busy={busy} error={error} onAction={onAction} onRetry={onRetry} onFullscreen={vi.fn()} />)
+  render(<LinuxDesktopViewer name="dev · Build device" state={state} busy={busy} error={error} onAction={onAction} onRetry={onRetry} onFullscreen={vi.fn()} />)
   return { onAction, onRetry }
 }
 
@@ -16,7 +16,7 @@ describe("desktop viewer lifecycle", () => {
     const user = userEvent.setup()
     const { onAction } = viewer({ installed: true, autoStart, state: "vm-stopped" })
     expect(onAction).not.toHaveBeenCalled()
-    await user.click(screen.getByRole("button", { name: autoStart ? "Start sandbox" : "Start sandbox and desktop" }))
+    await user.click(screen.getByRole("button", { name: autoStart ? "Start computer" : "Start computer and desktop" }))
     expect(onAction).toHaveBeenCalledWith("start")
   })
   it("starts a stopped session without changing startup preference", async () => {
@@ -59,24 +59,24 @@ describe("desktop viewer lifecycle", () => {
     expect(trigger).toHaveFocus()
     expect(onAction).not.toHaveBeenCalled()
   })
-  it("frames the guest display so sandbox content is never mistaken for Silo's", () => {
+  it("frames the guest display so computer content is never mistaken for Silo's", () => {
     viewer({ installed: true, autoStart: true, state: "running" })
-    const frame = screen.getByRole("region", { name: "Sandbox display" })
-    expect(frame).toHaveAccessibleDescription(/comes from the sandbox/)
+    const frame = screen.getByRole("region", { name: "Computer display" })
+    expect(frame).toHaveAccessibleDescription(/comes from the computer/)
     // The guest webview is placed on the inner element, never over the frame.
     const display = within(frame).getByLabelText("Linux desktop display")
     expect(display).not.toBe(frame)
     expect(frame).toHaveClass("p-1")
-    expect(within(screen.getByRole("banner")).getByText("Sandbox content")).toHaveAttribute("title", expect.stringContaining("amber frame"))
+    expect(within(screen.getByRole("banner")).getByText("Computer content")).toHaveAttribute("title", expect.stringContaining("amber frame"))
   })
-  it("shows no sandbox frame without a running desktop", () => {
+  it("shows no computer frame without a running desktop", () => {
     viewer({ installed: true, autoStart: true, state: "stopped" })
-    expect(screen.queryByRole("region", { name: "Sandbox display" })).not.toBeInTheDocument()
-    expect(screen.queryByText("Sandbox content")).not.toBeInTheDocument()
+    expect(screen.queryByRole("region", { name: "Computer display" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Computer content")).not.toBeInTheDocument()
   })
   it("does not offer agent control or installation inside the viewer", () => {
     viewer({ installed: false, autoStart: true, state: "uninstalled" })
-    expect(screen.getByText("Choose Add Linux desktop in the sandbox’s actions menu.")).toBeVisible()
+    expect(screen.getByText("Choose Add Linux desktop in the computer’s actions menu.")).toBeVisible()
     expect(screen.queryByRole("button", { name: /Start desktop|agent|control/i })).not.toBeInTheDocument()
   })
 })

@@ -74,16 +74,16 @@ describe("onboarding preparation interactions", () => {
   it("asks for confirmation before clearing onboarding repository access", async () => {
     const changeSelections = vi.fn()
     render(<GitHubStep
-      workspaces={[{ name: "dev" }]}
+      computers={[{ name: "dev" }]}
       connectionState="connected"
       repositoryOptions={["acme/silo"]}
-      workspaceSelections={{ dev: [{ repository: "acme/silo", allowPushes: false }] }}
-      workspaceIdentities={{ dev: { name: "Taylor", email: "taylor@example.com", apply: true } }}
-      currentHostGitIdentity={{ name: "Taylor", email: "taylor@example.com" }}
+      computerSelections={{ dev: [{ repository: "acme/silo", allowPushes: false }] }}
+      computerIdentities={{ dev: { name: "Taylor", email: "taylor@example.com", apply: true } }}
+      currentDeviceGitIdentity={{ name: "Taylor", email: "taylor@example.com" }}
       onConnect={vi.fn()}
-      onWorkspaceSelectionsChange={changeSelections}
-      onWorkspaceIdentityChange={vi.fn()}
-      onResetWorkspaceIdentity={vi.fn()}
+      onComputerSelectionsChange={changeSelections}
+      onComputerIdentityChange={vi.fn()}
+      onResetComputerIdentity={vi.fn()}
     />)
 
     const user = userEvent.setup()

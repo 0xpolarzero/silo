@@ -35,7 +35,7 @@ const available: UpdateSnapshot = {
   phase: "available", lastChecked: null, retryAction: null, currentVersion: "0.2.1", availableVersion: "0.2.2",
   releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "macos",
   releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null,
-  installBlockReason: null, runningSandboxes: [], canInstall: true,
+  installBlockReason: null, runningComputers: [], canInstall: true,
 }
 const source = { applicationActions: {}, statusActions: {} } as unknown as ProductionSource
 function mount(onboardingComplete = false) {
@@ -54,14 +54,14 @@ beforeEach(() => {
 
 it("shows the update during unfinished setup and downloads without losing the current step", async () => {
   const { user, store } = mount()
-  await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
+  await user.click(screen.getByRole("tab", { name: /Computers/ }))
   expect(await screen.findByText("Silo 0.2.2 is available.")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "View update" }))
   const dialog = within(screen.getByRole("dialog", { name: "Silo updates" }))
   await user.click(dialog.getByRole("button", { name: "Download update" }))
   expect(backend.download).toHaveBeenCalledOnce()
   await user.keyboard("{Escape}")
-  expect(screen.getByRole("tab", { name: /Sandboxes/ })).toHaveAttribute("aria-selected", "true")
+  expect(screen.getByRole("tab", { name: /Computers/ })).toHaveAttribute("aria-selected", "true")
   expect(store.getSnapshot().settings.onboardingComplete).toBe(false)
 })
 

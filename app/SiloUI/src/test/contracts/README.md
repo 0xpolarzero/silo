@@ -7,7 +7,7 @@ same files and verify that the fields needed by the UI survive parsing.
 
 The application fixtures run `read_application_state_with` with a deterministic
 runtime runner and temporary metadata, checkpoint, lifecycle, and secret stores.
-The test fixes the measured host capacity before serialization because the
+The test fixes the measured device capacity before serialization because the
 device running the test changes that value. The remote snapshot fixtures apply
 the same `ApplicationSource` to JSON conversion as `runtime.snapshot` dispatch;
 `device_snapshot` passes that payload through. They cover the wire contract,

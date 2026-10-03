@@ -29,16 +29,16 @@ describe("SecretsPage", () => {
 
   it.each([true, false])("keeps secret assignment badges local when a same-named remote exists (local present: %s)", (localPresent) => {
     const source = structuredClone(applicationSourceForScenario("running"))
-    const local = source.workspaces.find(({ machine, computer }) => machine.name === "dev" && !computer)!
+    const local = source.computers.find(({ configuration, device }) => configuration.name === "dev" && !device)!
     local.state = "running"
     const remote = {
       ...local, state: "failed" as const,
-      computer: { id: "office", vmId: "remote-vm", name: "Office", address: "office", connected: true },
+      device: { id: "office", computerId: "remote-computer", name: "Office", address: "office", connected: true },
     }
-    source.workspaces = [remote, ...source.workspaces.filter(workspace => localPresent || workspace !== local)]
-    source.secrets = [{ ...source.secrets[0], workspaces: ["dev"] }]
+    source.computers = [remote, ...source.computers.filter(computer => localPresent || computer !== local)]
+    source.secrets = [{ ...source.secrets[0], computers: ["dev"] }]
     render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={vi.fn()} />)
-    const assignments = screen.getByRole("group", { name: "Sandboxes for PACKAGE_TOKEN" })
+    const assignments = screen.getByRole("group", { name: "Computers for PACKAGE_TOKEN" })
     expect(assignments).toHaveTextContent(/^dev$/)
     if (localPresent) expect(within(assignments).getByLabelText("dev, Running")).toBeVisible()
     else expect(within(assignments).queryByLabelText(/dev,/)).not.toBeInTheDocument()
@@ -81,19 +81,19 @@ describe("SecretsPage", () => {
     expect(screen.queryByRole("form")).not.toBeInTheDocument()
   })
 
-  it("offers only local virtual machines when assigning a secret", async () => {
+  it("offers only local virtual configurations when assigning a secret", async () => {
     const user = userEvent.setup()
     const source = structuredClone(applicationSourceForScenario("running"))
-    const remote = { ...source.workspaces[0], machine: { ...source.workspaces[0].machine, name: "remote-only" }, computer: { id: "office", vmId: "remote-vm", name: "Office", address: "office", connected: true } }
-    source.workspaces.push(remote)
+    const remote = { ...source.computers[0], configuration: { ...source.computers[0].configuration, name: "remote-only" }, device: { id: "office", computerId: "remote-computer", name: "Office", address: "office", connected: true } }
+    source.computers.push(remote)
     render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={vi.fn()} />)
     await user.click(screen.getByRole("button", { name: "Add secret" }))
-    await user.click(screen.getByRole("combobox", { name: "Add sandbox" }))
-    expect(screen.getAllByRole("option").map(option => option.textContent)).toEqual(source.workspaces.filter(workspace => !workspace.computer && workspace.machine.kind === "vm").map(workspace => workspace.machine.name))
+    await user.click(screen.getByRole("combobox", { name: "Add computer" }))
+    expect(screen.getAllByRole("option").map(option => option.textContent)).toEqual(source.computers.filter(computer => !computer.device).map(computer => computer.configuration.name))
     expect(screen.queryByRole("option", { name: "remote-only" })).not.toBeInTheDocument()
   })
 
-  it("keeps Edit and Remove available while sandbox secret application is pending", () => {
+  it("keeps Edit and Remove available while computer secret application is pending", () => {
     const source = applicationSourceForScenario("running")
     const applying = { ...source, secrets: source.secrets.map((secret) => ({ ...secret, state: "applying" as const })) }
     const props = { onSaveSecret: vi.fn(), onRemoveSecret: vi.fn() }
@@ -106,11 +106,11 @@ describe("SecretsPage", () => {
     expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toBeEnabled()
   })
 
-  it("removes an applying secret even when its sandbox cannot be reached, blocking only the in-flight request", async () => {
+  it("removes an applying secret even when its computer cannot be reached, blocking only the in-flight request", async () => {
     const user = userEvent.setup()
     const source = structuredClone(applicationSourceForScenario("running"))
     source.secrets[0] = { ...source.secrets[0], state: "applying", removing: true, error: "Could not reach dev." }
-    source.workspaces[0].freshness = "stale"
+    source.computers[0].freshness = "stale"
     let finish!: () => void
     const remove = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
     render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={remove} />)
@@ -173,7 +173,7 @@ describe("SecretsPage", () => {
 
   it.each([
     "Secret settings are too large. Reduce assignments or allowed domains and retry. No settings were overwritten.",
-    "A selected sandbox was removed while saving this secret. Select sandboxes again and retry.",
+    "A selected computer was removed while saving this secret. Select computers again and retry.",
   ])("preserves an actionable native save failure without discarding the draft: %s", async message => {
     const user = userEvent.setup()
     const save = vi.fn().mockRejectedValue(message)
@@ -198,10 +198,10 @@ describe("SecretsPage", () => {
     expect(remove).toHaveBeenCalledTimes(2)
   })
 
-  it("shows the affected sandboxes and retries partial runtime application", async () => {
+  it("shows the affected computers and retries partial runtime application", async () => {
     const user = userEvent.setup()
     const source = structuredClone(applicationSourceForScenario("running"))
-    source.secrets[0] = { ...source.secrets[0], state: "restart-required", pendingWorkspaces: ["dev"], error: "Could not apply access to playgrounds." }
+    source.secrets[0] = { ...source.secrets[0], state: "restart-required", pendingComputers: ["dev"], error: "Could not apply access to playgrounds." }
     const retry = vi.fn().mockResolvedValue(undefined)
     render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={vi.fn()} onRetrySecret={retry} />)
     expect(screen.getByText("Restart to apply: dev")).toBeVisible()
@@ -239,7 +239,7 @@ describe("SecretsPage", () => {
     await user.type(form.getByRole("textbox", { name: "Name" }), "SERVICE_TOKEN")
     expect(form.getByLabelText("Value")).toHaveAttribute("type", "password")
     await user.type(form.getByLabelText("Value"), "fixture-token")
-    await user.click(form.getByRole("combobox", { name: "Add sandbox" }))
+    await user.click(form.getByRole("combobox", { name: "Add computer" }))
     await user.click(screen.getByRole("option", { name: "dev" }))
     await user.type(form.getByRole("textbox", { name: "Allowed domains" }), "API.Example.test, *.example.test")
     await user.click(form.getByRole("button", { name: "Save" }))
@@ -283,7 +283,7 @@ describe("SecretsPage", () => {
 
     await user.type(form.getByRole("textbox", { name: "Name" }), "PACKAGE_TOKEN")
     await user.type(form.getByLabelText("Value"), "fixture-token")
-    await user.click(form.getByRole("combobox", { name: "Add sandbox" }))
+    await user.click(form.getByRole("combobox", { name: "Add computer" }))
     await user.click(screen.getByRole("option", { name: "personal" }))
     await user.type(form.getByRole("textbox", { name: "Allowed domains" }), "https://api.example.test/path")
     await user.click(form.getByRole("button", { name: "Save" }))
@@ -296,7 +296,7 @@ describe("SecretsPage", () => {
     await user.clear(form.getByRole("textbox", { name: "Allowed domains" }))
     await user.type(form.getByRole("textbox", { name: "Allowed domains" }), "API.Example.test, api.example.test")
     await user.keyboard("{Enter}")
-    expect(onSaveSecret).toHaveBeenCalledExactlyOnceWith({ operation: "add", name: "SERVICE_TOKEN", value: "fixture-token", workspaces: ["personal"], allowedDomains: ["api.example.test"] })
+    expect(onSaveSecret).toHaveBeenCalledExactlyOnceWith({ operation: "add", name: "SERVICE_TOKEN", value: "fixture-token", computers: ["personal"], allowedDomains: ["api.example.test"] })
     // The page waits for the source to publish the saved metadata.
     expect(screen.getByText("2 configured")).toBeVisible()
     expect(screen.getByRole("button", { name: "Add secret" })).toHaveFocus()
@@ -310,10 +310,10 @@ describe("SecretsPage", () => {
     let form = within(screen.getByRole("form", { name: "Edit PACKAGE_TOKEN" }))
     expect(form.getByRole("textbox", { name: "Name" })).toBeDisabled()
     expect(form.getByLabelText("Replacement value")).toHaveFocus()
-    await user.click(form.getByRole("combobox", { name: "Add sandbox" }))
+    await user.click(form.getByRole("combobox", { name: "Add computer" }))
     await user.click(screen.getByRole("option", { name: "personal" }))
     await user.click(form.getByRole("button", { name: "Save" }))
-    expect(onSaveSecret).toHaveBeenLastCalledWith({ operation: "edit", id: "package-token", name: "PACKAGE_TOKEN", workspaces: ["dev", "playgrounds", "personal"], allowedDomains: ["registry.npmjs.org"] })
+    expect(onSaveSecret).toHaveBeenLastCalledWith({ operation: "edit", id: "package-token", name: "PACKAGE_TOKEN", computers: ["dev", "playgrounds", "personal"], allowedDomains: ["registry.npmjs.org"] })
     expect(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" })).toHaveFocus()
 
     await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
@@ -333,7 +333,7 @@ describe("SecretsPage", () => {
     expect(screen.queryByRole("form")).not.toBeInTheDocument()
   })
 
-  it("searches and clears sandbox selections without submitting or dismissing the editor", async () => {
+  it("searches and clears computer selections without submitting or dismissing the editor", async () => {
     const user = userEvent.setup()
     const onSaveSecret = vi.fn()
     render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={onSaveSecret} onRemoveSecret={vi.fn()} />)
@@ -343,7 +343,7 @@ describe("SecretsPage", () => {
     expect(onSaveSecret).not.toHaveBeenCalled()
     expect(form.queryByRole("button", { name: "Remove dev" })).not.toBeInTheDocument()
 
-    const input = form.getByRole("combobox", { name: "Add sandbox" })
+    const input = form.getByRole("combobox", { name: "Add computer" })
     await user.type(input, "personal")
     await user.keyboard("{Enter}")
     expect(form.getByRole("button", { name: "Remove personal" })).toBeVisible()
@@ -398,7 +398,7 @@ describe("SecretsPage", () => {
 
     await user.click(list.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
     expect(screen.getByText("Remove PACKAGE_TOKEN?")).toBeVisible()
-    expect(screen.getByText("Silo deletes the stored value immediately. Sandboxes that cannot revoke access may keep it until they restart.")).toBeVisible()
+    expect(screen.getByText("Silo deletes the stored value immediately. Computers that cannot revoke access may keep it until they restart.")).toBeVisible()
     await user.keyboard("{Escape}")
     await waitFor(() => expect(screen.queryByText("Remove PACKAGE_TOKEN?")).not.toBeInTheDocument())
     expect(list.getAllByRole("listitem")).toHaveLength(2)

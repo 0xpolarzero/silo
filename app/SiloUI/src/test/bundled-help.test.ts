@@ -1,13 +1,13 @@
 import { readFileSync } from "node:fs"
 import { expect, it } from "vitest"
 
-it("directs connected-sandbox checkpoint deletion to the owning computer", () => {
+it("directs connected-computer checkpoint deletion to the owning device", () => {
   const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
   const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Delete checkpoint data"))
-  expect(instructions?.textContent).toMatch(/on the (?:sandbox's )?owning computer/i)
+  expect(instructions?.textContent).toMatch(/on the (?:computer's )?owning device/i)
 })
 
-it("qualifies Safari sandbox hostname support for older supported macOS versions", () => {
+it("qualifies Safari computer hostname support for older supported macOS versions", () => {
   const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
   const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.querySelector("strong")?.textContent === "Network")
   expect(instructions?.textContent).toMatch(/Safari.*macOS 26/)
@@ -25,11 +25,11 @@ it("qualifies copying diagnostics because some Details sections have no copy con
 it("distinguishes reclaimed host allocation from unchanged workspace capacity", () => {
   const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
   const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Free up space"))
-  expect(instructions?.textContent).toMatch(/reclamation.*allocated space.*on this computer/i)
+  expect(instructions?.textContent).toMatch(/reclamation.*allocated space.*on this device/i)
   expect(instructions?.textContent).toMatch(/workspace capacity.*stay.*same/i)
 })
 
-it("qualifies duplicated desktop settings for new sandboxes with built-in computer use", () => {
+it("qualifies duplicated desktop settings for new computers with built-in computer use", () => {
   const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
   const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Duplicate settings"))
   expect(instructions?.textContent).toMatch(/built-in computer use.*desktop.*starts automatically/i)
@@ -49,7 +49,7 @@ it("explains checkpoint deletion blockers and cleanup when dependencies are remo
   expect(instructions?.textContent).toMatch(/latest state.*builds on/i)
   expect(instructions?.textContent).toMatch(/later checkpoints/i)
   expect(instructions?.textContent).toMatch(/dependencies.*removed/i)
-  expect(instructions?.textContent).not.toMatch(/until its last dependent sandbox is deleted/i)
+  expect(instructions?.textContent).not.toMatch(/until its last dependent computer is deleted/i)
 })
 
 it("qualifies update instructions because Silo Dev has no release feed", () => {
@@ -61,9 +61,9 @@ it("qualifies update instructions because Silo Dev has no release feed", () => {
 
 it("explains the update prerequisite before starting an outdated legacy desktop", () => {
   const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
-  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.startsWith("Start desktop with sandbox"))
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.startsWith("Start desktop with computer"))
   expect(instructions?.textContent).toMatch(/Update desktop.*then.*Start desktop/i)
-  expect(instructions?.textContent).toMatch(/sandbox running.*desktop stopped/i)
+  expect(instructions?.textContent).toMatch(/computer running.*desktop stopped/i)
   expect(instructions?.textContent).toMatch(/updating.*does not start.*automatically/i)
 })
 

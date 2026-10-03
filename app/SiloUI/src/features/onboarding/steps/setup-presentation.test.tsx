@@ -4,27 +4,27 @@ import { describe, expect, it, vi } from "vitest"
 
 import { Button } from "@/components/ui/button"
 import { SetupNotice } from "@/features/onboarding/components/setup-notice"
-import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
-import type { ReviewQueueItemView, WorkspaceProgressView } from "@/features/onboarding/model/onboarding-state"
+import { fixtureComputerDefaults } from "@/fixtures/computer-configurations"
+import type { ReviewQueueItemView, ComputerProgressView } from "@/features/onboarding/model/onboarding-state"
 import { ReviewStep } from "@/features/onboarding/steps/review-step"
-import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
+import { ComputersStep } from "@/features/onboarding/steps/computers-step"
 import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
 import { onboardingScenarios } from "@/fixtures/scenarios"
 
-const progress: WorkspaceProgressView = {
-  status: "running", elapsedSeconds: 83, currentWorkspace: "playgrounds", currentMessage: "Checking sandbox connectivity",
+const progress: ComputerProgressView = {
+  status: "running", elapsedSeconds: 83, currentComputer: "playgrounds", currentMessage: "Checking computer connectivity",
   completedOperations: 4, totalOperations: 9, fraction: 4 / 9,
-  workspaces: [
+  computers: [
     { name: "dev", status: "ready", detail: "Ready" },
-    { name: "playgrounds", status: "working", detail: "Checking sandbox connectivity" },
+    { name: "playgrounds", status: "working", detail: "Checking computer connectivity" },
     { name: "personal", status: "waiting", detail: "Waiting" },
   ],
   visibleEvents: [], readyCount: 1, workingCount: 1, waitingCount: 1, failedCount: 0, retryable: false,
 }
 
 const queueItems: ReviewQueueItemView[] = [
-  { id: "workspaceRun", label: "Create sandboxes", status: "succeeded" },
-  { id: "workspaceVerify", label: "Verify sandboxes", status: "running" },
+  { id: "computerRun", label: "Create computers", status: "succeeded" },
+  { id: "computerVerify", label: "Verify computers", status: "running" },
   { id: "githubRun", label: "Save GitHub", status: "queued" },
   { id: "githubVerify", label: "Verify GitHub", status: "queued" },
   { id: "identityRun", label: "Save Git identities", status: "queued" },
@@ -33,33 +33,33 @@ const queueItems: ReviewQueueItemView[] = [
 ]
 
 function renderReview(onEditStep = vi.fn()) {
-  render(<ReviewStep machines={fixtureMachineDefaults} queueItems={queueItems} workspaces={progress.workspaces} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="2 repositories selected" onRetryWorkspaceSetup={vi.fn()} onEditStep={onEditStep} />)
+  render(<ReviewStep configurations={fixtureComputerDefaults} queueItems={queueItems} computers={progress.computers} computerRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="2 repositories selected" onRetryComputerSetup={vi.fn()} onEditStep={onEditStep} />)
   return onEditStep
 }
 
 describe("setup progress and review presentation", () => {
-  it("shows elapsed sandbox setup time when the start timestamp is zero", () => {
+  it("shows elapsed computer setup time when the start timestamp is zero", () => {
     const source = onboardingScenarios.running
-    const { workspaceProgress } = projectOnboarding({ ...source, bootstrapState: { ...source.bootstrapState, startedAt: 0, updatedAt: 83 } }, "connected")
-    render(<WorkspacesStep machines={fixtureMachineDefaults} progress={workspaceProgress} onMachinesChange={vi.fn()} onRetry={vi.fn()} />)
+    const { computerProgress } = projectOnboarding({ ...source, bootstrapState: { ...source.bootstrapState, startedAt: 0, updatedAt: 83 } }, "connected")
+    render(<ComputersStep configurations={fixtureComputerDefaults} progress={computerProgress} onConfigurationsChange={vi.fn()} onRetry={vi.fn()} />)
     expect(screen.getByLabelText("Elapsed time").textContent).toBe("01:23")
   })
   it("keeps activity collapsed until requested and preserves the list while opening it", async () => {
     const user = userEvent.setup()
-    render(<WorkspacesStep machines={fixtureMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} />)
-    const machines = screen.getByRole("list", { name: "Configured sandboxes" })
-    expect(screen.queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
+    render(<ComputersStep configurations={fixtureComputerDefaults} progress={progress} onConfigurationsChange={vi.fn()} onRetry={vi.fn()} />)
+    const configurations = screen.getByRole("list", { name: "Configured computers" })
+    expect(screen.queryByLabelText("Computer activity")).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Expand activity" }))
-    expect(screen.getByLabelText("Sandbox activity")).toHaveTextContent("No activity yet.")
-    expect(screen.getByRole("list", { name: "Configured sandboxes" })).toBe(machines)
-    expect(within(machines).getAllByRole("listitem")).toHaveLength(3)
+    expect(screen.getByLabelText("Computer activity")).toHaveTextContent("No activity yet.")
+    expect(screen.getByRole("list", { name: "Configured computers" })).toBe(configurations)
+    expect(within(configurations).getAllByRole("listitem")).toHaveLength(3)
     await user.click(screen.getByRole("button", { name: "Collapse activity" }))
-    expect(screen.queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("Computer activity")).not.toBeInTheDocument()
   })
 
-  it("distinguishes each sandbox status without replacing the busy machine icon", () => {
-    render(<WorkspacesStep machines={fixtureMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} />)
-    const rows = within(screen.getByRole("list", { name: "Configured sandboxes" })).getAllByRole("listitem")
+  it("distinguishes each computer status without replacing the busy configuration icon", () => {
+    render(<ComputersStep configurations={fixtureComputerDefaults} progress={progress} onConfigurationsChange={vi.fn()} onRetry={vi.fn()} />)
+    const rows = within(screen.getByRole("list", { name: "Configured computers" })).getAllByRole("listitem")
     expect(within(rows[0]).getByText("Complete")).toBeVisible()
     expect(within(rows[1]).getByText("In progress")).toBeVisible()
     expect(rows[1]).toHaveAttribute("aria-busy", "true")
@@ -72,27 +72,27 @@ describe("setup progress and review presentation", () => {
   it("keeps recovery and retry beside the failed operation", async () => {
     const user = userEvent.setup()
     const retry = vi.fn()
-    render(<WorkspacesStep machines={fixtureMachineDefaults} progress={{ ...progress, status: "failed", retryable: true, currentMessage: "The sandbox could not be reached.", recovery: "Check the network connection, then retry setup.", workspaces: [{ name: "playgrounds", status: "failed", detail: "The sandbox could not be reached." }] }} onMachinesChange={vi.fn()} onRetry={retry} />)
+    render(<ComputersStep configurations={fixtureComputerDefaults} progress={{ ...progress, status: "failed", retryable: true, currentMessage: "The computer could not be reached.", recovery: "Check the network connection, then retry setup.", computers: [{ name: "playgrounds", status: "failed", detail: "The computer could not be reached." }] }} onConfigurationsChange={vi.fn()} onRetry={retry} />)
     const status = screen.getByRole("alert")
-    expect(status).toHaveTextContent("The sandbox could not be reached.")
+    expect(status).toHaveTextContent("The computer could not be reached.")
     expect(status.parentElement).toHaveTextContent("Check the network connection, then retry setup.")
     await user.click(within(status).getByRole("button", { name: "Retry" }))
     expect(retry).toHaveBeenCalledOnce()
-    expect(within(screen.getByRole("list", { name: "Configured sandboxes" })).getByText("Failed")).toBeVisible()
+    expect(within(screen.getByRole("list", { name: "Configured computers" })).getByText("Failed")).toBeVisible()
   })
 
-  it("shows validation on existing cards and preserves sandbox order and resources", () => {
+  it("shows validation on existing cards and preserves computer order and resources", () => {
     renderReview()
-    expect(screen.getAllByRole("list").map(list => list.getAttribute("aria-label"))).toEqual(["Sandboxes"])
+    expect(screen.getAllByRole("list").map(list => list.getAttribute("aria-label"))).toEqual(["Computers"])
     expect(screen.queryByText("queued")).not.toBeInTheDocument()
     expect(screen.queryByText("succeeded")).not.toBeInTheDocument()
-    const sandboxes = within(screen.getByRole("list", { name: "Sandboxes" })).getAllByRole("listitem")
-    expect(sandboxes.map((row) => row.querySelector("[title]")?.getAttribute("title"))).toEqual(["dev", "playgrounds", "personal"])
-    expect(sandboxes[0]).toHaveTextContent("Complete")
-    expect(sandboxes[1]).toHaveTextContent("In progress")
-    expect(sandboxes[1]).toHaveAttribute("aria-busy", "true")
-    expect(sandboxes[2]).toHaveTextContent("Waiting")
-    expect(sandboxes[0]).toHaveTextContent("CPUs: 8 · Memory: 32 GiB · Disk: 120 GiB")
+    const computers = within(screen.getByRole("list", { name: "Computers" })).getAllByRole("listitem")
+    expect(computers.map((row) => row.querySelector("[title]")?.getAttribute("title"))).toEqual(["dev", "playgrounds", "personal"])
+    expect(computers[0]).toHaveTextContent("Complete")
+    expect(computers[1]).toHaveTextContent("In progress")
+    expect(computers[1]).toHaveAttribute("aria-busy", "true")
+    expect(computers[2]).toHaveTextContent("Waiting")
+    expect(computers[0]).toHaveTextContent("CPUs: 8 · Memory: 32 GiB · Disk: 120 GiB")
     expect(screen.getByText("2 repositories selected")).toBeVisible()
     expect(screen.getByText("Alex · alex@example.com")).toBeVisible()
   })
@@ -104,12 +104,12 @@ describe("setup progress and review presentation", () => {
     ["succeeded", "Complete"],
     ["failed", "Failed"],
   ] as const)("shows %s Git validation on the author card", (status, label) => {
-    render(<ReviewStep machines={fixtureMachineDefaults} workspaces={progress.workspaces} queueItems={[
+    render(<ReviewStep configurations={fixtureComputerDefaults} computers={progress.computers} queueItems={[
       { id: "githubRun", label: "Save GitHub", status: "succeeded" },
       { id: "githubVerify", label: "Verify GitHub", status },
       { id: "identityRun", label: "Save Git identities", status: "succeeded" },
       { id: "identityVerify", label: "Verify Git identities", status, failure: status === "failed" ? "Git identity could not be verified." : undefined },
-    ]} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
+    ]} computerRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="GitHub not connected" onRetryComputerSetup={vi.fn()} />)
     const author = screen.getByRole("group", { name: "Git identity" })
     expect(author).toHaveTextContent(label)
     expect(screen.getByRole("group", { name: "GitHub access" })).toHaveTextContent(label)
@@ -120,25 +120,25 @@ describe("setup progress and review presentation", () => {
     if (status === "failed") expect(author).toHaveTextContent("Git identity could not be verified.")
   })
 
-  it("keeps sandbox failures on the affected sandbox and never validates missing results", () => {
-    render(<ReviewStep machines={fixtureMachineDefaults} workspaces={[
-      { name: "dev", status: "failed", detail: "Sandbox could not be verified." },
-    ]} queueItems={[]} workspaceRetryable={false} identitySummary="No Git identity" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
-    const sandboxes = within(screen.getByRole("list", { name: "Sandboxes" })).getAllByRole("listitem")
-    expect(sandboxes[0]).toHaveTextContent("Failed")
-    expect(sandboxes[0]).toHaveTextContent("Sandbox could not be verified.")
-    expect(sandboxes[1]).not.toHaveTextContent("Complete")
+  it("keeps computer failures on the affected computer and never validates missing results", () => {
+    render(<ReviewStep configurations={fixtureComputerDefaults} computers={[
+      { name: "dev", status: "failed", detail: "Computer could not be verified." },
+    ]} queueItems={[]} computerRetryable={false} identitySummary="No Git identity" githubSummary="GitHub not connected" onRetryComputerSetup={vi.fn()} />)
+    const computers = within(screen.getByRole("list", { name: "Computers" })).getAllByRole("listitem")
+    expect(computers[0]).toHaveTextContent("Failed")
+    expect(computers[0]).toHaveTextContent("Computer could not be verified.")
+    expect(computers[1]).not.toHaveTextContent("Complete")
     expect(screen.queryByText("Complete")).not.toBeInTheDocument()
   })
 
   it("routes review edit shortcuts to their corresponding steps", async () => {
     const user = userEvent.setup()
     const edit = renderReview()
-    await user.click(screen.getByRole("button", { name: "Edit sandboxes" }))
-    expect(edit).toHaveBeenLastCalledWith("workspaces")
+    await user.click(screen.getByRole("button", { name: "Edit computers" }))
+    expect(edit).toHaveBeenLastCalledWith("computers")
     await user.click(screen.getByRole("button", { name: "Edit GitHub and Git identity" }))
     expect(edit).toHaveBeenLastCalledWith("github")
-    expect(screen.getAllByRole("button", { name: /^Edit / }).map(button => button.getAttribute("aria-label"))).toEqual(["Edit sandboxes", "Edit GitHub and Git identity"])
+    expect(screen.getAllByRole("button", { name: /^Edit / }).map(button => button.getAttribute("aria-label"))).toEqual(["Edit computers", "Edit GitHub and Git identity"])
   })
 
   it("keeps recovery visible while technical evidence stays optional", async () => {
@@ -154,12 +154,11 @@ describe("setup progress and review presentation", () => {
   })
 })
 
-it("offers the real computer connection flow during production sandbox setup", async () => {
+it("offers the real device connection flow during production computer setup", async () => {
   const user = userEvent.setup()
-  const onConnectComputer = vi.fn()
-  render(<WorkspacesStep machines={fixtureMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} onConnectComputer={onConnectComputer} />)
+  const onConnectDevice = vi.fn()
+  render(<ComputersStep configurations={fixtureComputerDefaults} progress={progress} onConfigurationsChange={vi.fn()} onRetry={vi.fn()} onConnectDevice={onConnectDevice} />)
   await user.click(screen.getByRole("button", { name: "Add" }))
-  expect(screen.queryByRole("menuitem", { name: "Connect an SSH host…" })).not.toBeInTheDocument()
-  await user.click(screen.getByRole("menuitem", { name: "Connect computer…" }))
-  expect(onConnectComputer).toHaveBeenCalledOnce()
+  await user.click(screen.getByRole("menuitem", { name: "Connect device…" }))
+  expect(onConnectDevice).toHaveBeenCalledOnce()
 })

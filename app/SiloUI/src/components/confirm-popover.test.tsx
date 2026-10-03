@@ -71,15 +71,15 @@ describe("ConfirmPopover", () => {
     function AnchoredForm() {
       const [open, setOpen] = useState(false)
       return <>
-        <FormPopover open={open} onOpenChange={setOpen} title="Import sandbox" confirmLabel="Import" onSubmit={vi.fn()}
-          anchor={<span><button type="button" onClick={() => setOpen(true)}>Add sandbox</button></span>}
-          fields={<input aria-label="Sandbox name" />} />
+        <FormPopover open={open} onOpenChange={setOpen} title="Import computer" confirmLabel="Import" onSubmit={vi.fn()}
+          anchor={<span><button type="button" onClick={() => setOpen(true)}>Add computer</button></span>}
+          fields={<input aria-label="Computer name" />} />
         <button type="button">Another action</button>
       </>
     }
     const user = userEvent.setup()
     render(<AnchoredForm />)
-    await user.click(screen.getByRole("button", { name: "Add sandbox" }))
+    await user.click(screen.getByRole("button", { name: "Add computer" }))
     const outside = screen.getByRole("button", { name: "Another action" })
     await user.click(outside)
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
@@ -89,15 +89,15 @@ describe("ConfirmPopover", () => {
   it.each(["Escape", "Cancel"])("returns focus to a button inside an external anchor after %s", async dismissal => {
     function AnchoredForm() {
       const [open, setOpen] = useState(false)
-      return <FormPopover open={open} onOpenChange={setOpen} title="Import sandbox" confirmLabel="Import" onSubmit={vi.fn()}
-        anchor={<span><button type="button" onClick={() => setOpen(true)}>Add sandbox</button></span>}
-        fields={<input aria-label="Sandbox name" />} />
+      return <FormPopover open={open} onOpenChange={setOpen} title="Import computer" confirmLabel="Import" onSubmit={vi.fn()}
+        anchor={<span><button type="button" onClick={() => setOpen(true)}>Add computer</button></span>}
+        fields={<input aria-label="Computer name" />} />
     }
     const user = userEvent.setup()
     render(<AnchoredForm />)
-    const anchorButton = screen.getByRole("button", { name: "Add sandbox" })
+    const anchorButton = screen.getByRole("button", { name: "Add computer" })
     await user.click(anchorButton)
-    expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveFocus()
+    expect(screen.getByRole("textbox", { name: "Computer name" })).toHaveFocus()
     if (dismissal === "Escape") await user.keyboard("{Escape}")
     else await user.click(screen.getByRole("button", { name: "Cancel" }))
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
@@ -142,8 +142,8 @@ describe("FormPopover", () => {
   })
 
   it("associates the form description with its dialog", () => {
-    render(<FormPopover open title="Rename sandbox" description="Choose a unique name." confirmLabel="Save" onSubmit={vi.fn()} fields={<input aria-label="Name" />} />)
-    expect(screen.getByRole("dialog", { name: "Rename sandbox" })).toHaveAccessibleDescription("Choose a unique name.")
+    render(<FormPopover open title="Rename computer" description="Choose a unique name." confirmLabel="Save" onSubmit={vi.fn()} fields={<input aria-label="Name" />} />)
+    expect(screen.getByRole("dialog", { name: "Rename computer" })).toHaveAccessibleDescription("Choose a unique name.")
   })
 })
 

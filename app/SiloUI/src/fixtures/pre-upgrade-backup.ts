@@ -18,7 +18,7 @@ export function preUpgradeBackupFixtureModeFromSearch(search: string): PreUpgrad
 // Midday UTC, so the local date is the same in every time zone from UTC-11 to UTC+11.
 const fixtureDeleteAt = "2026-10-15T12:00:00Z"
 const fixtureBackupBytes = Math.round(12.4 * 1024 ** 3)
-export const fixtureDeleteFailure = "Silo could not finish deleting the pre-upgrade backup: Permission denied (os error 13). Your sandboxes were not affected. Try again."
+export const fixtureDeleteFailure = "Silo could not finish deleting the pre-upgrade backup: Permission denied (os error 13). Your computers were not affected. Try again."
 
 export interface PreUpgradeBackupFixtureOptions {
   deleteAt?: string | null

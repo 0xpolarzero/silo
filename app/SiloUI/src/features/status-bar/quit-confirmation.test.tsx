@@ -11,28 +11,28 @@ import type { StatusBarActions } from "./status-bar-types"
 
 function setup(source: ApplicationSource, quitRequest?: number) {
   const actions: StatusBarActions = {
-    listWorkspaceDirectory: fixtureDirectoryLoader(source.workspaces),
+    listComputerDirectory: fixtureDirectoryLoader(source.computers),
     openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
-    startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(),
+    startComputer: vi.fn(), stopComputer: vi.fn(), restartComputer: vi.fn(),
     openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(),
   }
   const view = render(<StatusBarContent source={source} actions={actions} focusContent={vi.fn()} quitRequest={quitRequest} />, { wrapper: TooltipProvider })
   return { user: userEvent.setup(), actions, ...view }
 }
 
-function withStates(states: ApplicationSource["workspaces"][number]["state"][]) {
+function withStates(states: ApplicationSource["computers"][number]["state"][]) {
   const base = applicationSourceForScenario("complete")
-  const template = base.workspaces.find((workspace) => !workspace.computer && workspace.machine.kind === "vm")!
-  const workspaces = states.map((state, index) => ({ ...template, state, computer: undefined, machine: { ...template.machine, id: `vm-${index}`, name: `box-${index}` } }))
-  return { ...base, activities: [], workspaces }
+  const template = base.computers.find((computer) => !computer.device)!
+  const computers = states.map((state, index) => ({ ...template, state, device: undefined, configuration: { ...template.configuration, id: `vm-${index}`, name: `box-${index}` } }))
+  return { ...base, activities: [], computers }
 }
 
 describe("quit confirmation", () => {
-  it("names running local sandboxes before quitting and cancels cleanly", async () => {
+  it("names running local computers before quitting and cancels cleanly", async () => {
     const { user, actions } = setup(withStates(["running", "stopped", "running"]))
     await user.click(screen.getByRole("button", { name: "Quit Silo" }))
     const prompt = screen.getByRole("alertdialog", { name: "Quit Silo?" })
-    expect(prompt).toHaveTextContent("This stops 2 running sandboxes: box-0, box-2.")
+    expect(prompt).toHaveTextContent("This stops 2 running computers: box-0, box-2.")
     expect(actions.quit).not.toHaveBeenCalled()
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
@@ -55,6 +55,6 @@ describe("quit confirmation", () => {
     const { rerender, actions } = setup(source)
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument()
     rerender(<StatusBarContent source={source} actions={actions} focusContent={vi.fn()} quitRequest={1} />)
-    expect(screen.getByRole("alertdialog", { name: "Quit Silo?" })).toHaveTextContent("This stops 1 running sandbox: box-0.")
+    expect(screen.getByRole("alertdialog", { name: "Quit Silo?" })).toHaveTextContent("This stops 1 running computer: box-0.")
   })
 })

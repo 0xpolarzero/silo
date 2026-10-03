@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { Toaster } from "@/components/ui/sonner"
 import { SettingsProvider } from "@/features/preferences/settings-store"
 import { formatElapsed } from "@/lib/format-elapsed"
-import { dismissSandboxToasts, showOperationFailure, showOperationProgress, showOperationSuccess, useOperationProgressToast, type OperationProgressState } from "@/lib/operation-toast"
+import { dismissComputerToasts, showOperationFailure, showOperationProgress, showOperationSuccess, useOperationProgressToast, type OperationProgressState } from "@/lib/operation-toast"
 
 function Host() { return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster /></SettingsProvider> }
 const tick = () => act(async () => { await Promise.resolve(); await vi.advanceTimersByTimeAsync(50) })
@@ -48,18 +48,18 @@ describe("showOperationProgress", () => {
 
   it("cancel with confirm shows an inline confirmation that survives updates", async () => {
     const onCancel = vi.fn()
-    const cancel = { confirm: { prompt: "Remove the incomplete sandbox?", confirmLabel: "Remove" }, onCancel }
+    const cancel = { confirm: { prompt: "Remove the incomplete computer?", confirmLabel: "Remove" }, onCancel }
     render(<Host />)
     act(() => showOperationProgress("op", { title: "Working", cancel }))
     await tick()
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
-    expect(screen.getByText("Remove the incomplete sandbox?")).toBeInTheDocument()
+    expect(screen.getByText("Remove the incomplete computer?")).toBeInTheDocument()
     expect(onCancel).not.toHaveBeenCalled()
     act(() => showOperationProgress("op", { title: "Working", progress: 0.6, cancel }))
     await tick()
-    expect(screen.getByText("Remove the incomplete sandbox?")).toBeInTheDocument()
+    expect(screen.getByText("Remove the incomplete computer?")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Keep going" }))
-    expect(screen.queryByText("Remove the incomplete sandbox?")).not.toBeInTheDocument()
+    expect(screen.queryByText("Remove the incomplete computer?")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
     fireEvent.click(screen.getByRole("button", { name: "Remove" }))
     expect(onCancel).toHaveBeenCalledOnce()
@@ -171,15 +171,15 @@ describe("toast actions", () => {
     }
   })
 
-  it("dismisses notifications tagged with a deleted sandbox", async () => {
+  it("dismisses notifications tagged with a deleted computer", async () => {
     render(<Host />)
     act(() => {
-      showOperationSuccess("tagged", "Imported gone", { sandbox: "gone", action: { label: "Open", onClick: vi.fn() } })
-      showOperationSuccess("other", "Imported kept", { sandbox: "kept" })
+      showOperationSuccess("tagged", "Imported gone", { computer: "gone", action: { label: "Open", onClick: vi.fn() } })
+      showOperationSuccess("other", "Imported kept", { computer: "kept" })
     })
     await tick()
     expect(screen.getByText("Imported gone")).toBeInTheDocument()
-    act(() => dismissSandboxToasts("gone"))
+    act(() => dismissComputerToasts("gone"))
     await tick()
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.queryByText("Imported gone")).not.toBeInTheDocument()

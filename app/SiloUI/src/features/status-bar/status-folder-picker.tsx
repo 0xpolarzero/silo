@@ -1,4 +1,4 @@
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { computerTarget } from "@/features/application/model/connections"
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react"
 import { ArrowLeft, ChevronRight, Code, Folder, Search } from "lucide-react"
 
@@ -7,13 +7,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { FolderBreadcrumbs } from "@/components/folder-breadcrumbs"
 import { visibleText } from "@/lib/visible-text"
-import type { ApplicationWorkspace } from "@/features/application/model/application-source"
+import type { ApplicationComputer } from "@/features/application/model/application-source"
 
 import { createDirectoryStore, directoryKey, type DirectoryLoader } from "@/features/application/model/directory-store"
 
-export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDirectory }: {
+export function StatusFolderPicker({ computer, editor, onBack, onOpen, listDirectory }: {
   listDirectory?: DirectoryLoader
-  workspace: ApplicationWorkspace
+  computer: ApplicationComputer
   editor: string
   onBack: () => void
   onOpen: (path: string) => void
@@ -25,15 +25,15 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   useEffect(() => { back.current?.focus() }, [])
   const [store] = useState(() => createDirectoryStore(listDirectory))
   useLayoutEffect(() => { store.setLoader(listDirectory) }, [store, listDirectory])
-  const target = workspaceTarget(workspace)
-  useEffect(() => () => store.invalidateWorkspace(target), [store, target])
+  const target = computerTarget(computer)
+  useEffect(() => () => store.invalidateComputer(target), [store, target])
   const path = ["/workspace", ...segments].join("/")
   const key = directoryKey(target, path)
   const subscribe = useCallback((listener: () => void) => store.subscribe(key, listener), [store, key])
   const snapshot = useSyncExternalStore(subscribe, () => store.getSnapshot(key))
-  const available = workspace.machine.kind === "vm" && workspace.state === "running" && workspace.freshness === "fresh"
+  const available = computer.state === "running" && computer.freshness === "fresh"
   useEffect(() => {
-    if (!available) { store.invalidateWorkspace(target); return }
+    if (!available) { store.invalidateComputer(target); return }
     let focused = true
     let disposed = false
     let failureDelay = 0
@@ -67,7 +67,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   }, [store, available, target, path, key])
   const folders = snapshot.entries?.filter((entry) => entry.kind === "folder") ?? []
   const filtered = folders.filter((entry) => entry.name.toLowerCase().includes(query.trim().toLowerCase()))
-  const unavailable = workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this sandbox to browse its files." : "Files will be available when this sandbox is running."
+  const unavailable = computer.freshness !== "fresh" ? "Reconnect to browse files." : computer.state === "stopped" ? "Start this computer to browse its files." : "Files will be available when this computer is running."
 
   function navigate(next: string[]) {
     setSegments(next)
@@ -78,9 +78,9 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   return (
     <>
       <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5">
-        <Button ref={back} variant="ghost" size="icon-xs" aria-label="Back to sandboxes" onClick={onBack}><ArrowLeft /></Button>
+        <Button ref={back} variant="ghost" size="icon-xs" aria-label="Back to computers" onClick={onBack}><ArrowLeft /></Button>
         <div className="min-w-0">
-          <h2 className="truncate text-[13px] font-medium" title={`${workspace.machine.name} folders`}>{workspace.machine.name} folders</h2>
+          <h2 className="truncate text-[13px] font-medium" title={`${computer.configuration.name} folders`}>{computer.configuration.name} folders</h2>
           <p className="text-[11px] text-muted-foreground">Choose a folder to open in {editor}</p>
         </div>
       </header>

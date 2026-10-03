@@ -28,9 +28,9 @@ function StatusBarIcon({ tone, reduceMotion }: { tone: ReturnType<typeof statusB
 
 /**
  * Browser-preview host for the status panel (`?view=status-bar`, see UI-PATTERNS.md): a
- * menu-bar-style button and popover around `StatusBarContent` with the Radix sandbox menu.
+ * menu-bar-style button and popover around `StatusBarContent` with the Radix computer menu.
  * The desktop app does not use it: its tray opens `desktop/status-panel.tsx`, which renders
- * the same content with the native sandbox menu built from the same items.
+ * the same content with the native computer menu built from the same items.
  */
 export function StatusBar({ source, actions, defaultOpen = false }: { source: ApplicationSource; actions: StatusBarActions; defaultOpen?: boolean }) {
   const [open, setOpen] = useState(defaultOpen)

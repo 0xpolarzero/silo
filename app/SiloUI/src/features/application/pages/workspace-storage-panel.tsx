@@ -21,24 +21,24 @@ const reclaimTriggerLabels = new Map([
 function trigger(value: string) { return reclaimTriggerLabels.get(value) ?? 'Automatic' }
 
 interface StoragePanelProps {
-  workspaceId: string
-  /** Names the sandbox in the system notification. */
-  sandboxName?: string
-  running: boolean
-  /** The computer that owns the sandbox; omitted for a sandbox on this computer. */
+  computerId: string
+  /** Names the computer in the system notification. */
   computerName?: string
+  running: boolean
+  /** The device that owns the computer; omitted for a computer on this device. */
+  deviceName?: string
   disabled?: boolean
-  read: (workspaceId: string) => Promise<WorkspaceStorageState>
-  reclaim?: (workspaceId: string) => Promise<WorkspaceStorageState>
+  read: (computerId: string) => Promise<WorkspaceStorageState>
+  reclaim?: (computerId: string) => Promise<WorkspaceStorageState>
 }
 
 export function WorkspaceStoragePanel(props: StoragePanelProps) {
-  return <WorkspaceStorageContent key={`${props.workspaceId}:${props.running}`} {...props} />
+  return <WorkspaceStorageContent key={`${props.computerId}:${props.running}`} {...props} />
 }
 
-function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerName, disabled = false, read, reclaim }: StoragePanelProps) {
-  const location = computerName ?? 'This computer'
-  const where = computerName ? `on ${computerName}` : 'on this computer'
+function WorkspaceStorageContent({ computerId, computerName, running, deviceName, disabled = false, read, reclaim }: StoragePanelProps) {
+  const location = deviceName ?? 'This device'
+  const where = deviceName ? `on ${deviceName}` : 'on this device'
 
   const [storage, setStorage] = useState<WorkspaceStorageState | null>(null)
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -49,10 +49,10 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
   const readInitial = useEffectEvent(() => {
     const active = requests.current
     const request = ++active.generation
-    void read(workspaceId).then(value => {
+    void read(computerId).then(value => {
       if (active.generation === request) setStorage(value)
     }, cause => {
-      if (active.generation === request) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
+      if (active.generation === request) showOperationFailure(`storage-read:${computerId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
     }).finally(() => {
       if (active.generation === request) { active.busy = false; setBusy(false) }
     })
@@ -66,29 +66,29 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
     const request = ++requests.current.generation
     setBusy(true)
     setReclaiming(reclaimSpace)
-    const toastId = `storage-reclaim:${workspaceId}`
-    const noticeSandbox = sandboxName ? { id: workspaceId, name: sandboxName } : undefined
+    const toastId = `storage-reclaim:${computerId}`
+    const noticeComputer = computerName ? { id: computerId, name: computerName } : undefined
     if (reclaimSpace) showOperationProgress(toastId, { title: 'Freeing up space', step: 'Your files stay available' })
     try {
-      const value = await (reclaimSpace ? reclaim! : read)(workspaceId)
+      const value = await (reclaimSpace ? reclaim! : read)(computerId)
       const current = requests.current.generation === request
       if (current) {
         setStorage(value)
-        dismissOperationToast(`storage-read:${workspaceId}`)
+        dismissOperationToast(`storage-read:${computerId}`)
       }
       // The operation's notification outlives the panel that started it.
       if (reclaimSpace) {
-        if (value.lastError) showOperationFailure(toastId, 'Could not free up space', { noticeSandbox, description: value.lastError, retry: current ? () => void latestLoad.current?.(true) : undefined })
-        else showOperationSuccess(toastId, `Freed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: `Released ${where}.`, persist: true, noticeSandbox })
+        if (value.lastError) showOperationFailure(toastId, 'Could not free up space', { noticeComputer, description: value.lastError, retry: current ? () => void latestLoad.current?.(true) : undefined })
+        else showOperationSuccess(toastId, `Freed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: `Released ${where}.`, persist: true, noticeComputer })
       }
     } catch (cause) {
       const current = requests.current.generation === request
-      if (reclaimSpace) showOperationFailure(toastId, 'Could not free up space', { noticeSandbox, description: errorMessage(cause), retry: current ? () => void latestLoad.current?.(true) : undefined })
+      if (reclaimSpace) showOperationFailure(toastId, 'Could not free up space', { noticeComputer, description: errorMessage(cause), retry: current ? () => void latestLoad.current?.(true) : undefined })
       if (current) {
-        if (!reclaimSpace) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
+        if (!reclaimSpace) showOperationFailure(`storage-read:${computerId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
         if (reclaimSpace) {
           try {
-            const value = await read(workspaceId)
+            const value = await read(computerId)
             if (requests.current.generation === request) setStorage(value)
           } catch { /* Preserve the original operation error if refreshing also fails. */ }
         }
@@ -109,9 +109,9 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
   const host = (value: number | null | undefined) => !storage ? '—' : value == null ? 'Unknown' : formatBytes(value)
   const metrics: StorageMetricProps[] = [
     { icon: HardDrive, label: 'Workspace on disk', value: host(storage?.workspaceHostBytes), help: `Space the workspace disk takes ${where}. Deleted files keep using this space until it is freed up.` },
-    { icon: Database, label: 'Runtime on disk', value: host(storage?.runtimeHostBytes), help: 'The sandbox’s operating system and runtime files. Freeing up space does not shrink it.' },
-    { icon: Folder, label: 'Workspace files', value: guest(storage?.workspaceUsedBytes), help: running ? 'Used inside the sandbox, including filesystem overhead.' : 'Start the sandbox to measure usage.' },
-    { icon: Gauge, label: 'Workspace capacity', value: guest(storage?.workspaceCapacityBytes), help: running ? `The most the workspace can hold. This is a limit, not space used ${where}.` : 'Start the sandbox to measure capacity.' },
+    { icon: Database, label: 'Runtime on disk', value: host(storage?.runtimeHostBytes), help: 'The computer’s operating system and runtime files. Freeing up space does not shrink it.' },
+    { icon: Folder, label: 'Workspace files', value: guest(storage?.workspaceUsedBytes), help: running ? 'Used inside the computer, including filesystem overhead.' : 'Start the computer to measure usage.' },
+    { icon: Gauge, label: 'Workspace capacity', value: guest(storage?.workspaceCapacityBytes), help: running ? `The most the computer can hold. This is a limit, not space used ${where}.` : 'Start the computer to measure capacity.' },
   ]
   const checkpointCount = storage?.checkpointCount ?? 0
   const checkpointMetric: StorageMetricProps = {
@@ -126,7 +126,7 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
   }
 
   return <TooltipProvider delayDuration={150}>
-    <section aria-label="Sandbox storage" className="@container grid gap-3 text-xs" aria-busy={busy}>
+    <section aria-label="Computer storage" className="@container grid gap-3 text-xs" aria-busy={busy}>
       <div className="flex min-h-6 items-center justify-between">
         <span className="text-muted-foreground">{location}</span>
         <Tooltip>
@@ -185,10 +185,10 @@ function ReclaimControls({ where, latest, running, disabled, onReclaim }: { wher
   return <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background/40 p-3">
     <div className="grid gap-0.5">
       <span className="font-medium">Unused space</span>
-      <span title={`Releases unused blocks ${where}; files and capacity stay the same. Silo frees space automatically after 7 days of running, or when the sandbox stops once 24 hours have passed, and waits 24 hours after a failed attempt.`} className="text-[11px] leading-4 text-muted-foreground">Freed automatically</span>
+      <span title={`Releases unused blocks ${where}; files and capacity stay the same. Silo frees space automatically after 7 days of running, or when the computer stops once 24 hours have passed, and waits 24 hours after a failed attempt.`} className="text-[11px] leading-4 text-muted-foreground">Freed automatically</span>
     </div>
     <span className={`ml-auto text-right tabular-nums ${latest?.error ? 'text-destructive/80' : 'text-muted-foreground'}`}>{result}</span>
-    <span title={running ? undefined : 'Start the sandbox first.'}>
+    <span title={running ? undefined : 'Start the computer first.'}>
       <Button variant="outline" size="xs" disabled={disabled} onClick={onReclaim}>Free up space</Button>
     </span>
   </div>

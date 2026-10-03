@@ -8,7 +8,7 @@ import { createProductionSource, type ProductionBridge } from "./production-sour
 // specific export's verified result, never with another operation's.
 
 const source = applicationSourceForScenario("running")
-const exported = { name: "dev-2026-09-29.silo-backup", archivePath: "/Volumes/Backups/dev-2026-09-29.silo-backup", completedLabel: "Intact archive", size: "1.0 GiB", destination: "/Volumes/Backups", sandboxes: ["dev"] }
+const exported = { name: "dev-2026-09-29.silo-backup", archivePath: "/Volumes/Backups/dev-2026-09-29.silo-backup", completedLabel: "Intact archive", size: "1.0 GiB", destination: "/Volumes/Backups", computers: ["dev"] }
 const idle: BackupState = { snapshotId: "1", availability: "available", archives: [], operation: null }
 
 const running: BackupOperation = { kind: "running", operation: "backup", archive: exported, runningNames: [], progress: 0, phases: [] }
@@ -51,7 +51,7 @@ describe("export and verify", () => {
   it("resolves with the verified archive once this operation succeeds", async () => {
     const { production, publish, invoke } = await store(async () => "op-1")
     const completion = production.backupActions.exportAndVerify("/Volumes/Backups", ["dev"])
-    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("start_backup", { destination: "/Volumes/Backups", sandboxes: ["dev"] }))
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("start_backup", { destination: "/Volumes/Backups", computers: ["dev"] }))
     publish({ ...idle, operationId: "op-1", operation: running })
     publish({ ...idle, operationId: "op-1", operation: result("success") })
     await expect(completion).resolves.toEqual({ operationId: "op-1", archive: exported })
@@ -107,7 +107,7 @@ describe("export and verify", () => {
     const refused = await store(async () => { throw new Error("Choose the export destination again before starting.") })
     await expect(refused.production.backupActions.exportAndVerify("/Volumes/Backups", ["dev"], "checkpoint-1"))
       .rejects.toMatchObject({ reason: "rejected", message: "Choose the export destination again before starting." })
-    expect(refused.invoke).toHaveBeenCalledWith("start_backup", { destination: "/Volumes/Backups", sandboxes: ["dev"], checkpointId: "checkpoint-1" })
+    expect(refused.invoke).toHaveBeenCalledWith("start_backup", { destination: "/Volumes/Backups", computers: ["dev"], checkpointId: "checkpoint-1" })
     refused.production.dispose()
   })
 

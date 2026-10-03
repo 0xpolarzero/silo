@@ -8,9 +8,9 @@ beforeEach(() => vi.resetAllMocks())
 it("delivers a pending route after subscribing and receives repeated requests", async () => {
   let notify = () => {}
   mocks.listen.mockImplementation(async (_name, handler) => { notify = handler; return vi.fn() })
-  mocks.invoke.mockResolvedValue({ workspace: "dev", workspaceSection: "logs" })
+  mocks.invoke.mockResolvedValue({ computer: "dev", computerSection: "logs" })
   const { result } = renderHook(() => useMainRoute(true))
-  await waitFor(() => expect(result.current).toEqual({ workspace: "dev", workspaceSection: "logs" }))
+  await waitFor(() => expect(result.current).toEqual({ computer: "dev", computerSection: "logs" }))
   expect(mocks.listen.mock.invocationCallOrder[0]).toBeLessThan(mocks.invoke.mock.invocationCallOrder[0])
   const previous = result.current
   await act(async () => notify())
@@ -30,13 +30,13 @@ it("keeps a newer main-window route when the startup drain answers last", async 
   let finish!: (value: unknown) => void
   mocks.listen.mockImplementation(async (_name, handler) => { notify = handler; return vi.fn() })
   mocks.invoke.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
-    .mockResolvedValueOnce({ workspace: "newer", sandboxTab: "storage" })
+    .mockResolvedValueOnce({ computer: "newer", computerTab: "storage" })
   const { result } = renderHook(() => useMainRoute(true))
   await waitFor(() => expect(mocks.invoke).toHaveBeenCalledOnce())
   await act(async () => notify())
-  expect(result.current).toEqual({ workspace: "newer", sandboxTab: "storage" })
-  await act(async () => finish({ workspace: "older", workspaceSection: "logs" }))
-  expect(result.current).toEqual({ workspace: "newer", sandboxTab: "storage" })
+  expect(result.current).toEqual({ computer: "newer", computerTab: "storage" })
+  await act(async () => finish({ computer: "older", computerSection: "logs" }))
+  expect(result.current).toEqual({ computer: "newer", computerTab: "storage" })
 })
 
 it("still delivers a pending route when a later drain finds no route", async () => {
@@ -47,8 +47,8 @@ it("still delivers a pending route when a later drain finds no route", async () 
   const { result } = renderHook(() => useMainRoute(true))
   await waitFor(() => expect(mocks.invoke).toHaveBeenCalledOnce())
   await act(async () => notify())
-  await act(async () => finish({ workspace: "pending", workspaceSection: "logs" }))
-  expect(result.current).toEqual({ workspace: "pending", workspaceSection: "logs" })
+  await act(async () => finish({ computer: "pending", computerSection: "logs" }))
+  expect(result.current).toEqual({ computer: "pending", computerSection: "logs" })
 })
 
 it("leaves a pending route for the active listener after StrictMode cleanup", async () => {
@@ -58,7 +58,7 @@ it("leaves a pending route for the active listener after StrictMode cleanup", as
     notify.push(handler)
     return new Promise<() => void>(resolve => { register.push(resolve) })
   })
-  let pending: unknown = { workspace: "pending", workspaceSection: "logs" }
+  let pending: unknown = { computer: "pending", computerSection: "logs" }
   mocks.invoke.mockImplementation(async () => {
     const next = pending
     pending = null
@@ -70,6 +70,6 @@ it("leaves a pending route for the active listener after StrictMode cleanup", as
   const stop = vi.fn()
   await act(async () => { register[0](stop); register[1](vi.fn()) })
   expect(stop).toHaveBeenCalledOnce()
-  expect(result.current).toEqual({ workspace: "pending", workspaceSection: "logs" })
+  expect(result.current).toEqual({ computer: "pending", computerSection: "logs" })
   expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("take_main_route")
 })

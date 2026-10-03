@@ -2,7 +2,7 @@ import { createElement, useEffect, useRef, type ReactNode, type MouseEvent } fro
 import { toast } from "sonner"
 
 import { bridgeErrorMessage } from "@/contracts/bridge-error"
-import { deliverNotice, type Notice, type NoticeSandbox } from "@/desktop/notices"
+import { deliverNotice, type Notice, type NoticeComputer } from "@/desktop/notices"
 import { OperationToastBody, type OperationProgressOptions } from "@/components/operation-toast-body"
 
 export type { OperationCancel, OperationProgressOptions, OperationStep } from "@/components/operation-toast-body"
@@ -43,8 +43,8 @@ interface OperationToastOptions {
   successAction?: { label: string; onClick: () => void }
   /** See `OperationResultOptions.native`. */
   native?: boolean
-  /** See `OperationResultOptions.noticeSandbox`. */
-  noticeSandbox?: NoticeSandbox
+  /** See `OperationResultOptions.noticeComputer`. */
+  noticeComputer?: NoticeComputer
 }
 
 export function errorMessage(error: unknown): string {
@@ -58,22 +58,22 @@ export function errorMessage(error: unknown): string {
 type OperationAction = { label: string; onClick: (event: MouseEvent<HTMLButtonElement>) => void }
 
 /**
- * Notifications about a specific sandbox, so they can be dismissed when it is deleted (their
- * actions would point at a sandbox that no longer exists). Current sandbox targets by toast ID. Remote targets include their computer and VM IDs.
+ * Notifications about a specific computer, so they can be dismissed when it is deleted (their
+ * actions would point at a computer that no longer exists). Current computer targets by toast ID. Remote targets include their device and VM IDs.
  */
-const toastSandboxes = new Map<string, { targets: Set<string>; sandboxId?: string }>()
+const toastComputers = new Map<string, { targets: Set<string>; computerId?: string }>()
 
-function tagSandbox(id: string, sandbox: string | string[] | undefined, sandboxId?: string) {
-  const owner = { targets: new Set(sandbox ? Array.isArray(sandbox) ? sandbox : [sandbox] : []), sandboxId }
-  if (owner.targets.size || sandboxId) toastSandboxes.set(id, owner)
-  else toastSandboxes.delete(id)
+function tagComputer(id: string, computer: string | string[] | undefined, computerId?: string) {
+  const owner = { targets: new Set(computer ? Array.isArray(computer) ? computer : [computer] : []), computerId }
+  if (owner.targets.size || computerId) toastComputers.set(id, owner)
+  else toastComputers.delete(id)
   return () => {
-    if (toastSandboxes.get(id) === owner) toastSandboxes.delete(id)
+    if (toastComputers.get(id) === owner) toastComputers.delete(id)
   }
 }
 
-function resultCallbacks(id: string, sandbox: string | string[] | undefined, onDismiss?: () => void, action?: OperationAction, sandboxId?: string) {
-  const untag = tagSandbox(id, sandbox, sandboxId)
+function resultCallbacks(id: string, computer: string | string[] | undefined, onDismiss?: () => void, action?: OperationAction, computerId?: string) {
+  const untag = tagComputer(id, computer, computerId)
   let closed = false
   const close = () => {
     if (closed) return
@@ -91,17 +91,17 @@ function resultCallbacks(id: string, sandbox: string | string[] | undefined, onD
   }
 }
 
-/** Dismiss every notification tagged with this sandbox target. Call when the sandbox is deleted. */
-export function dismissSandboxToasts(target: string) {
-  for (const [id, owner] of toastSandboxes) {
+/** Dismiss every notification tagged with this computer target. Call when the computer is deleted. */
+export function dismissComputerToasts(target: string) {
+  for (const [id, owner] of toastComputers) {
     if (owner.targets.has(target)) dismissOperationToast(id)
   }
 }
 
-/** Dismiss notifications belonging to this sandbox incarnation, across names and computers. */
-export function dismissSandboxToastsById(sandboxId: string) {
-  for (const [id, owner] of toastSandboxes) {
-    if (owner.sandboxId === sandboxId) dismissOperationToast(id)
+/** Dismiss notifications belonging to this computer incarnation, across names and devices. */
+export function dismissComputerToastsById(computerId: string) {
+  for (const [id, owner] of toastComputers) {
+    if (owner.computerId === computerId) dismissOperationToast(id)
   }
 }
 
@@ -117,8 +117,8 @@ const progressStarts = new Map<string, number>()
 interface OperationResultOptions {
   description?: ReactNode
   action?: OperationAction
-  /** Sandbox(es) this notification is about; see `dismissSandboxToasts`. */
-  sandbox?: string | string[]
+  /** Computer(es) this notification is about; see `dismissComputerToasts`. */
+  computer?: string | string[]
   /** Called when the user closes the notification or it closes by itself. */
   onDismiss?: () => void
   /**
@@ -130,21 +130,21 @@ interface OperationResultOptions {
    * Mirror this result to the system (default true), which the backend shows only while
    * Silo is in the background. Failures always mirror; a success mirrors only after a
    * progress notification shown for over 3 s. Pass false when the backend already sends
-   * the system notification (sandbox lifecycle, export/import, setup), or when the failure
+   * the system notification (computer lifecycle, export/import, setup), or when the failure
    * is not the result of background work (a validation message, a cancelled file dialog).
    */
   native?: boolean
-  /** The sandbox the system notification is about; it names the sandbox and opens it on click. */
-  noticeSandbox?: NoticeSandbox
+  /** The computer the system notification is about; it names the computer and opens it on click. */
+  noticeComputer?: NoticeComputer
 }
 
-function mirror(category: Notice["category"], key: string, title: string, options: Pick<OperationResultOptions, "description" | "native" | "noticeSandbox">) {
+function mirror(category: Notice["category"], key: string, title: string, options: Pick<OperationResultOptions, "description" | "native" | "noticeComputer">) {
   if (options.native === false) return
-  deliverNotice({ category, key, title, body: typeof options.description === "string" ? options.description : "", sandbox: options.noticeSandbox ?? null })
+  deliverNotice({ category, key, title, body: typeof options.description === "string" ? options.description : "", computer: options.noticeComputer ?? null })
 }
 
 export function showOperationSuccess(id: string, title: string, options: OperationResultOptions = {}) {
-  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, options.action, options.noticeSandbox?.id)
+  const callbacks = resultCallbacks(id, options.computer, options.onDismiss, options.action, options.noticeComputer?.id)
   const started = progressStarts.get(id)
   progressStarts.delete(id)
   const long = started !== undefined && Date.now() - started > LONG_OPERATION_MS
@@ -158,7 +158,7 @@ export function showOperationFailure(id: string, title: string, options: Operati
     label: "Retry",
     onClick: (event: MouseEvent<HTMLButtonElement>) => { event.preventDefault(); options.retry?.() },
   } : undefined)
-  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, action, options.noticeSandbox?.id)
+  const callbacks = resultCallbacks(id, options.computer, options.onDismiss, action, options.noticeComputer?.id)
   progressStarts.delete(id)
   const notify = options.tone === "warning" ? toast.warning : toast.error
   notify(title, {
@@ -173,14 +173,14 @@ export function showOperationFailure(id: string, title: string, options: Operati
 
 /** Close a notification (e.g. when the state it reported has gone away). */
 export function dismissOperationToast(id: string) {
-  toastSandboxes.delete(id)
+  toastComputers.delete(id)
   progressStarts.delete(id)
   toast.dismiss(id)
 }
 
 /** A neutral, short-lived notice for an outcome that is neither success nor failure (e.g. cancelled). */
-export function showOperationNotice(id: string, title: string, options: { description?: ReactNode; onDismiss?: () => void; duration?: number; sandbox?: string | string[] } = {}) {
-  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss)
+export function showOperationNotice(id: string, title: string, options: { description?: ReactNode; onDismiss?: () => void; duration?: number; computer?: string | string[] } = {}) {
+  const callbacks = resultCallbacks(id, options.computer, options.onDismiss)
   toast(title, { id, description: options.description, duration: options.duration ?? 4000, closeButton: true, ...callbacks })
 }
 
@@ -190,8 +190,8 @@ export function showOperationNotice(id: string, title: string, options: { descri
  * Call again with the same id to update in place.
  */
 export function showOperationProgress(id: string, options: OperationProgressOptions) {
-  const { title, sandbox, ...body } = options
-  const untag = tagSandbox(id, sandbox)
+  const { title, computer, ...body } = options
+  const untag = tagComputer(id, computer)
   if (!progressStarts.has(id)) progressStarts.set(id, options.startedAt ?? Date.now())
   toast.loading(title, { id, duration: Infinity, action: undefined, description: createElement(OperationToastBody, { ...body, title }), onDismiss: untag })
 }
@@ -201,7 +201,7 @@ export type OperationProgressState =
   | { status: "idle" }
   | ({ status: "running" } & OperationProgressOptions)
   | ({ status: "success"; title: string } & OperationResultOptions)
-  | { status: "failure"; title: string; description?: ReactNode; retry?: () => void; onDismiss?: () => void; sandbox?: string | string[]; native?: boolean; noticeSandbox?: NoticeSandbox }
+  | { status: "failure"; title: string; description?: ReactNode; retry?: () => void; onDismiss?: () => void; computer?: string | string[]; native?: boolean; noticeComputer?: NoticeComputer }
 
 /**
  * Maps an operation state to progress/success/failure toasts under `id`. A state that is
@@ -219,9 +219,9 @@ export function useOperationProgressToast(id: string, state: OperationProgressSt
     } else if (before === null) {
       return
     } else if (state.status === "success" && before !== "success") {
-      showOperationSuccess(id, state.title, { description: state.description, action: state.action, sandbox: state.sandbox, onDismiss: state.onDismiss, persist: state.persist, native: state.native, noticeSandbox: state.noticeSandbox })
+      showOperationSuccess(id, state.title, { description: state.description, action: state.action, computer: state.computer, onDismiss: state.onDismiss, persist: state.persist, native: state.native, noticeComputer: state.noticeComputer })
     } else if (state.status === "failure" && before !== "failure") {
-      showOperationFailure(id, state.title, { description: state.description, retry: state.retry, sandbox: state.sandbox, onDismiss: state.onDismiss, native: state.native, noticeSandbox: state.noticeSandbox })
+      showOperationFailure(id, state.title, { description: state.description, retry: state.retry, computer: state.computer, onDismiss: state.onDismiss, native: state.native, noticeComputer: state.noticeComputer })
     } else if (state.status === "idle" && before === "running") {
       toast.dismiss(id)
     }
@@ -233,10 +233,10 @@ export async function runWithOperationToast<T>(id: string, copy: OperationToastC
   showOperationProgress(id, { title: copy.loading, step: copy.description, progress: null })
   try {
     const result = await action()
-    showOperationSuccess(id, copy.success, { description: copy.description, action: options.successAction, native: options.native, noticeSandbox: options.noticeSandbox })
+    showOperationSuccess(id, copy.success, { description: copy.description, action: options.successAction, native: options.native, noticeComputer: options.noticeComputer })
     return result
   } catch (error) {
-    showOperationFailure(id, copy.failure, { description: errorMessage(error), retry: options.retry, native: options.native, noticeSandbox: options.noticeSandbox })
+    showOperationFailure(id, copy.failure, { description: errorMessage(error), retry: options.retry, native: options.native, noticeComputer: options.noticeComputer })
     return undefined
   }
 }
@@ -252,7 +252,7 @@ export function showQuickConfirmation(title: string, description?: string) {
  * notification. Pass `native: false` for a failure that is not the result of background
  * work (a cancelled file dialog, a validation message).
  */
-export function showActionFailure(title: string, error: unknown, retry?: () => void, options: { id?: string; native?: boolean; noticeSandbox?: NoticeSandbox } = {}) {
+export function showActionFailure(title: string, error: unknown, retry?: () => void, options: { id?: string; native?: boolean; noticeComputer?: NoticeComputer } = {}) {
   const id = options.id ?? `action-failure:${title}`
   const description = errorMessage(error)
   toast.error(title, {

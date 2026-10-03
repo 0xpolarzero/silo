@@ -1,40 +1,40 @@
 import { expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
-import { workspaceTarget } from "../model/remote-computers"
+import { computerTarget } from "../model/connections"
 import { applicationCommands } from "./application-commands"
 
 function remoteRunningSource() {
   const source = structuredClone(applicationSourceForScenario("complete"))
   source.runtimeRepair = null
-  source.sandboxConfigurationOperation = null
+  source.computerConfigurationOperation = null
   source.activities = []
-  const local = source.workspaces.find(item => item.machine.kind === "vm" && !item.computer)!
+  const local = source.computers.find(item => !item.device)!
   const remote = structuredClone(local)
-  remote.machine = { ...remote.machine, id: `${local.machine.id}-office` }
-  remote.computer = { id: "office", vmId: "vm-office", name: "Office", address: "office.test", connected: true }
-  for (const workspace of [local, remote]) {
-    workspace.state = "running"
-    workspace.freshness = "fresh"
-    workspace.attention = undefined
-    workspace.lifecycleAction = undefined
+  remote.configuration = { ...remote.configuration, id: `${local.configuration.id}-office` }
+  remote.device = { id: "office", computerId: "vm-office", name: "Office", address: "office.test", connected: true }
+  for (const computer of [local, remote]) {
+    computer.state = "running"
+    computer.freshness = "fresh"
+    computer.attention = undefined
+    computer.lifecycleAction = undefined
   }
-  source.workspaces.push(remote)
+  source.computers.push(remote)
   return { source, local, remote }
 }
 
-it("addresses a remote sandbox by its computer target and names the computer", () => {
+it("addresses a remote computer by its device target and names the device", () => {
   const { source, remote } = remoteRunningSource()
-  const actions = { openTerminal: vi.fn(), openEditor: vi.fn(), startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn() } as unknown as ApplicationActions
+  const actions = { openTerminal: vi.fn(), openEditor: vi.fn(), startComputer: vi.fn(), stopComputer: vi.fn(), restartComputer: vi.fn() } as unknown as ApplicationActions
   const commands = applicationCommands(source, actions, vi.fn())
-  const target = workspaceTarget(remote)
+  const target = computerTarget(remote)
 
-  const terminal = commands.find(command => command.id === `${remote.machine.id}:terminal`)!
-  expect(terminal.label).toBe(`Open ${remote.machine.name} on Office in ${source.preferences.terminal}`)
+  const terminal = commands.find(command => command.id === `${remote.configuration.id}:terminal`)!
+  expect(terminal.label).toBe(`Open ${remote.configuration.name} on Office in ${source.preferences.terminal}`)
   expect(terminal.keywords).toContain("Office")
   terminal.run()
   expect(actions.openTerminal).toHaveBeenCalledWith(target)
 
-  commands.find(command => command.id === `${remote.machine.id}:editor`)!.run()
+  commands.find(command => command.id === `${remote.configuration.id}:editor`)!.run()
   expect(actions.openEditor).toHaveBeenCalledWith(target)
 })

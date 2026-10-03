@@ -8,7 +8,7 @@ it("keeps consumers stable across equal polls and events but updates the install
     phase: "ready", lastChecked: null, retryAction: null, currentVersion: "0.1.0",
     availableVersion: "0.2.0", releaseNotes: null, downloadedBytes: 100, totalBytes: 100,
     automaticChecks: true, packageKind: "macos", releaseUrl: "https://example.invalid/releases",
-    error: null, errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true,
+    error: null, errorDetails: null, installBlockReason: null, runningComputers: [], canInstall: true,
   }
   let receive!: (next: UpdateSnapshot) => void
   const backend: UpdateBackend = {

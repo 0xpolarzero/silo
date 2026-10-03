@@ -4,7 +4,7 @@ import { expect, it, vi } from "vitest"
 import { UpdatesCard, UpdateNotice } from "./updates"
 import { UpdatesProvider, type UpdateBackend, type UpdateSnapshot } from "./update-store"
 
-const state: UpdateSnapshot = { phase: "idle", lastChecked: null, retryAction: null, currentVersion: "0.1.0", availableVersion: null, releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "macos", releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true }
+const state: UpdateSnapshot = { phase: "idle", lastChecked: null, retryAction: null, currentVersion: "0.1.0", availableVersion: null, releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "macos", releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null, installBlockReason: null, runningComputers: [], canInstall: true }
 function mount(initial: Partial<UpdateSnapshot> = {}, adjust: (backend: UpdateBackend) => void = () => {}) {
   let emit!: (value: UpdateSnapshot) => void
   const backend: UpdateBackend = {
@@ -104,7 +104,7 @@ it("loads the installed version without a fake up-to-date result and persists au
   expect(backend.setAutomaticChecks).toHaveBeenCalledWith(false)
   expect(screen.getByRole("switch", { name: "Automatically check for updates" })).not.toBeChecked()
 })
-it("checks and downloads only on request, displays real progress, and requires confirmation before stopping sandboxes", async () => {
+it("checks and downloads only on request, displays real progress, and requires confirmation before stopping computers", async () => {
   const user = userEvent.setup()
   const { backend, emit } = mount()
   await user.click(await screen.findByRole("button", { name: "Check for updates" }))
@@ -114,14 +114,14 @@ it("checks and downloads only on request, displays real progress, and requires c
   expect(screen.getByRole("progressbar", { name: "Update download" })).toHaveAttribute("aria-valuenow", "25")
   emit({ phase: "downloading", downloadedBytes: 25, totalBytes: null })
   expect(screen.getByRole("progressbar")).not.toHaveAttribute("aria-valuenow")
-  emit({ phase: "ready" as const, availableVersion: "0.2.0", runningSandboxes: ["dev"] })
+  emit({ phase: "ready" as const, availableVersion: "0.2.0", runningComputers: ["dev"] })
   await user.click(screen.getByRole("button", { name: "Restart and update" }))
   expect(backend.install).not.toHaveBeenCalled()
   expect(screen.getByText(/dev will stop/)).toBeVisible()
   await user.keyboard("{Escape}")
-  expect(screen.queryByRole("button", { name: "Stop sandboxes and update" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: "Stop computers and update" })).not.toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Restart and update" }))
-  await user.click(screen.getByRole("button", { name: "Stop sandboxes and update" }))
+  await user.click(screen.getByRole("button", { name: "Stop computers and update" }))
   expect(backend.install).toHaveBeenCalledWith(true)
 })
 it("does not permit installation during active operations", async () => {
@@ -187,14 +187,14 @@ it("retries a failed download directly without discarding the selected update", 
 })
 it("requires a fresh stop confirmation when retrying installation and dismisses it outside", async () => {
   const user = userEvent.setup()
-  const { backend } = mount({ phase: "error", error: "Could not stop dev.", retryAction: "install", availableVersion: "0.2.0", runningSandboxes: ["dev"] })
+  const { backend } = mount({ phase: "error", error: "Could not stop dev.", retryAction: "install", availableVersion: "0.2.0", runningComputers: ["dev"] })
   await user.click(await screen.findByRole("button", { name: "Retry" }))
   expect(backend.install).not.toHaveBeenCalled()
   expect(screen.getByRole("button", { name: "Cancel" })).toBeVisible()
   await user.click(screen.getByRole("heading", { name: "Updates" }))
   expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Retry" }))
-  await user.click(screen.getByRole("button", { name: "Stop sandboxes and update" }))
+  await user.click(screen.getByRole("button", { name: "Stop computers and update" }))
   expect(backend.install).toHaveBeenCalledWith(true)
 })
 it("keeps the same update notice dismissed while native state refreshes", async () => {
@@ -251,8 +251,8 @@ it("does not overwrite saved automatic-check settings with an older focus refres
   expect(screen.getByRole("switch", { name: "Automatically check for updates" })).not.toBeChecked()
 })
 it("explains an inspection failure without claiming an operation is still running", async () => {
-  mount({ phase: "ready", canInstall: false, installBlockReason: "Silo could not verify sandbox status. Check Sandboxes before updating." })
-  expect(await screen.findByText("Silo could not verify sandbox status. Check Sandboxes before updating.")).toBeVisible()
+  mount({ phase: "ready", canInstall: false, installBlockReason: "Silo could not verify computer status. Check Computers before updating." })
+  expect(await screen.findByText("Silo could not verify computer status. Check Computers before updating.")).toBeVisible()
   expect(screen.getByRole("button", { name: "Restart and update" })).toBeDisabled()
   expect(screen.queryByText("Wait for active operations to finish.")).not.toBeInTheDocument()
 })
@@ -277,12 +277,12 @@ it("surfaces a native automatic discovery without a manual check or download", a
   expect(backend.download).not.toHaveBeenCalled()
 })
 
-it("updates Debian through the authenticated installer and confirms running sandboxes", async () => {
+it("updates Debian through the authenticated installer and confirms running computers", async () => {
   const user = userEvent.setup()
-  const { backend, emit } = mount({ packageKind: "debian", phase: "available", availableVersion: "0.5.1", runningSandboxes: ["dev"] })
+  const { backend, emit } = mount({ packageKind: "debian", phase: "available", availableVersion: "0.5.1", runningComputers: ["dev"] })
   await user.click(await screen.findByRole("button", { name: "Update" }))
   expect(backend.install).not.toHaveBeenCalled()
-  await user.click(screen.getByRole("button", { name: "Stop sandboxes and update" }))
+  await user.click(screen.getByRole("button", { name: "Stop computers and update" }))
   expect(backend.install).toHaveBeenCalledWith(true)
   expect(backend.openRelease).not.toHaveBeenCalled()
   expect(backend.download).not.toHaveBeenCalled()
@@ -290,9 +290,9 @@ it("updates Debian through the authenticated installer and confirms running sand
   expect(screen.getByText("Refreshing Silo’s package list…")).toBeVisible()
 })
 it("keeps Debian installation disabled while operations are active", async () => {
-  mount({ packageKind: "debian", phase: "available", availableVersion: "0.5.1", canInstall: false, installBlockReason: "Wait for sandbox operations to finish." })
+  mount({ packageKind: "debian", phase: "available", availableVersion: "0.5.1", canInstall: false, installBlockReason: "Wait for computer operations to finish." })
   expect(await screen.findByRole("button", { name: "Update" })).toBeDisabled()
-  expect(screen.getByText("Wait for sandbox operations to finish.")).toBeVisible()
+  expect(screen.getByText("Wait for computer operations to finish.")).toBeVisible()
 })
 it("asks for a manual relaunch when an installed update could not restart, without offering a retry", async () => {
   const { backend } = mount({ packageKind: "debian", phase: "error", retryAction: "relaunch", canInstall: false,

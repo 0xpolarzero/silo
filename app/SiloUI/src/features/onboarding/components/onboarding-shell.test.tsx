@@ -105,7 +105,7 @@ describe("onboarding shell", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument()
   })
 
-  it("does not announce completion when only sandbox operations are complete", () => {
+  it("does not announce completion when only computer operations are complete", () => {
     const viewModel = projectOnboarding(onboardingScenarios.complete, "connected")
     viewModel.queueItems = viewModel.queueItems.map((item) => item.id === "githubVerify" ? { ...item, status: "queued" } : item)
     viewModel.finishEnabled = false
@@ -115,7 +115,7 @@ describe("onboarding shell", () => {
     expect(within(footer).getByRole("button", { name: "Finish" })).toBeDisabled()
   })
 
-  it("reports a non-sandbox failure in the footer", () => {
+  it("reports a non-computer failure in the footer", () => {
     const viewModel = projectOnboarding(onboardingScenarios.complete, "connected")
     viewModel.queueItems = viewModel.queueItems.map((item) => item.id === "githubVerify" ? { ...item, status: "failed", failure: "Reconnect GitHub to continue" } : item)
     viewModel.finishEnabled = false

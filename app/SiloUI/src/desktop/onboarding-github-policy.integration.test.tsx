@@ -22,24 +22,24 @@ function Setup({ source }: { source: ProductionSource }) {
 it.each(["connected", "disconnected"] as const)("keeps token policy through the real onboarding save bridge and completion with OAuth %s", async (oauthState) => {
   const user = userEvent.setup()
   const live = applicationSourceForScenario("running", oauthState)
-  live.workspaces = [live.workspaces[0]]
-  const policy = { ...live.github.workspaces![0], authenticationMethod: "token" as const, repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }
-  live.github = { ...live.github, personalToken: { state: "connected", saved: true }, workspaces: [policy], policyRevision: 10 }
+  live.computers = [live.computers[0]]
+  const policy = { ...live.github.computers![0], authenticationMethod: "token" as const, repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }
+  live.github = { ...live.github, personalToken: { state: "connected", saved: true }, computers: [policy], policyRevision: 10 }
   const invoke = nativeBridgeMock({
     read_application_state: () => structuredClone(live),
     read_backup_state: () => ({ snapshotId: "test", availability: "available", archives: [], operation: null }),
     read_setup_activity: () => [],
-    read_network_state: () => ({ workspaces: [] }),
-    remote_network_state: () => ({ workspaces: [] }),
-    remote_host_list: () => [],
-    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }),
+    read_network_state: () => ({ computers: [] }),
+    remote_network_state: () => ({ computers: [] }),
+    device_list: () => [],
+    connections_status: () => ({ enabled: false, deviceId: "local", name: "Laptop", address: "developer@laptop" }),
     read_operation_queue: () => ({ running: [], waiting: [] }),
-    verify_workspace_identities: () => true,
-    configure_workspace_identities: () => undefined,
+    verify_computer_identities: () => true,
+    configure_computer_identities: () => undefined,
     save_github_configuration: (args) => {
       const configuration = args!.configuration as ApplicationGitHubConfiguration
-      live.github = { ...live.github, policyRevision: 11, workspaces: configuration.workspaces,
-        workspaceOperations: [{ workspace: "dev", status: "succeeded", message: "Applied" }] }
+      live.github = { ...live.github, policyRevision: 11, computers: configuration.computers,
+        computerOperations: [{ computer: "dev", status: "succeeded", message: "Applied" }] }
       return structuredClone(live.github)
     },
   })
@@ -54,17 +54,17 @@ it.each(["connected", "disconnected"] as const)("keeps token policy through the 
     expect(screen.getByRole("radio", { name: "Use token for dev" })).toBeEnabled()
     await user.click(screen.getByRole("button", { name: "Continue" }))
     await waitFor(() => expect(invoke).toHaveBeenCalledWith("save_github_configuration", {
-      configuration: { baseRevision: 10, hostIdentity: live.github.hostIdentity ?? null, workspaces: [policy] },
+      configuration: { baseRevision: 10, deviceIdentity: live.github.deviceIdentity ?? null, computers: [policy] },
     }))
-    expect(source.getSnapshot().source?.github.workspaces).toEqual([policy])
+    expect(source.getSnapshot().source?.github.computers).toEqual([policy])
     if (oauthState === "disconnected") {
-      expect(screen.getByRole("group", { name: "GitHub access" })).toHaveTextContent("Personal token in 1 sandbox")
+      expect(screen.getByRole("group", { name: "GitHub access" })).toHaveTextContent("Personal token in 1 computer")
       expect(screen.getByRole("group", { name: "GitHub access" })).not.toHaveTextContent("Skipped")
     }
     await waitFor(() => expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled())
     await user.click(screen.getByRole("button", { name: "Finish" }))
     await waitFor(() => expect(settings.getSnapshot().settings.onboardingComplete).toBe(true))
-    expect(source.getSnapshot().source?.github.workspaces).toEqual([policy])
+    expect(source.getSnapshot().source?.github.computers).toEqual([policy])
   } finally {
     view.unmount()
     source.dispose()

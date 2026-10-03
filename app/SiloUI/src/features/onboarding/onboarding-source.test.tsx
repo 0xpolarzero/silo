@@ -13,24 +13,24 @@ afterEach(() => vi.useRealTimers())
 describe("onboarding source boundary", () => {
   it("counts restored draft VMs before the real setup queue starts", async () => {
     const settings = createMemorySettingsStore()
-    const machines = onboardingScenarios.complete.machineConfigurations
-    await settings.updateOnboardingDraft({ currentStep: "workspaces", machines, unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} })
-    const actions = { connectGitHub: vi.fn(), saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn(), submitStep: vi.fn() }
-    const source = { ...onboardingScenarios.complete, machineConfigurations: [], bootstrapConfiguration: { ...onboardingScenarios.complete.bootstrapConfiguration, workspaces: [] }, progressEvents: [], bootstrapResult: null, setupQueue: [{ id: "workspaceRun" as const, status: "idle" as const }, { id: "workspaceVerify" as const, status: "idle" as const }] }
+    const configurations = onboardingScenarios.complete.computerConfigurations
+    await settings.updateOnboardingDraft({ currentStep: "computers", computers: configurations, unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
+    const actions = { connectGitHub: vi.fn(), saveComputerConfiguration: vi.fn(), retryComputerSetup: vi.fn(), finishSetup: vi.fn(), submitStep: vi.fn() }
+    const source = { ...onboardingScenarios.complete, computerConfigurations: [], bootstrapConfiguration: { ...onboardingScenarios.complete.bootstrapConfiguration, computers: [] }, progressEvents: [], bootstrapResult: null, setupQueue: [{ id: "computerRun" as const, status: "idle" as const }, { id: "computerVerify" as const, status: "idle" as const }] }
     await act(async () => { render(<SettingsProvider store={settings}><OnboardingApp source={source} actions={actions} githubConnectionState="disconnected" completed={false} /></SettingsProvider>) })
-    expect(screen.getByText(`0 of ${machines.filter(({ kind }) => kind === "vm").length * 2} operations complete`)).toBeVisible()
-    expect(screen.getByText("Continue to create sandboxes")).toBeVisible()
+    expect(screen.getByText(`0 of ${configurations.length * 2} operations complete`)).toBeVisible()
+    expect(screen.getByText("Continue to create computers")).toBeVisible()
     expect(actions.submitStep).not.toHaveBeenCalled()
   })
 
-  it("loads real machines arriving after dependencies without resetting the current step", async () => {
+  it("loads real configurations arriving after dependencies without resetting the current step", async () => {
     const settings = createMemorySettingsStore()
-    const actions = { connectGitHub: vi.fn(), saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn() }
+    const actions = { connectGitHub: vi.fn(), saveComputerConfiguration: vi.fn(), retryComputerSetup: vi.fn(), finishSetup: vi.fn() }
     const wrap = (source: typeof onboardingScenarios.complete) => <SettingsProvider store={settings}><OnboardingApp source={source} actions={actions} githubConnectionState="disconnected" completed={false} /></SettingsProvider>
-    const view = render(wrap({ ...onboardingScenarios.complete, machineConfigurations: [] }))
+    const view = render(wrap({ ...onboardingScenarios.complete, computerConfigurations: [] }))
     await userEvent.setup().click(screen.getByRole("tab", { name: /GitHub/ }))
     await act(async () => { view.rerender(wrap(onboardingScenarios.complete)) })
-    expect(settings.getSnapshot().onboardingDraft?.machines).toEqual(onboardingScenarios.complete.machineConfigurations)
+    expect(settings.getSnapshot().onboardingDraft?.computers).toEqual(onboardingScenarios.complete.computerConfigurations)
     expect(screen.getByRole("tab", { name: /GitHub/ })).toHaveAttribute("aria-selected", "true")
   })
 
@@ -40,8 +40,8 @@ describe("onboarding source boundary", () => {
       connectGitHub: vi.fn(),
       cancelGitHubConnection: vi.fn(),
       reopenGitHubAuthorization: vi.fn(),
-      saveMachineConfiguration: vi.fn(),
-      retryWorkspaceSetup: vi.fn(),
+      saveComputerConfiguration: vi.fn(),
+      retryComputerSetup: vi.fn(),
       finishSetup: vi.fn(),
     }
     const props = { source: onboardingScenarios.complete, actions, completed: false }
@@ -67,8 +67,8 @@ describe("onboarding source boundary", () => {
     const user = userEvent.setup()
     const actions = {
       connectGitHub: vi.fn(),
-      saveMachineConfiguration: vi.fn(),
-      retryWorkspaceSetup: vi.fn(),
+      saveComputerConfiguration: vi.fn(),
+      retryComputerSetup: vi.fn(),
       finishSetup: vi.fn(),
     }
     const props = { source: onboardingScenarios.complete, actions, githubConnectionState: "connected" as const }

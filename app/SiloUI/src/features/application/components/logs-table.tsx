@@ -3,11 +3,11 @@ import { CopyButton } from "@/components/copy-button"
 import { DisclosureIndicator, disclosureTriggerStateClass } from "@/components/disclosure-indicator"
 import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { WorkspaceBadge } from "./application-ui"
-import type { ApplicationWorkspace } from "../model/application-source"
+import { ComputerBadge } from "./application-ui"
+import type { ApplicationComputer } from "../model/application-source"
 import { formatLog, LOG_ROW_HEIGHT as ROW_HEIGHT, type LogEntry } from "../model/logs"
 
-export interface LogRow { entry: LogEntry; workspace: ApplicationWorkspace }
+export interface LogRow { entry: LogEntry; computer: ApplicationComputer }
 interface LogsTableProps {
   rows: LogRow[]
   loading: boolean
@@ -25,7 +25,7 @@ const HEADER_HEIGHT = 32
 const OVERSCAN = 8
 const PREFETCH_DISTANCE = ROW_HEIGHT * 6
 const ESTIMATED_DETAILS_HEIGHT = 120
-function rowKey({ entry }: LogRow) { return JSON.stringify([entry.computerId, entry.sandboxId, entry.id]) }
+function rowKey({ entry }: LogRow) { return JSON.stringify([entry.deviceId, entry.computerId, entry.id]) }
 
 function rowAtOffset(offsets: number[], offset: number) {
   let low = 0, high = offsets.length - 1
@@ -41,7 +41,7 @@ function LogRecord({ row, rowIndex, open, onOpenChange, onHeightChange }: {
   row: LogRow; rowIndex: number; open: boolean
   onOpenChange: (open: boolean) => void; onHeightChange: (height: number) => void
 }) {
-  const { entry, workspace } = row
+  const { entry, computer } = row
   const element = useRef<HTMLTableSectionElement>(null)
   const reportHeight = useEffectEvent(() => {
     const height = element.current?.getBoundingClientRect().height ?? 0
@@ -57,25 +57,25 @@ function LogRecord({ row, rowIndex, open, onOpenChange, onHeightChange }: {
   const embedded = /^(\d{2}:\d{2}:\d{2})\s{2,}(.*)$/.exec(entry.line)
   const timestamp = new Date(entry.occurredAt)
   const time = embedded?.[1] ?? timestamp.toLocaleTimeString()
-  const label = `log from ${workspace.machine.name} at ${time}`
+  const label = `log from ${computer.configuration.name} at ${time}`
   return <Collapsible asChild open={open} onOpenChange={onOpenChange}>
     <tbody ref={element} role="rowgroup" className="collapsible-motion">
       <tr role="row" aria-rowindex={rowIndex} style={{ height: ROW_HEIGHT }} className="group/log-row border-b border-border hover:bg-muted/55 focus-within:bg-muted/55">
-        <td role="cell" title={entry.guestTimestamp ? `${entry.occurredAt} (time reported by the sandbox)` : entry.occurredAt} className="px-3 font-mono whitespace-nowrap text-muted-foreground"><time dateTime={entry.occurredAt}>{time}</time><span className="block text-[10px]">{timestamp.toLocaleDateString("en", { month: "short", day: "numeric" })}</span></td>
+        <td role="cell" title={entry.guestTimestamp ? `${entry.occurredAt} (time reported by the computer)` : entry.occurredAt} className="px-3 font-mono whitespace-nowrap text-muted-foreground"><time dateTime={entry.occurredAt}>{time}</time><span className="block text-[10px]">{timestamp.toLocaleDateString("en", { month: "short", day: "numeric" })}</span></td>
         <td role="cell" title={`${entry.source}${entry.session ? ` · session ${entry.session}` : ""}\n${entry.line}`} className="max-w-0 truncate px-3 font-mono">{embedded?.[2] ?? entry.line}</td>
-        <td role="cell" className="px-3 whitespace-nowrap"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></td>
+        <td role="cell" className="px-3 whitespace-nowrap"><ComputerBadge name={computer.configuration.name} state={computer.state} device={computer.device} /></td>
         <td role="cell" className="px-3 whitespace-nowrap text-muted-foreground">{entry.source}</td>
         <td role="cell" className="px-3"><div className="flex w-12 items-center justify-end">
-          <CopyButton size="icon-xs" variant="ghost" className="opacity-0 group-hover/log-row:opacity-100 group-focus-within/log-row:opacity-100" value={() => formatLog(entry)} labels={{ idle: `Copy log line from ${workspace.machine.name} at ${time}`, copied: "Log line copied", failed: "Copy log line failed" }} />
+          <CopyButton size="icon-xs" variant="ghost" className="opacity-0 group-hover/log-row:opacity-100 group-focus-within/log-row:opacity-100" value={() => formatLog(entry)} labels={{ idle: `Copy log line from ${computer.configuration.name} at ${time}`, copied: "Log line copied", failed: "Copy log line failed" }} />
           <CollapsibleTrigger asChild><Button size="icon-xs" variant="ghost" className={disclosureTriggerStateClass} title={open ? "Collapse log" : "Expand log"} aria-label={`${open ? "Collapse" : "Expand"} ${label}`}><DisclosureIndicator /></Button></CollapsibleTrigger>
         </div></td>
       </tr>
       <tr role="row" aria-rowindex={open ? rowIndex + 1 : undefined} aria-hidden={!open}>
         <td role="cell" colSpan={5} className="max-w-0 p-0">
-          <CollapsibleContent role="region" aria-label={`Log details from ${workspace.machine.name} at ${time}`} className="collapsible-content-motion">
+          <CollapsibleContent role="region" aria-label={`Log details from ${computer.configuration.name} at ${time}`} className="collapsible-content-motion">
             <div className="border-b border-border bg-muted/20 px-3 py-3">
-              <p className="mb-2 text-[10px] text-muted-foreground">{entry.occurredAt}{entry.guestTimestamp ? " (time reported by the sandbox)" : ""} · {entry.source}{entry.session ? ` · Session ${entry.session}` : ""}</p>
-              <pre role="group" tabIndex={0} aria-label={`Log message from ${workspace.machine.name} at ${time}`} className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 select-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">{entry.line}</pre>
+              <p className="mb-2 text-[10px] text-muted-foreground">{entry.occurredAt}{entry.guestTimestamp ? " (time reported by the computer)" : ""} · {entry.source}{entry.session ? ` · Session ${entry.session}` : ""}</p>
+              <pre role="group" tabIndex={0} aria-label={`Log message from ${computer.configuration.name} at ${time}`} className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 select-text focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">{entry.line}</pre>
             </div>
           </CollapsibleContent>
         </td>
@@ -168,7 +168,7 @@ export function LogsTable({ rows, loading, loadingOlder, hasOlder, active, scrol
           <tr role="row" aria-rowindex={1} style={{ height: HEADER_HEIGHT }} className="shrink-0 border-b border-border font-medium text-muted-foreground">
             <th role="columnheader" className="px-3 font-medium whitespace-nowrap">Time</th>
             <th role="columnheader" className="w-full min-w-64 px-3 font-medium">Message</th>
-            <th role="columnheader" className="px-3 font-medium whitespace-nowrap">Sandbox</th>
+            <th role="columnheader" className="px-3 font-medium whitespace-nowrap">Computer</th>
             <th role="columnheader" className="px-3 font-medium whitespace-nowrap">Source</th>
             <th role="columnheader" className="px-3 font-medium"><span className="sr-only">Actions</span></th>
           </tr>

@@ -9,7 +9,7 @@ export function resourceFixtureModeFromSearch(search: string): ResourceFixtureMo
 }
 
 export function withResourceFixture(source: ApplicationSource, mode?: ResourceFixtureMode): ApplicationSource {
-  if (mode === "create-storage") return { ...source, resourceNotice: { kind: "create-storage", sandbox: "sandbox", requiredGB: 18, availableGB: 11, volume: "the selected volume" } }
-  if (mode === "start-memory") return { ...source, resourceNotice: { kind: "start-memory", sandbox: "dev", memoryGiB: 32 } }
+  if (mode === "create-storage") return { ...source, resourceNotice: { kind: "create-storage", computer: "computer", requiredGB: 18, availableGB: 11, volume: "the selected volume" } }
+  if (mode === "start-memory") return { ...source, resourceNotice: { kind: "start-memory", computer: "dev", memoryGiB: 32 } }
   return source
 }

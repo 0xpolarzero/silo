@@ -13,7 +13,7 @@ it("warns about data loss until dismissed, and stays dismissed after remount", a
   const user = userEvent.setup()
   const store = createMemorySettingsStore()
   const view = render(notice(store))
-  expect(await screen.findByRole("region", { name: "Silo is in alpha" })).toHaveTextContent("Export sandboxes you care about regularly")
+  expect(await screen.findByRole("region", { name: "Silo is in alpha" })).toHaveTextContent("Export computers you care about regularly")
 
   await user.click(screen.getByRole("button", { name: "Got it" }))
   expect(screen.queryByRole("region", { name: "Silo is in alpha" })).not.toBeInTheDocument()

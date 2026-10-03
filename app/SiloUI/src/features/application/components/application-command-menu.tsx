@@ -9,9 +9,9 @@ import { Button } from "@/components/ui/button"
 import { restoreFocus } from "@/lib/focus"
 import type { ApplicationCommand } from "./application-commands"
 
-const groups = ["Go to", "Sandboxes", "Actions"] as const
+const groups = ["Go to", "Computers", "Actions"] as const
 
-/** Items are keyed by command id (same-named sandboxes stay distinct); the label is the first keyword. */
+/** Items are keyed by command id (same-named computers stay distinct); the label is the first keyword. */
 function filterItem(_value: string, search: string, keywords: string[] = []) {
   const [label = "", ...rest] = keywords
   return filterCommand(label, search, rest)
@@ -102,7 +102,7 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
         {confirming?.confirm ? <CommandConfirmationPanel command={confirming} onCancel={() => setConfirming(null)} onConfirm={() => { if (disabled) return; setOpen(false); confirming.run() }} /> : <Command label="Search commands" filter={filterItem} loop vimBindings={false}>
           <div className="flex items-center gap-3 border-b border-border px-4">
             <Search aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
-            <Command.Input aria-label="Search commands" placeholder="Search pages, sandboxes, and actions…" autoFocus autoComplete="off" spellCheck={false} className="h-12 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground" />
+            <Command.Input aria-label="Search commands" placeholder="Search pages, computers, and actions…" autoFocus autoComplete="off" spellCheck={false} className="h-12 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground" />
             <Dialog.Close aria-label="Close commands" className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring">Esc</Dialog.Close>
           </div>
           <Command.List className="max-h-[min(22rem,50dvh)] overflow-y-auto overscroll-contain scroll-py-2 p-1.5" label="Commands">

@@ -29,8 +29,8 @@ export interface OperationProgressOptions {
   cancel?: OperationCancel
   /** A button beside Cancel for a choice the step offers, such as Retry. */
   action?: { label: string; onClick: () => void }
-  /** Sandbox this notification is about (see `dismissSandboxToasts`). */
-  sandbox?: string | string[]
+  /** Computer this notification is about (see `dismissComputerToasts`). */
+  computer?: string | string[]
 }
 
 function useElapsed(startedAt: number | undefined) {

@@ -1,10 +1,10 @@
-import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { computerTarget } from "@/features/application/model/connections"
 import { fixtureLogPage, type LogLoader } from "@/features/application/model/logs"
 import { useMemo, useState } from "react"
 import { fixtureDirectoryLoader } from "./directory-loader"
 import { useApplicationFixture } from "@/fixtures/application-state"
 import { ApplicationApp } from "@/features/application/application-app"
-import type { ApplicationActions, ApplicationSource, SshAccessRequest, SshAccessWorkspace } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationSource, SshAccessRequest, SshAccessComputer } from "@/features/application/model/application-source"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { useBackupFixture, useUnavailableBackup, type BackupFixtureMode } from "@/fixtures/application-backup"
 import { ApplicationCatalogProvider } from "@/features/preferences/application-catalog"
@@ -21,14 +21,14 @@ const inactiveApplicationActions: ApplicationActions = {
   saveSecret: () => undefined,
   removeSecret: () => undefined,
   retryRuntimeChecks: () => undefined,
-  saveMachineConfiguration: () => undefined,
-  dismissMachineConfigurationError: () => undefined,
-  retryMachineConfiguration: () => undefined,
+  saveComputerConfiguration: () => undefined,
+  dismissComputerConfigurationError: () => undefined,
+  retryComputerConfiguration: () => undefined,
   pushRepository: () => undefined,
-  startWorkspace: () => undefined,
-  stopWorkspace: () => undefined,
-  restartWorkspace: () => undefined,
-  dismissWorkspaceError: () => undefined,
+  startComputer: () => undefined,
+  stopComputer: () => undefined,
+  restartComputer: () => undefined,
+  dismissComputerError: () => undefined,
   openTerminal: () => undefined,
   openEditor: () => undefined,
   disconnectGitHub: () => undefined,
@@ -60,19 +60,19 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
 function FixtureApplicationPreview({ source, actions, backupPreviewMode, initialRoute, unseenResult }: Parameters<typeof ApplicationPreview>[0]) {
   const fixture = useApplicationFixture(source)
   const [sshSettings, setSshSettings] = useState(() => new Map<string, SshAccessRequest>())
-  const sshAccess = { workspaces: fixture.source.workspaces.filter(w => w.machine.kind === "vm").map((w, index): SshAccessWorkspace => {
-    const target = workspaceTarget(w)
-    const seeded = fixture.source.sshAccess?.workspaces.find(access => access.workspace === target)
-    const settings = sshSettings.get(target) ?? seeded ?? { workspace: target, enabled: index === 0, port: 2222 + index, bindAddress: "127.0.0.1", keys: [] }
-    return { ...settings, keys: settings.keys ?? [], state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, computerName: seeded?.computerName ?? w.computer?.name ?? "Ada’s Mac mini", addresses: seeded?.addresses ?? ["127.0.0.1", "192.168.1.42"] }
+  const sshAccess = { computers: fixture.source.computers.map((w, index): SshAccessComputer => {
+    const target = computerTarget(w)
+    const seeded = fixture.source.sshAccess?.computers.find(access => access.computer === target)
+    const settings = sshSettings.get(target) ?? seeded ?? { computer: target, enabled: index === 0, port: 2222 + index, bindAddress: "127.0.0.1", keys: [] }
+    return { ...settings, keys: settings.keys ?? [], state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, deviceName: seeded?.deviceName ?? w.device?.name ?? "Ada’s Mac mini", addresses: seeded?.addresses ?? ["127.0.0.1", "192.168.1.42"] }
   }) }
 
   const queryLogs = useMemo<LogLoader>(() => async request => {
-    const workspace = fixture.source.workspaces.find(item => (item.computer?.vmId ?? item.machine.id) === request.sandboxId && item.computer?.id === request.computerId)
-    if (!workspace) throw new Error("Sandbox unavailable")
-    return fixtureLogPage(workspace, request)
-  }, [fixture.source.workspaces])
-  const listWorkspaceDirectory = useMemo(() => fixtureDirectoryLoader(source.workspaces), [source.workspaces])
+    const computer = fixture.source.computers.find(item => (item.device?.computerId ?? item.configuration.id) === request.computerId && item.device?.id === request.deviceId)
+    if (!computer) throw new Error("Computer unavailable")
+    return fixtureLogPage(computer, request)
+  }, [fixture.source.computers])
+  const listComputerDirectory = useMemo(() => fixtureDirectoryLoader(source.computers), [source.computers])
   // Read once, when the application opens: a result acknowledged on the screen about the backup is already seen.
   const [initialResult] = useState(() => unseenResult?.current())
   const backup = useBackupFixture({
@@ -83,18 +83,18 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
   })
 
   return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp
-    source={{ ...fixture.source, sshAccess, network: fixture.source.network ?? { workspaces: fixture.source.workspaces.map(w => ({ workspace:w.machine.name,error:null,ports:w.ports.map(p => ({port:p.port,hostPort:p.port,scheme:"http" as const,state:p.listening === true ? "reachable" as const : p.listening === false ? "waiting" as const : "unknown" as const,configured:true})) })) } }}
+    source={{ ...fixture.source, sshAccess, network: fixture.source.network ?? { computers: fixture.source.computers.map(w => ({ computer:w.configuration.name,error:null,ports:w.ports.map(p => ({port:p.port,hostPort:p.port,scheme:"http" as const,state:p.listening === true ? "reachable" as const : p.listening === false ? "waiting" as const : "unknown" as const,configured:true})) })) } }}
     initialRoute={initialRoute}
     routeRequest={initialRoute}
     backup={backup}
     actions={{
       ...inactiveApplicationActions,
-      saveSshAccess: async request => { setSshSettings(current => new Map(current).set(request.workspace, { ...request, keys: request.keys ?? current.get(request.workspace)?.keys ?? sshAccess.workspaces.find(access => access.workspace === request.workspace)?.keys ?? [] })) },
+      saveSshAccess: async request => { setSshSettings(current => new Map(current).set(request.computer, { ...request, keys: request.keys ?? current.get(request.computer)?.keys ?? sshAccess.computers.find(access => access.computer === request.computer)?.keys ?? [] })) },
       createCheckpoint: fixture.createCheckpoint,
       forkCheckpoint: fixture.forkCheckpoint,
       restoreCheckpoint: fixture.restoreCheckpoint,
       deleteCheckpoint: fixture.deleteCheckpoint,
-      listWorkspaceDirectory,
+      listComputerDirectory,
       queryLogs,
       ...actions,
       saveSecret: (request) => {
@@ -111,5 +111,5 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
 
 function UnavailableApplicationPreview({ source, actions, initialRoute }: Parameters<typeof ApplicationPreview>[0]) {
   const backup = useUnavailableBackup(source)
-  return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp source={{ ...source, vmOperationsUnavailable: "Sandbox operations are not available in this Silo build. No sandbox state was changed." }} initialRoute={initialRoute} routeRequest={initialRoute} backup={backup} actions={{ ...inactiveApplicationActions, ...actions }} /></ApplicationCatalogProvider>
+  return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp source={{ ...source, computerOperationsUnavailable: "Computer operations are not available in this Silo build. No computer state was changed." }} initialRoute={initialRoute} routeRequest={initialRoute} backup={backup} actions={{ ...inactiveApplicationActions, ...actions }} /></ApplicationCatalogProvider>
 }

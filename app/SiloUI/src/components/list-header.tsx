@@ -6,9 +6,9 @@ import { cn } from "@/lib/utils"
  * breadcrumb root stay pixel-identical and cannot drift. */
 export const listHeadingClassName = "font-medium"
 
-/** The header row shared by the sandbox list and the sandbox detail page: a
+/** The header row shared by the computer list and the computer detail page: a
  * heading (or breadcrumb) with an optional subtitle on the left and actions on
- * the right. Both callers render it identically so opening a sandbox never
+ * the right. Both callers render it identically so opening a computer never
  * shifts the heading. */
 export function ListHeader({ heading, subtitle, actions, className, ...props }: {
   heading: ReactNode

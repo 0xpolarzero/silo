@@ -33,12 +33,12 @@ export interface GitHubIdentity {
   apply: boolean
 }
 
-export interface GitHubWorkspace {
+export interface GitHubComputer {
   name: string
 }
 
 interface RepositoryComboboxProps {
-  workspace: string
+  computer: string
   repositoryOptions: readonly string[]
   selectedRepositories: readonly GitHubRepositorySelection[]
   disabled?: boolean
@@ -46,7 +46,7 @@ interface RepositoryComboboxProps {
   onAdd: (repository: string) => void
 }
 
-function WorkspaceDisclosure({ name, actions, children }: { name: string; actions?: ReactNode; children: ReactNode }) {
+function ComputerDisclosure({ name, actions, children }: { name: string; actions?: ReactNode; children: ReactNode }) {
   const [open, setOpen] = useState(true)
 
   return (
@@ -67,7 +67,7 @@ function WorkspaceDisclosure({ name, actions, children }: { name: string; action
 
 const repositoryGridColumns = "grid-cols-[minmax(0,1fr)_10rem_1.5rem]"
 
-function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories, disabled = false, onAdd, onManageRepositories }: RepositoryComboboxProps) {
+function RepositoryCombobox({ computer, repositoryOptions, selectedRepositories, disabled = false, onAdd, onManageRepositories }: RepositoryComboboxProps) {
   const listboxId = useId()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
@@ -121,7 +121,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
           <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input technical
             role="combobox"
-            aria-label={`Add repository to ${workspace}`}
+            aria-label={`Add repository to ${computer}`}
             aria-autocomplete="list"
             aria-expanded={!disabled && open}
             aria-controls={listboxId}
@@ -160,7 +160,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
       <PopoverContent
         id={listboxId}
         role="listbox"
-        aria-label={`Repository results for ${workspace}`}
+        aria-label={`Repository results for ${computer}`}
         className="max-h-[min(15rem,var(--radix-popover-content-available-height))] w-[var(--radix-popover-trigger-width)] overflow-y-auto overscroll-contain p-1"
         onOpenAutoFocus={(event) => event.preventDefault()}
         onEscapeKeyDown={(event) => { if (event.isComposing) event.preventDefault() }}
@@ -209,32 +209,32 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
 }
 
 export interface GitHubAccessEditorProps {
-  workspaces: readonly GitHubWorkspace[]
+  computers: readonly GitHubComputer[]
   connectionState: GitHubConnectionState
   tokenConnected?: boolean
   tokenConnection?: ReactNode
   repositoryOptions: readonly string[]
-  workspaceSelections: Readonly<Record<string, readonly GitHubRepositorySelection[]>>
-  workspaceRepositoryAccess?: Readonly<Record<string, GitHubRepositoryAccess>>
-  onWorkspaceRepositoryAccessChange?: (workspace: string, access: GitHubRepositoryAccess) => void
-  workspaceIdentities: Readonly<Record<string, GitHubIdentity>>
-  currentHostGitIdentity: { name: string; email: string } | null
+  computerSelections: Readonly<Record<string, readonly GitHubRepositorySelection[]>>
+  computerRepositoryAccess?: Readonly<Record<string, GitHubRepositoryAccess>>
+  onComputerRepositoryAccessChange?: (computer: string, access: GitHubRepositoryAccess) => void
+  computerIdentities: Readonly<Record<string, GitHubIdentity>>
+  currentDeviceGitIdentity: { name: string; email: string } | null
   onCancelConnection?: () => void
   onManageRepositories?: () => void
   onReopenAuthorization?: () => void
   onConnect: () => void
-  onWorkspaceSelectionsChange: (workspace: string, selections: GitHubRepositorySelection[]) => void
-  onWorkspaceIdentityChange: (workspace: string, identity: GitHubIdentity) => void
-  onCommitWorkspaceIdentity?: (workspace: string, identity: GitHubIdentity) => void
-  onResetWorkspaceIdentity: (workspace: string) => void
+  onComputerSelectionsChange: (computer: string, selections: GitHubRepositorySelection[]) => void
+  onComputerIdentityChange: (computer: string, identity: GitHubIdentity) => void
+  onCommitComputerIdentity?: (computer: string, identity: GitHubIdentity) => void
+  onResetComputerIdentity: (computer: string) => void
   compactConnection?: boolean
   connectedTitle?: ReactNode
   connectedDetail?: ReactNode
   connectionProgress?: ReactNode
   connectedActions?: ReactNode
   notice?: ReactNode
-  renderWorkspaceActions?: (workspace: GitHubWorkspace) => ReactNode
-  renderWorkspaceNotice?: (workspace: GitHubWorkspace) => ReactNode
+  renderComputerActions?: (computer: GitHubComputer) => ReactNode
+  renderComputerNotice?: (computer: GitHubComputer) => ReactNode
   footer?: ReactNode
   disabled?: boolean
   repositoryControlsAvailable?: boolean
@@ -243,32 +243,32 @@ export interface GitHubAccessEditorProps {
 }
 
 export function GitHubAccessEditor({
-  workspaces,
+  computers,
   connectionState,
   tokenConnected = false,
   tokenConnection,
   repositoryOptions,
-  workspaceSelections,
-  workspaceIdentities,
-  workspaceRepositoryAccess = {},
-  onWorkspaceRepositoryAccessChange,
-  currentHostGitIdentity,
+  computerSelections,
+  computerIdentities,
+  computerRepositoryAccess = {},
+  onComputerRepositoryAccessChange,
+  currentDeviceGitIdentity,
   onConnect,
   onCancelConnection,
   onReopenAuthorization,
   onManageRepositories,
-  onWorkspaceSelectionsChange,
-  onWorkspaceIdentityChange,
-  onCommitWorkspaceIdentity,
-  onResetWorkspaceIdentity,
+  onComputerSelectionsChange,
+  onComputerIdentityChange,
+  onCommitComputerIdentity,
+  onResetComputerIdentity,
   compactConnection = false,
   connectedTitle = "Connected to GitHub",
-  connectedDetail = "Repository credentials are scoped to each sandbox.",
+  connectedDetail = "Repository credentials are scoped to each computer.",
   connectionProgress,
   connectedActions,
   notice,
-  renderWorkspaceActions,
-  renderWorkspaceNotice,
+  renderComputerActions,
+  renderComputerNotice,
   footer,
   disabled = false,
   repositoryControlsAvailable = true,
@@ -313,20 +313,20 @@ export function GitHubAccessEditor({
       {tokenConnection}
       {notice && <div className="shrink-0">{notice}</div>}
 
-      <ScrollArea className="min-h-0 flex-1 rounded-md border border-border" role="region" aria-label="Sandbox Git identity and repository access" aria-busy={busy || undefined}>
+      <ScrollArea className="min-h-0 flex-1 rounded-md border border-border" role="region" aria-label="Computer Git identity and repository access" aria-busy={busy || undefined}>
         <div className="divide-y divide-border">
-          {workspaces.map((workspace) => {
-            const { name } = workspace
-            const selections = (Object.hasOwn(workspaceSelections, name) ? workspaceSelections[name] : undefined) ?? emptySelections
-            const access = (Object.hasOwn(workspaceRepositoryAccess, name) ? workspaceRepositoryAccess[name] : undefined) ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }
-            const identity = (Object.hasOwn(workspaceIdentities, name) ? workspaceIdentities[name] : undefined) ?? { name: "", email: "", apply: true }
-            const workspaceActions = renderWorkspaceActions?.(workspace)
-            const workspaceNotice = renderWorkspaceNotice?.(workspace)
-            const workspaceDisabled = disabled
+          {computers.map((computer) => {
+            const { name } = computer
+            const selections = (Object.hasOwn(computerSelections, name) ? computerSelections[name] : undefined) ?? emptySelections
+            const access = (Object.hasOwn(computerRepositoryAccess, name) ? computerRepositoryAccess[name] : undefined) ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }
+            const identity = (Object.hasOwn(computerIdentities, name) ? computerIdentities[name] : undefined) ?? { name: "", email: "", apply: true }
+            const computerActions = renderComputerActions?.(computer)
+            const computerNotice = renderComputerNotice?.(computer)
+            const computerDisabled = disabled
             return (
-              <WorkspaceDisclosure key={name} name={name} actions={workspaceActions}>
+              <ComputerDisclosure key={name} name={name} actions={computerActions}>
                   <div className="grid gap-3 px-3 pb-3">
-                    {workspaceNotice}
+                    {computerNotice}
                     <div
                       role="group"
                       aria-label={`Git identity for ${name}`}
@@ -344,7 +344,7 @@ export function GitHubAccessEditor({
                               <GitBranch aria-hidden="true" className="size-3.5" />
                             </span>
                           </TooltipTrigger>
-                          <TooltipContent>Name and email used for Git commits in this sandbox.</TooltipContent>
+                          <TooltipContent>Name and email used for Git commits in this computer.</TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
                       <Input technical
@@ -352,10 +352,10 @@ export function GitHubAccessEditor({
                         autoComplete="off"
                         className="h-7 min-w-0 flex-[0.8] rounded-md px-2 text-[11px] md:text-[11px]"
                         placeholder="Name"
-                        disabled={workspaceDisabled}
+                        disabled={computerDisabled}
                         value={identity.name}
-                        onChange={(event) => onWorkspaceIdentityChange(name, { ...identity, name: event.target.value })}
-                        onBlur={() => onCommitWorkspaceIdentity?.(name, identity)}
+                        onChange={(event) => onComputerIdentityChange(name, { ...identity, name: event.target.value })}
+                        onBlur={() => onCommitComputerIdentity?.(name, identity)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" && !event.nativeEvent.isComposing) event.currentTarget.blur()
                         }}
@@ -367,10 +367,10 @@ export function GitHubAccessEditor({
                         inputMode="email"
                         placeholder="Email"
                         type="email"
-                        disabled={workspaceDisabled}
+                        disabled={computerDisabled}
                         value={identity.email}
-                        onChange={(event) => onWorkspaceIdentityChange(name, { ...identity, email: event.target.value })}
-                        onBlur={() => onCommitWorkspaceIdentity?.(name, identity)}
+                        onChange={(event) => onComputerIdentityChange(name, { ...identity, email: event.target.value })}
+                        onBlur={() => onCommitComputerIdentity?.(name, identity)}
                         onKeyDown={(event) => {
                           if (event.key === "Enter" && !event.nativeEvent.isComposing) event.currentTarget.blur()
                         }}
@@ -379,8 +379,8 @@ export function GitHubAccessEditor({
                         <Checkbox
                           aria-label={`Apply Git identity to ${name}`}
                           checked={identity.apply}
-                          disabled={workspaceDisabled}
-                          onCheckedChange={(checked) => onWorkspaceIdentityChange(name, { ...identity, apply: checked === true })}
+                          disabled={computerDisabled}
+                          onCheckedChange={(checked) => onComputerIdentityChange(name, { ...identity, apply: checked === true })}
                         />
                         Apply
                       </label>
@@ -389,16 +389,16 @@ export function GitHubAccessEditor({
                           <TooltipTrigger asChild>
                             <span
                               className="inline-flex shrink-0"
-                              tabIndex={currentHostGitIdentity ? undefined : 0}
-                              aria-label={currentHostGitIdentity ? undefined : `Reset Git identity for ${name}`}
+                              tabIndex={currentDeviceGitIdentity ? undefined : 0}
+                              aria-label={currentDeviceGitIdentity ? undefined : `Reset Git identity for ${name}`}
                             >
                               <Button
                                 type="button"
                                 variant="ghost"
                                 size="icon-xs"
                                 aria-label={`Reset Git identity for ${name}`}
-                                disabled={workspaceDisabled || !currentHostGitIdentity}
-                                onClick={() => onResetWorkspaceIdentity(name)}
+                                disabled={computerDisabled || !currentDeviceGitIdentity}
+                                onClick={() => onResetComputerIdentity(name)}
                               >
                                 <RotateCcw aria-hidden="true" className="size-3" />
                               </Button>
@@ -408,36 +408,36 @@ export function GitHubAccessEditor({
                         </Tooltip>
                       </TooltipProvider>
                     </div>
-                    {onWorkspaceRepositoryAccessChange && (
+                    {onComputerRepositoryAccessChange && (
                       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
                         <div role="radiogroup" aria-label={`GitHub authentication for ${name}`} className="flex flex-wrap items-center gap-4 text-xs">
                           <label className="flex items-center gap-2">
                             <input type="radio" name={`github-method-${name}`} aria-label={`Use GitHub OAuth for ${name}`}
                               checked={(access.authenticationMethod ?? "oauth") === "oauth"}
-                              disabled={workspaceDisabled || connectionState !== "connected"}
-                              onChange={() => onWorkspaceRepositoryAccessChange(name, { ...access, authenticationMethod: "oauth" })} />
+                              disabled={computerDisabled || connectionState !== "connected"}
+                              onChange={() => onComputerRepositoryAccessChange(name, { ...access, authenticationMethod: "oauth" })} />
                             Use GitHub OAuth
                           </label>
                           <TooltipProvider><Tooltip><TooltipTrigger asChild>
                             <label className="flex items-center gap-2">
                               <input type="radio" name={`github-method-${name}`} aria-label={`Use token for ${name}`}
                                 checked={access.authenticationMethod === "token"}
-                                disabled={workspaceDisabled || !tokenConnected}
-                                onChange={() => onWorkspaceRepositoryAccessChange(name, { ...access, authenticationMethod: "token" })} />
+                                disabled={computerDisabled || !tokenConnected}
+                                onChange={() => onComputerRepositoryAccessChange(name, { ...access, authenticationMethod: "token" })} />
                               Use token
                             </label>
-                          </TooltipTrigger><TooltipContent>Full token access. This sandbox can perform every action permitted by the token, with no additional Silo repository restrictions. Credentials remain outside the sandbox.</TooltipContent></Tooltip></TooltipProvider>
+                          </TooltipTrigger><TooltipContent>Full token access. This computer can perform every action permitted by the token, with no additional Silo repository restrictions. Credentials remain outside the computer.</TooltipContent></Tooltip></TooltipProvider>
                         </div>
                         {connectionState === "connected" && access.authenticationMethod !== "token" && (
                           <div className="ml-auto flex flex-wrap items-center justify-end gap-x-4 gap-y-2 text-xs">
                             <label className="flex items-center gap-2">
-                              <Checkbox aria-label={`All repositories for ${name}`} checked={access.repositoryMode === "all"} disabled={workspaceDisabled || !repositoryControlsAvailable}
-                                onCheckedChange={(checked) => onWorkspaceRepositoryAccessChange(name, { ...access, repositoryMode: checked === true ? "all" : "selected", allRepositoriesAllowChanges: false })} />
+                              <Checkbox aria-label={`All repositories for ${name}`} checked={access.repositoryMode === "all"} disabled={computerDisabled || !repositoryControlsAvailable}
+                                onCheckedChange={(checked) => onComputerRepositoryAccessChange(name, { ...access, repositoryMode: checked === true ? "all" : "selected", allRepositoriesAllowChanges: false })} />
                               All repositories
                             </label>
                             {access.repositoryMode === "all" && <label className="flex items-center gap-2">
-                              <Checkbox aria-label={`Allow GitHub changes for all repositories in ${name}`} checked={access.allRepositoriesAllowChanges} disabled={workspaceDisabled || !repositoryControlsAvailable}
-                                onCheckedChange={(checked) => onWorkspaceRepositoryAccessChange(name, { ...access, allRepositoriesAllowChanges: checked === true })} />
+                              <Checkbox aria-label={`Allow GitHub changes for all repositories in ${name}`} checked={access.allRepositoriesAllowChanges} disabled={computerDisabled || !repositoryControlsAvailable}
+                                onCheckedChange={(checked) => onComputerRepositoryAccessChange(name, { ...access, allRepositoriesAllowChanges: checked === true })} />
                               Allow GitHub changes
                             </label>}
                           </div>
@@ -449,12 +449,12 @@ export function GitHubAccessEditor({
                         {access.repositoryMode === "all" && <p className="text-xs text-muted-foreground">All repositories authorized on GitHub, including future additions.</p>}
                         {access.repositoryMode !== "all" && repositoryControlsAvailable && (
                           <RepositoryCombobox
-                            workspace={name}
+                            computer={name}
                             repositoryOptions={repositoryOptions}
                             selectedRepositories={selections}
                             onManageRepositories={onManageRepositories}
-                            disabled={workspaceDisabled}
-                            onAdd={(repository) => onWorkspaceSelectionsChange(name, [...selections, { repository, allowPushes: false }])}
+                            disabled={computerDisabled}
+                            onAdd={(repository) => onComputerSelectionsChange(name, [...selections, { repository, allowPushes: false }])}
                           />
                         )}
                         {access.repositoryMode !== "all" && selections.length > 0 && (
@@ -470,7 +470,7 @@ export function GitHubAccessEditor({
                                         <Info aria-hidden="true" className="size-3" />
                                       </Button>
                                     </TooltipTrigger>
-                                    <TooltipContent>Allow Git pushes and GitHub changes, such as issues and pull requests, from this sandbox.</TooltipContent>
+                                    <TooltipContent>Allow Git pushes and GitHub changes, such as issues and pull requests, from this computer.</TooltipContent>
                                   </Tooltip>
                                 </TooltipProvider>
                               </span>
@@ -483,14 +483,14 @@ export function GitHubAccessEditor({
                                       size="icon-xs"
                                       className="size-5"
                                       aria-label={`Clear repositories from ${name}`}
-                                      disabled={workspaceDisabled || !repositoryControlsAvailable}
-                                      onClick={confirmRepositoryClear ? undefined : () => onWorkspaceSelectionsChange(name, [])}
+                                      disabled={computerDisabled || !repositoryControlsAvailable}
+                                      onClick={confirmRepositoryClear ? undefined : () => onComputerSelectionsChange(name, [])}
                                     >
                                       <Trash2 aria-hidden="true" className="size-3" />
                                     </Button>
                                     const label = `Clear repositories from ${name}`
                                     return confirmRepositoryClear
-                                      ? <ConfirmPopover align="end" tone="destructive" title={`Remove all repositories from ${name}?`} description={`${name} loses GitHub access to them.`} confirmLabel="Remove all" tooltip={label} onConfirm={() => onWorkspaceSelectionsChange(name, [])}>{trigger}</ConfirmPopover>
+                                      ? <ConfirmPopover align="end" tone="destructive" title={`Remove all repositories from ${name}?`} description={`${name} loses GitHub access to them.`} confirmLabel="Remove all" tooltip={label} onConfirm={() => onComputerSelectionsChange(name, [])}>{trigger}</ConfirmPopover>
                                       : <Tooltip><TooltipTrigger asChild><span className="inline-flex">{trigger}</span></TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>
                                   })()}
                                 </TooltipProvider>
@@ -503,8 +503,8 @@ export function GitHubAccessEditor({
                                   <Checkbox
                                     aria-label={`Allow GitHub changes for ${selection.repository}`}
                                     checked={selection.allowPushes}
-                                    disabled={workspaceDisabled || !repositoryControlsAvailable}
-                                    onCheckedChange={(checked) => onWorkspaceSelectionsChange(name, selections.map((item) => (
+                                    disabled={computerDisabled || !repositoryControlsAvailable}
+                                    onCheckedChange={(checked) => onComputerSelectionsChange(name, selections.map((item) => (
                                       item.repository === selection.repository ? { ...item, allowPushes: checked === true } : item
                                     )))}
                                   />
@@ -515,8 +515,8 @@ export function GitHubAccessEditor({
                                     variant="ghost"
                                     size="icon-xs"
                                     aria-label={`Remove ${selection.repository} from ${name}`}
-                                    disabled={workspaceDisabled || !repositoryControlsAvailable}
-                                    onClick={() => onWorkspaceSelectionsChange(name, selections.filter(({ repository }) => repository !== selection.repository))}
+                                    disabled={computerDisabled || !repositoryControlsAvailable}
+                                    onClick={() => onComputerSelectionsChange(name, selections.filter(({ repository }) => repository !== selection.repository))}
                                   >
                                     <X aria-hidden="true" />
                                   </Button>
@@ -528,7 +528,7 @@ export function GitHubAccessEditor({
                       </>
                     )}
                   </div>
-              </WorkspaceDisclosure>
+              </ComputerDisclosure>
             )
           })}
         </div>

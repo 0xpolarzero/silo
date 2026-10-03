@@ -8,28 +8,28 @@ import { Input } from "@/components/ui/input"
 import type { ApplicationSecret, ApplicationSource, SecretConfigurationRequest } from "../model/application-source"
 import { secretConfiguration, type SecretDraft, type SecretValidationErrors } from "../model/secret-configuration"
 
-export function SecretEditor({ secret, source, onSave, onCancel, saving = false, saveError, initialWorkspaces }: {
+export function SecretEditor({ secret, source, onSave, onCancel, saving = false, saveError, initialComputers }: {
   secret?: ApplicationSecret
   source: ApplicationSource
   onSave: (request: SecretConfigurationRequest) => void
   onCancel: () => void
   saving?: boolean
   saveError?: string
-  /** Preselected sandboxes when adding a new secret (e.g. scoped to one sandbox on its page). */
-  initialWorkspaces?: string[]
+  /** Preselected computers when adding a new secret (e.g. scoped to one computer on its page). */
+  initialComputers?: string[]
 }) {
   const [baseline, setBaseline] = useState(secret)
   const [draft, setDraft] = useState<SecretDraft>(() => ({
-    name: secret?.name ?? "", value: "", workspaces: secret?.workspaces ?? initialWorkspaces ?? [],
+    name: secret?.name ?? "", value: "", computers: secret?.computers ?? initialComputers ?? [],
     domains: secret?.allowedDomains.join(", ") ?? "", allowAnyDomain: secret?.allowedDomains.includes("*") ?? false,
   }))
   const [errors, setErrors] = useState<SecretValidationErrors>({})
   const formRef = useRef<HTMLFormElement>(null)
   const id = useId()
-  const workspaces = source.workspaces.filter(w => !w.computer).filter(({ machine }) => machine.kind === "vm")
+  const computers = source.computers.filter(w => !w.device)
   const title = secret ? `Edit ${secret.name}` : "Add secret"
   const settingsChanged = Boolean(secret && baseline && (
-    secret.workspaces.length !== baseline.workspaces.length || !secret.workspaces.every(name => baseline.workspaces.includes(name))
+    secret.computers.length !== baseline.computers.length || !secret.computers.every(name => baseline.computers.includes(name))
     || secret.allowedDomains.length !== baseline.allowedDomains.length || !secret.allowedDomains.every(domain => baseline.allowedDomains.includes(domain))
   ))
   const anyDomain = draft.domains.split(/[\s,]+/).includes("*")
@@ -53,14 +53,14 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
   return <form ref={formRef} aria-label={title} className="grid min-w-0 gap-3 p-3" noValidate onSubmit={(event) => {
     event.preventDefault()
     if (saving || settingsChanged) return
-    const result = secretConfiguration(draft, source.secrets, workspaces.map(({ machine }) => machine.name), secret)
+    const result = secretConfiguration(draft, source.secrets, computers.map(({ configuration }) => configuration.name), secret)
     if (result.errors) {
       setErrors(result.errors)
       return
     }
     const request = result.request
     const unchanged = secret && request.value === undefined
-      && request.workspaces.length === secret.workspaces.length && request.workspaces.every((name) => secret.workspaces.includes(name))
+      && request.computers.length === secret.computers.length && request.computers.every((name) => secret.computers.includes(name))
       && request.allowedDomains.length === secret.allowedDomains.length && request.allowedDomains.every((domain) => secret.allowedDomains.includes(domain))
     if (unchanged) onCancel()
     else onSave(request)
@@ -77,7 +77,7 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
       <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => {
         if (!secret) return
         setBaseline(secret)
-        update({ name: secret.name, workspaces: [...secret.workspaces], domains: secret.allowedDomains.join(", "), allowAnyDomain: secret.allowedDomains.includes("*") })
+        update({ name: secret.name, computers: [...secret.computers], domains: secret.allowedDomains.join(", "), allowAnyDomain: secret.allowedDomains.includes("*") })
       }}>Reload settings</Button>
     </div>}
     <fieldset disabled={saving || settingsChanged} className="grid min-w-0 gap-3">
@@ -95,21 +95,21 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
       </div>
     </div>
     <fieldset className="grid min-w-0 gap-2">
-      <legend className="mb-2 text-[11px] font-medium text-muted-foreground">Sandboxes</legend>
+      <legend className="mb-2 text-[11px] font-medium text-muted-foreground">Computers</legend>
       <FilterCombobox
-        options={workspaces.map(({ machine }) => ({ value: machine.name, label: machine.name }))}
-        selectedValues={new Set(draft.workspaces)}
-        onChange={(values) => update({ workspaces: [...values] })}
-        label="Secret sandboxes"
-        inputLabel="Add sandbox"
-        placeholder="Select sandboxes…"
-        listLabel="Available sandboxes"
-        selectedLabel="Selected sandboxes"
-        emptyMessage={workspaces.length === 0 ? "Add a sandbox to assign secrets." : "No sandboxes available."}
-        inputInvalid={Boolean(errors.workspaces)}
-        inputDescribedBy={errors.workspaces ? `${id}-workspaces-error` : undefined}
+        options={computers.map(({ configuration }) => ({ value: configuration.name, label: configuration.name }))}
+        selectedValues={new Set(draft.computers)}
+        onChange={(values) => update({ computers: [...values] })}
+        label="Secret computers"
+        inputLabel="Add computer"
+        placeholder="Select computers…"
+        listLabel="Available computers"
+        selectedLabel="Selected computers"
+        emptyMessage={computers.length === 0 ? "Add a computer to assign secrets." : "No computers available."}
+        inputInvalid={Boolean(errors.computers)}
+        inputDescribedBy={errors.computers ? `${id}-computers-error` : undefined}
       />
-      {fieldError("workspaces")}
+      {fieldError("computers")}
     </fieldset>
     <div className="grid gap-1">
       <label htmlFor={`${id}-domains`} className="text-[11px] font-medium text-muted-foreground">Allowed domains</label>

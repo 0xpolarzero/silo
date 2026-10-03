@@ -1,4 +1,4 @@
-/** Where a Start is, as reported by the backend while the sandbox's operation is held. */
+/** Where a Start is, as reported by the backend while the computer's operation is held. */
 export type LifecycleStep = "boot" | "network" | "account"
 
 export const lifecycleSteps: readonly LifecycleStep[] = ["boot", "network", "account"]
@@ -6,7 +6,7 @@ export const lifecycleSteps: readonly LifecycleStep[] = ["boot", "network", "acc
 const stepText: Record<LifecycleStep, string> = {
   boot: "Starting the VM",
   network: "Connecting the network",
-  account: "Checking the sandbox account",
+  account: "Checking the computer account",
 }
 
 /** The one-line step text and bar fraction of a Start; before the first report it is the boot. */

@@ -18,7 +18,7 @@ afterEach(() => { vi.useRealTimers() })
 
 function pendingSource(lifecycleAction: "start" | "stop" = "stop", lifecycleStep?: "boot" | "network" | "account") {
   const source = applicationSourceForScenario("running")
-  source.workspaces = [{ ...source.workspaces[0], lifecycleAction, lifecycleStep }]
+  source.computers = [{ ...source.computers[0], lifecycleAction, lifecycleStep }]
   return source
 }
 
@@ -30,7 +30,7 @@ it("shows one delayed progress toast after StrictMode replays setup", () => {
   })
   act(() => { vi.advanceTimersByTime(800) })
   expect(showOperationProgress).toHaveBeenCalledExactlyOnceWith(
-    `lifecycle::${source.workspaces[0].machine.id}`,
+    `lifecycle::${source.computers[0].configuration.id}`,
     expect.objectContaining({ title: "Stopping dev" }),
   )
 })
@@ -54,7 +54,7 @@ it("retires progress notifications and timers when the owner unmounts", () => {
   const view = renderHook(() => useLifecycleToasts(source, actions))
   act(() => { vi.advanceTimersByTime(800) })
   view.unmount()
-  expect(dismissOperationToast).toHaveBeenCalledWith(`lifecycle::${source.workspaces[0].machine.id}`)
+  expect(dismissOperationToast).toHaveBeenCalledWith(`lifecycle::${source.computers[0].configuration.id}`)
   expect(vi.getTimerCount()).toBe(0)
 })
 
@@ -65,7 +65,7 @@ it("uses the current queue state when delayed progress first appears", () => {
     ...source,
     operationQueue: { running: [], waiting: [{
       id: 1, kind: "lifecycle" as const, label: "Stopping dev",
-      vmId: source.workspaces[0].machine.id, vmName: "dev", sinceMs: Date.now(),
+      computerId: source.computers[0].configuration.id, computerName: "dev", sinceMs: Date.now(),
       cancellable: true, expectedMs: null, blockedByHidden: true,
     }] },
   }
@@ -74,7 +74,7 @@ it("uses the current queue state when delayed progress first appears", () => {
   view.rerender({ current: { ...queued, operationQueue: { running: [], waiting: [] } } })
   act(() => { vi.advanceTimersByTime(400) })
   expect(showOperationProgress).toHaveBeenCalledExactlyOnceWith(
-    `lifecycle::${source.workspaces[0].machine.id}`,
+    `lifecycle::${source.computers[0].configuration.id}`,
     expect.objectContaining({ title: "Stopping dev", step: "Stopping…" }),
   )
 })
@@ -83,13 +83,13 @@ it("shows a start immediately with the real step and a bar", () => {
   const source = pendingSource("start")
   const actions = createApplicationActionsMock()
   const view = renderHook(({ current }) => useLifecycleToasts(current, actions), { initialProps: { current: source } })
-  const id = `lifecycle::${source.workspaces[0].machine.id}`
+  const id = `lifecycle::${source.computers[0].configuration.id}`
   expect(showOperationProgress).toHaveBeenLastCalledWith(id, expect.objectContaining({ title: "Starting dev", step: "Starting the VM", progress: expect.any(Number) }))
   const network = pendingSource("start", "network")
   view.rerender({ current: network })
   expect(showOperationProgress).toHaveBeenLastCalledWith(id, expect.objectContaining({ step: "Connecting the network" }))
   const first = vi.mocked(showOperationProgress).mock.calls[0][1].progress as number
   expect(vi.mocked(showOperationProgress).mock.calls.at(-1)![1].progress as number).toBeGreaterThan(first)
-  view.rerender({ current: { ...network, workspaces: [{ ...network.workspaces[0], lifecycleAction: undefined, lifecycleStep: undefined }] } })
+  view.rerender({ current: { ...network, computers: [{ ...network.computers[0], lifecycleAction: undefined, lifecycleStep: undefined }] } })
   expect(dismissOperationToast).toHaveBeenCalledWith(id)
 })

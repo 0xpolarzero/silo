@@ -7,16 +7,16 @@ import { Switch } from "@/components/ui/switch"
 import { Button } from "@/components/ui/button"
 import { useSettings } from "@/features/preferences/settings-store"
 import { useSystemIntegrations } from "@/features/preferences/system-integrations-store"
-import type { SetupMachineConfiguration } from "@/contracts/silo"
+import type { SetupComputerConfiguration } from "@/contracts/silo"
 
 const notificationCategories = [
   { id: "notifyFailures", label: "Failures", icon: CircleAlert },
-  { id: "notifyChanges", label: "Unexpected sandbox changes", icon: HeartPulse },
+  { id: "notifyChanges", label: "Unexpected computer changes", icon: HeartPulse },
   { id: "notifyCompletions", label: "Long tasks finished", icon: CircleCheck },
 ] as const
 
-export function SetupComplete({ machines, githubSummary }: {
-  machines: readonly SetupMachineConfiguration[]
+export function SetupComplete({ configurations, githubSummary }: {
+  configurations: readonly SetupComputerConfiguration[]
   githubSummary: string
 }) {
   const { settings, store, updateSettings } = useSettings()
@@ -24,9 +24,9 @@ export function SetupComplete({ machines, githubSummary }: {
   const notificationsEnabled = settings.notificationsEnabled && integrations.notificationsAuthorized
 
   useLayoutEffect(() => {
-    const initial = machines.find(({ name }) => name === "dev") ?? machines[0]
-    store.updateDefaults({ startupWorkspaceIds: initial ? [initial.id] : [] })
-  }, [machines, store])
+    const initial = configurations.find(({ name }) => name === "dev") ?? configurations[0]
+    store.updateDefaults({ startupComputerIds: initial ? [initial.id] : [] })
+  }, [configurations, store])
 
   return (
     <section aria-labelledby="setup-complete-title" className="grid gap-3">
@@ -35,7 +35,7 @@ export function SetupComplete({ machines, githubSummary }: {
           role="status"
           icon={<ListRowIcon className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" aria-hidden="true"><Check className="size-3.5" /></ListRowIcon>}
           title={<h2 id="setup-complete-title">Setup complete</h2>}
-          detail={`${machines.length} ${machines.length === 1 ? "sandbox is" : "sandboxes are"} ready. Open Silo to get started.`}
+          detail={`${configurations.length} ${configurations.length === 1 ? "computer is" : "computers are"} ready. Open Silo to get started.`}
           detailClassName="whitespace-normal"
         />
         <ListRow
@@ -68,22 +68,22 @@ export function SetupComplete({ machines, githubSummary }: {
                 <ListRow
                   className="py-1.5 hover:bg-muted/35 focus-within:bg-muted/35"
                   icon={<ListRowIcon aria-hidden="true"><Boxes className="size-3.5" /></ListRowIcon>}
-                  title={<span className="text-xs">Start sandboxes at launch</span>}
+                  title={<span className="text-xs">Start computers at launch</span>}
                   detail={null}
-                  actions={<Switch checked={settings.startWorkspacesAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startWorkspacesAtLaunch: enabled, ...(enabled ? { startupWorkspaceIds: settings.startupWorkspaceIds } : {}) }) }} aria-label="Start sandboxes at launch" />}
+                  actions={<Switch checked={settings.startComputersAtLaunch} onCheckedChange={(enabled) => { void updateSettings({ startComputersAtLaunch: enabled, ...(enabled ? { startupComputerIds: settings.startupComputerIds } : {}) }) }} aria-label="Start computers at launch" />}
                 />
-                {settings.startWorkspacesAtLaunch && (
-                  <ListRowDetails label="Sandboxes to start at launch" className="mx-0 gap-2 px-2">
+                {settings.startComputersAtLaunch && (
+                  <ListRowDetails label="Computers to start at launch" className="mx-0 gap-2 px-2">
                     <FilterCombobox
-                      options={machines.map((machine) => ({ value: machine.id, label: machine.name }))}
-                      selectedValues={new Set(settings.startupWorkspaceIds)}
-                      onChange={(selected) => { void updateSettings({ startupWorkspaceIds: [...selected] }) }}
-                      label="Startup sandboxes"
-                      inputLabel="Add sandbox at startup"
-                      placeholder="Select sandboxes…"
-                      listLabel="Available startup sandboxes"
-                      selectedLabel="Selected startup sandboxes"
-                      emptyMessage="No sandboxes available."
+                      options={configurations.map((configuration) => ({ value: configuration.id, label: configuration.name }))}
+                      selectedValues={new Set(settings.startupComputerIds)}
+                      onChange={(selected) => { void updateSettings({ startupComputerIds: [...selected] }) }}
+                      label="Startup computers"
+                      inputLabel="Add computer at startup"
+                      placeholder="Select computers…"
+                      listLabel="Available startup computers"
+                      selectedLabel="Selected startup computers"
+                      emptyMessage="No computers available."
                     />
                   </ListRowDetails>
                 )}

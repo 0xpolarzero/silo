@@ -22,21 +22,21 @@ export function initialBackupArchive(source: ApplicationSource): BackupArchive {
     completedLabel: source.backup.completedLabel,
     size: source.backup.compressedSize,
     destination: source.backup.destination,
-    sandboxes: source.workspaces.filter(({ machine }) => machine.kind === "vm").map(({ machine }) => machine.name),
+    computers: source.computers.map(({ configuration }) => configuration.name),
   }
 }
 
 const backupPhases: Array<[string, string]> = [
-  ["Prepare export", "Saving a checkpoint after flushing sandbox files."],
+  ["Prepare export", "Saving a checkpoint after flushing computer files."],
   ["Save disk copies", "Saving each managed disk."],
   ["Write and verify export file", "Writing a self-contained export file."],
   ["Finalize export", "Saving the durable result."],
 ]
 const restorePhases: Array<[string, string]> = [
   ["Validate export", "Checking the manifest and checksum."],
-  ["Create new sandbox", "Writing managed disk data."],
-  ["Apply Silo settings", "Importing the sandbox settings."],
-  ["Verify new sandbox", "Checking the new stopped sandbox."],
+  ["Create new computer", "Writing managed disk data."],
+  ["Apply Silo settings", "Importing the computer settings."],
+  ["Verify new computer", "Checking the new stopped computer."],
 ]
 
 function phasesFor(operation: BackupOperationKind, step: number): BackupPhase[] {
@@ -60,13 +60,13 @@ type RunningFixture = { operation: BackupOperationKind; archive: BackupArchive; 
 function resultFor(running: RunningFixture, mode: BackupFixtureMode): Extract<BackupOperation, { kind: "result" }> {
   const common = { operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }) }
   if (running.operation === "backup") {
-    if (mode === "stop-failed") return { ...common, kind: "result", outcome: "failed", title: "Export could not start", message: "dev could not be saved. No export file was created.", detail: "No sandbox data changed." }
+    if (mode === "stop-failed") return { ...common, kind: "result", outcome: "failed", title: "Export could not start", message: "dev could not be saved. No export file was created.", detail: "No computer data changed." }
     if (mode === "capture-failed") return { ...common, kind: "result", outcome: "failed", title: "Could not save the disk copy", message: "The disk copy failed. No export file was created.", detail: "Earlier exports were not changed." }
     if (mode === "backup-failed") return { ...common, kind: "result", outcome: "failed", title: "Export could not be verified", message: "The destination disconnected while writing. The incomplete temporary file was removed.", detail: "Earlier exports were not changed." }
     return { ...common, kind: "result", outcome: "success", title: "Export ready", message: `${running.archive.name} · ${running.archive.size} · checksum verified`, detail: `Saved in ${running.archive.destination}.` }
   }
-  if (mode === "restore-failed") return { ...common, kind: "result", outcome: "failed", title: "Import did not complete", message: `The new disk failed verification. The incomplete ${running.targetName} sandbox was removed.`, detail: "The export file and existing sandboxes were not changed." }
-  return { ...common, kind: "result", outcome: "success", title: `${running.targetName} is ready`, message: "The new sandbox was imported and verified. It is stopped.", detail: "Disk files and settings were imported; running programs were not." }
+  if (mode === "restore-failed") return { ...common, kind: "result", outcome: "failed", title: "Import did not complete", message: `The new disk failed verification. The incomplete ${running.targetName} computer was removed.`, detail: "The export file and existing computers were not changed." }
+  return { ...common, kind: "result", outcome: "success", title: `${running.targetName} is ready`, message: "The new computer was imported and verified. It is stopped.", detail: "Disk files and settings were imported; running programs were not." }
 }
 
 export function useBackupFixture({ source, previewMode = "success", onRestoreComplete, initialResult }: BackupFixtureOptions): BackupController {
@@ -101,14 +101,14 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
   function start(operation: BackupOperationKind, archive: BackupArchive, selected: string[], targetName?: string) {
     setResult(null)
     setResultUnseen(false)
-    setRunning({ operation, archive, targetName, step: 0, runningNames: source.workspaces.filter(({ machine, state }) => selected.includes(machine.name) && state === "running").map(({ machine }) => machine.name) })
+    setRunning({ operation, archive, targetName, step: 0, runningNames: source.computers.filter(({ configuration, state }) => selected.includes(configuration.name) && state === "running").map(({ configuration }) => configuration.name) })
   }
 
-  function startBackup(destination: string, sandboxes: string[], checkpointId?: string) {
-    const base = sandboxes.length === 1 ? sandboxes[0] : "Silo-Export"
+  function startBackup(destination: string, computers: string[], checkpointId?: string) {
+    const base = computers.length === 1 ? computers[0] : "Silo-Export"
     const name = `${base}${checkpointId ? "-checkpoint" : ""}-${new Date().toISOString().slice(0, 10)}.silo-backup`
-    const checkpointName = checkpointId ? source.workspaces.find(({ machine }) => machine.name === sandboxes[0])?.checkpoints?.find(({ id }) => id === checkpointId)?.name : undefined
-    start("backup", { name, archivePath: `${destination}/${name}`, completedLabel: "Just now", size: source.backup.compressedSize, destination, sandboxes, ...(checkpointName && { checkpointName }) }, sandboxes)
+    const checkpointName = checkpointId ? source.computers.find(({ configuration }) => configuration.name === computers[0])?.checkpoints?.find(({ id }) => id === checkpointId)?.name : undefined
+    start("backup", { name, archivePath: `${destination}/${name}`, completedLabel: "Just now", size: source.backup.compressedSize, destination, computers, ...(checkpointName && { checkpointName }) }, computers)
   }
 
   return {
@@ -117,7 +117,7 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
       availability: "available",
       requiredSpaceGB: previewMode === "restore-storage" ? 24 : 32,
       availableSpaceGB: previewMode === "space-blocked" ? 19 : previewMode === "restore-storage" ? 15 : 86,
-      unsupportedStorage: previewMode === "unsupported-storage" ? { sandbox: "dev", label: "Client files" } : undefined,
+      unsupportedStorage: previewMode === "unsupported-storage" ? { computer: "dev", label: "Client files" } : undefined,
       archives,
       ...(resultUnseen && !running && result && { resultUnseen: true }),
       operation: running ? { kind: "running", operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), progress: 18 + running.step * 25, phases: phasesFor(running.operation, running.step) } : result,
@@ -133,19 +133,19 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
         return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this export file format is newer than this Silo version." } : { archive, valid: true }
       },
       startBackup,
-      exportAndVerify(destination, sandboxes, checkpointId) {
+      exportAndVerify(destination, computers, checkpointId) {
         if (running) return Promise.reject(new ExportIncompleteError("busy", "Another export or import is running."))
-        startBackup(destination, sandboxes, checkpointId)
+        startBackup(destination, computers, checkpointId)
         return new Promise<VerifiedExport>((resolve, reject) => { awaitedExport.current = { operationId: `fixture-export-${Date.now()}`, resolve, reject } })
       },
-      startRestore: (archive, newName) => start("restore", archive, archive.sandboxes, newName),
+      startRestore: (archive, newName) => start("restore", archive, archive.computers, newName),
       cancelOperation() {
         if (!running) return
         if (running.operation === "backup" && awaitedExport.current) {
           awaitedExport.current.reject(new ExportIncompleteError("cancelled", "The operation was cancelled.", awaitedExport.current.operationId))
           awaitedExport.current = null
         }
-        setResult({ operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), kind: "result", outcome: "cancelled", title: running.operation === "backup" ? "Export cancelled" : "Import cancelled", message: running.operation === "backup" ? "The export was cancelled." : "The import was cancelled.", detail: running.operation === "backup" ? "No export file was saved." : "No sandbox was added. The export file was not changed." })
+        setResult({ operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), kind: "result", outcome: "cancelled", title: running.operation === "backup" ? "Export cancelled" : "Import cancelled", message: running.operation === "backup" ? "The export was cancelled." : "The import was cancelled.", detail: running.operation === "backup" ? "No export file was saved." : "No computer was added. The export file was not changed." })
         setResultUnseen(false)
         setRunning(null)
       },
@@ -157,7 +157,7 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
 
 export function useUnavailableBackup(source: ApplicationSource): BackupController {
   return {
-    state: { snapshotId: JSON.stringify(source.backup), availability: "unavailable", availabilityMessage: "Export and import are not available in this Silo build. No sandbox data was changed.", requiredSpaceGB: 0, archives: [], operation: null },
+    state: { snapshotId: JSON.stringify(source.backup), availability: "unavailable", availabilityMessage: "Export and import are not available in this Silo build. No computer data was changed.", requiredSpaceGB: 0, archives: [], operation: null },
     actions: {
       chooseDestination: async () => null,
       chooseArchive: async () => null,

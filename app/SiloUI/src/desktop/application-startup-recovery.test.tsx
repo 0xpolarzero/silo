@@ -38,7 +38,7 @@ vi.mock("./production-surface", () => ({
   ProductionSurface: () => <p>Silo application</p>,
 }))
 
-it("paints at once, does not wait for the saved sandbox list, and retries a failed start", async () => {
+it("paints at once, does not wait for the saved computer list, and retries a failed start", async () => {
   let releaseSettings!: () => void
   const settingsReady = new Promise<void>((resolve) => { releaseSettings = resolve })
   let failures = 1
@@ -59,7 +59,7 @@ it("paints at once, does not wait for the saved sandbox list, and retries a fail
   expect(native.production.loadConfiguration).toHaveBeenCalledOnce()
   expect(native.integrations.initialize).toHaveBeenCalledOnce()
   await act(async () => { releaseSettings() })
-  expect(await screen.findByRole("alert")).toHaveTextContent("Silo startup failed: settings lock unavailable. No sandbox state changed.")
+  expect(await screen.findByRole("alert")).toHaveTextContent("Silo startup failed: settings lock unavailable. No computer state changed.")
   expect(native.production.initialize).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole("button", { name: "Retry" }))
   // The saved list never answered: it only feeds the loading skeleton, so it cannot block startup.

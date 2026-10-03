@@ -10,7 +10,7 @@ export const PREPARATION_SHOW_DELAY_MS = 400
 export const PREPARATION_HIDE_DELAY_MS = 1200
 
 /**
- * One non-blocking notification for what this computer prepares in the background at launch
+ * One non-blocking notification for what this device prepares in the background at launch
  * (the VM image, LCU, ChatGPT for Linux): the current item while it works, a short message
  * with Retry when something fails, and nothing once everything is ready. Renders nothing itself.
  */

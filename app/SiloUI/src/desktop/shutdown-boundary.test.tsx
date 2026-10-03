@@ -25,19 +25,19 @@ beforeEach(() => {
 
 it("shows shutdown progress and disables the existing screen until native failure cancels Quit", async () => {
   const user = userEvent.setup()
-  render(<ShutdownBoundary><input aria-label="Sandbox name" defaultValue="My sandbox" /><button>Create VM</button></ShutdownBoundary>)
+  render(<ShutdownBoundary><input aria-label="Computer name" defaultValue="My computer" /><button>Create VM</button></ShutdownBoundary>)
   await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
   screen.getByRole("button", { name: "Create VM" }).focus()
   act(() => native.receive({ payload: true }))
   expect(screen.getByRole("dialog", { name: "Quitting Silo" })).toBeVisible()
-  expect(screen.getByRole("status")).toHaveTextContent("Stopping local sandboxes…")
+  expect(screen.getByRole("status")).toHaveTextContent("Stopping local computers…")
   expect(screen.getByText("Create VM").closest("[inert]")).not.toBeNull()
   await user.keyboard("{Escape}{Tab}{Enter}")
   expect(screen.getByRole("dialog", { name: "Quitting Silo" })).toHaveFocus()
   act(() => native.receive({ payload: false }))
   expect(screen.queryByRole("status")).not.toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Create VM" }).closest("[inert]")).toBeNull()
-  expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveValue("My sandbox")
+  expect(screen.getByRole("textbox", { name: "Computer name" })).toHaveValue("My computer")
   await vi.waitFor(() => expect(screen.getByRole("button", { name: "Create VM" })).toHaveFocus())
 })
 it("reads active shutdown when a window opens after the event", async () => {
@@ -47,7 +47,7 @@ it("reads active shutdown when a window opens after the event", async () => {
     throw new Error(`Unexpected command: ${command}`)
   })
   const view = render(<ShutdownBoundary compact><button>Quit Silo</button></ShutdownBoundary>)
-  expect(await screen.findByRole("status")).toHaveTextContent("Stopping local sandboxes…")
+  expect(await screen.findByRole("status")).toHaveTextContent("Stopping local computers…")
   view.unmount()
   // While quitting the boundary holds two subscriptions: shutdown state and the
   // operation queue it reads for the overlay. Both are released on unmount.
@@ -55,20 +55,20 @@ it("reads active shutdown when a window opens after the event", async () => {
 })
 it("names the running work Quit waits for and cancels only cancellable entries on request", async () => {
   const queue = { running: [
-    { id: 7, label: "Stopping local sandboxes", kind: "shutdown", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false },
-    { id: 8, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false },
+    { id: 7, label: "Stopping local computers", kind: "shutdown", computerId: null, computerName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false },
+    { id: 8, label: "Backing up computers", computerId: null, computerName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false },
   ], waiting: [] }
   native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? queue : name === "read_shutdown_state" ? false : true)
   render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
   await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
   act(() => native.receive({ payload: true }))
-  expect(await screen.findByText("Waiting for Backing up sandboxes…")).toBeVisible()
+  expect(await screen.findByText("Waiting for Backing up computers…")).toBeVisible()
   await userEvent.setup().click(screen.getByRole("button", { name: "Cancel and quit" }))
   expect(native.invoke).toHaveBeenCalledWith("cancel_operation", { id: 8 })
   expect(native.invoke).not.toHaveBeenCalledWith("cancel_operation", { id: 7 })
 })
-it("names the local sandbox Quit is stopping", async () => {
-  const queue = { running: [{ id: 7, label: "Stopping dev (1 of 2)", kind: "shutdown", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false }], waiting: [] }
+it("names the local computer Quit is stopping", async () => {
+  const queue = { running: [{ id: 7, label: "Stopping dev (1 of 2)", kind: "shutdown", computerId: null, computerName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false }], waiting: [] }
   native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? queue : name === "read_shutdown_state" ? false : true)
   render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
   await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
@@ -77,7 +77,7 @@ it("names the local sandbox Quit is stopping", async () => {
   expect(screen.queryByRole("button", { name: "Cancel and quit" })).not.toBeInTheDocument()
 })
 it("waits for non-cancellable running work and offers no cancel control", async () => {
-  const queue = { running: [{ id: 9, label: "Installing update", vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  const queue = { running: [{ id: 9, label: "Installing update", computerId: null, computerName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false }], waiting: [] }
   native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? queue : name === "read_shutdown_state" ? false : true)
   render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
   await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
@@ -106,11 +106,11 @@ it("names pending setup work Quit waits for when no queued operation runs", asyn
   await act(async () => { native.receive({ payload: true }) })
   expect(screen.getByRole("status")).toHaveTextContent("Finishing setup (verifying GitHub access)…")
   view.rerender(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
-  expect(screen.getByRole("status")).toHaveTextContent("Stopping local sandboxes…")
+  expect(screen.getByRole("status")).toHaveTextContent("Stopping local computers…")
 })
 
 it("keeps the newest queue read when an earlier one answers last", async () => {
-  const entry = (id: number, label: string) => ({ id, label, vmId: null, vmName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false })
+  const entry = (id: number, label: string) => ({ id, label, computerId: null, computerName: null, sinceMs: 0, cancellable: false, expectedMs: null, blockedByHidden: false })
   const reads: Array<(value: unknown) => void> = []
   native.invoke.mockImplementation((name: string) => name === "read_operation_queue"
     ? new Promise(resolve => { reads.push(resolve) })
@@ -123,9 +123,9 @@ it("keeps the newest queue read when an earlier one answers last", async () => {
   await vi.waitFor(() => expect(reads).toHaveLength(2))
   // The newer read (after the queue changed) answers first; the older, outdated read last.
   await act(async () => reads[1]({ running: [entry(2, "Installing update")], waiting: [] }))
-  await act(async () => reads[0]({ running: [entry(1, "Backing up sandboxes")], waiting: [] }))
+  await act(async () => reads[0]({ running: [entry(1, "Backing up computers")], waiting: [] }))
   expect(screen.getByText("Waiting for Installing update…")).toBeVisible()
-  expect(screen.queryByText("Waiting for Backing up sandboxes…")).not.toBeInTheDocument()
+  expect(screen.queryByText("Waiting for Backing up computers…")).not.toBeInTheDocument()
 })
 
 it("observes work that starts while the queue listener is still registering", async () => {
@@ -146,9 +146,9 @@ it("observes work that starts while the queue listener is still registering", as
   await act(async () => { native.receive({ payload: true }) })
   await vi.waitFor(() => expect(subscribe).toBeTypeOf("function"))
   // This native queue change precedes registration, so it cannot deliver an event.
-  queue = { running: [{ id: 8, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  queue = { running: [{ id: 8, label: "Backing up computers", computerId: null, computerName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
   await act(async () => subscribe())
-  expect(await screen.findByText("Waiting for Backing up sandboxes…")).toBeVisible()
+  expect(await screen.findByText("Waiting for Backing up computers…")).toBeVisible()
   expect(screen.getByRole("button", { name: "Cancel and quit" })).toBeVisible()
 })
 
@@ -175,13 +175,13 @@ it("keeps running work and cancellation visible when the queue subscription fail
     native.receive = receive
     return native.stop
   })
-  const queue = { running: [{ id: 8, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  const queue = { running: [{ id: 8, label: "Backing up computers", computerId: null, computerName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
   native.invoke.mockImplementation(async (command: string) => command === "read_operation_queue" ? queue : false)
   try {
     render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
     await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
     await act(async () => { native.receive({ payload: true }) })
-    expect(await screen.findByText("Waiting for Backing up sandboxes…")).toBeVisible()
+    expect(await screen.findByText("Waiting for Backing up computers…")).toBeVisible()
     await userEvent.setup().click(screen.getByRole("button", { name: "Cancel and quit" }))
     expect(native.invoke).toHaveBeenCalledWith("cancel_operation", { id: 8 })
   } finally { logged.mockRestore() }

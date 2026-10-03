@@ -15,13 +15,13 @@ describe("production directory replies", () => {
     const invoke = vi.fn().mockResolvedValueOnce(page(["cached"], 1))
       .mockResolvedValueOnce(malformed).mockResolvedValueOnce(page(["older"]))
     const production = createProductionSource({ invoke, listen: vi.fn() } as unknown as ProductionBridge)
-    const store = createDirectoryStore(production.applicationActions.listWorkspaceDirectory)
-    const workspace = "silo-remote:office:dev"
+    const store = createDirectoryStore(production.applicationActions.listComputerDirectory)
+    const computer = "silo-remote:office:dev"
     const path = "/workspace"
-    const key = directoryKey(workspace, path)
+    const key = directoryKey(computer, path)
     try {
-      await store.load(workspace, path)
-      await store.load(workspace, path, { more: true })
+      await store.load(computer, path)
+      await store.load(computer, path, { more: true })
 
       expect(store.getSnapshot(key)).toMatchObject({
         entries: [entry("cached")], snapshotId: "snapshot", nextOffset: 1,
@@ -29,13 +29,13 @@ describe("production directory replies", () => {
       })
       expect(JSON.stringify(store.getSnapshot(key))).not.toContain("private-backend-data")
 
-      await store.load(workspace, path, { more: true })
+      await store.load(computer, path, { more: true })
 
       expect(store.getSnapshot(key)).toMatchObject({ entries: [entry("cached"), entry("older")], nextOffset: null, error: null })
       expect(invoke.mock.calls).toEqual([
-        ["list_workspace_directory", { workspace, path, offset: 0, snapshotId: null }],
-        ["list_workspace_directory", { workspace, path, offset: 1, snapshotId: "snapshot" }],
-        ["list_workspace_directory", { workspace, path, offset: 1, snapshotId: "snapshot" }],
+        ["list_computer_directory", { computer, path, offset: 0, snapshotId: null }],
+        ["list_computer_directory", { computer, path, offset: 1, snapshotId: "snapshot" }],
+        ["list_computer_directory", { computer, path, offset: 1, snapshotId: "snapshot" }],
       ])
     } finally { store.dispose(); production.dispose() }
   })

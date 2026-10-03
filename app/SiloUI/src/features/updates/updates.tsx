@@ -44,13 +44,13 @@ export function UpdatesCard() {
           actions={<InlineConfirmation active={confirm} onDismiss={updates.cancelInstall}>
             {confirm && installing && state ? <span className="flex shrink-0 gap-1.5">
               <Button size="xs" variant="outline" disabled={busy} onClick={updates.cancelInstall}>Cancel</Button>
-              <Button size="xs" disabled={busy || !state.canInstall} onClick={() => updates.install(true)}>Stop sandboxes and update</Button>
+              <Button size="xs" disabled={busy || !state.canInstall} onClick={() => updates.install(true)}>Stop computers and update</Button>
             </span> : state?.phase === "available" && state.packageKind === "debian" ? <Button size="xs" variant="outline" disabled={busy || !state.canInstall} onClick={requestInstall}>Update</Button>
               : state?.phase === "available" ? <Button size="xs" variant="outline" disabled={busy} onClick={state.packageKind === "manual" ? updates.openRelease : updates.download}>{state.packageKind === "manual" ? "View installers on GitHub" : "Download update"}</Button>
               : state?.phase === "ready" ? <Button size="xs" variant="outline" disabled={busy || !state.canInstall} onClick={requestInstall}>Restart and update</Button>
                 : error || state?.phase === "downloading" || state?.phase === "installing" ? null : <Button size="xs" variant="outline" disabled={busy || !state} onClick={updates.check}><RefreshCw aria-hidden="true" className="size-3" />Check for updates</Button>}
           </InlineConfirmation>} />
-        {confirm && installing && state && <p className="px-2 pb-2 text-[11px] text-muted-foreground">{state.runningSandboxes.join(", ")} will stop and restart after updating. Save your work before continuing.</p>}
+        {confirm && installing && state && <p className="px-2 pb-2 text-[11px] text-muted-foreground">{state.runningComputers.join(", ")} will stop and restart after updating. Save your work before continuing.</p>}
         {state?.phase === "downloading" && <div className="px-2 pb-2">
           <div role="progressbar" aria-label="Update download" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-valuetext={percent === undefined ? `${state.downloadedBytes.toLocaleString()} bytes downloaded` : `${percent}%`} className="h-1 overflow-hidden rounded-full bg-muted">
             <div className={percent === undefined ? "h-full w-1/3 animate-pulse bg-primary motion-reduce:animate-none" : "h-full bg-primary"} style={percent === undefined ? undefined : { width: `${percent}%` }} />
@@ -64,7 +64,7 @@ export function UpdatesCard() {
         {state?.packageKind === "manual" && state.phase === "available" && <details className="px-2 pb-2 text-[11px] text-muted-foreground">
           <summary className="cursor-pointer">How to install</summary>
           <div className="mt-1 grid gap-2">
-            <p>Quit Silo before installing. Quitting stops local sandboxes.</p>
+            <p>Quit Silo before installing. Quitting stops local computers.</p>
             <p>On Ubuntu, use Software Updater if you enabled Silo’s software source. If it shows no update, refresh the package list and upgrade Silo in Terminal:</p>
             <code className="whitespace-pre-wrap break-words">sudo apt update &amp;&amp; sudo apt install --only-upgrade silo</code>
             <p>For a manual download, open Assets on GitHub and choose the installer for your system. If the Debian installer does not open, install it in Terminal, replacing the path below with the downloaded file:</p>

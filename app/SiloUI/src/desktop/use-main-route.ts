@@ -5,10 +5,10 @@ import { z } from "zod"
 import type { StatusBarRoute } from "@/features/status-bar/status-bar-types"
 
 const routeShape = z.object({
-  tab: z.enum(["workspaces", "github", "secrets", "system", "settings"]).optional(),
-  workspaceSection: z.enum(["overview", "files", "logs", "network", "activity"]).optional(),
-  workspace: z.string().optional(),
-  sandboxTab: z.enum(["overview", "checkpoints", "storage", "access"]).optional(),
+  tab: z.enum(["computers", "github", "secrets", "system", "settings"]).optional(),
+  computerSection: z.enum(["overview", "files", "logs", "network", "activity"]).optional(),
+  computer: z.string().optional(),
+  computerTab: z.enum(["overview", "checkpoints", "storage", "access"]).optional(),
 }).strict()
 
 export function useMainRoute(enabled: boolean) {

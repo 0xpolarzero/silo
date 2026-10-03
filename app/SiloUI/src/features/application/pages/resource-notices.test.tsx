@@ -15,17 +15,17 @@ describe("operation-owned resource notices", () => {
   })
 
   it("advises for the selected VM and keeps Start anyway", async () => {
-    const startWorkspace = vi.fn()
-    render(<ApplicationPreview source={withResourceFixture(applicationSourceForScenario("running", undefined, "stopped"), "start-memory")} actions={{ startWorkspace }} />)
+    const startComputer = vi.fn()
+    render(<ApplicationPreview source={withResourceFixture(applicationSourceForScenario("running", undefined, "stopped"), "start-memory")} actions={{ startComputer }} />)
     fireEvent.click(screen.getByRole("button", { name: "Start playgrounds" }))
     expect(screen.queryByText(/memory pressure/i)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Start dev" }))
     // The question opens next to the Start button that asked it.
-    const prompt = screen.getByText("Starting dev may slow this computer").closest<HTMLElement>("[data-slot=popover-content]")!
+    const prompt = screen.getByText("Starting dev may slow this device").closest<HTMLElement>("[data-slot=popover-content]")!
     expect(prompt).toHaveTextContent("32 GiB")
-    expect(startWorkspace).not.toHaveBeenCalledWith("dev")
+    expect(startComputer).not.toHaveBeenCalledWith("dev")
     fireEvent.click(within(prompt).getByRole("button", { name: "Start anyway" }))
-    await waitFor(() => expect(startWorkspace).toHaveBeenCalledWith("dev"))
+    await waitFor(() => expect(startComputer).toHaveBeenCalledWith("dev"))
   })
 
   it("blocks Create only after the user saves the affected VM", async () => {
@@ -34,20 +34,20 @@ describe("operation-owned resource notices", () => {
     expect(screen.queryByText(/Not enough storage/i)).not.toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    fireEvent.change(screen.getByRole("textbox", { name: "Sandbox name" }), { target: { value: "sandbox" } })
+    await user.click(screen.getByRole("menuitem", { name: "New computer" }))
+    fireEvent.change(screen.getByRole("textbox", { name: "Computer name" }), { target: { value: "computer" } })
     fireEvent.click(screen.getByRole("button", { name: "Create" }))
 
-    expect((await screen.findAllByText(/Not enough storage to create sandbox.*18 GiB is needed.*11 GiB is available/)).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText(/Not enough storage to create computer.*18 GiB is needed.*11 GiB is available/)).length).toBeGreaterThan(0)
   })
 
   it("reports unavailable native VM actions without changing fixture state", async () => {
-    const startWorkspace = vi.fn()
-    render(<><Toaster /><ApplicationPreview source={applicationSourceForScenario("running", undefined, "stopped")} nativeOperations actions={{ startWorkspace }} /></>)
+    const startComputer = vi.fn()
+    render(<><Toaster /><ApplicationPreview source={applicationSourceForScenario("running", undefined, "stopped")} nativeOperations actions={{ startComputer }} /></>)
 
     fireEvent.click(screen.getByRole("button", { name: "Start dev" }))
 
-    expect(await screen.findByText("Sandbox operation unavailable")).toBeVisible()
-    expect(startWorkspace).not.toHaveBeenCalled()
+    expect(await screen.findByText("Computer operation unavailable")).toBeVisible()
+    expect(startComputer).not.toHaveBeenCalled()
   })
 })

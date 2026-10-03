@@ -1,53 +1,47 @@
 import { z } from "zod"
 
 import {
-  setupMachineConfigurationRequestSchema,
-  setupSSHMachineConfigurationSchema,
-  setupVirtualMachineConfigurationSchema,
+  setupComputerConfigurationRequestSchema,
+  setupComputerConfigurationSchema,
 } from "@/contracts/silo"
 import { onboardingSteps } from "@/features/onboarding/model/onboarding-state"
 
 // Recovery stores unfinished input. Existing Save validation still decides
-// whether these values can become a machine configuration.
-const unfinishedMachineSchema = z.discriminatedUnion("kind", [
-  z.object({
-    ...setupVirtualMachineConfigurationSchema.shape,
-    name: z.string(),
-    cpus: z.number(),
-    maxCPUs: z.number(),
-    workspaceStorageGiB: z.number(),
-    runtimeStorageGiB: z.number(),
-    memoryGiB: z.number(),
-    maxMemoryGiB: z.number(),
-  }).strict(),
-  setupSSHMachineConfigurationSchema.extend({
-    name: z.string(), host: z.string(), user: z.string(), port: z.number(),
-  }).strict(),
-])
+// whether these values can become a configuration configuration.
+const unfinishedComputerSchema = z.object({
+  ...setupComputerConfigurationSchema.shape,
+  name: z.string(),
+  cpus: z.number(),
+  maxCPUs: z.number(),
+  workspaceStorageGiB: z.number(),
+  runtimeStorageGiB: z.number(),
+  memoryGiB: z.number(),
+  maxMemoryGiB: z.number(),
+}).strict()
 
-export const machineEditorDraftSchema = z.object({
-  draft: unfinishedMachineSchema,
+export const computerEditorDraftSchema = z.object({
+  draft: unfinishedComputerSchema,
   originalID: z.uuid().optional(),
   insertAt: z.number().int().nonnegative(),
   displayAfterID: z.uuid().optional(),
 }).strict()
 
-export type MachineEditorDraft = z.infer<typeof machineEditorDraftSchema>
+export type ComputerEditorDraft = z.infer<typeof computerEditorDraftSchema>
 
 export const onboardingDraftSchema = z.object({
   currentStep: z.enum(onboardingSteps),
-  machines: setupMachineConfigurationRequestSchema.shape.machines,
-  unfinishedMachineEditor: machineEditorDraftSchema.nullable(),
-  workspaceSelections: z.record(z.string(), z.array(z.object({
+  computers: setupComputerConfigurationRequestSchema.shape.computers,
+  unfinishedComputerEditor: computerEditorDraftSchema.nullable(),
+  computerSelections: z.record(z.string(), z.array(z.object({
     repository: z.string(),
     allowPushes: z.boolean(),
   }).strict())),
-  workspaceRepositoryAccess: z.record(z.string(), z.object({ authenticationMethod: z.enum(["oauth", "token"]).optional(), repositoryMode: z.enum(["selected", "all"]), allRepositoriesAllowChanges: z.boolean() }).strict()).optional(),
-  workspaceIdentities: z.record(z.string(), z.object({
+  computerRepositoryAccess: z.record(z.string(), z.object({ authenticationMethod: z.enum(["oauth", "token"]).optional(), repositoryMode: z.enum(["selected", "all"]), allRepositoriesAllowChanges: z.boolean() }).strict()).optional(),
+  computerIdentities: z.record(z.string(), z.object({
     name: z.string(), email: z.string(), apply: z.boolean(),
   }).strict()),
 }).strict().superRefine((draft, context) => {
-  const result = setupMachineConfigurationRequestSchema.safeParse({ schemaVersion: 1, machines: draft.machines })
+  const result = setupComputerConfigurationRequestSchema.safeParse({ schemaVersion: 1, computers: draft.computers })
   if (!result.success) {
     for (const issue of result.error.issues) context.addIssue({ ...issue })
   }

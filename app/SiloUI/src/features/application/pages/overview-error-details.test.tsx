@@ -8,15 +8,15 @@ import { OverviewPage } from "./overview-page"
 
 const output = Array.from({ length: 30 }, (_, index) => `msb: stage ${index}: exec failed`).join("\n")
 const page = (source: ApplicationSource, actions = {} as ApplicationActions) =>
-  <><Toaster /><OverviewPage source={structuredClone(source)} actions={actions} onMachinesChange={vi.fn()} /></>
+  <><Toaster /><OverviewPage source={structuredClone(source)} actions={actions} onConfigurationsChange={vi.fn()} /></>
 
 it("summarizes a long lifecycle failure and keeps the runtime output behind Details", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.name === "dev")!
-  workspace.state = "stopped"
+  const computer = source.computers.find(item => item.configuration.name === "dev")!
+  computer.state = "stopped"
   const view = render(page(source))
-  workspace.lifecycleFailure = `Start failed: the VM did not boot\n${output}\n[Diagnostic truncated]`
-  workspace.lifecycleFailureAction = "start"
+  computer.lifecycleFailure = `Start failed: the VM did not boot\n${output}\n[Diagnostic truncated]`
+  computer.lifecycleFailureAction = "start"
   view.rerender(page(source))
   expect(await screen.findByText("Could not start dev")).toBeVisible()
   expect(screen.getByText("Start failed: the VM did not boot")).toBeVisible()
@@ -25,30 +25,30 @@ it("summarizes a long lifecycle failure and keeps the runtime output behind Deta
   expect(screen.getByLabelText("Error details")).toHaveTextContent("msb: stage 29: exec failed")
 })
 
-it("summarizes a long sandbox setup failure in the configuration alert", async () => {
+it("summarizes a long computer setup failure in the configuration alert", async () => {
   const source = structuredClone(applicationSourceForScenario("running"))
-  source.sandboxConfigurationOperation = {
+  source.computerConfigurationOperation = {
     id: "setup", status: "failed", result: null, progressEvents: [],
-    candidate: { schemaVersion: 1, machines: source.workspaces.map(({ machine }) => machine) },
-    error: { code: "native_bridge_failed", workspace: null, message: `Sandbox setup failed (exit code 3): ${output}`, recovery: null, retryable: true },
+    candidate: { schemaVersion: 1, computers: source.computers.map(({ configuration }) => configuration) },
+    error: { code: "native_bridge_failed", computer: null, message: `Computer setup failed (exit code 3): ${output}`, recovery: null, retryable: true },
   }
-  render(page(source, { dismissMachineConfigurationError: vi.fn() } as unknown as ApplicationActions))
-  const alert = screen.getAllByRole("alert").find(element => element.textContent?.includes("Sandbox setup failed."))!
-  expect(within(alert).getByText("Sandbox setup failed.")).toBeVisible()
+  render(page(source, { dismissComputerConfigurationError: vi.fn() } as unknown as ApplicationActions))
+  const alert = screen.getAllByRole("alert").find(element => element.textContent?.includes("Computer setup failed."))!
+  expect(within(alert).getByText("Computer setup failed.")).toBeVisible()
   expect(within(alert).queryByText(/exit code/)).not.toBeInTheDocument()
   expect(within(alert).getByRole("button", { name: "Show details" })).toBeVisible()
 })
 
 it("keeps the runtime's separate lifecycle diagnostic available behind Details", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.name === "dev")!
-  workspace.state = "stopped"
+  const computer = source.computers.find(item => item.configuration.name === "dev")!
+  computer.state = "stopped"
   const view = render(page(source))
-  workspace.lifecycleFailure = "The sandbox did not start. Review the details and retry."
-  workspace.lifecycleFailureDiagnostic = output
-  workspace.lifecycleFailureAction = "start"
+  computer.lifecycleFailure = "The computer did not start. Review the details and retry."
+  computer.lifecycleFailureDiagnostic = output
+  computer.lifecycleFailureAction = "start"
   view.rerender(page(source))
-  expect(await screen.findByText(workspace.lifecycleFailure)).toBeVisible()
+  expect(await screen.findByText(computer.lifecycleFailure)).toBeVisible()
   expect(screen.queryByText(/stage 29/)).not.toBeInTheDocument()
   await userEvent.setup().click(screen.getByRole("button", { name: "Show details" }))
   expect(screen.getByLabelText("Error details")).toHaveTextContent("msb: stage 29: exec failed")

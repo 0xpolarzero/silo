@@ -11,10 +11,10 @@ it.each(["network", "ssh"] as const)("marks %s polling as background and bypasse
   vi.useFakeTimers()
   const refresh = vi.fn().mockResolvedValue(undefined)
   const actions = { refreshNetwork: refresh } as unknown as ApplicationActions
-  const workspaces = applicationSourceForScenario("running").workspaces
+  const computers = applicationSourceForScenario("running").computers
   const useRefresh = service === "ssh"
     ? () => useSshAccessRefresh(refresh)
-    : () => useNetworkPorts({ workspaces, actions, active: true })
+    : () => useNetworkPorts({ computers, actions, active: true })
   const { unmount } = renderHook(useRefresh)
   expect(refresh).toHaveBeenCalledExactlyOnceWith({ background: false })
   await act(async () => vi.advanceTimersByTimeAsync(5000))

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 
 import type { ApplicationSource, RepositoryPushOperation } from "@/features/application/model/application-source"
-import { workspaceAvailability } from "@/features/application/model/workspace-availability"
+import { computerAvailability } from "@/features/application/model/computer-availability"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 import { statusBarSourceForFixture, type StatusBarFixtureMode } from "./status-bar-scenarios"
 import { useSettings } from "@/features/preferences/settings-store"
@@ -19,28 +19,28 @@ interface PreviewOperation {
 function completeOperation(source: ApplicationSource, operation: PreviewOperation): ApplicationSource {
   return {
     ...source,
-    workspaces: source.workspaces.map((workspace) => workspace.machine.name === operation.name ? {
-      ...workspace,
+    computers: source.computers.map((computer) => computer.configuration.name === operation.name ? {
+      ...computer,
       state: operation.state,
       stateDetail: operation.state === "running" ? "Running" : "Stopped",
       attention: undefined,
       freshness: "fresh",
-      ports: workspace.ports.map((port, index) => ({ ...port, listening: operation.state === "running" && index === 0 })),
-    } : workspace),
+      ports: computer.ports.map((port, index) => ({ ...port, listening: operation.state === "running" && index === 0 })),
+    } : computer),
   }
 }
 
 function completePush(source: ApplicationSource, operation: RepositoryPushOperation): ApplicationSource {
   return {
     ...source,
-    workspaces: source.workspaces.map((workspace) => workspace.machine.name === operation.workspace ? {
-      ...workspace,
-      repositories: workspace.repositories.map((repository) => repository.path === operation.repositoryPath ? {
+    computers: source.computers.map((computer) => computer.configuration.name === operation.computer ? {
+      ...computer,
+      repositories: computer.repositories.map((repository) => repository.path === operation.repositoryPath ? {
         ...repository,
         ahead: Math.max(0, repository.ahead - operation.commitCount),
       } : repository),
-    } : workspace),
-    repositoryPushOperations: source.repositoryPushOperations.map((current) => current.workspace === operation.workspace && current.repositoryPath === operation.repositoryPath
+    } : computer),
+    repositoryPushOperations: source.repositoryPushOperations.map((current) => current.computer === operation.computer && current.repositoryPath === operation.repositoryPath
       ? { ...operation, status: "succeeded" }
       : current),
   }
@@ -57,15 +57,15 @@ export function useStatusBarFixture(source: ApplicationSource, mode: StatusBarFi
   const snapshot: ApplicationSource = {
     ...settledSnapshot,
     preferences: { ...settledSnapshot.preferences, ...settings },
-    workspaces: settledSnapshot.workspaces.map((workspace) => {
-      const pending = pendingOperations.find(({ name }) => name === workspace.machine.name)
-      return pending ? { ...workspace, state: pending.action === "stopped" ? workspace.state : "starting", stateDetail: pending.title } : workspace
+    computers: settledSnapshot.computers.map((computer) => {
+      const pending = pendingOperations.find(({ name }) => name === computer.configuration.name)
+      return pending ? { ...computer, state: pending.action === "stopped" ? computer.state : "starting", stateDetail: pending.title } : computer
     }),
     activities: [
       ...pendingOperations.map((operation) => ({
         id: `preview-${operation.name}`,
-        workspace: operation.name,
-        category: "sandbox" as const,
+        computer: operation.name,
+        category: "computer" as const,
         status: "running" as const,
         tone: "neutral" as const,
         title: operation.title,
@@ -88,7 +88,7 @@ export function useStatusBarFixture(source: ApplicationSource, mode: StatusBarFi
     }
   }, [])
 
-  function updateWorkspace(name: string, state: PreviewOperation["state"], action: PreviewOperation["action"]) {
+  function updateComputer(name: string, state: PreviewOperation["state"], action: PreviewOperation["action"]) {
     if (operationTimers.current.has(name)) return
     const title = `${action === "started" ? "Starting" : action === "stopped" ? "Stopping" : "Restarting"} ${name}…`
     const operation = { name, state, action, title, occurredAt: new Date().toISOString() }
@@ -119,15 +119,15 @@ export function useStatusBarFixture(source: ApplicationSource, mode: StatusBarFi
   function pushRepository(name: string, repositoryPath: string) {
     const key = JSON.stringify([name, repositoryPath])
     if (pendingPushes.current.has(key)) return
-    const workspace = snapshot.workspaces.find(({ machine }) => machine.name === name)
-    const repository = workspace?.repositories.find(({ path }) => path === repositoryPath)
-    if (!workspace || !repository || repository.ahead <= 0 || !workspaceAvailability(workspace, snapshot).canOpen) return
-    if (snapshot.repositoryPushOperations.some((operation) => operation.workspace === name && operation.repositoryPath === repositoryPath && operation.status === "pushing")) return
-    const operation: RepositoryPushOperation = { workspace: name, repositoryPath, commitCount: repository.ahead, status: "pushing" }
+    const computer = snapshot.computers.find(({ configuration }) => configuration.name === name)
+    const repository = computer?.repositories.find(({ path }) => path === repositoryPath)
+    if (!computer || !repository || repository.ahead <= 0 || !computerAvailability(computer, snapshot).canOpen) return
+    if (snapshot.repositoryPushOperations.some((operation) => operation.computer === name && operation.repositoryPath === repositoryPath && operation.status === "pushing")) return
+    const operation: RepositoryPushOperation = { computer: name, repositoryPath, commitCount: repository.ahead, status: "pushing" }
     setSnapshot((current) => ({
       ...current,
       repositoryPushOperations: [
-        ...current.repositoryPushOperations.filter((pending) => pending.workspace !== name || pending.repositoryPath !== repositoryPath),
+        ...current.repositoryPushOperations.filter((pending) => pending.computer !== name || pending.repositoryPath !== repositoryPath),
         operation,
       ],
     }))
@@ -138,16 +138,16 @@ export function useStatusBarFixture(source: ApplicationSource, mode: StatusBarFi
     pendingPushes.current.set(key, { operation, timer })
   }
 
-  const dismissRepositoryPush = useCallback((workspace: string, repositoryPath: string) => {
+  const dismissRepositoryPush = useCallback((computer: string, repositoryPath: string) => {
     setSnapshot((current) => ({
       ...current,
-      repositoryPushOperations: current.repositoryPushOperations.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath || operation.status !== "succeeded"),
+      repositoryPushOperations: current.repositoryPushOperations.filter((operation) => operation.computer !== computer || operation.repositoryPath !== repositoryPath || operation.status !== "succeeded"),
     }))
   }, [])
 
-  const listWorkspaceDirectory = useMemo(() => fixtureDirectoryLoader(snapshot.workspaces), [snapshot.workspaces])
+  const listComputerDirectory = useMemo(() => fixtureDirectoryLoader(snapshot.computers), [snapshot.computers])
   const actions: StatusBarActions = {
-    listWorkspaceDirectory,
+    listComputerDirectory,
     openSilo: (route) => onOpenSilo(settleOperations(), route),
     quit: () => {
       settleOperations()
@@ -155,12 +155,12 @@ export function useStatusBarFixture(source: ApplicationSource, mode: StatusBarFi
       setAcknowledgement("Silo quit in this preview.")
     },
     refresh: () => {
-      setSnapshot((current) => ({ ...current, workspaces: current.workspaces.map((workspace) => ({ ...workspace, freshness: "fresh" })) }))
-      setAcknowledgement("Preview: sandbox status refreshed.")
+      setSnapshot((current) => ({ ...current, computers: current.computers.map((computer) => ({ ...computer, freshness: "fresh" })) }))
+      setAcknowledgement("Preview: computer status refreshed.")
     },
-    startWorkspace: (name) => updateWorkspace(name, "running", "started"),
-    stopWorkspace: (name) => updateWorkspace(name, "stopped", "stopped"),
-    restartWorkspace: (name) => updateWorkspace(name, "running", "restarted"),
+    startComputer: (name) => updateComputer(name, "running", "started"),
+    stopComputer: (name) => updateComputer(name, "stopped", "stopped"),
+    restartComputer: (name) => updateComputer(name, "running", "restarted"),
     openTerminal: (name) => setAcknowledgement(`Preview: open ${snapshot.preferences.terminal} in ${name}.`),
     openEditor: (name, path) => setAcknowledgement(`Preview: open ${path} in ${snapshot.preferences.editor} on ${name}.`),
     openSite: (name, port) => setAcknowledgement(`Preview: open ${name} port ${port} in ${snapshot.preferences.browser}.`),

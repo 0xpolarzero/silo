@@ -1,30 +1,30 @@
 import { createContext, useContext, useSyncExternalStore } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { parseRemoteWorkspaceTarget } from "@/features/application/model/remote-computers"
+import { parseRemoteComputerTarget } from "@/features/application/model/connections"
 import { chatGptAppStatusSchema, parseChatGptAppStatus, parseLinuxDesktopState, type ChatGptAppStatus, type ComputerUseApproval, type LinuxDesktopState } from "./linux-desktop-state"
 
 /** What built-in computer use needs from its host: the native commands in production,
- * deterministic fixtures in the browser preview. Every computer downloads the ChatGPT app
+ * deterministic fixtures in the browser preview. Every device downloads the ChatGPT app
  * by itself; the commands only read its status and ask it to try again. They take the host
- * id of a remote computer (omitted: this computer). */
+ * id of a remote device (omitted: this device). */
 export interface ComputerUseBackend {
-  readDesktopState(workspace: string): Promise<unknown>
-  setApproval(workspace: string, mode: ComputerUseApproval): Promise<unknown>
-  setup(workspace: string): Promise<unknown>
-  chatGptStatus(computer?: string): Promise<unknown>
-  /** Asks the computer to download the app again now. Resolves at once; progress follows from the status. */
-  retry(computer?: string): Promise<unknown>
-  /** Subscribes to `chatgpt-app-status` events of this computer; resolves to an unsubscribe function. */
+  readDesktopState(computer: string): Promise<unknown>
+  setApproval(computer: string, mode: ComputerUseApproval): Promise<unknown>
+  setup(computer: string): Promise<unknown>
+  chatGptStatus(device?: string): Promise<unknown>
+  /** Asks the device to download the app again now. Resolves at once; progress follows from the status. */
+  retry(device?: string): Promise<unknown>
+  /** Subscribes to `chatgpt-app-status` events of this device; resolves to an unsubscribe function. */
   listenStatus(handler: (status: unknown) => void): Promise<() => void>
 }
 
 export const nativeComputerUseBackend: ComputerUseBackend = {
-  readDesktopState: workspace => invoke("read_desktop_state", { workspace }),
-  setApproval: (workspace, mode) => invoke("set_computer_use_approval", { workspace, mode }),
-  setup: workspace => invoke("desktop_action", { workspace, action: "setup-computer-use" }),
-  chatGptStatus: computer => invoke("chatgpt_app_status", { computer }),
-  retry: computer => invoke("chatgpt_app_retry", { computer }),
+  readDesktopState: computer => invoke("read_desktop_state", { computer }),
+  setApproval: (computer, mode) => invoke("set_computer_use_approval", { computer, mode }),
+  setup: computer => invoke("desktop_action", { computer, action: "setup-computer-use" }),
+  chatGptStatus: device => invoke("chatgpt_app_status", { device }),
+  retry: device => invoke("chatgpt_app_retry", { device }),
   listenStatus: handler => listen("chatgpt-app-status", event => handler(event.payload)),
 }
 
@@ -49,34 +49,34 @@ export interface ChatGptAppStore {
   subscribe(listener: () => void): () => void
   getSnapshot(): ChatGptAppSnapshot
   refresh(): Promise<void>
-  /** Asks the computer to try the download again now. */
+  /** Asks the device to try the download again now. */
   retry(): Promise<void>
   dismissError(): void
 }
 
 export interface ComputerUseBridge {
-  readState(workspace: string): Promise<LinuxDesktopState>
-  setApproval(workspace: string, mode: ComputerUseApproval): Promise<LinuxDesktopState>
-  setup(workspace: string): Promise<LinuxDesktopState>
-  /** The ChatGPT app store of one computer: this one (omitted) or the remote computer with that host id. */
-  chatGptFor(computer?: string): ChatGptAppStore
+  readState(computer: string): Promise<LinuxDesktopState>
+  setApproval(computer: string, mode: ComputerUseApproval): Promise<LinuxDesktopState>
+  setup(computer: string): Promise<LinuxDesktopState>
+  /** The ChatGPT app store of one device: this one (omitted) or the remote device with that device id. */
+  chatGptFor(device?: string): ChatGptAppStore
 }
 
 const message = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
 const LOCAL = "local"
-// A remote computer's status has no events: it is read again on this schedule.
+// A remote device's status has no events: it is read again on this schedule.
 const REMOTE_BUSY_POLL_MS = 3000
 const REMOTE_IDLE_POLL_MS = 15000
 const REMOTE_FAILURE_POLL_MAX_MS = 30000
 const working = (status: ChatGptAppStatus | null) => status?.state === "downloading" || status?.state === "verifying" || status?.state === "extracting" || status?.state === "idle"
 
-/** The host id of the computer that owns a sandbox workspace target, undefined for a local sandbox. */
-export function computerOfWorkspace(workspace: string | undefined): string | undefined {
-  if (!workspace) return undefined
-  try { return parseRemoteWorkspaceTarget(workspace)?.hostId } catch { return undefined }
+/** The device id of the device that owns a computer target, undefined for a local computer. */
+export function deviceOfComputer(computer: string | undefined): string | undefined {
+  if (!computer) return undefined
+  try { return parseRemoteComputerTarget(computer)?.deviceId } catch { return undefined }
 }
 
-function createChatGptAppStore(backend: ComputerUseBackend, computer: string | undefined, pollMs = { busy: REMOTE_BUSY_POLL_MS, idle: REMOTE_IDLE_POLL_MS }): ChatGptAppStore {
+function createChatGptAppStore(backend: ComputerUseBackend, device: string | undefined, pollMs = { busy: REMOTE_BUSY_POLL_MS, idle: REMOTE_IDLE_POLL_MS }): ChatGptAppStore {
   let snapshot: ChatGptAppSnapshot = { status: null, busy: false, error: null, loadError: null, subscriptionError: null }
   const listeners = new Set<() => void>()
   let stopListening: (() => void) | null = null
@@ -104,7 +104,7 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
     const read = ++reads
     const seenEvents = events
     try {
-      const value = await backend.chatGptStatus(computer)
+      const value = await backend.chatGptStatus(device)
       if (read !== reads || seenEvents !== events) return
       const status = parseChatGptAppStatus(value)
       if (status) { failureDelay = 0; set({ status, loadError: null }) }
@@ -121,11 +121,11 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
   }
   const retry = async () => {
     set({ busy: true, error: null })
-    try { await backend.retry(computer) } catch (cause) { set({ error: message(cause) }) } finally { set({ busy: false }) }
+    try { await backend.retry(device) } catch (cause) { set({ error: message(cause) }) } finally { set({ busy: false }) }
     await refresh()
   }
   const schedule = (mine: number) => {
-    if (computer === undefined) return
+    if (device === undefined) return
     window.clearTimeout(timer)
     if (document.visibilityState === "hidden") return
     timer = window.setTimeout(() => {
@@ -136,7 +136,7 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
   const start = () => {
     const mine = ++generation
     const begin = () => {
-      if (mine !== generation || (computer !== undefined && document.visibilityState === "hidden")) return
+      if (mine !== generation || (device !== undefined && document.visibilityState === "hidden")) return
       void refresh().finally(() => { if (mine === generation) schedule(mine) })
     }
     let retryDelay = 1000
@@ -144,7 +144,7 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
     const register = () => {
       if (mine !== generation || registering) return
       registering = true
-      backend.listenStatus(payload => { if (mine === generation && computer === undefined) receive(payload) })
+      backend.listenStatus(payload => { if (mine === generation && device === undefined) receive(payload) })
         .then(stop => {
           if (mine !== generation) { stop(); return }
           registering = false
@@ -155,7 +155,7 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
         }, cause => {
           if (mine !== generation) return
           registering = false
-          if (computer === undefined) {
+          if (device === undefined) {
             set({ subscriptionError: `Silo could not subscribe to ChatGPT for Linux updates: ${message(cause)}` })
             if (document.visibilityState !== "hidden") {
               timer = window.setTimeout(register, retryDelay)
@@ -168,11 +168,11 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
     onVisibilityChange = () => {
       window.clearTimeout(timer)
       if (document.visibilityState === "hidden") return
-      if (computer !== undefined) begin()
+      if (device !== undefined) begin()
       else if (snapshot.subscriptionError) register()
     }
     document.addEventListener("visibilitychange", onVisibilityChange)
-    if (computer === undefined) register()
+    if (device === undefined) register()
     else begin()
   }
   return {
@@ -202,14 +202,14 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
 export function createComputerUseBridge(backend: ComputerUseBackend, pollMs?: { busy: number; idle: number }): ComputerUseBridge {
   const stores = new Map<string, ChatGptAppStore>()
   return {
-    readState: async workspace => parseLinuxDesktopState(await backend.readDesktopState(workspace)),
-    setApproval: async (workspace, mode) => parseLinuxDesktopState(await backend.setApproval(workspace, mode)),
-    setup: async workspace => parseLinuxDesktopState(await backend.setup(workspace)),
-    chatGptFor(computer) {
-      const key = computer || LOCAL
+    readState: async computer => parseLinuxDesktopState(await backend.readDesktopState(computer)),
+    setApproval: async (computer, mode) => parseLinuxDesktopState(await backend.setApproval(computer, mode)),
+    setup: async computer => parseLinuxDesktopState(await backend.setup(computer)),
+    chatGptFor(device) {
+      const key = device || LOCAL
       let store = stores.get(key)
       if (!store) {
-        store = createChatGptAppStore(backend, computer || undefined, pollMs)
+        store = createChatGptAppStore(backend, device || undefined, pollMs)
         stores.set(key, store)
       }
       return store

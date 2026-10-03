@@ -11,56 +11,56 @@ import { OverviewPage } from "./overview-page"
 
 const GiB = 1024 ** 3
 const backup = { state: { availability: "available", operation: null }, actions: {} } as BackupController
-const verified: VerifiedExport = { operationId: "export-dev", archive: { name: "dev", archivePath: "/fixture/dev.silo", completedLabel: "Now", size: "4.2 GiB", destination: "/fixture", sandboxes: ["dev"] } }
+const verified: VerifiedExport = { operationId: "export-dev", archive: { name: "dev", archivePath: "/fixture/dev.silo", completedLabel: "Now", size: "4.2 GiB", destination: "/fixture", computers: ["dev"] } }
 
 for (const entry of ["row", "page"] as const) {
   it(`waits for a verified export before deleting from the ${entry}`, async () => {
     const user = userEvent.setup()
-    const onMachinesChange = vi.fn()
+    const onConfigurationsChange = vi.fn()
     let complete!: (value: VerifiedExport | null) => void
-    const onExportSandbox = vi.fn(() => new Promise<VerifiedExport | null>(resolve => { complete = resolve }))
-    render(<OverviewPage source={stoppedDev()} actions={{} as ApplicationActions} backup={backup} onExportSandbox={onExportSandbox} onMachinesChange={onMachinesChange} />)
+    const onExportComputer = vi.fn(() => new Promise<VerifiedExport | null>(resolve => { complete = resolve }))
+    render(<OverviewPage source={stoppedDev()} actions={{} as ApplicationActions} backup={backup} onExportComputer={onExportComputer} onConfigurationsChange={onConfigurationsChange} />)
     if (entry === "page") await user.click(screen.getByRole("button", { name: "Open dev" }))
     await user.click(screen.getByRole("button", { name: "More actions for dev" }))
     await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
     await user.click(popover().getByRole("button", { name: "Export, then delete" }))
-    expect(onExportSandbox).toHaveBeenCalledWith("dev")
-    expect(onMachinesChange).not.toHaveBeenCalled()
+    expect(onExportComputer).toHaveBeenCalledWith("dev")
+    expect(onConfigurationsChange).not.toHaveBeenCalled()
     complete(verified)
-    await waitFor(() => expect(onMachinesChange).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(onConfigurationsChange).toHaveBeenCalledTimes(1))
   })
 }
 
-it.each(["cancelled", "failed"])("keeps the sandbox when export is %s", async outcome => {
+it.each(["cancelled", "failed"])("keeps the computer when export is %s", async outcome => {
   const user = userEvent.setup()
-  const onMachinesChange = vi.fn()
-  const onExportSandbox = vi.fn(async () => { if (outcome === "failed") throw new Error("Export failed"); return null })
-  render(<OverviewPage source={stoppedDev()} actions={{} as ApplicationActions} backup={backup} onExportSandbox={onExportSandbox} onMachinesChange={onMachinesChange} />)
+  const onConfigurationsChange = vi.fn()
+  const onExportComputer = vi.fn(async () => { if (outcome === "failed") throw new Error("Export failed"); return null })
+  render(<OverviewPage source={stoppedDev()} actions={{} as ApplicationActions} backup={backup} onExportComputer={onExportComputer} onConfigurationsChange={onConfigurationsChange} />)
   await user.click(screen.getByRole("button", { name: "More actions for dev" }))
   await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
   await user.click(popover().getByRole("button", { name: "Export, then delete" }))
-  await waitFor(() => expect(onExportSandbox).toHaveBeenCalled())
-  expect(onMachinesChange).not.toHaveBeenCalled()
+  await waitFor(() => expect(onExportComputer).toHaveBeenCalled())
+  expect(onConfigurationsChange).not.toHaveBeenCalled()
   expect(screen.getByRole("button", { name: "Open dev" })).toBeVisible()
 })
 
-it("keeps a sandbox that started while its export was running", async () => {
+it("keeps a computer that started while its export was running", async () => {
   const user = userEvent.setup()
-  const onMachinesChange = vi.fn()
+  const onConfigurationsChange = vi.fn()
   let complete!: (value: VerifiedExport) => void
-  const onExportSandbox = vi.fn(() => new Promise<VerifiedExport>(resolve => { complete = resolve }))
+  const onExportComputer = vi.fn(() => new Promise<VerifiedExport>(resolve => { complete = resolve }))
   const source = stoppedDev()
-  const view = (current: ApplicationSource) => <><Toaster /><OverviewPage source={current} actions={{} as ApplicationActions} backup={backup} onExportSandbox={onExportSandbox} onMachinesChange={onMachinesChange} /></>
+  const view = (current: ApplicationSource) => <><Toaster /><OverviewPage source={current} actions={{} as ApplicationActions} backup={backup} onExportComputer={onExportComputer} onConfigurationsChange={onConfigurationsChange} /></>
   const { rerender } = render(view(source))
   await user.click(screen.getByRole("button", { name: "More actions for dev" }))
   await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
   await user.click(popover().getByRole("button", { name: "Export, then delete" }))
   const running = structuredClone(source)
-  running.workspaces.find(({ machine }) => machine.name === "dev")!.state = "running"
+  running.computers.find(({ configuration }) => configuration.name === "dev")!.state = "running"
   rerender(view(running))
   complete(verified)
   await waitFor(() => expect(screen.getByText("Could not delete dev")).toBeVisible())
-  expect(onMachinesChange).not.toHaveBeenCalled()
+  expect(onConfigurationsChange).not.toHaveBeenCalled()
 })
 
 function storage(bytes: number): WorkspaceStorageState {
@@ -69,9 +69,9 @@ function storage(bytes: number): WorkspaceStorageState {
 
 function stoppedDev(): ApplicationSource {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
-  source.sandboxConfigurationOperation = null
-  const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
+  source.devices = []
+  source.computerConfigurationOperation = null
+  const dev = source.computers.find(({ configuration }) => configuration.name === "dev")!
   dev.state = "stopped"
   dev.checkpoints = [
     { id: "c1", name: "One", createdAt: "2026-09-25T10:00:00.000Z", scope: "full", reason: "manual" },
@@ -94,39 +94,39 @@ async function expectDeleteDialog() {
   return remove
 }
 
-it("shows one permanent-deletion dialog, with the sandbox's size and checkpoints, from the list row", async () => {
+it("shows one permanent-deletion dialog, with the computer's size and checkpoints, from the list row", async () => {
   const user = userEvent.setup()
-  const onMachinesChange = vi.fn()
+  const onConfigurationsChange = vi.fn()
   const readWorkspaceStorage = vi.fn(async () => storage(4.2 * GiB))
-  render(<OverviewPage source={stoppedDev()} actions={{ readWorkspaceStorage } as unknown as ApplicationActions} onMachinesChange={onMachinesChange} />)
+  render(<OverviewPage source={stoppedDev()} actions={{ readWorkspaceStorage } as unknown as ApplicationActions} onConfigurationsChange={onConfigurationsChange} />)
   await user.click(screen.getByRole("button", { name: "More actions for dev" }))
   await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
   const remove = await expectDeleteDialog()
-  expect(readWorkspaceStorage).toHaveBeenCalledWith(stoppedDev().workspaces.find(({ machine }) => machine.name === "dev")!.machine.id)
+  expect(readWorkspaceStorage).toHaveBeenCalledWith(stoppedDev().computers.find(({ configuration }) => configuration.name === "dev")!.configuration.id)
   await user.click(remove)
-  await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
+  await waitFor(() => expect(onConfigurationsChange).toHaveBeenCalled())
 })
 
-it("shows the same dialog from the sandbox page", async () => {
+it("shows the same dialog from the computer page", async () => {
   const user = userEvent.setup()
-  const onMachinesChange = vi.fn()
+  const onConfigurationsChange = vi.fn()
   const readWorkspaceStorage = vi.fn(async () => storage(4.2 * GiB))
-  render(<OverviewPage source={stoppedDev()} actions={{ readWorkspaceStorage } as unknown as ApplicationActions} onMachinesChange={onMachinesChange} />)
+  render(<OverviewPage source={stoppedDev()} actions={{ readWorkspaceStorage } as unknown as ApplicationActions} onConfigurationsChange={onConfigurationsChange} />)
   await user.click(screen.getByRole("button", { name: "Open dev" }))
   await user.click(screen.getByRole("button", { name: "More actions for dev" }))
   await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
   await user.click(await expectDeleteDialog())
-  await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
-  expect(await screen.findByRole("list", { name: "Configured sandboxes" })).toBeVisible()
+  await waitFor(() => expect(onConfigurationsChange).toHaveBeenCalled())
+  expect(await screen.findByRole("list", { name: "Configured computers" })).toBeVisible()
 })
 
 it("omits the size while it is unknown and never blocks deletion on it", async () => {
   const user = userEvent.setup()
-  const onMachinesChange = vi.fn()
-  render(<OverviewPage source={stoppedDev()} actions={{ readWorkspaceStorage: vi.fn(async () => { throw new Error("offline") }) } as unknown as ApplicationActions} onMachinesChange={onMachinesChange} />)
+  const onConfigurationsChange = vi.fn()
+  render(<OverviewPage source={stoppedDev()} actions={{ readWorkspaceStorage: vi.fn(async () => { throw new Error("offline") }) } as unknown as ApplicationActions} onConfigurationsChange={onConfigurationsChange} />)
   await user.click(screen.getByRole("button", { name: "More actions for dev" }))
   await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
   expect(await popover().findByText("Its files and 2 checkpoints will be deleted. This can't be undone.")).toBeVisible()
   await user.click(popover().getByRole("button", { name: "Delete permanently" }))
-  await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
+  await waitFor(() => expect(onConfigurationsChange).toHaveBeenCalled())
 })

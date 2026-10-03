@@ -16,7 +16,7 @@ export const preparationStatusSchema = z.object({ image: taskSchema, lcu: taskSc
 export type PreparationTask = z.infer<typeof taskSchema>
 export type PreparationStatus = z.infer<typeof preparationStatusSchema>
 
-/** What this computer prepares in the background at launch: the native commands in
+/** What this device prepares in the background at launch: the native commands in
  * production, deterministic fixtures in the browser preview. */
 export interface PreparationBackend {
   read(): Promise<unknown>
@@ -147,7 +147,7 @@ export interface PreparationState {
   retry(): void
 }
 
-/** What this computer is preparing in the background, for the toast and for any action that
+/** What this device is preparing in the background, for the toast and for any action that
  * shows a "waiting for X" step. Without a provider everything reads as ready. */
 export function usePreparationStatus(): PreparationState {
   const store = useContext(PreparationContext)

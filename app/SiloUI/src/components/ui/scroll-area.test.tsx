@@ -7,7 +7,7 @@ import { ScrollBar } from "./scroll-area"
 
 it.each(["vertical", "horizontal"] as const)("gives the %s scrollbar a usable thickness", async (orientation) => {
   const { container } = render(<ScrollAreaPrimitive.Root type="always">
-    <ScrollAreaPrimitive.Viewport>Sandbox content</ScrollAreaPrimitive.Viewport>
+    <ScrollAreaPrimitive.Viewport>Computer content</ScrollAreaPrimitive.Viewport>
     <ScrollBar orientation={orientation} />
   </ScrollAreaPrimitive.Root>)
   const scrollbar = container.querySelector<HTMLElement>("[data-slot=scroll-area-scrollbar]")!

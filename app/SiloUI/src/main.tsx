@@ -111,7 +111,7 @@ function start() {
   function run() {
     void boot().catch((error: unknown) => {
       if (disposed) return
-      const message = `Silo startup failed: ${error instanceof Error ? error.message : String(error)}. No sandbox state changed.`
+      const message = `Silo startup failed: ${error instanceof Error ? error.message : String(error)}. No computer state changed.`
       const retry = () => { root.render(<StartupLoading statusPanel={statusPanel} />); run() }
       root.render(statusPanel ? <StatusPanelUnavailable message={message} retry={retry} /> : <Unavailable message={message} retry={retry} retryLabel="Retry" />)
     })

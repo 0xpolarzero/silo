@@ -1,15 +1,15 @@
-import type { SetupVirtualMachineConfiguration, SiloProgressEvent } from "@/contracts/silo"
+import type { SetupComputerConfiguration, SiloProgressEvent } from "@/contracts/silo"
 import type {
-  ApplicationGitHubWorkspacePolicy,
+  ApplicationGitHubComputerPolicy,
   ApplicationSource,
-  ApplicationWorkspace,
-  GitHubWorkspaceOperation,
+  ApplicationComputer,
+  GitHubComputerOperation,
   RepositoryPushOperation,
   RuntimeRepairPresentation,
-  SandboxConfigurationOperation,
-  WorkspaceState,
+  ComputerConfigurationOperation,
+  ComputerState,
 } from "@/features/application/model/application-source"
-import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
+import { fixtureComputerDefaults } from "@/fixtures/computer-configurations"
 import { repositoryFixtures, type GitHubFixtureState, type ScenarioName } from "@/fixtures/scenarios"
 import {
   applicationActivitiesForFixture,
@@ -17,19 +17,19 @@ import {
   type ActivityFixtureMode,
 } from "@/fixtures/application-activity"
 
-const [devMachine, playgroundsMachine, personalMachine] = fixtureMachineDefaults
+const [devComputer, playgroundsComputer, personalComputer] = fixtureComputerDefaults
 
-export const workspaceFixtureModes = ["running", "starting", "stopped", "warning", "error"] as const
-export type WorkspaceFixtureMode = (typeof workspaceFixtureModes)[number]
+export const computerFixtureModes = ["running", "starting", "stopped", "warning", "error"] as const
+export type ComputerFixtureMode = (typeof computerFixtureModes)[number]
 
-export const sandboxConfigurationFixtureModes = [
+export const computerConfigurationFixtureModes = [
   "add-configuring",
   "add-networking",
   "add-verifying",
   "remove-pending",
-  "workspace-error",
+  "computer-error",
 ] as const
-export type SandboxConfigurationFixtureMode = (typeof sandboxConfigurationFixtureModes)[number]
+export type ComputerConfigurationFixtureMode = (typeof computerConfigurationFixtureModes)[number]
 
 export const systemIssueFixtureModes = ["needed", "checking", "runtime-missing"] as const
 export type SystemIssueFixtureMode = (typeof systemIssueFixtureModes)[number]
@@ -44,19 +44,19 @@ export const githubManagementFixtureModes = [
   "failed",
   "disabled",
   "connected-empty",
-  "missing-host-identity",
+  "missing-device-identity",
   "catalog-unavailable",
 ] as const
 export type GitHubManagementFixtureMode = (typeof githubManagementFixtureModes)[number]
 
-export function workspaceFixtureModeFromSearch(search: string): WorkspaceFixtureMode | undefined {
-  const requested = new URLSearchParams(search).get("sandbox-state")
-  return workspaceFixtureModes.find((mode) => mode === requested)
+export function computerFixtureModeFromSearch(search: string): ComputerFixtureMode | undefined {
+  const requested = new URLSearchParams(search).get("computer-state")
+  return computerFixtureModes.find((mode) => mode === requested)
 }
 
-export function sandboxConfigurationFixtureModeFromSearch(search: string): SandboxConfigurationFixtureMode | undefined {
-  const requested = new URLSearchParams(search).get("sandbox-change")
-  return sandboxConfigurationFixtureModes.find((mode) => mode === requested)
+export function computerConfigurationFixtureModeFromSearch(search: string): ComputerConfigurationFixtureMode | undefined {
+  const requested = new URLSearchParams(search).get("computer-change")
+  return computerConfigurationFixtureModes.find((mode) => mode === requested)
 }
 
 export function systemIssueFixtureModeFromSearch(search: string): SystemIssueFixtureMode | undefined {
@@ -74,14 +74,13 @@ export function githubManagementFixtureModeFromSearch(search: string): GitHubMan
   return githubManagementFixtureModes.find((mode) => mode === requested)
 }
 
-const baseWorkspaces: ApplicationWorkspace[] = [
+const baseComputers: ApplicationComputer[] = [
   {
-    machine: { ...devMachine },
-    purpose: "Primary software development sandbox",
+    configuration: { ...devComputer },
+    purpose: "Primary software development computer",
     state: "running",
     stateDetail: "Running for 2h 18m",
     freshness: "fresh",
-    host: "dev.silo.test",
     repositories: [
       { path: "acme/silo", branch: "main", ahead: 2, behind: 0, dirty: true, repository: "acme/silo", head: "4f1c2d9e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d" },
       { path: "acme/design-system", branch: "next", ahead: 0, behind: 1, dirty: false, repository: "acme/design-system", head: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b" },
@@ -112,12 +111,11 @@ const baseWorkspaces: ApplicationWorkspace[] = [
     secretNames: ["PACKAGE_TOKEN", "DATABASE_URL"],
   },
   {
-    machine: { ...playgroundsMachine },
+    configuration: { ...playgroundsComputer },
     purpose: "Experiments and disposable prototypes",
     state: "stopped",
     stateDetail: "Stopped yesterday",
     freshness: "fresh",
-    host: "playgrounds.silo.test",
     repositories: [{ path: "acme/platform-tools", branch: "main", ahead: 0, behind: 0, dirty: false, repository: "acme/platform-tools", head: "1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c" }],
     files: [
       { name: "experiments", kind: "folder", children: [{ name: "typescript", kind: "folder" }, { name: "rust", kind: "folder" }] },
@@ -125,17 +123,16 @@ const baseWorkspaces: ApplicationWorkspace[] = [
       { name: "README.md", kind: "file" },
     ],
     ports: [],
-    logs: [{ line: "17:02:11  silo  Sandbox stopped cleanly", occurredAt: "2026-09-03T17:02:11Z" }],
+    logs: [{ line: "17:02:11  silo  Computer stopped cleanly", occurredAt: "2026-09-03T17:02:11Z" }],
     githubRepositories: ["acme/platform-tools"],
     secretNames: ["PACKAGE_TOKEN"],
   },
   {
-    machine: { ...personalMachine },
+    configuration: { ...personalComputer },
     purpose: "Personal projects and services",
     state: "stopped",
     stateDetail: "Stopped 4 days ago",
     freshness: "fresh",
-    host: "personal.silo.test",
     repositories: [{ path: "taylor/docs-site", branch: "main", ahead: 0, behind: 0, dirty: false, repository: "taylor/docs-site", head: "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00" }],
     files: [
       { name: "docs-site", kind: "folder", children: [{ name: "content", kind: "folder" }, { name: "public", kind: "folder" }] },
@@ -143,52 +140,52 @@ const baseWorkspaces: ApplicationWorkspace[] = [
       { name: "notes.md", kind: "file" },
     ],
     ports: [],
-    logs: [{ line: "09:41:02  silo  Sandbox stopped cleanly", occurredAt: "2026-08-31T09:41:02Z" }],
+    logs: [{ line: "09:41:02  silo  Computer stopped cleanly", occurredAt: "2026-08-31T09:41:02Z" }],
     githubRepositories: ["taylor/docs-site"],
     secretNames: [],
   },
 ]
 
-function workspacesForScenario(scenario: ScenarioName): ApplicationWorkspace[] {
+function computersForScenario(scenario: ScenarioName): ApplicationComputer[] {
   if (scenario === "complete") {
-    return baseWorkspaces.map((workspace) => ({
-      ...workspace,
+    return baseComputers.map((computer) => ({
+      ...computer,
       state: "running",
       stateDetail: "Running and verified",
-      ports: workspace.ports.length > 0 ? workspace.ports : [{ port: 3000, listening: true, configured: true, hostPort: 3000, scheme: "http" }],
-      checkpoints: workspace.machine.name === "dev"
+      ports: computer.ports.length > 0 ? computer.ports : [{ port: 3000, listening: true, configured: true, hostPort: 3000, scheme: "http" }],
+      checkpoints: computer.configuration.name === "dev"
         ? [
             { id: "checkpoint-dev-1", name: "Before dependency upgrade", createdAt: "2026-09-04T18:00:00Z", scope: "full", reason: "manual" },
             { id: "checkpoint-dev-2", name: "Nightly disk checkpoint", createdAt: "2026-09-05T02:00:00Z", scope: "disk", reason: "manual" },
             { id: "checkpoint-dev-3", name: "Before restore", createdAt: "2026-09-05T09:30:00Z", scope: "full", reason: "before-restore" },
           ]
-        : workspace.checkpoints,
+        : computer.checkpoints,
     }))
   }
   if (scenario === "bootstrap-failure") {
-    return baseWorkspaces.map((workspace) => workspace.machine.name === "dev" ? {
-      ...workspace,
+    return baseComputers.map((computer) => computer.configuration.name === "dev" ? {
+      ...computer,
       state: "failed",
       stateDetail: "Start failed 3m ago",
       attention: { level: "error", message: "Candidate networking did not become ready." },
       freshness: "stale",
-    } : workspace)
+    } : computer)
   }
-  return baseWorkspaces
+  return baseComputers
 }
 
-const fixtureStateDetails: Record<WorkspaceState, string> = {
+const fixtureStateDetails: Record<ComputerState, string> = {
   running: "Running and verified",
   starting: "Starting services",
   stopped: "Stopped",
   failed: "Start failed",
 }
 
-function workspacesForFixtureMode(workspaces: ApplicationWorkspace[], mode?: WorkspaceFixtureMode): ApplicationWorkspace[] {
-  if (!mode) return workspaces
-  const state: WorkspaceState = mode === "error" ? "failed" : mode === "warning" ? "stopped" : mode
-  return workspaces.map((workspace) => ({
-    ...workspace,
+function computersForFixtureMode(computers: ApplicationComputer[], mode?: ComputerFixtureMode): ApplicationComputer[] {
+  if (!mode) return computers
+  const state: ComputerState = mode === "error" ? "failed" : mode === "warning" ? "stopped" : mode
+  return computers.map((computer) => ({
+    ...computer,
     state,
     stateDetail: fixtureStateDetails[state],
     attention: mode === "warning"
@@ -200,8 +197,8 @@ function workspacesForFixtureMode(workspaces: ApplicationWorkspace[], mode?: Wor
   }))
 }
 
-const scratchMachine: SetupVirtualMachineConfiguration = {
-  ...devMachine,
+const scratchComputer: SetupComputerConfiguration = {
+  ...devComputer,
   id: "00000000-0000-4000-8000-000000000004",
   name: "scratch",
   cpus: 4,
@@ -212,14 +209,14 @@ const scratchMachine: SetupVirtualMachineConfiguration = {
 
 const fixtureRevision = "a".repeat(64)
 
-function progressEvent(step: string, workspace: string, fraction: 0 | 1, message: string): SiloProgressEvent {
+function progressEvent(step: string, computer: string, fraction: 0 | 1, message: string): SiloProgressEvent {
   return {
     schemaVersion: 1,
     type: "progress",
-    requestId: "fixture-sandbox-configuration",
-    phase: step === "workspace-verification" ? "verification" : "workspaces",
+    requestId: "fixture-computer-configuration",
+    phase: step === "computer-verification" ? "verification" : "computers",
     step,
-    workspace,
+    computer,
     revision: fixtureRevision,
     fraction,
     message,
@@ -228,47 +225,47 @@ function progressEvent(step: string, workspace: string, fraction: 0 | 1, message
 }
 
 function configurationOperationForFixture(
-  workspaces: ApplicationWorkspace[],
-  mode?: SandboxConfigurationFixtureMode,
-): SandboxConfigurationOperation | null {
+  computers: ApplicationComputer[],
+  mode?: ComputerConfigurationFixtureMode,
+): ComputerConfigurationOperation | null {
   if (!mode) return null
-  const machines = workspaces.map(({ machine }) => machine)
+  const configurations = computers.map(({ configuration }) => configuration)
   const candidate = {
     schemaVersion: 1 as const,
-    machines: mode === "remove-pending"
-      ? machines.filter(({ name }) => name !== "playgrounds")
-      : [...machines, scratchMachine],
+    computers: mode === "remove-pending"
+      ? configurations.filter(({ name }) => name !== "playgrounds")
+      : [...configurations, scratchComputer],
   }
-  const configured = progressEvent("workspace-configuration", "scratch", 1, "Sandbox 'scratch' is configured.")
-  const networkReady = progressEvent("workspace-networking", "scratch", 1, "Candidate networking is ready for 'scratch'.")
+  const configured = progressEvent("computer-configuration", "scratch", 1, "Computer 'scratch' is configured.")
+  const networkReady = progressEvent("computer-networking", "scratch", 1, "Candidate networking is ready for 'scratch'.")
 
-  if (mode === "workspace-error") {
+  if (mode === "computer-error") {
     return {
-      id: "fixture-sandbox-configuration",
+      id: "fixture-computer-configuration",
       status: "failed",
       candidate,
-      progressEvents: [configured, progressEvent("workspace-networking", "scratch", 0, "Candidate networking failed for 'scratch'.")],
+      progressEvents: [configured, progressEvent("computer-networking", "scratch", 0, "Candidate networking failed for 'scratch'.")],
       result: null,
       error: {
         code: "SILO_CANDIDATE_NETWORKING_FAILED",
         message: "Networking failed for 'scratch'.",
-        recovery: "Repair sandbox startup or SSH forwarding, then retry.",
-        workspace: "scratch",
+        recovery: "Repair computer startup or SSH forwarding, then retry.",
+        computer: "scratch",
         retryable: true,
       },
     }
   }
 
   const progressEvents = mode === "add-configuring"
-    ? [progressEvent("workspace-configuration", "scratch", 0, "Configuring sandbox 'scratch'.")]
+    ? [progressEvent("computer-configuration", "scratch", 0, "Configuring computer 'scratch'.")]
     : mode === "add-networking"
-      ? [configured, progressEvent("workspace-networking", "scratch", 0, "Starting candidate networking for 'scratch'.")]
+      ? [configured, progressEvent("computer-networking", "scratch", 0, "Starting candidate networking for 'scratch'.")]
       : mode === "add-verifying"
-        ? [configured, networkReady, progressEvent("workspace-verification", "scratch", 0, "Verifying 'scratch'.")]
+        ? [configured, networkReady, progressEvent("computer-verification", "scratch", 0, "Verifying 'scratch'.")]
         : []
 
   return {
-    id: "fixture-sandbox-configuration",
+    id: "fixture-computer-configuration",
     status: "applying",
     candidate,
     progressEvents,
@@ -279,7 +276,7 @@ function configurationOperationForFixture(
 
 const neededRuntimeRepair: RuntimeRepairPresentation = {
   status: "needed",
-  reason: "Silo could not verify the bundled runtime used to manage sandboxes.",
+  reason: "Silo could not verify the bundled runtime used to manage computers.",
 }
 
 function runtimeRepairForFixture(
@@ -292,14 +289,14 @@ function runtimeRepairForFixture(
   return {
     status: "unavailable",
     reason: "This app build is missing its bundled Silo runtime.",
-    recovery: "Reinstall Silo from a complete app bundle. Keep your existing sandboxes and settings.",
+    recovery: "Reinstall Silo from a complete app bundle. Keep your existing computers and settings.",
   }
 }
 
 function repositoryPushOperationsForFixture(mode?: RepositoryPushFixtureMode): RepositoryPushOperation[] {
   if (!mode) return []
   const operation = {
-    workspace: "dev",
+    computer: "dev",
     repositoryPath: "acme/silo",
     commitCount: 2,
   }
@@ -317,9 +314,9 @@ function repositoryPushOperationsForFixture(mode?: RepositoryPushFixtureMode): R
   }]
 }
 
-const githubWorkspacePolicies: readonly ApplicationGitHubWorkspacePolicy[] = [
+const githubComputerPolicies: readonly ApplicationGitHubComputerPolicy[] = [
   {
-    workspace: "dev",
+    computer: "dev",
     identity: { name: "Taylor Example", email: "taylor@example.com", apply: true },
     repositories: [
       { repository: "acme/silo", allowPushes: true },
@@ -327,33 +324,33 @@ const githubWorkspacePolicies: readonly ApplicationGitHubWorkspacePolicy[] = [
     ],
   },
   {
-    workspace: "playgrounds",
+    computer: "playgrounds",
     identity: { name: "Taylor Example", email: "taylor@example.com", apply: false },
     repositories: [{ repository: "acme/platform-tools", allowPushes: false }],
   },
   {
-    workspace: "personal",
+    computer: "personal",
     identity: { name: "Taylor Example", email: "taylor@personal.dev", apply: true },
     repositories: [{ repository: "taylor/docs-site", allowPushes: true }],
   },
 ]
 
-function githubWorkspaceOperationsForFixture(mode?: GitHubManagementFixtureMode): readonly GitHubWorkspaceOperation[] {
-  if (!mode || mode === "idle" || mode === "disabled" || mode === "connected-empty" || mode === "missing-host-identity" || mode === "catalog-unavailable") return []
+function githubComputerOperationsForFixture(mode?: GitHubManagementFixtureMode): readonly GitHubComputerOperation[] {
+  if (!mode || mode === "idle" || mode === "disabled" || mode === "connected-empty" || mode === "missing-device-identity" || mode === "catalog-unavailable") return []
   if (mode === "applying") {
-    return [{ workspace: "dev", status: "applying", message: "Applying repository access…" }]
+    return [{ computer: "dev", status: "applying", message: "Applying repository access…" }]
   }
   if (mode === "succeeded") {
-    return [{ workspace: "dev", status: "succeeded", message: "Repository access applied." }]
+    return [{ computer: "dev", status: "succeeded", message: "Repository access applied." }]
   }
   if (mode === "failed") {
     return [{
-      workspace: "dev",
+      computer: "dev",
       status: "failed",
       message: "Repository access could not be applied.",
       canRetry: true,
       diagnosticDetails: [
-        "Sandbox: dev",
+        "Computer: dev",
         "Repository: acme/silo",
         "The scoped repository grant could not be verified.",
       ].join("\n"),
@@ -362,24 +359,24 @@ function githubWorkspaceOperationsForFixture(mode?: GitHubManagementFixtureMode)
   return []
 }
 
-function githubWorkspacePoliciesForFixture(mode?: GitHubManagementFixtureMode): readonly ApplicationGitHubWorkspacePolicy[] {
+function githubComputerPoliciesForFixture(mode?: GitHubManagementFixtureMode): readonly ApplicationGitHubComputerPolicy[] {
   if (mode === "connected-empty") {
-    return githubWorkspacePolicies.map((policy) => ({ ...policy, repositories: [] }))
+    return githubComputerPolicies.map((policy) => ({ ...policy, repositories: [] }))
   }
-  if (mode === "missing-host-identity") {
-    return githubWorkspacePolicies.map((policy) => ({
+  if (mode === "missing-device-identity") {
+    return githubComputerPolicies.map((policy) => ({
       ...policy,
       identity: { name: "", email: "", apply: false },
     }))
   }
-  return githubWorkspacePolicies
+  return githubComputerPolicies
 }
 
 export function applicationSourceForScenario(
   scenario: ScenarioName,
   githubState?: GitHubFixtureState,
-  workspaceMode?: WorkspaceFixtureMode,
-  sandboxConfigurationMode?: SandboxConfigurationFixtureMode,
+  computerMode?: ComputerFixtureMode,
+  computerConfigurationMode?: ComputerConfigurationFixtureMode,
   systemIssueMode?: SystemIssueFixtureMode,
   repositoryPushMode?: RepositoryPushFixtureMode,
   activityMode?: ActivityFixtureMode,
@@ -387,18 +384,18 @@ export function applicationSourceForScenario(
   githubManagementMode?: GitHubManagementFixtureMode,
 ): ApplicationSource {
   const githubConnectionState = githubState ?? "connected"
-  const workspaces: ApplicationWorkspace[] = workspacesForFixtureMode(workspacesForScenario(scenario), workspaceMode).map((workspace) => (
-    repositoryPushMode === "succeeded" && workspace.machine.name === "dev"
-      ? { ...workspace, repositories: workspace.repositories.map((repository) => repository.path === "acme/silo" ? { ...repository, ahead: 0 } : repository) }
-      : githubManagementMode === "failed" && workspace.machine.name === "dev"
-        ? { ...workspace, attention: { level: "error", message: "GitHub access could not be applied." } }
-      : workspace
+  const computers: ApplicationComputer[] = computersForFixtureMode(computersForScenario(scenario), computerMode).map((computer) => (
+    repositoryPushMode === "succeeded" && computer.configuration.name === "dev"
+      ? { ...computer, repositories: computer.repositories.map((repository) => repository.path === "acme/silo" ? { ...repository, ahead: 0 } : repository) }
+      : githubManagementMode === "failed" && computer.configuration.name === "dev"
+        ? { ...computer, attention: { level: "error", message: "GitHub access could not be applied." } }
+      : computer
   ))
   // Deep-clone so a test that mutates its source cannot leak into the
   // module-level fixture data shared by every later test.
   return structuredClone({
     runtimeRepair: runtimeRepairForFixture(scenario, systemIssueMode),
-    workspaces,
+    computers,
     activities: applicationActivitiesForFixture(
       activityMode,
       activityStep,
@@ -406,20 +403,20 @@ export function applicationSourceForScenario(
         ? [
             {
               id: "dev-failure",
-              category: "sandbox",
+              category: "computer",
               title: "Start failed",
               detail: "Candidate networking did not become ready.",
               occurredAt: "2026-09-04T15:59:00.000Z",
               time: "3m ago",
               tone: "danger",
               status: "completed",
-              workspace: "dev",
+              computer: "dev",
             },
             ...defaultApplicationActivities,
           ]
         : defaultApplicationActivities,
     ),
-    sandboxConfigurationOperation: configurationOperationForFixture(workspaces, sandboxConfigurationMode),
+    computerConfigurationOperation: configurationOperationForFixture(computers, computerConfigurationMode),
     repositoryPushOperations: repositoryPushOperationsForFixture(repositoryPushMode),
     github: {
       state: githubConnectionState,
@@ -429,15 +426,15 @@ export function applicationSourceForScenario(
       repositoryCatalogStatus: githubManagementMode === "catalog-unavailable"
         ? { status: "unavailable", message: "GitHub repositories could not be loaded.", canRetry: true }
         : { status: "available" },
-      hostIdentity: githubManagementMode === "missing-host-identity"
+      deviceIdentity: githubManagementMode === "missing-device-identity"
         ? null
         : { name: "Taylor Example", email: "taylor@example.com" },
-      workspaces: githubWorkspacePoliciesForFixture(githubManagementMode),
-      workspaceOperations: githubWorkspaceOperationsForFixture(githubManagementMode),
+      computers: githubComputerPoliciesForFixture(githubManagementMode),
+      computerOperations: githubComputerOperationsForFixture(githubManagementMode),
     },
     secrets: [
-      { id: "package-token", name: "PACKAGE_TOKEN", workspaces: ["dev", "playgrounds"], allowedDomains: ["registry.npmjs.org"], state: "active" },
-      { id: "database-url", name: "DATABASE_URL", workspaces: ["dev"], allowedDomains: ["db.example.test"], state: "restart-required" },
+      { id: "package-token", name: "PACKAGE_TOKEN", computers: ["dev", "playgrounds"], allowedDomains: ["registry.npmjs.org"], state: "active" },
+      { id: "database-url", name: "DATABASE_URL", computers: ["dev"], allowedDomains: ["db.example.test"], state: "restart-required" },
     ],
     backup: {
       lastArchive: "silo-2026-09-02.silo-backup",
@@ -447,7 +444,7 @@ export function applicationSourceForScenario(
     },
     preferences: {
       launchAtLogin: true,
-      startWorkspacesAtLaunch: false,
+      startComputersAtLaunch: false,
       terminal: "Terminal",
       editor: "Visual Studio Code",
       browser: "Safari",

@@ -11,19 +11,17 @@ const backup = { state: { snapshotId: "1", availability: "available", archives: 
 
 function setup(desktop: boolean) {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
+  source.devices = []
   source.runtimeRepair = null
-  source.sandboxConfigurationOperation = null
+  source.computerConfigurationOperation = null
   source.activities = []
-  const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
+  const dev = source.computers.find(({ configuration }) => configuration.name === "dev")!
   Object.assign(dev, { state: "stopped", freshness: "fresh", attention: undefined, lifecycleAction: undefined })
-  if (dev.machine.kind === "vm") {
-    if (desktop) dev.machine.desktop = { startWithSandbox: true }
-    else delete dev.machine.desktop
-  }
+  if (desktop) dev.configuration.desktop = { startWithComputer: true }
+  else delete dev.configuration.desktop
   const openDesktop = vi.fn()
   const actions = { openDesktop, readWorkspaceStorage: vi.fn(() => new Promise(() => {})) } as unknown as ApplicationActions
-  render(<OverviewPage source={source} actions={actions} backup={backup} onExportSandbox={vi.fn()} onMachinesChange={vi.fn()} />)
+  render(<OverviewPage source={source} actions={actions} backup={backup} onExportComputer={vi.fn()} onConfigurationsChange={vi.fn()} />)
   return { openDesktop }
 }
 
@@ -41,7 +39,7 @@ it("opens the Linux desktop from an icon on the row and on the page", async () =
   expect(screen.queryByRole("menuitem", { name: "Open dev desktop" })).not.toBeInTheDocument()
 })
 
-it("offers no desktop icon for a sandbox without a Linux desktop", async () => {
+it("offers no desktop icon for a computer without a Linux desktop", async () => {
   const user = userEvent.setup()
   setup(false)
   expect(screen.queryByRole("button", { name: "Open dev desktop" })).not.toBeInTheDocument()

@@ -4,7 +4,7 @@ import {
   type SiloProgressEvent,
 } from "@/contracts/silo"
 import { parseOnboardingSource, type OnboardingSource } from "@/features/onboarding/model/onboarding-source"
-import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
+import { fixtureComputerDefaults } from "@/fixtures/computer-configurations"
 
 export const scenarioNames = ["running", "complete", "dependency-failure", "bootstrap-failure", "stress-running"] as const
 export type ScenarioName = (typeof scenarioNames)[number]
@@ -24,7 +24,7 @@ const requestId = "setup-bootstrap-20260903"
 
 const stressBootstrapConfiguration = {
   schemaVersion: 1,
-  workspaces: [
+  computers: [
     { name: "dev", cpu: 8, cpuCeiling: 12, memoryGiB: 32, memoryCeilingGiB: 48, workspaceStorageGiB: 120, runtimeStorageGiB: 100 },
     { name: "playgrounds", cpu: 4, cpuCeiling: 12, memoryGiB: 32, memoryCeilingGiB: 48, workspaceStorageGiB: 60, runtimeStorageGiB: 60 },
     { name: "personal", cpu: 6, cpuCeiling: 12, memoryGiB: 16, memoryCeilingGiB: 32, workspaceStorageGiB: 100, runtimeStorageGiB: 80 },
@@ -42,14 +42,14 @@ const stressBootstrapConfiguration = {
 
 const bootstrapConfiguration = {
   schemaVersion: 1,
-  workspaces: fixtureMachineDefaults.map((machine) => ({
-    name: machine.name,
-    cpu: machine.cpus,
-    cpuCeiling: machine.maxCPUs,
-    memoryGiB: machine.memoryGiB,
-    memoryCeilingGiB: machine.maxMemoryGiB,
-    workspaceStorageGiB: machine.workspaceStorageGiB,
-    runtimeStorageGiB: machine.runtimeStorageGiB,
+  computers: fixtureComputerDefaults.map((configuration) => ({
+    name: configuration.name,
+    cpu: configuration.cpus,
+    cpuCeiling: configuration.maxCPUs,
+    memoryGiB: configuration.memoryGiB,
+    memoryCeilingGiB: configuration.maxMemoryGiB,
+    workspaceStorageGiB: configuration.workspaceStorageGiB,
+    runtimeStorageGiB: configuration.runtimeStorageGiB,
   })),
 } satisfies SiloBootstrapConfiguration
 
@@ -64,7 +64,7 @@ const passingPreflightChecks = [
 function progress(
   message: string,
   step: string,
-  workspace: string,
+  computer: string,
   fraction: number,
   safeForDisplay = true,
 ): SiloProgressEvent {
@@ -72,9 +72,9 @@ function progress(
     schemaVersion: 1,
     type: "progress",
     requestId,
-    phase: step === "workspace-verification" ? "verification" : "workspaces",
+    phase: step === "computer-verification" ? "verification" : "computers",
     step,
-    workspace,
+    computer,
     revision,
     fraction,
     message,
@@ -83,57 +83,57 @@ function progress(
 }
 
 function configuredEvents(configuration: SiloBootstrapConfiguration) {
-  return configuration.workspaces.flatMap(({ name }) => [
-    progress(`Configuring sandbox '${name}'.`, "workspace-configuration", name, 0),
-    progress(`Sandbox '${name}' is configured.`, "workspace-configuration", name, 1),
+  return configuration.computers.flatMap(({ name }) => [
+    progress(`Configuring computer '${name}'.`, "computer-configuration", name, 0),
+    progress(`Computer '${name}' is configured.`, "computer-configuration", name, 1),
   ])
 }
 
 function networkedEvents(configuration: SiloBootstrapConfiguration) {
-  return configuration.workspaces.flatMap(({ name }) => [
-    progress(`Starting candidate networking for '${name}'.`, "workspace-networking", name, 0),
-    progress(`Candidate networking is ready for '${name}'.`, "workspace-networking", name, 1),
+  return configuration.computers.flatMap(({ name }) => [
+    progress(`Starting candidate networking for '${name}'.`, "computer-networking", name, 0),
+    progress(`Candidate networking is ready for '${name}'.`, "computer-networking", name, 1),
   ])
 }
 
 function verifyingEvents(configuration: SiloBootstrapConfiguration, readyCount: number) {
-  const currentWorkspace = configuration.workspaces[readyCount].name
+  const currentComputer = configuration.computers[readyCount].name
   return [
     ...configuredEvents(configuration),
     ...networkedEvents(configuration),
-    ...configuration.workspaces.slice(0, readyCount).flatMap(({ name }) => [
-      progress(`Verifying '${name}'.`, "workspace-verification", name, 0),
-      progress(`Verification passed for '${name}'.`, "workspace-verification", name, 1),
+    ...configuration.computers.slice(0, readyCount).flatMap(({ name }) => [
+      progress(`Verifying '${name}'.`, "computer-verification", name, 0),
+      progress(`Verification passed for '${name}'.`, "computer-verification", name, 1),
     ]),
-    progress("Internal verification path is not safe for display.", "workspace-verification", currentWorkspace, 0, false),
-    progress(`Verifying '${currentWorkspace}'.`, "workspace-verification", currentWorkspace, 0),
+    progress("Internal verification path is not safe for display.", "computer-verification", currentComputer, 0, false),
+    progress(`Verifying '${currentComputer}'.`, "computer-verification", currentComputer, 0),
   ]
 }
 
 const runningEvents = verifyingEvents(bootstrapConfiguration, 2)
 
-const completeEvents = bootstrapConfiguration.workspaces.flatMap(({ name }) => [
-  progress(`Sandbox '${name}' is configured.`, "workspace-configuration", name, 1),
-  progress(`Candidate networking is ready for '${name}'.`, "workspace-networking", name, 1),
-  progress(`Verification passed for '${name}'.`, "workspace-verification", name, 1),
+const completeEvents = bootstrapConfiguration.computers.flatMap(({ name }) => [
+  progress(`Computer '${name}' is configured.`, "computer-configuration", name, 1),
+  progress(`Candidate networking is ready for '${name}'.`, "computer-networking", name, 1),
+  progress(`Verification passed for '${name}'.`, "computer-verification", name, 1),
 ]) satisfies SiloProgressEvent[]
 
 const runningSource = {
-  machineConfigurations: fixtureMachineDefaults.map((machine) => ({ ...machine })),
+  computerConfigurations: fixtureComputerDefaults.map((configuration) => ({ ...configuration })),
   bootstrapConfiguration,
   bootstrapState: {
-    phase: "workspaces",
+    phase: "computers",
     startedAt: 810129582,
     updatedAt: 810129720,
-    completedPhases: ["welcome", "preflight", "toolchain", "hostIntegration"],
-    phaseDurations: { preflight: 1.4, toolchain: 0.8, hostIntegration: 0.6 },
+    completedPhases: ["welcome", "preflight", "toolchain", "deviceIntegration"],
+    phaseDurations: { preflight: 1.4, toolchain: 0.8, deviceIntegration: 0.6 },
   },
   preflightChecks: passingPreflightChecks,
   progressEvents: runningEvents,
   githubPolicies: [{
-    workspace: "dev",
+    computer: "dev",
     repositories: [{
-      workspace: "dev",
+      computer: "dev",
       repositoryID: 1001,
       fullName: "acme/silo",
       ownerID: 42,
@@ -142,7 +142,7 @@ const runningSource = {
       mode: "read-only",
     }],
   }],
-  currentHostGitIdentity: {
+  currentDeviceGitIdentity: {
     name: "Taylor Example",
     email: "taylor@example.com",
   },
@@ -161,18 +161,18 @@ const completeSource = {
     phase: "complete",
     startedAt: 810129300,
     updatedAt: 810129720,
-    completedPhases: ["welcome", "preflight", "toolchain", "hostIntegration", "workspaces", "github", "identity", "complete"],
-    workspaceConfigurations: bootstrapConfiguration.workspaces.map((workspace, index) => ({
+    completedPhases: ["welcome", "preflight", "toolchain", "deviceIntegration", "computers", "github", "identity", "complete"],
+    computerConfigurations: bootstrapConfiguration.computers.map((computer, index) => ({
       id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
-      name: workspace.name,
-      cpus: workspace.cpu,
-      maxCPUs: workspace.cpuCeiling,
-      memoryGiB: workspace.memoryGiB,
-      maxMemoryGiB: workspace.memoryCeilingGiB,
-      workspaceStorageGiB: workspace.workspaceStorageGiB,
-      runtimeStorageGiB: workspace.runtimeStorageGiB,
+      name: computer.name,
+      cpus: computer.cpu,
+      maxCPUs: computer.cpuCeiling,
+      memoryGiB: computer.memoryGiB,
+      maxMemoryGiB: computer.memoryCeilingGiB,
+      workspaceStorageGiB: computer.workspaceStorageGiB,
+      runtimeStorageGiB: computer.runtimeStorageGiB,
     })),
-    phaseDurations: { preflight: 1.4, toolchain: 0.8, hostIntegration: 0.6, workspaces: 416 },
+    phaseDurations: { preflight: 1.4, toolchain: 0.8, deviceIntegration: 0.6, computers: 416 },
   },
   progressEvents: completeEvents,
   bootstrapResult: {
@@ -180,7 +180,7 @@ const completeSource = {
     phase: "complete",
     requiresApproval: false,
     vmsStarted: true,
-    message: "Sandbox bootstrap and deep verification completed; the previous running set was restored.",
+    message: "Computer bootstrap and deep verification completed; the previous running set was restored.",
   },
   error: null,
 } satisfies OnboardingSource
@@ -210,12 +210,12 @@ const bootstrapFailureSource = {
   ...runningSource,
   progressEvents: [
     ...configuredEvents(bootstrapConfiguration),
-    ...bootstrapConfiguration.workspaces.slice(0, 1).flatMap(({ name }) => [
-      progress(`Starting candidate networking for '${name}'.`, "workspace-networking", name, 0),
-      progress(`Candidate networking is ready for '${name}'.`, "workspace-networking", name, 1),
+    ...bootstrapConfiguration.computers.slice(0, 1).flatMap(({ name }) => [
+      progress(`Starting candidate networking for '${name}'.`, "computer-networking", name, 0),
+      progress(`Candidate networking is ready for '${name}'.`, "computer-networking", name, 1),
     ]),
-    progress("Starting candidate networking for 'playgrounds'.", "workspace-networking", "playgrounds", 0),
-    progress("Candidate networking failed for 'playgrounds'.", "workspace-networking", "playgrounds", 0),
+    progress("Starting candidate networking for 'playgrounds'.", "computer-networking", "playgrounds", 0),
+    progress("Candidate networking failed for 'playgrounds'.", "computer-networking", "playgrounds", 0),
   ],
   bootstrapState: {
     ...runningSource.bootstrapState,
@@ -224,8 +224,8 @@ const bootstrapFailureSource = {
   error: {
     code: "SILO_CANDIDATE_NETWORKING_FAILED",
     message: bootstrapFailureMessage,
-    recovery: "Repair sandbox startup or SSH forwarding for 'playgrounds', then resume Setup.",
-    workspace: "playgrounds",
+    recovery: "Repair computer startup or SSH forwarding for 'playgrounds', then resume Setup.",
+    computer: "playgrounds",
     retryable: true,
   },
 } satisfies OnboardingSource
@@ -233,16 +233,15 @@ const bootstrapFailureSource = {
 // A separate, coherent fixture for long names, scrolling, and larger setup queues.
 const stressRunningSource = {
   ...runningSource,
-  machineConfigurations: stressBootstrapConfiguration.workspaces.map((workspace, index) => ({
+  computerConfigurations: stressBootstrapConfiguration.computers.map((computer, index) => ({
     id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
-    kind: "vm" as const,
-    name: workspace.name,
-    cpus: workspace.cpu,
-    maxCPUs: workspace.cpuCeiling,
-    memoryGiB: workspace.memoryGiB,
-    maxMemoryGiB: workspace.memoryCeilingGiB,
-    workspaceStorageGiB: workspace.workspaceStorageGiB,
-    runtimeStorageGiB: workspace.runtimeStorageGiB,
+    name: computer.name,
+    cpus: computer.cpu,
+    maxCPUs: computer.cpuCeiling,
+    memoryGiB: computer.memoryGiB,
+    maxMemoryGiB: computer.memoryCeilingGiB,
+    workspaceStorageGiB: computer.workspaceStorageGiB,
+    runtimeStorageGiB: computer.runtimeStorageGiB,
   })),
   bootstrapConfiguration: stressBootstrapConfiguration,
   progressEvents: verifyingEvents(stressBootstrapConfiguration, 3),

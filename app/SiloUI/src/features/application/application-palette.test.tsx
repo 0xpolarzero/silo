@@ -17,15 +17,15 @@ async function run(user: ReturnType<typeof userEvent.setup>, search: string, opt
 
 function withStoppedDev(): ApplicationSource {
   const source = structuredClone(applicationSourceForScenario("running"))
-  source.workspaces.find(({ machine }) => machine.name === "dev")!.state = "stopped"
+  source.computers.find(({ configuration }) => configuration.name === "dev")!.state = "stopped"
   return source
 }
 
-it("opens a sandbox's page and its Checkpoints tab", async () => {
+it("opens a computer's page and its Checkpoints tab", async () => {
   const user = userEvent.setup()
   render(<ApplicationPreview source={applicationSourceForScenario("running")} />)
   await run(user, "open dev", "Open dev")
-  expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Sandboxesdev")
+  expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Computersdev")
   await run(user, "dev checkpoints", "Open dev checkpoints")
   expect(screen.getByRole("tab", { name: "Checkpoints" })).toHaveAttribute("aria-selected", "true")
 })
@@ -40,11 +40,11 @@ it("opens the same folder picker as the editor buttons instead of opening the ed
   expect(openEditor).not.toHaveBeenCalled()
 })
 
-it("forks from the palette through the sandbox's own Fork popover", async () => {
+it("forks from the palette through the computer's own Fork popover", async () => {
   const user = userEvent.setup()
   render(<ApplicationPreview source={applicationSourceForScenario("running")} />)
   await run(user, "fork dev", "Fork dev…")
-  expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Sandboxesdev")
+  expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Computersdev")
   const popover = await waitFor(() => within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!))
   expect(popover.getByText("Fork dev")).toBeVisible()
   expect(popover.getByRole("textbox")).toHaveFocus()
@@ -52,24 +52,24 @@ it("forks from the palette through the sandbox's own Fork popover", async () => 
   // Leaving the page and coming back does not reopen the popover.
   await user.keyboard("{Escape}")
   await waitFor(() => expect(document.querySelector("[data-slot=popover-content]")).toBeNull())
-  await user.click(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("button", { name: "Sandboxes" }))
-  await user.click(within(screen.getByRole("region", { name: "Sandboxes" })).getByRole("button", { name: "Open dev" }))
-  expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Sandboxesdev")
+  await user.click(within(screen.getByRole("navigation", { name: "Breadcrumb" })).getByRole("button", { name: "Computers" }))
+  await user.click(within(screen.getByRole("region", { name: "Computers" })).getByRole("button", { name: "Open dev" }))
+  expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Computersdev")
   expect(document.querySelector("[data-slot=popover-content]")).toBeNull()
 })
 
 it("deletes from the palette through the one Delete dialog", async () => {
   const user = userEvent.setup()
-  const saveMachineConfiguration = vi.fn()
-  render(<ApplicationPreview source={withStoppedDev()} actions={{ saveMachineConfiguration }} />)
+  const saveComputerConfiguration = vi.fn()
+  render(<ApplicationPreview source={withStoppedDev()} actions={{ saveComputerConfiguration }} />)
   await run(user, "delete dev", "Delete dev…")
   const popover = await waitFor(() => within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!))
   expect(popover.getByText("Delete dev permanently?")).toBeVisible()
   await user.click(popover.getByRole("button", { name: "Delete permanently" }))
-  await waitFor(() => expect(saveMachineConfiguration).toHaveBeenCalled())
+  await waitFor(() => expect(saveComputerConfiguration).toHaveBeenCalled())
 })
 
-it("does not offer Delete for a running sandbox", async () => {
+it("does not offer Delete for a running computer", async () => {
   const user = userEvent.setup()
   render(<ApplicationPreview source={applicationSourceForScenario("running")} />)
   await user.click(screen.getByRole("button", { name: "Search or jump to" }))
@@ -77,21 +77,21 @@ it("does not offer Delete for a running sandbox", async () => {
   expect(screen.queryByRole("option", { name: "Delete dev…" })).not.toBeInTheDocument()
 })
 
-it("starts a new sandbox from the palette", async () => {
+it("starts a new computer from the palette", async () => {
   const user = userEvent.setup()
   render(<ApplicationPreview source={applicationSourceForScenario("running")} />)
-  await run(user, "new sandbox", "New sandbox…")
-  expect(await screen.findByRole("textbox", { name: "Sandbox name" })).toBeVisible()
+  await run(user, "new computer", "New computer…")
+  expect(await screen.findByRole("textbox", { name: "Computer name" })).toBeVisible()
 })
 
-it("keeps same-named sandboxes on different computers apart", async () => {
+it("keeps same-named computers on different devices apart", async () => {
   const user = userEvent.setup()
   const openTerminal = vi.fn()
   const source = structuredClone(applicationSourceForScenario("running"))
-  const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
-  const twin = (id: string) => ({ ...structuredClone(dev), machine: { ...dev.machine, id: `remote-${id}` }, computer: { id, vmId: `vm-${id}`, name: "Office", address: `${id}.test`, connected: true } })
-  source.workspaces = [twin("first"), twin("second")]
-  source.remoteComputers = [{ id: "first", name: "Office", address: "first.test", connected: true }, { id: "second", name: "Office", address: "second.test", connected: true }]
+  const dev = source.computers.find(({ configuration }) => configuration.name === "dev")!
+  const twin = (id: string) => ({ ...structuredClone(dev), configuration: { ...dev.configuration, id: `remote-${id}` }, device: { id, computerId: `vm-${id}`, name: "Office", address: `${id}.test`, connected: true } })
+  source.computers = [twin("first"), twin("second")]
+  source.devices = [{ id: "first", name: "Office", address: "first.test", connected: true }, { id: "second", name: "Office", address: "second.test", connected: true }]
   render(<ApplicationPreview source={source} actions={{ openTerminal }} />)
   await user.click(screen.getByRole("button", { name: "Search or jump to" }))
   await user.type(screen.getByRole("combobox", { name: "Search commands" }), "dev terminal")

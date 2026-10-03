@@ -2,12 +2,12 @@ import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
-import { SandboxListRow } from "@/features/sandboxes/components/sandbox-list"
+import { ComputerListRow } from "@/features/computers/components/computer-list"
 
 describe("openable list rows", () => {
   it("reveals complete text details when they are truncated", () => {
-    const detail = "Sandbox connection details ".repeat(20)
-    render(<SandboxListRow name="dev" kind="vm" detail={detail} />)
+    const detail = "Computer connection details ".repeat(20)
+    render(<ComputerListRow name="dev" detail={detail} />)
     expect(screen.getByText(detail.trim())).toHaveAttribute("title", detail)
   })
 
@@ -15,7 +15,7 @@ describe("openable list rows", () => {
     const user = userEvent.setup()
     const onOpen = vi.fn()
     const cancel = vi.fn()
-    render(<SandboxListRow name="dev" kind="vm" onOpen={onOpen} detail={<span>Starting · <button type="button" onClick={cancel}>Cancel</button></span>} />)
+    render(<ComputerListRow name="dev" onOpen={onOpen} detail={<span>Starting · <button type="button" onClick={cancel}>Cancel</button></span>} />)
 
     const open = screen.getByRole("button", { name: "Open dev" })
     expect(open).not.toHaveTextContent("Starting")

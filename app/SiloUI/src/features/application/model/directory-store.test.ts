@@ -48,12 +48,12 @@ describe('directory store', () => {
     await Promise.all(requests)
   })
 
-  it('discards active results and cancels queued requests when a workspace is invalidated', async () => {
+  it('discards active results and cancels queued requests when a computer is invalidated', async () => {
     const response = deferred()
     const loader = vi.fn(() => response.promise)
     const store = createDirectoryStore(loader)
     const requests = [0, 1, 2, 3].map(index => store.load('dev', `/workspace/${index}`))
-    store.invalidateWorkspace('dev')
+    store.invalidateComputer('dev')
     await requests[3]
     response.resolve(page(['obsolete']))
     await Promise.all(requests)
@@ -69,7 +69,7 @@ describe('directory store', () => {
     const loader = vi.fn().mockReturnValueOnce(old.promise).mockReturnValueOnce(fresh.promise)
     const store = createDirectoryStore(loader)
     const first = store.load('dev', '/workspace')
-    store.invalidateWorkspace('dev')
+    store.invalidateComputer('dev')
     const second = store.load('dev', '/workspace')
     fresh.resolve(page(['new']))
     await second
@@ -208,19 +208,19 @@ describe('directory store', () => {
   it('invalidates one owner without cancelling another owner with the same folder', async () => {
     const local = deferred()
     const remote = deferred()
-    const workspace = 'silo-remote:office:dev'
+    const computer = 'silo-remote:office:dev'
     const loader = vi.fn().mockReturnValueOnce(local.promise).mockReturnValueOnce(remote.promise)
     const store = createDirectoryStore(loader)
     const localLoad = store.load('dev', '/workspace')
-    const remoteLoad = store.load(workspace, '/workspace')
-    store.invalidateWorkspace('dev')
+    const remoteLoad = store.load(computer, '/workspace')
+    store.invalidateComputer('dev')
     remote.resolve(page(['remote']))
     await remoteLoad
     local.resolve(page(['stale']))
     await localLoad
     expect(store.getSnapshot(key).entries).toBeNull()
-    expect(store.getSnapshot(directoryKey(workspace, '/workspace')).entries).toEqual([entry('remote')])
-    expect(loader).toHaveBeenCalledWith(workspace, '/workspace', 0, undefined)
+    expect(store.getSnapshot(directoryKey(computer, '/workspace')).entries).toEqual([entry('remote')])
+    expect(loader).toHaveBeenCalledWith(computer, '/workspace', 0, undefined)
   })
 
   it('recovers an unavailable folder when a loader is installed and the load is retried', async () => {

@@ -18,7 +18,7 @@ const OPERATION_QUEUE_TOAST_ID = "operation-queue"
 /** Quick operations never flash: the toast appears only once an entry has run this long. */
 const TOAST_DEBOUNCE_MS = 500
 
-/** Small inline Cancel control for a queued operation shown near its sandbox row. */
+/** Small inline Cancel control for a queued operation shown near its computer row. */
 function CancelOperationButton({ entry, onCancel }: { entry: OperationEntry; onCancel: (id: number) => void }) {
   return (
     <button
@@ -116,12 +116,12 @@ export function OperationQueueToast({ queue, onCancel }: { queue?: OperationQueu
 }
 
 /**
- * Inline per-VM waiting status shown near a sandbox's activity indicator when an
+ * Inline per-VM waiting status shown near a computer's activity indicator when an
  * operation for that VM is waiting its turn behind other running work.
  */
-export function WorkspaceWaitingStatus({ queue, vmId, onCancel }: { queue?: OperationQueue; vmId: string; onCancel?: (id: number) => void }) {
+export function ComputerWaitingStatus({ queue, computerId, onCancel }: { queue?: OperationQueue; computerId: string; onCancel?: (id: number) => void }) {
   if (!queue) return null
-  const waiting = waitingOperationForVm(queue, vmId)
+  const waiting = waitingOperationForVm(queue, computerId)
   if (!waiting) return null
   return (
     <span role="status" className="inline-flex items-center gap-1 text-muted-foreground">

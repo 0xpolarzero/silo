@@ -16,7 +16,7 @@ interface PendingQuit {
 
 /**
  * The main window's Quit confirmation (decision 7). ⌘Q, the app and Dock menus, and the
- * backend's own Quit requests arrive here while local sandboxes run; the tray asks inline
+ * backend's own Quit requests arrive here while local computers run; the tray asks inline
  * with the same words. "Quit and stop" lets Silo stop them and exit; Cancel, Escape, or this
  * UI going away keeps Silo open.
  */
@@ -38,7 +38,7 @@ export function QuitRequestConfirmation({ connect }: { connect?: ConnectQuitConf
         resolve(confirmed)
       }
       unanswered.add(answer)
-      setPending({ names: request.sandboxes, answer })
+      setPending({ names: request.computers, answer })
     })
     connect(ask)
       .then((unlisten) => { if (disposed) unlisten(); else stop = unlisten })
@@ -52,7 +52,7 @@ export function QuitRequestConfirmation({ connect }: { connect?: ConnectQuitConf
 
   const detail = pending?.names.length
     ? quitConfirmationDetail(pending.names)
-    : "Silo could not check which sandboxes are running. Quitting stops any sandboxes running on this computer."
+    : "Silo could not check which computers are running. Quitting stops any computers running on this device."
 
   return <AlertDialog.Root open={pending !== null} onOpenChange={(open) => { if (!open) pending?.answer(false) }}>
     <AlertDialog.Portal>

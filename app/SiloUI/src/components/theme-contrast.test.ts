@@ -72,7 +72,7 @@ describe("muted text contrast", () => {
 
 describe("pending operation steps", () => {
   it.each([":root", ".dark"] as const)("keeps pending text readable on the toast surface in %s", (selector) => {
-    const { container } = render(createElement(OperationToastBody, { steps: [{ label: "Boot sandbox", state: "pending" }] }))
+    const { container } = render(createElement(OperationToastBody, { steps: [{ label: "Boot computer", state: "pending" }] }))
     const row = container.querySelector("li[data-state=pending]")!
     const color = row.className.match(/\btext-muted-foreground(?:\/(\d+))?\b/)
     expect(color).not.toBeNull()
@@ -110,7 +110,7 @@ describe("destructive text contrast", () => {
 describe("secret restart notice contrast", () => {
   it.each([":root", ".dark"] as const)("meets WCAG AA on neutral surfaces in %s", (selector) => {
     const source = structuredClone(applicationSourceForScenario("running"))
-    source.secrets[0] = { ...source.secrets[0], state: "restart-required", pendingWorkspaces: ["dev"] }
+    source.secrets[0] = { ...source.secrets[0], state: "restart-required", pendingComputers: ["dev"] }
     render(createElement(SecretsPage, { source, onSaveSecret: () => {}, onRemoveSecret: () => {} }))
     const notice = screen.getByText("Restart to apply: dev")
     const name = notice.className.match(selector === ".dark" ? /dark:text-(amber-\d+)/ : /\btext-(amber-\d+)/)?.[1]

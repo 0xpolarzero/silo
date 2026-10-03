@@ -30,7 +30,7 @@ describe("settings synchronization", () => {
   })
 
   it("delivers only the latest queued draft while preserving an in-flight write", async () => {
-    const draft = { currentStep: "github" as const, machines: [], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} }
+    const draft = { currentStep: "github" as const, computers: [], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} }
     let state = snapshot()
     let acknowledge!: () => void
     const writes: SettingsSnapshot["onboardingDraft"][] = []
@@ -47,7 +47,7 @@ describe("settings synchronization", () => {
     try {
       await store.initialize()
       const first = store.updateOnboardingDraft(draft)
-      const second = store.updateOnboardingDraft({ ...draft, currentStep: "workspaces" })
+      const second = store.updateOnboardingDraft({ ...draft, currentStep: "computers" })
       const third = store.updateOnboardingDraft({ ...draft, currentStep: "review" })
       const cleared = store.updateOnboardingDraft(null)
       expect(store.getSnapshot().onboardingDraft).toBeNull()
@@ -75,7 +75,7 @@ describe("settings synchronization", () => {
     })
     try {
       await store.initialize()
-      await store.updateOnboardingDraft({ currentStep: "review", machines: [], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} })
+      await store.updateOnboardingDraft({ currentStep: "review", computers: [], unfinishedComputerEditor: null, computerSelections: {}, computerIdentities: {} })
       await store.updateOnboardingDraft(null)
       failing = false
       await store.flush()
@@ -125,9 +125,9 @@ describe("settings synchronization", () => {
 
   it("keeps explicit false and empty selections across a new store session", async () => {
     const first = createMemorySettingsStore()
-    await first.updateSettings({ launchAtLogin: false, startupWorkspaceIds: [], notifyChanges: false, editor: "Cursor" })
+    await first.updateSettings({ launchAtLogin: false, startupComputerIds: [], notifyChanges: false, editor: "Cursor" })
     const second = createMemorySettingsStore(first.getSnapshot().settings)
-    expect(second.getSnapshot().settings).toMatchObject({ launchAtLogin: false, startupWorkspaceIds: [], notifyChanges: false, editor: "Cursor" })
+    expect(second.getSnapshot().settings).toMatchObject({ launchAtLogin: false, startupComputerIds: [], notifyChanges: false, editor: "Cursor" })
   })
 
   it("subscribes before reading and ignores an older initial read", async () => {
@@ -280,15 +280,15 @@ describe("settings synchronization", () => {
         return state
       },
       updateOnboardingDraft: async () => state, flush: async () => {},
-    }, { startupWorkspaceIds: ["initial-dev"] })
+    }, { startupComputerIds: ["initial-dev"] })
     await store.initialize()
-    const pending = store.updateSettings({ startupWorkspaceIds: [] })
-    store.updateDefaults({ startupWorkspaceIds: ["new-dev"] })
-    expect(store.getSnapshot().settings.startupWorkspaceIds).toEqual([])
+    const pending = store.updateSettings({ startupComputerIds: [] })
+    store.updateDefaults({ startupComputerIds: ["new-dev"] })
+    expect(store.getSnapshot().settings.startupComputerIds).toEqual([])
     release()
     await pending
-    store.updateDefaults({ startupWorkspaceIds: ["another-dev"] })
-    expect(store.getSnapshot().settings.startupWorkspaceIds).toEqual([])
+    store.updateDefaults({ startupComputerIds: ["another-dev"] })
+    expect(store.getSnapshot().settings.startupComputerIds).toEqual([])
     expect(writes).toBe(1)
   })
 

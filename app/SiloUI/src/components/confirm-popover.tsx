@@ -15,7 +15,7 @@ import { restoreFocus } from "@/lib/focus"
  * `children` is the click trigger (asChild). `FormPopover` takes its inputs via `fields`.
  *
  * External anchor (popover opened without clicking its trigger, e.g. native menu
- * "File → Import Sandbox…"): omit the trigger, control `open`, and pass the target button as
+ * "File → Import Computer…"): omit the trigger, control `open`, and pass the target button as
  * `anchor`; it is wrapped in a Radix Popover.Anchor so the menu handler only calls `setOpen(true)`:
  *
  *   <FormPopover open={open} onOpenChange={setOpen} anchor={<Button>Add</Button>} ... />

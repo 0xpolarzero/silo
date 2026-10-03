@@ -3,16 +3,16 @@ import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import type { ApplicationActions, ApplicationSource, ApplicationWorkspace } from "../model/application-source"
+import type { ApplicationActions, ApplicationSource, ApplicationComputer } from "../model/application-source"
 import { OverviewPage } from "./overview-page"
 
-function sourceWith(change: (workspace: ApplicationWorkspace) => void): ApplicationSource {
+function sourceWith(change: (computer: ApplicationComputer) => void): ApplicationSource {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  source.remoteComputers = []
+  source.devices = []
   source.runtimeRepair = null
-  source.sandboxConfigurationOperation = null
+  source.computerConfigurationOperation = null
   source.activities = []
-  const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
+  const dev = source.computers.find(({ configuration }) => configuration.name === "dev")!
   Object.assign(dev, { state: "running", freshness: "fresh", attention: undefined, lifecycleAction: undefined })
   change(dev)
   return source
@@ -27,9 +27,9 @@ async function reasonFor(user: ReturnType<typeof userEvent.setup>, control: HTML
   return (await screen.findByRole("tooltip")).textContent
 }
 
-it("explains the sandbox page's disabled Terminal, Editor and Start controls", async () => {
+it("explains the computer page's disabled Terminal, Editor and Start controls", async () => {
   const user = userEvent.setup()
-  render(<OverviewPage source={sourceWith(workspace => { workspace.state = "stopped" })} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
+  render(<OverviewPage source={sourceWith(computer => { computer.state = "stopped" })} actions={{} as ApplicationActions} onConfigurationsChange={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: "Open dev" }))
   const header = within(screen.getByRole("navigation", { name: "Breadcrumb" }).parentElement!.parentElement!)
 
@@ -39,18 +39,18 @@ it("explains the sandbox page's disabled Terminal, Editor and Start controls", a
   expect(header.getByRole("button", { name: "Start dev" })).toBeEnabled()
 })
 
-it("offers Start for a crashed sandbox on the page as in the list", async () => {
+it("offers Start for a crashed computer on the page as in the list", async () => {
   const user = userEvent.setup()
-  render(<OverviewPage source={sourceWith(workspace => { workspace.state = "failed"; workspace.attention = { level: "error", message: "The sandbox runtime crashed. Restart it to retry." } })} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
+  render(<OverviewPage source={sourceWith(computer => { computer.state = "failed"; computer.attention = { level: "error", message: "The computer runtime crashed. Restart it to retry." } })} actions={{} as ApplicationActions} onConfigurationsChange={vi.fn()} />)
   const row = within(screen.getByText("dev").closest("li")!)
   expect(row.getByRole("button", { name: "Start dev" })).toBeEnabled()
   await user.click(row.getByRole("button", { name: "Open dev" }))
   expect(screen.getByRole("button", { name: "Start dev" })).toBeEnabled()
 })
 
-it("disables Stop while the sandbox is still starting, in the list and on the page, with the reason", async () => {
+it("disables Stop while the computer is still starting, in the list and on the page, with the reason", async () => {
   const user = userEvent.setup()
-  render(<OverviewPage source={sourceWith(workspace => { workspace.state = "starting"; workspace.stateDetail = "Starting" })} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
+  render(<OverviewPage source={sourceWith(computer => { computer.state = "starting"; computer.stateDetail = "Starting" })} actions={{} as ApplicationActions} onConfigurationsChange={vi.fn()} />)
   const row = within(screen.getByText("dev").closest("li")!)
   expect(await reasonFor(user, row.getByRole("button", { name: "Stop dev" }))).toContain("Wait for dev to finish starting.")
   await user.click(row.getByRole("button", { name: "Open dev" }))
@@ -60,45 +60,45 @@ it("disables Stop while the sandbox is still starting, in the list and on the pa
 
 it.each(["list", "detail"])("pauses an open %s editor while a checkpoint runs and keeps its draft", async surface => {
   const user = userEvent.setup()
-  const source = sourceWith(workspace => { workspace.state = "stopped" })
-  const onMachinesChange = vi.fn()
-  const view = (current: ApplicationSource) => <OverviewPage source={current} actions={{} as ApplicationActions} onMachinesChange={onMachinesChange} />
+  const source = sourceWith(computer => { computer.state = "stopped" })
+  const onConfigurationsChange = vi.fn()
+  const view = (current: ApplicationSource) => <OverviewPage source={current} actions={{} as ApplicationActions} onConfigurationsChange={onConfigurationsChange} />
   const result = render(view(source))
   if (surface === "detail") await user.click(screen.getByRole("button", { name: "Open dev" }))
   await user.click(screen.getByRole("button", { name: "More actions for dev" }))
   await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   const busy = structuredClone(source)
-  busy.workspaces.find(({ machine }) => machine.name === "dev")!.checkpointOperation = {
+  busy.computers.find(({ configuration }) => configuration.name === "dev")!.checkpointOperation = {
     kind: "capture", status: "running", stage: "Saving disk copies",
   }
   result.rerender(view(busy))
   expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Save" })).toHaveAccessibleDescription("Wait for the checkpoint to finish.")
-  expect(onMachinesChange).not.toHaveBeenCalled()
+  expect(onConfigurationsChange).not.toHaveBeenCalled()
   result.rerender(view(source))
   expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
 })
 
 
-it.each(["list", "detail"])("pauses an open %s editor when the sandbox status becomes stale", async surface => {
+it.each(["list", "detail"])("pauses an open %s editor when the computer status becomes stale", async surface => {
   const user = userEvent.setup()
-  const source = sourceWith(workspace => { workspace.state = "stopped" })
-  const onMachinesChange = vi.fn()
-  const view = (current: ApplicationSource) => <OverviewPage source={current} actions={{} as ApplicationActions} onMachinesChange={onMachinesChange} />
+  const source = sourceWith(computer => { computer.state = "stopped" })
+  const onConfigurationsChange = vi.fn()
+  const view = (current: ApplicationSource) => <OverviewPage source={current} actions={{} as ApplicationActions} onConfigurationsChange={onConfigurationsChange} />
   const result = render(view(source))
   if (surface === "detail") await user.click(screen.getByRole("button", { name: "Open dev" }))
   await user.click(screen.getByRole("button", { name: "More actions for dev" }))
   await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   const stale = structuredClone(source)
-  stale.workspaces.find(({ machine }) => machine.name === "dev")!.freshness = "stale"
+  stale.computers.find(({ configuration }) => configuration.name === "dev")!.freshness = "stale"
   result.rerender(view(stale))
   expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
-  expect(screen.getByRole("button", { name: "Save" })).toHaveAccessibleDescription("Silo could not refresh this sandbox’s status.")
+  expect(screen.getByRole("button", { name: "Save" })).toHaveAccessibleDescription("Silo could not refresh this computer’s status.")
   await user.click(screen.getByRole("button", { name: "Save" }))
-  expect(onMachinesChange).not.toHaveBeenCalled()
+  expect(onConfigurationsChange).not.toHaveBeenCalled()
   result.rerender(view(source))
   expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()

@@ -1,6 +1,6 @@
 import { useLifecycleToasts } from "./model/use-lifecycle-toasts"
 import { useRepositoryPushToasts } from "./components/use-repository-push-toasts"
-import { workspaceTarget } from "./model/remote-computers"
+import { computerTarget } from "./model/connections"
 import { useBackendNotices } from "@/features/application/model/use-backend-notices"
 import { useUpdates } from "@/features/updates/update-store"
 import { updateCommands } from "@/features/updates/update-commands"
@@ -10,49 +10,49 @@ import { createDirectoryStore } from "@/features/application/model/directory-sto
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useState } from "react"
 
 import type { BackupController } from "@/features/application/model/backup-source"
-import type { SetupMachineConfiguration } from "@/contracts/silo"
+import type { SetupComputerConfiguration } from "@/contracts/silo"
 import { ApplicationShell, type ApplicationNavigationLoading } from "@/features/application/components/application-shell"
-import { MachineEditorDraftsProvider } from "@/features/sandboxes/model/editor-drafts"
+import { ComputerEditorDraftsProvider } from "@/features/computers/model/editor-drafts"
 import { ApplicationCommandMenu } from "@/features/application/components/application-command-menu"
 import { PreparationToast } from "@/features/application/components/preparation-toast"
-import { MachineConfigurationToast } from "@/features/application/components/machine-configuration-toast"
+import { ComputerConfigurationToast } from "@/features/application/components/computer-configuration-toast"
 import { OperationQueueToast } from "@/features/application/components/operation-queue-panel"
 import { QuitRequestConfirmation, type ConnectQuitConfirmation } from "@/features/application/components/quit-request-confirmation"
-import { applicationCommands, type SandboxCommandRequest } from "@/features/application/components/application-commands"
-import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, RepositoryPushTarget, SandboxConfigurationOperation } from "@/features/application/model/application-source"
+import { applicationCommands, type ComputerCommandRequest } from "@/features/application/components/application-commands"
+import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, RepositoryPushTarget, ComputerConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { defaultStartupWorkspaceIds } from "@/features/application/model/startup-workspaces"
+import { defaultStartupComputerIds } from "@/features/application/model/startup-computers"
 import { AlphaNotice } from "@/features/application/components/alpha-notice"
 import { EditorIncludeNotice } from "@/features/application/components/editor-include-notice"
-import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
+import { ConnectionsSettings } from "@/features/application/components/connections-settings"
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
 import { NotificationsPage } from "@/features/application/pages/notifications-page"
-import { OverviewPage, type SandboxPageRequest } from "@/features/application/pages/overview-page"
-import { useSandboxTransfer } from "@/features/application/components/sandbox-transfer"
+import { OverviewPage, type ComputerPageRequest } from "@/features/application/pages/overview-page"
+import { useComputerTransfer } from "@/features/application/components/computer-transfer"
 import { SecretsPage } from "@/features/application/pages/secrets-page"
 import { SystemIssuePage } from "@/features/application/pages/system-issue-page"
-import { WorkspacesPage } from "@/features/application/pages/workspaces-page"
+import { ComputersPage } from "@/features/application/pages/computers-page"
 import { applicationPreferenceChanges, type ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 import { SettingsProvider, useSettings } from "@/features/preferences/settings-store"
 
-function workspaceAttentionCounts(source: Pick<ApplicationSource, "workspaces" | "sandboxConfigurationOperation">): { errors: number; warnings: number } {
-  const attentionByMachine = new Map(source.workspaces.map((workspace) => [
-    workspace.machine.id,
-    workspace.state === "failed" || workspace.attention?.level === "error"
+function computerAttentionCounts(source: Pick<ApplicationSource, "computers" | "computerConfigurationOperation">): { errors: number; warnings: number } {
+  const attentionByComputer = new Map(source.computers.map((computer) => [
+    computer.configuration.id,
+    computer.state === "failed" || computer.attention?.level === "error"
       ? "error" as const
-      : workspace.attention?.level === "warning"
+      : computer.attention?.level === "warning"
         ? "warning" as const
         : null,
   ]))
-  const operation = source.sandboxConfigurationOperation
-  if (operation?.status === "failed" && operation.error.workspace) {
-    const failedMachine = operation.candidate.machines.find(({ name }) => name === operation.error.workspace)
-      ?? source.workspaces.find(({ machine }) => machine.name === operation.error.workspace)?.machine
-    if (failedMachine) attentionByMachine.set(failedMachine.id, "error")
+  const operation = source.computerConfigurationOperation
+  if (operation?.status === "failed" && operation.error.computer) {
+    const failedComputer = operation.candidate.computers.find(({ name }) => name === operation.error.computer)
+      ?? source.computers.find(({ configuration }) => configuration.name === operation.error.computer)?.configuration
+    if (failedComputer) attentionByComputer.set(failedComputer.id, "error")
   }
 
-  return [...attentionByMachine.values()].reduce((counts, attention) => {
+  return [...attentionByComputer.values()].reduce((counts, attention) => {
     if (attention === "error") counts.errors += 1
     else if (attention === "warning") counts.warnings += 1
     return counts
@@ -64,7 +64,7 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
     .filter(({ status }) => status === "running")
     .map(({ category }) => category))
   const githubSourceBusy = source.github.state === "connecting"
-    || (source.github.workspaceOperations ?? []).some(({ status }) => status === "applying")
+    || (source.github.computerOperations ?? []).some(({ status }) => status === "applying")
 
   return {
     tabs: {
@@ -72,11 +72,11 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
       secrets: runningCategories.has("secrets"),
       system: source.runtimeRepair?.checking || runningCategories.has("system"),
     },
-    workspaceSections: {
-      overview: source.sandboxConfigurationOperation?.status === "applying"
-        || source.workspaces.some(({ state }) => state === "starting")
+    computerSections: {
+      overview: source.computerConfigurationOperation?.status === "applying"
+        || source.computers.some(({ state }) => state === "starting")
         || backupBusy
-        || runningCategories.has("sandbox")
+        || runningCategories.has("computer")
         || runningCategories.has("backup"),
       files: source.repositoryPushOperations.some(({ status }) => status === "pushing")
         || runningCategories.has("git"),
@@ -101,7 +101,7 @@ type ApplicationAppProps = {
 export function ApplicationApp(props: ApplicationAppProps) {
   return <SettingsProvider initialSettings={{
     ...props.source.preferences,
-    startupWorkspaceIds: props.source.preferences.startupWorkspaceIds ?? defaultStartupWorkspaceIds(props.source.workspaces),
+    startupComputerIds: props.source.preferences.startupComputerIds ?? defaultStartupComputerIds(props.source.computers),
   }}><ApplicationContent {...props} /></SettingsProvider>
 }
 
@@ -110,26 +110,26 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const updates = useUpdates()
   const installingUpdate = updates?.snapshot?.phase === "installing"
     || Boolean(updates?.pending && (updates.snapshot?.phase === "ready" || updates.snapshot?.retryAction === "install"))
-  const [newSandboxRequest, setNewSandboxRequest] = useState(0)
-  // A palette command that opens something on a sandbox's page (folder picker, Fork, Delete).
-  const [sandboxRequest, setSandboxRequest] = useState<SandboxPageRequest>()
+  const [newComputerRequest, setNewComputerRequest] = useState(0)
+  // A palette command that opens something on a computer's page (folder picker, Fork, Delete).
+  const [computerRequest, setComputerRequest] = useState<ComputerPageRequest>()
   const [searchRequest, setSearchRequest] = useState(0)
   const [sidebarRequest, setSidebarRequest] = useState(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
-  const [directoryStore] = useState(() => createDirectoryStore(actions.listWorkspaceDirectory))
+  const [directoryStore] = useState(() => createDirectoryStore(actions.listComputerDirectory))
   useLayoutEffect(() => {
-    directoryStore.setLoader(actions.listWorkspaceDirectory)
-  }, [actions.listWorkspaceDirectory, directoryStore])
+    directoryStore.setLoader(actions.listComputerDirectory)
+  }, [actions.listComputerDirectory, directoryStore])
   const previousFileStates = useRef(new Map<string, string>())
   useLayoutEffect(() => {
-    const current = new Map(source.workspaces.map((workspace) => [
-      workspaceTarget(workspace), `${workspace.machine.id}:${workspace.state}:${workspace.freshness}`,
+    const current = new Map(source.computers.map((computer) => [
+      computerTarget(computer), `${computer.configuration.id}:${computer.state}:${computer.freshness}`,
     ]))
     for (const [name, state] of previousFileStates.current) {
-      if (current.get(name) !== state) directoryStore.invalidateWorkspace(name)
+      if (current.get(name) !== state) directoryStore.invalidateComputer(name)
     }
     previousFileStates.current = current
-  }, [source.workspaces, directoryStore])
+  }, [source.computers, directoryStore])
 
   const { settings, updateSettings } = useSettings()
   const { reduceMotion } = settings
@@ -145,42 +145,42 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     ...(settings.browserPath && { browserPath: settings.browserPath }),
   }
   const activeRuntimeRepair = source.runtimeRepair
-  const initialWorkspaceId = initialRoute?.workspace ? resolveSandboxId(initialRoute.workspace) : undefined
-  const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute && { ...initialRoute, workspace: initialWorkspaceId })
-  const { tab: activeTab, workspaceSection, settingsSection } = navigation
-  const workspaces = source.workspaces
-  const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<Set<string>>(() => new Set(
-    source.workspaces
-      .filter(({ machine }) => machine.id === initialWorkspaceId)
-      .map(({ machine }) => machine.id),
+  const initialComputerId = initialRoute?.computer ? resolveComputerId(initialRoute.computer) : undefined
+  const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute && { ...initialRoute, computer: initialComputerId })
+  const { tab: activeTab, computerSection, settingsSection } = navigation
+  const computers = source.computers
+  const [selectedComputerIds, setSelectedComputerIds] = useState<Set<string>>(() => new Set(
+    source.computers
+      .filter(({ configuration }) => configuration.id === initialComputerId)
+      .map(({ configuration }) => configuration.id),
   ))
   const [logQuery, setLogQuery] = useState("")
-  const [sandboxConfigurationOperation, setSandboxConfigurationOperation] = useState<SandboxConfigurationOperation | null>(source.sandboxConfigurationOperation)
+  const [computerConfigurationOperation, setComputerConfigurationOperation] = useState<ComputerConfigurationOperation | null>(source.computerConfigurationOperation)
   const [repositoryPushOperations, setRepositoryPushOperations] = useState<RepositoryPushOperation[]>(source.repositoryPushOperations)
   const backupBusy = backup.state.operation?.kind === "running"
   const [githubBusy, setGitHubBusy] = useState(
     source.github.state === "connecting"
-      || (source.github.workspaceOperations ?? []).some(({ status }) => status === "applying"),
+      || (source.github.computerOperations ?? []).some(({ status }) => status === "applying"),
   )
   const visibleTab = activeTab
-  const visibleWorkspaceSection = workspaceSection
+  const visibleComputerSection = computerSection
   const applicationSource = {
     ...source,
-    workspaces,
-    sandboxConfigurationOperation,
+    computers,
+    computerConfigurationOperation,
     repositoryPushOperations,
     preferences: { ...source.preferences, ...settings },
   }
-  const transfer = useSandboxTransfer(backup, { source: applicationSource, openSandbox: (id) => navigation.openSandbox(id) })
+  const transfer = useComputerTransfer(backup, { source: applicationSource, openComputer: (id) => navigation.openComputer(id) })
 
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
-    setSelectedWorkspaceIds((current) => {
-      const availableIds = new Set(source.workspaces.map(({ machine }) => machine.id))
+    setSelectedComputerIds((current) => {
+      const availableIds = new Set(source.computers.map(({ configuration }) => configuration.id))
       const next = new Set([...current].filter((id) => availableIds.has(id)))
       return next.size === current.size ? current : next
     })
-  }, [source.workspaces])
+  }, [source.computers])
 
   // The latest native snapshot, for saves that settle after later snapshots arrived.
   const latestSource = useRef(source)
@@ -191,8 +191,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   useEffect(() => {
     // The native bridge clears or replaces the pending operation alongside its authoritative snapshot.
     // oxlint-disable-next-line react/set-state-in-effect
-    setSandboxConfigurationOperation(source.sandboxConfigurationOperation)
-  }, [source.sandboxConfigurationOperation])
+    setComputerConfigurationOperation(source.computerConfigurationOperation)
+  }, [source.computerConfigurationOperation])
   useEffect(() => {
     // The native bridge replaces local push progress with its authoritative operation result.
     // oxlint-disable-next-line react/set-state-in-effect
@@ -203,40 +203,40 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     void updateSettings(applicationPreferenceChanges(applicationPreferences, next))
   }
 
-  function updateMachines(machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) {
-    const candidate = { schemaVersion: 1 as const, machines }
-    setSandboxConfigurationOperation({
-      id: "local-sandbox-configuration",
+  function updateConfigurations(configurations: SetupComputerConfiguration[], baseline?: SetupComputerConfiguration[]) {
+    const candidate = { schemaVersion: 1 as const, computers: configurations }
+    setComputerConfigurationOperation({
+      id: "local-computer-configuration",
       status: "applying",
       candidate,
       progressEvents: [],
       result: null,
       error: null,
     })
-    const outcome = actions.saveMachineConfiguration(candidate, baseline)
+    const outcome = actions.saveComputerConfiguration(candidate, baseline)
     // Without a promise, only the next snapshot reports the change; keep the optimistic state until then.
     if (!outcome || typeof outcome.then !== "function") return Promise.resolve()
     // Once the save settles the native snapshot is authoritative: adopt the latest one. A no-op
     // save publishes nothing, and a late stale-baseline rejection must not restore the operation
     // from when the save began. Re-raise a rejection so the editor can react.
-    const settle = () => setSandboxConfigurationOperation(latestSource.current.sandboxConfigurationOperation)
+    const settle = () => setComputerConfigurationOperation(latestSource.current.computerConfigurationOperation)
     return outcome.then(settle, (cause: unknown) => {
       settle()
       throw cause
     })
   }
 
-  function pushRepository(workspace: string, repositoryPath: string, commitCount: number, target: RepositoryPushTarget) {
+  function pushRepository(computer: string, repositoryPath: string, commitCount: number, target: RepositoryPushTarget) {
     setRepositoryPushOperations((current) => [
-      ...current.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath),
-      { workspace, repositoryPath, commitCount, target, status: "pushing" },
+      ...current.filter((operation) => operation.computer !== computer || operation.repositoryPath !== repositoryPath),
+      { computer, repositoryPath, commitCount, target, status: "pushing" },
     ])
-    actions.pushRepository(workspace, repositoryPath, target)
+    actions.pushRepository(computer, repositoryPath, target)
   }
 
-  const dismissRepositoryPush = useCallback((workspace: string, repositoryPath: string) => {
-    if (actions.dismissRepositoryPush) { actions.dismissRepositoryPush(workspace, repositoryPath); return }
-    setRepositoryPushOperations((current) => current.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath))
+  const dismissRepositoryPush = useCallback((computer: string, repositoryPath: string) => {
+    if (actions.dismissRepositoryPush) { actions.dismissRepositoryPush(computer, repositoryPath); return }
+    setRepositoryPushOperations((current) => current.filter((operation) => operation.computer !== computer || operation.repositoryPath !== repositoryPath))
   }, [actions])
 
   useLifecycleToasts(applicationSource, actions)
@@ -245,37 +245,37 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     onDismiss: dismissRepositoryPush,
     queue: source.operationQueue,
     onCancel: actions.cancelOperation,
-    resolveSandbox: target => {
-      const machine = workspaces.find(workspace => workspaceTarget(workspace) === target)?.machine
-      return machine ? { id: machine.id, name: machine.name } : undefined
+    resolveComputer: target => {
+      const configuration = computers.find(computer => computerTarget(computer) === target)?.configuration
+      return configuration ? { id: configuration.id, name: configuration.name } : undefined
     },
   })
 
-  function resolveSandboxId(value: string) {
-    return (source.workspaces.find((workspace) => workspace.machine.id === value)
-      ?? source.workspaces.find((workspace) => workspaceTarget(workspace) === value))?.machine.id ?? value
+  function resolveComputerId(value: string) {
+    return (source.computers.find((computer) => computer.configuration.id === value)
+      ?? source.computers.find((computer) => computerTarget(computer) === value))?.configuration.id ?? value
   }
 
-  // History never keeps a page for a sandbox that no longer exists (deleted, or gone after a
-  // refresh): its entries become the Sandboxes list in place, so Back cannot land on it.
-  const { forgetSandboxes } = navigation
+  // History never keeps a page for a computer that no longer exists (deleted, or gone after a
+  // refresh): its entries become the Computers list in place, so Back cannot land on it.
+  const { forgetComputers } = navigation
   useEffect(() => {
     const known = new Set<string>()
-    for (const workspace of source.workspaces) known.add(workspace.machine.id)
-    for (const machine of sandboxConfigurationOperation?.candidate.machines ?? []) known.add(machine.id)
-    forgetSandboxes((workspace) => known.has(workspace))
-  }, [source.workspaces, sandboxConfigurationOperation, forgetSandboxes])
+    for (const computer of source.computers) known.add(computer.configuration.id)
+    for (const configuration of computerConfigurationOperation?.candidate.computers ?? []) known.add(configuration.id)
+    forgetComputers((computer) => known.has(computer))
+  }, [source.computers, computerConfigurationOperation, forgetComputers])
 
   function navigateCommand(route: ApplicationInitialRoute) {
-    const wantsSection = Boolean(route.workspaceSection && route.workspaceSection !== "overview")
-    // A workspace without a detail section deep-links into that sandbox's overview page.
-    if (route.workspace && !wantsSection) { navigation.openSandbox(resolveSandboxId(route.workspace), route.sandboxTab); return }
-    if (route.workspace || wantsSection) {
-      setSelectedWorkspaceIds(new Set(source.workspaces
-        .filter(({ machine }) => route.workspace !== undefined && machine.id === resolveSandboxId(route.workspace))
-        .map(({ machine }) => machine.id)))
+    const wantsSection = Boolean(route.computerSection && route.computerSection !== "overview")
+    // A computer without a detail section deep-links into that computer's overview page.
+    if (route.computer && !wantsSection) { navigation.openComputer(resolveComputerId(route.computer), route.computerTab); return }
+    if (route.computer || wantsSection) {
+      setSelectedComputerIds(new Set(source.computers
+        .filter(({ configuration }) => route.computer !== undefined && configuration.id === resolveComputerId(route.computer))
+        .map(({ configuration }) => configuration.id)))
     }
-    if (route.workspaceSection || route.workspace) navigation.selectWorkspaceSection(route.workspaceSection ?? "overview")
+    if (route.computerSection || route.computer) navigation.selectComputerSection(route.computerSection ?? "overview")
     else if (route.settingsSection) navigation.selectSettingsSection(route.settingsSection)
     else if (route.tab) navigation.selectTab(route.tab)
   }
@@ -287,23 +287,23 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     if (routeRequest) navigateRequested(routeRequest)
   }, [routeRequest])
 
-  const canCreateSandbox = sandboxConfigurationOperation === null
+  const canCreateComputer = computerConfigurationOperation === null
   const canImport = !backupBusy
   const canCheckUpdates = Boolean(updates && !updates.pending && !["checking", "downloading", "installing"].includes(updates.snapshot?.phase ?? ""))
-  function requestNewSandbox() {
-    navigation.selectWorkspaceSection("overview")
-    setNewSandboxRequest(nextRequestToken())
+  function requestNewComputer() {
+    navigation.selectComputerSection("overview")
+    setNewComputerRequest(nextRequestToken())
   }
-  function requestOnSandboxPage(workspaceId: string, request: SandboxCommandRequest) {
-    navigation.openSandbox(workspaceId)
-    setSandboxRequest({ token: nextRequestToken(), workspaceId, request })
+  function requestOnComputerPage(computerId: string, request: ComputerCommandRequest) {
+    navigation.openComputer(computerId)
+    setComputerRequest({ token: nextRequestToken(), computerId, request })
   }
 
-  // The review popover anchors to the sandbox list's Add button, so show the list first.
-  const openImport = () => { navigation.selectWorkspaceSection("overview"); navigation.closeSandbox(); void transfer.beginImport() }
+  // The review popover anchors to the computer list's Add button, so show the list first.
+  const openImport = () => { navigation.selectComputerSection("overview"); navigation.closeComputer(); void transfer.beginImport() }
   const nativeMenu = useAppMenu({ ready: true, busy: installingUpdate,
     canGoBack: navigation.canGoBack, canGoForward: navigation.canGoForward,
-    canCreateSandbox, canImport, canCheckUpdates, sidebarCollapsed,
+    canCreateComputer, canImport, canCheckUpdates, sidebarCollapsed,
   }, (command) => {
     if (installingUpdate) return
     switch (command) {
@@ -312,29 +312,29 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         navigation.selectSettingsSection("general")
         if (canCheckUpdates) updates?.check()
         break
-      case "new-sandbox":
-        if (canCreateSandbox) requestNewSandbox()
+      case "new-computer":
+        if (canCreateComputer) requestNewComputer()
         break
-      case "import-sandbox":
+      case "import-computer":
         if (canImport) openImport()
         break
       case "search": setSearchRequest(value => value + 1); break
       case "toggle-sidebar": setSidebarRequest(value => value + 1); break
       case "go-back": navigation.goBack(); break
       case "go-forward": navigation.goForward(); break
-      case "go-sandboxes": navigation.selectWorkspaceSection("overview"); break
-      case "go-files": navigation.selectWorkspaceSection("files"); break
-      case "go-logs": navigation.selectWorkspaceSection("logs"); break
-      case "go-network": navigation.selectWorkspaceSection("network"); break
-      case "go-activity": navigation.selectWorkspaceSection("activity"); break
+      case "go-computers": navigation.selectComputerSection("overview"); break
+      case "go-files": navigation.selectComputerSection("files"); break
+      case "go-logs": navigation.selectComputerSection("logs"); break
+      case "go-network": navigation.selectComputerSection("network"); break
+      case "go-activity": navigation.selectComputerSection("activity"); break
       case "go-github": navigation.selectTab("github"); break
       case "go-secrets": navigation.selectTab("secrets"); break
     }
   })
 
   return (
-    // Keeps unsaved sandbox edits while navigating between sections (I-37).
-    <MachineEditorDraftsProvider>
+    // Keeps unsaved computer edits while navigating between sections (I-37).
+    <ComputerEditorDraftsProvider>
     <ApplicationShell
       toggleSidebarRequest={sidebarRequest}
       onSidebarCollapsedChange={setSidebarCollapsed}
@@ -342,13 +342,13 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       notice={<UpdateNotice onOpen={() => navigation.selectSettingsSection("general")} />}
       banner={<><AlphaNotice /><EditorIncludeNotice /></>}
       activeTab={visibleTab}
-      workspaceSection={visibleWorkspaceSection}
+      computerSection={visibleComputerSection}
       settingsSection={settingsSection}
       systemIssueStatus={activeRuntimeRepair?.status ?? null}
-      workspaceAttention={workspaceAttentionCounts(applicationSource)}
+      computerAttention={computerAttentionCounts(applicationSource)}
       navigationLoading={navigationLoadingState(applicationSource, githubBusy, backupBusy)}
       onTabChange={navigation.selectTab}
-      onWorkspaceSectionChange={navigation.selectWorkspaceSection}
+      onComputerSectionChange={navigation.selectComputerSection}
       onSettingsSectionChange={navigation.selectSettingsSection}
       canGoBack={navigation.canGoBack}
       canGoForward={navigation.canGoForward}
@@ -356,58 +356,58 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       onGoForward={navigation.goForward}
       reduceMotion={reduceMotion}
       commandMenu={<ApplicationCommandMenu nativeShortcuts={nativeMenu} openRequest={searchRequest} disabled={installingUpdate} commands={[...applicationCommands(applicationSource, actions, navigateCommand, {
-        onImportSandbox: canImport ? openImport : undefined,
-        onNewSandbox: canCreateSandbox ? requestNewSandbox : undefined,
-        onExportSandbox: canImport ? (name) => { void transfer.exportSandbox(name) } : undefined,
-        onSandboxRequest: requestOnSandboxPage,
+        onImportComputer: canImport ? openImport : undefined,
+        onNewComputer: canCreateComputer ? requestNewComputer : undefined,
+        onExportComputer: canImport ? (name) => { void transfer.exportComputer(name) } : undefined,
+        onComputerRequest: requestOnComputerPage,
       }), ...updateCommands(updates, () => navigation.selectSettingsSection("general"))]} />}
     >
       {/* One toast reflects VM-changing operations wherever the user is, so progress and
           Cancel never vanish while the work continues. It renders nothing inline. */}
       <OperationQueueToast queue={source.operationQueue} onCancel={actions.cancelOperation} />
-      <MachineConfigurationToast operation={source.sandboxConfigurationOperation} workspaces={source.workspaces} onOpen={(id) => navigation.openSandbox(id)} />
+      <ComputerConfigurationToast operation={source.computerConfigurationOperation} computers={source.computers} onOpen={(id) => navigation.openComputer(id)} />
       <PreparationToast />
       <QuitRequestConfirmation connect={connectQuitConfirmation} />
-      <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
-        {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage notifyOperations={false} active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)}
-            sandboxRequest={sandboxRequest} onSandboxRequestHandled={(token) => setSandboxRequest(current => current?.token === token ? undefined : current)} onExportSandbox={transfer.exportSandbox} onImportSandbox={openImport} importPopover={transfer.importPopover} backup={backup} source={applicationSource}
-            selectedSandboxId={navigation.workspace ? resolveSandboxId(navigation.workspace) : null}
-            sandboxTab={navigation.sandboxTab}
-            onOpenSandbox={(id, tab) => navigation.openSandbox(id, tab)}
-            onCloseSandbox={() => navigation.closeSandbox()}
-            onSelectSandboxTab={(tab) => navigation.selectSandboxTab(tab)}
+      <section id="application-panel-computers" role="region" aria-labelledby="application-nav-computers" hidden={visibleTab !== "computers"} className="h-full min-h-0 overflow-hidden">
+        {visibleComputerSection === "overview" ? (
+          <OverviewPage notifyOperations={false} active={visibleTab === "computers"} newComputerRequest={newComputerRequest} onNewComputerRequestHandled={(id) => setNewComputerRequest(current => current === id ? 0 : current)}
+            computerRequest={computerRequest} onComputerRequestHandled={(token) => setComputerRequest(current => current?.token === token ? undefined : current)} onExportComputer={transfer.exportComputer} onImportComputer={openImport} importPopover={transfer.importPopover} backup={backup} source={applicationSource}
+            selectedComputerId={navigation.computer ? resolveComputerId(navigation.computer) : null}
+            computerTab={navigation.computerTab}
+            onOpenComputer={(id, tab) => navigation.openComputer(id, tab)}
+            onCloseComputer={() => navigation.closeComputer()}
+            onSelectComputerTab={(tab) => navigation.selectComputerTab(tab)}
             onNavigate={navigateCommand}
-            actions={{ ...actions, dismissMachineConfigurationError: () => {
-            if (sandboxConfigurationOperation?.status !== "failed") return
-            actions.dismissMachineConfigurationError()
-            setSandboxConfigurationOperation(null)
-          } }} onMachinesChange={updateMachines} />
+            actions={{ ...actions, dismissComputerConfigurationError: () => {
+            if (computerConfigurationOperation?.status !== "failed") return
+            actions.dismissComputerConfigurationError()
+            setComputerConfigurationOperation(null)
+          } }} onConfigurationsChange={updateConfigurations} />
         ) : (
-          <WorkspacesPage
+          <ComputersPage
             notifyOperations={false}
             source={applicationSource}
-            onSectionChange={navigation.selectWorkspaceSection}
+            onSectionChange={navigation.selectComputerSection}
             network={source.network}
             networkError={source.networkError}
             networkActions={actions}
             onOpenEditor={actions.openEditor}
             editor={applicationPreferences.editor}
             directoryStore={directoryStore}
-            active={visibleTab === "workspaces"}
-            workspaces={workspaces}
+            active={visibleTab === "computers"}
+            computers={computers}
             activities={source.activities}
-            selectedWorkspaceIds={selectedWorkspaceIds}
-            section={visibleWorkspaceSection}
+            selectedComputerIds={selectedComputerIds}
+            section={visibleComputerSection}
             logQuery={logQuery}
             repositoryPushOperations={repositoryPushOperations}
             browser={applicationPreferences.browser}
-            onWorkspaceFilterChange={setSelectedWorkspaceIds}
+            onComputerFilterChange={setSelectedComputerIds}
             onLogQueryChange={setLogQuery}
             onPushRepository={pushRepository}
             operationQueue={source.operationQueue}
             onDismissRepositoryPush={dismissRepositoryPush}
-            onCreateSandbox={canCreateSandbox && !installingUpdate ? requestNewSandbox : undefined}
+            onCreateComputer={canCreateComputer && !installingUpdate ? requestNewComputer : undefined}
           />
         )}
       </section>
@@ -424,10 +424,10 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <div hidden={settingsSection !== "general"}>
           <GeneralPage source={source} applicationPreferences={applicationPreferences} onApplicationPreferencesChange={changeApplicationPreferences} reduceMotion={reduceMotion} onReduceMotionChange={(enabled) => { void updateSettings({ reduceMotion: enabled }) }} />
         </div>
-        <div hidden={settingsSection !== "computers"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><RemoteComputersSettings source={source} actions={actions} active={visibleTab === "settings" && settingsSection === "computers"} /></div>
+        <div hidden={settingsSection !== "connections"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><ConnectionsSettings source={source} actions={actions} active={visibleTab === "settings" && settingsSection === "connections"} /></div>
         <div hidden={settingsSection !== "notifications"}><NotificationsPage /></div>
       </section>
     </ApplicationShell>
-    </MachineEditorDraftsProvider>
+    </ComputerEditorDraftsProvider>
   )
 }

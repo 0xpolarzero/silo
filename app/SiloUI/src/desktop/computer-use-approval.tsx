@@ -4,9 +4,9 @@ import { useComputerUseBridge } from "./computer-use-bridge"
 import type { ComputerUseApproval, ComputerUseState, LinuxDesktopState } from "./linux-desktop-state"
 
 export interface ComputerUseApprovalController {
-  /** The sandbox's state as last read; null until the first read. */
+  /** The computer's state as last read; null until the first read. */
   state: LinuxDesktopState | null
-  /** Absent for a sandbox from before computer use was built in. */
+  /** Absent for a computer from before computer use was built in. */
   computerUse: ComputerUseState | null | undefined
   running: boolean
   busy: boolean
@@ -15,15 +15,15 @@ export interface ComputerUseApprovalController {
   /** The latest read failed; `state` may be stale. */
   loadError: string | null
   setApproval(mode: ComputerUseApproval): void
-  /** Configures the agents installed in the sandbox again. Only possible while it runs. */
+  /** Configures the agents installed in the computer again. Only possible while it runs. */
   setup(): void
   refresh(): void
   dismissError(): void
 }
 
-/** Reads and changes one sandbox's computer use, polling only while `active` and the window is visible. Returns null without a bridge.
- * Use with a `workspace` that does not change for the life of the caller: its reads belong to one sandbox. */
-export function useComputerUseApproval(workspace: string, pollMs = 5000, active = true): ComputerUseApprovalController | null {
+/** Reads and changes one computer's computer use, polling only while `active` and the window is visible. Returns null without a bridge.
+ * Use with a `computer` that does not change for the life of the caller: its reads belong to one computer. */
+export function useComputerUseApproval(computer: string, pollMs = 5000, active = true): ComputerUseApprovalController | null {
   const bridge = useComputerUseBridge()
   const [state, setState] = useState<LinuxDesktopState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -39,7 +39,7 @@ export function useComputerUseApproval(workspace: string, pollMs = 5000, active 
     reading.current = true
     const current = revision.current
     try {
-      const next = await bridge.readState(workspace)
+      const next = await bridge.readState(computer)
       if (current === revision.current) {
         failureDelay.current = 0
         setState(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
@@ -52,7 +52,7 @@ export function useComputerUseApproval(workspace: string, pollMs = 5000, active 
       }
     }
     finally { reading.current = false }
-  }, [bridge, workspace, pollMs])
+  }, [bridge, computer, pollMs])
   useEffect(() => {
     if (!active) return
     let disposed = false
@@ -83,13 +83,13 @@ export function useComputerUseApproval(workspace: string, pollMs = 5000, active 
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
       // The change may have been stored or even applied before it failed to answer: show what the
-      // sandbox's own state says now, not the snapshot from before the change. Only when that read
+      // computer's own state says now, not the snapshot from before the change. Only when that read
       // fails too does the old snapshot stand, with its read error.
-      try { setState(await bridge?.readState(workspace) ?? previous); setLoadError(null) }
+      try { setState(await bridge?.readState(computer) ?? previous); setLoadError(null) }
       catch (readCause) { setLoadError(readCause instanceof Error ? readCause.message : String(readCause)); setState(previous) }
     }
     finally { working.current = false; setBusy(false) }
-  }, [bridge, state, workspace])
+  }, [bridge, state, computer])
   if (!bridge) return null
   return {
     state,
@@ -98,14 +98,14 @@ export function useComputerUseApproval(workspace: string, pollMs = 5000, active 
     busy,
     error,
     loadError,
-    setApproval: mode => { void run(() => bridge.setApproval(workspace, mode), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, approval: mode, approvalApply: "pending", approvalApplyReason: null } : current.computerUse })) },
-    setup: () => { void run(() => bridge.setup(workspace), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, state: "installing", reason: null } : current.computerUse })) },
+    setApproval: mode => { void run(() => bridge.setApproval(computer, mode), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, approval: mode, approvalApply: "pending", approvalApplyReason: null } : current.computerUse })) },
+    setup: () => { void run(() => bridge.setup(computer), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, state: "installing", reason: null } : current.computerUse })) },
     refresh: () => { void refresh() },
     dismissError: () => setError(null),
   }
 }
 
-/** Where the approval of a sandbox's computer use stands, for its switch and warning. */
+/** Where the approval of a computer's computer use stands, for its switch and warning. */
 export function approvalStatus(computerUse: ComputerUseState, running: boolean) {
   const apply = computerUse.approvalApply
   const applied = computerUse.appliedApproval
@@ -135,8 +135,8 @@ export function approvalStatus(computerUse: ComputerUseState, running: boolean) 
   }
 }
 
-/** The "Allow without asking" switch of one sandbox, with a quiet "Applying…" beside it. It works while the sandbox is
- * stopped: the choice is stored and applied at start. Renders nothing until the sandbox's computer use is known. */
+/** The "Allow without asking" switch of one computer, with a quiet "Applying…" beside it. It works while the computer is
+ * stopped: the choice is stored and applied at start. Renders nothing until the computer's computer use is known. */
 export function ComputerUseApprovalSwitch({ approval, label = "Allow without asking", labelledBy }: { approval: ComputerUseApprovalController | null; label?: string; labelledBy?: string }) {
   const computerUse = approval?.computerUse
   if (!approval || !computerUse) return null

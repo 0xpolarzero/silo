@@ -21,7 +21,7 @@ import { useSettings } from "@/features/preferences/settings-store"
 
 /** Painted before any native call at startup, so the window Rust has shown is never blank. */
 export function StartupLoading({ statusPanel = false }: { statusPanel?: boolean }) {
-  if (statusPanel) return <ApplicationLoading machines={[]} statusPanel />
+  if (statusPanel) return <ApplicationLoading configurations={[]} statusPanel />
   return <SiloWindow title="Silo" label="Silo"><span role="status" className="sr-only">Opening Silo…</span></SiloWindow>
 }
 
@@ -59,13 +59,13 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   const dependencies = useDependencyStore(dependencyStore)
   const { settings: currentSettings, revision: settingsRevision, writeProtected: settingsProtected, store: settingsStore } = useSettings()
   const [preparingUpdate, setPreparingUpdate] = useState(false)
-  const updateBackend = useMemo(() => ({ ...desktopUpdateBackend, install: async (stopSandboxes: boolean) => {
+  const updateBackend = useMemo(() => ({ ...desktopUpdateBackend, install: async (stopComputers: boolean) => {
     setPreparingUpdate(true)
     try {
       await settingsStore.flush()
       const { saveError, writeProtected } = settingsStore.getSnapshot()
       if (saveError || writeProtected) throw new Error(saveError ?? "Settings are protected from writes")
-      return await desktopUpdateBackend.install(stopSandboxes)
+      return await desktopUpdateBackend.install(stopComputers)
     } finally {
       setPreparingUpdate(false)
     }
@@ -92,15 +92,15 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
     return <UpdatesProvider backend={updateBackend}><UpdateInstallationBoundary preparing={preparingUpdate}><ProductionOnboarding application={current.source} dependencies={dependencies} source={source} onOpenApp={() => setOnboardingActive(false)} /></UpdateInstallationBoundary></UpdatesProvider>
   }
   if (!current.source) {
-    if (current.loading && !current.error && !failures.length) return <ApplicationLoading machines={current.savedMachines ?? []} statusPanel={statusPanel} />
-    const message = current.error ?? "The native application state is unavailable. No sandbox state changed."
+    if (current.loading && !current.error && !failures.length) return <ApplicationLoading configurations={current.savedConfigurations ?? []} statusPanel={statusPanel} />
+    const message = current.error ?? "The native application state is unavailable. No computer state changed."
     if (statusPanel) return <StatusPanelUnavailable message={message} retry={current.loading ? undefined : retryChecks} />
     return <Unavailable message={message} checks={failures} checking={checking} retry={current.loading ? undefined : retryChecks} />
   }
-  const remoteOnly = Boolean(current.source.remoteComputers?.length)
-    && !current.source.workspaces.some(workspace => !workspace.computer && workspace.machine.kind === "vm")
+  const remoteOnly = Boolean(current.source.devices?.length)
+    && !current.source.computers.some(computer => !computer.device)
   const localRuntimeFailures = remoteOnly ? [] : failures
-  // Connected computers stay usable while this computer's sandboxes update; say why
+  // Connected devices stay usable while this device's computers update; say why
   // the local ones are missing.
   const notice = current.localUpdating ? localUpdatingNotice : undefined
   return statusPanel

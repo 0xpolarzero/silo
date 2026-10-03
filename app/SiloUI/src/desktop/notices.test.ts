@@ -4,9 +4,9 @@ const native = vi.hoisted(() => ({ tauri: true, invoke: vi.fn(), listen: vi.fn()
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => native.tauri, invoke: native.invoke }))
 vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen }))
 
-import { clearSandboxNotices, deliverNotice, listenForNotices, noticeSchema, type Notice } from "./notices"
+import { clearComputerNotices, deliverNotice, listenForNotices, noticeSchema, type Notice } from "./notices"
 
-const notice: Notice = { category: "failures", key: "push:dev", title: "Push failed", body: "rejected", sandbox: { id: "vm-1", name: "dev" } }
+const notice: Notice = { category: "failures", key: "push:dev", title: "Push failed", body: "rejected", computer: { id: "vm-1", name: "dev" } }
 
 beforeEach(() => {
   native.tauri = true
@@ -14,11 +14,11 @@ beforeEach(() => {
   native.listen.mockReset()
 })
 
-it("delivers a notice and clears a sandbox's notices with the wire shape", () => {
+it("delivers a notice and clears a computer's notices with the wire shape", () => {
   deliverNotice(notice)
-  clearSandboxNotices("vm-1")
+  clearComputerNotices("vm-1")
   expect(native.invoke).toHaveBeenNthCalledWith(1, "deliver_notice", { notice })
-  expect(native.invoke).toHaveBeenNthCalledWith(2, "clear_sandbox_notices", { sandboxId: "vm-1" })
+  expect(native.invoke).toHaveBeenNthCalledWith(2, "clear_computer_notices", { computerId: "vm-1" })
 })
 
 it("is a no-op outside the desktop app and never throws when delivery fails", async () => {
@@ -55,8 +55,8 @@ it("forwards valid backend notices, ignores malformed ones, and stops listening 
   log.mockRestore()
 })
 
-it("accepts a notice without a sandbox and rejects an unknown category", () => {
-  expect(noticeSchema.safeParse({ ...notice, sandbox: null }).success).toBe(true)
+it("accepts a notice without a computer and rejects an unknown category", () => {
+  expect(noticeSchema.safeParse({ ...notice, computer: null }).success).toBe(true)
   expect(noticeSchema.safeParse({ ...notice, category: "health" }).success).toBe(false)
 })
 

@@ -9,8 +9,8 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/relative-time"
 import { runCheckpointOperation } from "@/features/application/model/checkpoint-operation-toast"
 import { ForkBody } from "./fork-popover"
-import type { ApplicationActions, ApplicationWorkspace } from "@/features/application/model/application-source"
-import type { CheckpointUsage, WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
+import type { ApplicationActions, ApplicationComputer } from "@/features/application/model/application-source"
+import type { CheckpointUsage, ComputerCheckpoint } from "@/features/application/model/checkpoint-source"
 import { formatStorageBytes } from "@/features/application/model/workspace-storage"
 
 function suggestedName(now = new Date()) {
@@ -18,54 +18,54 @@ function suggestedName(now = new Date()) {
   return `Checkpoint ${now.toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })}`
 }
 
-function checkpointTag(checkpoint: WorkspaceCheckpoint) {
+function checkpointTag(checkpoint: ComputerCheckpoint) {
   if (checkpoint.reason === "before-restore") return "Recovery"
   return checkpoint.scope === "full" ? "Includes memory" : "Disks only"
 }
 
 type CheckpointUsageEntry = CheckpointUsage["checkpoints"][number]
 
-function deleteDescription(checkpoint: WorkspaceCheckpoint, info: CheckpointUsageEntry | undefined) {
+function deleteDescription(checkpoint: ComputerCheckpoint, info: CheckpointUsageEntry | undefined) {
   const recovery = checkpoint.reason === "before-restore" ? "This is the recovery point saved before a Restore; you can no longer undo the Restore it was saved for. " : ""
   const freed = info?.sizeBytes != null ? `, freeing up to ${formatStorageBytes(info.sizeBytes)}` : ""
-  return `${recovery}Its saved state is removed from this computer${freed}. This can’t be undone.`
+  return `${recovery}Its saved state is removed from this device${freed}. This can’t be undone.`
 }
 
-export function CheckpointPanel({ workspace, target, actions, disabled, onExport, exportDisabled = false, forkedAction, restoredAction, takenNames }: {
-  workspace: ApplicationWorkspace
-  /** Sandbox names already used on this sandbox's computer, so a fork name conflict shows inline. */
+export function CheckpointPanel({ computer, target, actions, disabled, onExport, exportDisabled = false, forkedAction, restoredAction, takenNames }: {
+  computer: ApplicationComputer
+  /** Computer names already used on this computer's device, so a fork name conflict shows inline. */
   takenNames?: readonly string[]
   target: string
   actions: ApplicationActions
   disabled: boolean
-  onExport?: (checkpoint: WorkspaceCheckpoint) => void
+  onExport?: (checkpoint: ComputerCheckpoint) => void
   exportDisabled?: boolean
-  /** Action on the "Fork created" notification, e.g. Open. Receives the new sandbox name. */
+  /** Action on the "Fork created" notification, e.g. Open. Receives the new computer name. */
   forkedAction?: (name: string) => { label: string; onClick: () => void }
   /** Action on the "Restored" notification, e.g. Start. */
-  restoredAction?: (checkpoint: WorkspaceCheckpoint) => { label: string; onClick: () => void }
+  restoredAction?: (checkpoint: ComputerCheckpoint) => { label: string; onClick: () => void }
 }) {
   const [createOpen, setCreateOpen] = useState(false)
   const [name, setName] = useState(suggestedName)
   const [pending, setPending] = useState(false)
   /** True once the user started an operation here, so its outcome is reported by a notification rather than an inline label. */
   const [started, setStarted] = useState(false)
-  const checkpoints = [...(workspace.checkpoints ?? [])].sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-  const operation = workspace.checkpointOperation
+  const checkpoints = [...(computer.checkpoints ?? [])].sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+  const operation = computer.checkpointOperation
   const running = operation?.status === "running"
   const busy = pending || running
   const locked = disabled || busy
-  const isLocal = !workspace.computer
-  const sandbox = workspace.machine.name
-  const noticeSandbox = { id: workspace.machine.id, name: sandbox }
+  const isLocal = !computer.device
+  const computerName = computer.configuration.name
+  const noticeComputer = { id: computer.configuration.id, name: computerName }
 
   // Sizes and Delete availability come from the native store, so they are read on demand
-  // for checkpoints on this computer and again after every checkpoint change.
+  // for checkpoints on this device and again after every checkpoint change.
   const [usage, setUsage] = useState<ReadonlyMap<string, CheckpointUsageEntry>>(new Map())
   const [usageRequest, setUsageRequest] = useState(0)
   const canReadUsage = isLocal && Boolean(actions.readCheckpointUsage)
-  const usageKey = `${workspace.machine.id}:${checkpoints.map(checkpoint => checkpoint.id).join(",")}:${running}:${usageRequest}`
-  const readUsage = useEffectEvent(() => actions.readCheckpointUsage!(workspace.machine.id))
+  const usageKey = `${computer.configuration.id}:${checkpoints.map(checkpoint => checkpoint.id).join(",")}:${running}:${usageRequest}`
+  const readUsage = useEffectEvent(() => actions.readCheckpointUsage!(computer.configuration.id))
   useEffect(() => {
     if (!canReadUsage || running) return
     let current = true
@@ -89,8 +89,8 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       id: `checkpoint:${target}:capture`,
       kind: "capture",
       target,
-      sandbox,
-      noticeSandbox,
+      computer: computerName,
+      noticeComputer,
       title: `Creating checkpoint “${title}”`,
       run: () => actions.createCheckpoint!(target, title),
       success: { title: "Checkpoint created", description: title },
@@ -98,29 +98,29 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
     }).then(ok => { if (ok) setName(suggestedName()) })
   }
 
-  function restore(checkpoint: WorkspaceCheckpoint) {
+  function restore(checkpoint: ComputerCheckpoint) {
     if (locked || !actions.restoreCheckpoint) return
     void run({
       id: `checkpoint:${target}:restore`,
       kind: "restore",
       target,
-      sandbox,
-      noticeSandbox,
+      computer: computerName,
+      noticeComputer,
       title: `Restoring “${checkpoint.name}”`,
       run: () => actions.restoreCheckpoint!(target, checkpoint.id),
-      success: { title: `Restored “${checkpoint.name}”`, description: `${sandbox} is stopped. A recovery checkpoint was saved first.`, action: restoredAction?.(checkpoint) },
+      success: { title: `Restored “${checkpoint.name}”`, description: `${computerName} is stopped. A recovery checkpoint was saved first.`, action: restoredAction?.(checkpoint) },
       failureTitle: `Could not restore “${checkpoint.name}”`,
     })
   }
 
-  function fork(checkpoint: WorkspaceCheckpoint, newName: string) {
+  function fork(checkpoint: ComputerCheckpoint, newName: string) {
     if (locked || !actions.forkCheckpoint) return
     void run({
       id: `checkpoint:${target}:fork`,
       kind: "fork",
       target,
-      sandbox: [sandbox, newName],
-      noticeSandbox,
+      computer: [computerName, newName],
+      noticeComputer,
       title: `Creating fork ${newName}`,
       run: () => actions.forkCheckpoint!(target, checkpoint.id, newName),
       success: { title: "Fork created", description: `${newName} is stopped. Start it when you’re ready.`, action: forkedAction?.(newName) },
@@ -128,14 +128,14 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
     })
   }
 
-  function remove(checkpoint: WorkspaceCheckpoint) {
+  function remove(checkpoint: ComputerCheckpoint) {
     if (locked || !actions.deleteCheckpoint) return
     void run({
       id: `checkpoint:${target}:delete`,
       kind: "delete",
       target,
-      sandbox,
-      noticeSandbox,
+      computer: computerName,
+      noticeComputer,
       title: `Deleting “${checkpoint.name}”`,
       run: () => actions.deleteCheckpoint!(target, checkpoint.id),
       success: { title: "Checkpoint deleted", description: checkpoint.name },
@@ -149,25 +149,25 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
       id: `checkpoint:${target}:restore`,
       kind: "restore",
       target,
-      sandbox,
-      noticeSandbox,
+      computer: computerName,
+      noticeComputer,
       title: "Abandoning Restore",
       run: () => actions.abandonRestore!(target),
-      success: { title: "Restore abandoned", description: `${sandbox} keeps its current state.` },
+      success: { title: "Restore abandoned", description: `${computerName} keeps its current state.` },
       failureTitle: "Could not abandon the Restore",
     })
   }
 
-  const unfinished = workspace.unfinishedRestore
+  const unfinished = computer.unfinishedRestore
   const unfinishedTarget = unfinished ? checkpoints.find(checkpoint => checkpoint.id === unfinished.checkpointId) : undefined
-  // A secured Restore whose original sandbox was already removed finishes on Start.
-  const replaced = Boolean(unfinished && workspace.pendingCheckpointRestore)
+  // A secured Restore whose original computer was already removed finishes on Start.
+  const replaced = Boolean(unfinished && computer.pendingCheckpointRestore)
   const unfinishedError = unfinished && operation?.kind === "restore" && operation.status === "failed" ? operation.error ?? operation.stage : null
   // A failure that predates this session is only noted quietly; failures of operations started here are notified.
   const staleFailure = operation?.status === "failed" && !started && !unfinished ? operation.error ?? operation.stage : null
 
   return <TooltipProvider delayDuration={250}>
-    <section aria-label={`Checkpoints for ${workspace.machine.name}`} aria-busy={busy || undefined} className="grid gap-1.5 text-xs">
+    <section aria-label={`Checkpoints for ${computer.configuration.name}`} aria-busy={busy || undefined} className="grid gap-1.5 text-xs">
       <div className="flex min-h-6 items-center justify-between gap-2">
         <h3 className="text-xs font-medium">Checkpoints</h3>
         {actions.createCheckpoint && <FormPopover
@@ -183,7 +183,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
           <Button size="xs" variant="outline" className="shrink-0" disabled={locked}>New checkpoint</Button>
         </FormPopover>}
       </div>
-      <p className="text-[11px] text-muted-foreground">Checkpoints let you rewind this sandbox. Restore replaces its current files; Fork creates a new stopped sandbox with a copy of its files.</p>
+      <p className="text-[11px] text-muted-foreground">Checkpoints let you rewind this computer. Restore replaces its current files; Fork creates a new stopped computer with a copy of its files.</p>
 
       {staleFailure && <p className="text-muted-foreground">Last checkpoint operation failed: <span className="text-destructive">{staleFailure}</span></p>}
 
@@ -194,10 +194,10 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
             <p>
               The Restore to {unfinished.checkpointName ? `“${unfinished.checkpointName}”` : "a checkpoint"} did not finish.{" "}
               {replaced
-                ? `Start ${sandbox} to finish it.`
+                ? `Start ${computerName} to finish it.`
                 : unfinished.phase === "capturing"
-                  ? `Silo had not saved its recovery checkpoint yet, so ${sandbox} was not changed.`
-                  : `Its recovery checkpoint was saved, but ${sandbox} was not replaced yet.`}
+                  ? `Silo had not saved its recovery checkpoint yet, so ${computerName} was not changed.`
+                  : `Its recovery checkpoint was saved, but ${computerName} was not replaced yet.`}
             </p>
             {unfinishedError && <p className="text-muted-foreground">Last error: <span className="text-destructive">{unfinishedError}</span></p>}
           </div>
@@ -206,7 +206,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
           {!replaced && isLocal && actions.abandonRestore && <ConfirmPopover
             align="end"
             title="Abandon this Restore?"
-            description={`${sandbox} keeps its current state and is resumed if the Restore left it paused. A recovery checkpoint that was already saved stays in the list.`}
+            description={`${computerName} keeps its current state and is resumed if the Restore left it paused. A recovery checkpoint that was already saved stays in the list.`}
             confirmLabel="Abandon"
             onConfirm={abandon}
           >
@@ -221,7 +221,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
           <ListRow
             icon={<ListRowIcon aria-hidden="true"><History className="size-3.5" /></ListRowIcon>}
             title="No checkpoints yet"
-            detail="Save a checkpoint to rewind or fork this sandbox later."
+            detail="Save a checkpoint to rewind or fork this computer later."
             detailClassName="whitespace-normal"
           />
         </ListCard>
@@ -247,9 +247,9 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                 <ConfirmPopover
                   align="end"
                   title={`Restore “${checkpoint.name}”?`}
-                  description={workspace.state === "running"
-                    ? `${sandbox} is running. Silo pauses it, saves a recovery checkpoint that includes its memory (this can use a lot of disk space), force-stops it, then rewinds it. It stays stopped. Changes outside the sandbox, such as pushed commits or sent requests, are not undone.`
-                    : `Silo saves a recovery checkpoint first, then rewinds ${sandbox}. It stays stopped. Changes outside the sandbox, such as pushed commits or sent requests, are not undone.`}
+                  description={computer.state === "running"
+                    ? `${computerName} is running. Silo pauses it, saves a recovery checkpoint that includes its memory (this can use a lot of disk space), force-stops it, then rewinds it. It stays stopped. Changes outside the computer, such as pushed commits or sent requests, are not undone.`
+                    : `Silo saves a recovery checkpoint first, then rewinds ${computerName}. It stays stopped. Changes outside the computer, such as pushed commits or sent requests, are not undone.`}
                   confirmLabel="Restore"
                   onConfirm={() => restore(checkpoint)}
                 >
@@ -259,13 +259,13 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                   label={`Checkpoint actions for ${checkpoint.name}`}
                   disabled={locked}
                   popovers={{
-                    fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox with a copy of this sandbox’s files at this checkpoint. Select Start when ready." disabled={locked} takenNames={takenNames} onFork={newName => fork(checkpoint, newName)} onClose={close} />,
+                    fork: close => <ForkBody computerName={computerName} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped computer with a copy of this computer’s files at this checkpoint. Select Start when ready." disabled={locked} takenNames={takenNames} onFork={newName => fork(checkpoint, newName)} onClose={close} />,
                     delete: close => <ConfirmBody tone="destructive" title={`Delete “${checkpoint.name}”?`} description={deleteDescription(checkpoint, info)} confirmLabel="Delete" onConfirm={() => remove(checkpoint)} onClose={close} />,
                   }}
                   items={[
                     ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
                     ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),
-                    // Delete runs on this computer only; a pinned checkpoint says what still needs it.
+                    // Delete runs on this device only; a pinned checkpoint says what still needs it.
                     ...(isLocal && actions.deleteCheckpoint ? [{ label: "Delete…", accessibleLabel: `Delete ${checkpoint.name}`, destructive: true, separatorBefore: true, disabled: locked || Boolean(info?.deleteBlocker), tooltip: info?.deleteBlocker, popover: "delete" }] : []),
                   ]}
                 />
