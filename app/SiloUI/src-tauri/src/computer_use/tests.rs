@@ -418,6 +418,27 @@ fn the_pinned_pair_comes_from_the_two_locks_and_agrees() {
 }
 
 #[test]
+fn the_pushed_helper_registers_every_agent_and_agents_installed_later() {
+    // Each boot and app-ready runs `apply --boot`, which reconciles even when nothing else
+    // changed; the same pushed helper carries the commands the watcher and login hook use.
+    for part in [
+        "'--agent', 'all', '--allow-missing'",
+        "'--agent', 'auto'",
+        "'--reconcile'",
+        "commands.add_parser('reconcile')",
+        "commands.add_parser('watch')",
+        "/etc/profile.d/silo-computer-use.sh",
+    ] {
+        assert!(HELPER.contains(part), "{part}");
+    }
+    let script = guest_script(
+        &pinned(DebArch::Arm64).unwrap(),
+        &apply_command(Approval::Ask, false, true),
+    );
+    assert!(script.contains("silo-computer-use apply --approval ask --boot"));
+}
+
+#[test]
 fn the_guest_script_installs_the_helper_and_pair_before_running_the_command() {
     let pair = pinned(DebArch::Arm64).unwrap();
     let script = guest_script(&pair, &apply_command(Approval::Auto, true, false));

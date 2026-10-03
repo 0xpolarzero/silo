@@ -71,7 +71,17 @@ class Guest(unittest.TestCase):
         self.start_effect = None
         self.autostart = True
         self.installed = False
+        # Whether this LCU documents `setup --allow-missing` and `--reconcile` (0.8.8), what
+        # `lcu status --json` lists as pending, and what the reconcile finds installed.
+        self.new_lcu = True
+        self.pending = []
+        self.reconciled = []
+        self.spawned = []
+        self.hook = root / 'profile-hook.sh'
         patches = [
+            mock.patch.object(cu, 'PROFILE_HOOK', self.hook),
+            mock.patch.object(cu, 'WATCH_LOCK', self.state / 'watch.lock'),
+            mock.patch.object(cu, 'spawn_watcher', lambda: self.spawned.append(True)),
             mock.patch.object(cu, 'STATE', self.state),
             mock.patch.object(cu, 'PINNED', self.state / 'pinned.json'),
             mock.patch.object(cu, 'RECEIPT', self.state / 'receipt.json'),
@@ -142,7 +152,14 @@ class Guest(unittest.TestCase):
         if name == 'lcu' and argv[1:3] == ['status', '--json']:
             if not self.installed:
                 return subprocess.CompletedProcess(argv, 1, stdout='', stderr='')
-            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(self.lcu_status), stderr='')
+            report = dict(self.lcu_status, pending=list(self.pending)) if self.new_lcu else self.lcu_status
+            return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(report), stderr='')
+        if name == 'lcu' and argv[1:3] == ['setup', '--help']:
+            usage = 'usage: lcu setup [--agent ID] [--allow-missing] [--reconcile]\n' if self.new_lcu else 'usage: lcu setup [--agent ID]\n'
+            return subprocess.CompletedProcess(argv, 0, stdout=usage, stderr='')
+        if name == 'lcu' and argv[1:3] == ['setup', '--reconcile']:
+            self.pending = [a for a in self.pending if a not in self.reconciled]
+            return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
         if name == 'lcu' and argv[1:2] == ['setup']:
             return subprocess.CompletedProcess(argv, self.setup_code, stdout=self.setup_output, stderr='')
         if name == 'curl' and self.curl_failures_left > 0:
@@ -236,13 +253,14 @@ class Apply(Guest):
         result = cu.apply('ask')
         self.assertEqual(result['state'], 'ready')
         names = [Path(argv[0]).name for argv in self.lcu_commands()]
-        self.assertEqual(names, ['install.sh', 'lcu', 'lcu', 'lcu-session'])
+        self.assertEqual(names, ['install.sh', 'lcu', 'lcu', 'lcu', 'lcu', 'lcu-session'])
         install = next(argv for argv in self.lcu_commands() if argv[0].endswith('install.sh'))
         self.assertEqual(install[1:], ['--user', 'silo', '--runtime-only', '--skip-system', '--offline',
                                        '--existing-app', str(self.mount / APP_DIR), '--yes'])
-        setup, = [(argv, user) for argv, user, _ in self.commands if argv[1:2] == ['setup']]
-        self.assertEqual(setup[0][1:], ['setup', '--agent', 'auto', '--session', 'direct', '--yes',
-                                        '--approval', 'ask'])
+        setup, = [(argv, user) for argv, user, _ in self.commands
+                  if argv[1:2] == ['setup'] and '--session' in argv]
+        self.assertEqual(setup[0][1:], ['setup', '--agent', 'all', '--allow-missing', '--session', 'direct',
+                                        '--yes', '--approval', 'ask'])
         self.assertTrue(setup[1], 'setup runs as the working account')
         doctor = self.lcu_commands()[-1]
         self.assertTrue([user for argv, user, _ in self.commands if argv == doctor][0],
@@ -276,8 +294,10 @@ class Apply(Guest):
         self.assertEqual(result['apply']['outcome'], 'applied')
         self.assertTrue(any(argv[1:3] == ['status', '--json'] for argv, *_ in self.commands))
         self.assertTrue(any(argv[0].endswith('lcu-session') for argv, *_ in self.commands))
-        self.assertFalse(any(argv[1:2] == ['setup'] or argv[0].endswith('install.sh')
+        self.assertFalse(any('--approval' in argv or argv[0].endswith('install.sh')
                              for argv, *_ in self.commands))
+        # The boot asks LCU to register agents installed since (a quiet no-op otherwise).
+        self.assertTrue(any(argv[1:3] == ['setup', '--reconcile'] for argv, *_ in self.commands))
         self.assertEqual(self.receipt()['verifiedAt'], 123456)
 
     def test_a_ready_receipt_does_not_hide_a_failed_new_boot(self):
@@ -317,7 +337,7 @@ class Apply(Guest):
         self.assertEqual(result['apply'], {'approval': 'auto', 'outcome': 'applied', 'reason': None})
         names = [Path(argv[0]).name for argv in self.lcu_commands()]
         self.assertNotIn('install.sh', names)
-        setup = next(argv for argv, *_ in self.commands if argv[1:2] == ['setup'])
+        setup = next(argv for argv, *_ in self.commands if argv[1:2] == ['setup'] and '--approval' in argv)
         self.assertEqual(setup[-2:], ['--approval', 'auto'])
         # An explicit ask is applied too (it removes the entries).
         self.assertEqual(cu.apply('ask')['apply']['outcome'], 'applied')
@@ -711,6 +731,105 @@ class Apply(Guest):
         self.assertEqual(hostile['compatibility'], 'unknown')
         self.assertIsNone(hostile['appVersion'])
         self.assertLessEqual(len(hostile['warning']), 300)
+
+
+class Pending(Guest):
+    def test_pending_agents_are_recorded_and_are_not_a_partial_outcome(self):
+        self.pending = ['hermes', 'omp', 'pi']
+        result = cu.apply('ask')
+        self.assertEqual(result['apply'], {'approval': 'ask', 'outcome': 'applied', 'reason': None})
+        receipt = self.receipt()
+        self.assertEqual((receipt['agents'], receipt['pending']), (['claude-code', 'codex'], ['hermes', 'omp', 'pi']))
+        self.assertEqual(receipt['approvalOutcome'], 'applied')
+        self.assertEqual(self.spawned, [True], 'a watcher starts while agents are pending')
+        self.assertIn('silo-computer-use reconcile', self.hook.read_text())
+
+    def test_nothing_pending_starts_no_watcher_but_leaves_the_login_hook(self):
+        cu.apply('ask')
+        self.assertEqual((self.receipt()['pending'], self.spawned), ([], []))
+        self.assertTrue(self.hook.is_file())
+
+    def test_a_boot_registers_an_agent_installed_while_the_vm_was_off(self):
+        self.pending = ['pi', 'hermes']
+        cu.apply('ask')
+        self.commands.clear()
+        self.reconciled = ['pi']
+        result = cu.apply('ask', boot=True)
+        self.assertTrue(any(argv[1:3] == ['setup', '--reconcile'] for argv, *_ in self.commands))
+        self.assertFalse(any('--approval' in argv for argv, *_ in self.commands))
+        self.assertEqual(result['agents'], ['claude-code', 'codex', 'pi'])
+        self.assertEqual(self.receipt()['pending'], ['hermes'])
+
+    def test_the_idempotent_no_op_path_still_reconciles_while_something_is_pending(self):
+        self.pending = ['pi']
+        cu.apply('ask')
+        self.commands.clear()
+        self.reconciled = ['pi']
+        self.assertEqual(cu.apply('ask')['apply']['outcome'], 'applied')
+        self.assertTrue(any(argv[1:3] == ['setup', '--reconcile'] for argv, *_ in self.commands))
+        self.assertEqual((self.receipt()['pending'], self.receipt()['agents']), ([], ['claude-code', 'codex', 'pi']))
+
+    def test_the_reconcile_command_updates_the_receipt_and_skips_when_busy_or_not_ready(self):
+        self.assertEqual(cu.reconcile(), {'reconcile': 'skipped'})
+        self.pending = ['omp']
+        cu.apply('ask')
+        self.reconciled = ['omp']
+        self.assertEqual(cu.reconcile(), {'reconcile': 'done', 'agents': ['claude-code', 'codex', 'omp'], 'pending': []})
+        self.assertEqual(self.receipt()['pending'], [])
+        with open(self.state / 'lock', 'a') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.assertEqual(cu.reconcile(), {'reconcile': 'busy'})
+
+    def test_the_lcu_commands_run_with_the_agents_install_directories_on_the_path(self):
+        with mock.patch.object(cu.subprocess, 'run') as run:
+            run.return_value = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+            REAL_RUN(['lcu', 'status'], user=True)
+        argv = run.call_args.args[0]
+        self.assertIn(f'PATH={cu.USER_PATH}', argv)
+        for directory in ('/home/silo/.local/bin', '/home/silo/.bun/bin', '/usr/local/bin'):
+            self.assertIn(directory, cu.USER_PATH.split(':'))
+
+    def test_an_lcu_without_allow_missing_falls_back_to_auto_and_never_reconciles(self):
+        self.new_lcu = False
+        result = cu.apply('ask')
+        setup = next(argv for argv, *_ in self.commands if '--approval' in argv)
+        self.assertEqual(setup[1:4], ['setup', '--agent', 'auto'])
+        self.assertNotIn('--allow-missing', setup)
+        self.assertEqual(result['apply']['outcome'], 'applied')
+        self.assertEqual(self.receipt()['pending'], [])
+        cu.apply('ask', boot=True)
+        self.assertFalse(any(argv[1:3] == ['setup', '--reconcile'] for argv, *_ in self.commands))
+
+    def test_pending_names_are_read_from_status(self):
+        self.assertEqual(cu.pending_agents({'pending': ['pi', {'id': 'omp'}, 'Bad Name', 5]}), ['omp', 'pi'])
+        self.assertIsNone(cu.pending_agents({'lcu_version': '0.8.7'}))
+        self.assertIsNone(cu.pending_agents(None))
+
+    def test_the_watcher_reconciles_once_when_a_pending_binary_appears_and_ends_when_none_is_pending(self):
+        bin_dir = Path(self.tmp.name) / 'bin'
+        bin_dir.mkdir()
+        self.pending = ['pi']
+        cu.apply('ask')
+        runs = []
+        with mock.patch.object(cu.subprocess, 'run', lambda argv, **k: runs.append(argv)):
+            cu.watch(interval=0, directories=[bin_dir], rounds=2)
+            self.assertEqual(runs, [], 'nothing installed yet')
+            binary = bin_dir / 'pi'
+            binary.write_text('#!/bin/sh\n')
+            binary.chmod(0o755)
+            cu.watch(interval=0, directories=[bin_dir], rounds=3)
+            self.assertEqual(runs, [[cu.HELPER, 'reconcile']])
+            receipt = self.receipt()
+            receipt['pending'] = []
+            (self.state / 'receipt.json').write_text(json.dumps(receipt))
+            cu.watch(interval=0, directories=[bin_dir])
+        self.assertEqual(runs, [[cu.HELPER, 'reconcile']])
+
+    def test_main_runs_reconcile_and_prints_it(self):
+        cu.apply('ask')
+        with mock.patch.object(cu.os, 'geteuid', return_value=0), mock.patch('builtins.print') as shown:
+            self.assertEqual(cu.main(['reconcile']), 0)
+        self.assertEqual(json.loads(shown.call_args.args[0])['reconcile'], 'done')
 
 
 class CommandLine(Guest):
