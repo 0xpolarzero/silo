@@ -331,13 +331,10 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         </div>
       )}
 
-      {draft.kind === "vm" && (builtInDesktop || builtInNewVm) && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
-        <div className="text-xs">Linux desktop and computer use<p className="mt-1 text-[11px] text-muted-foreground">{builtInDesktop ? "Built in. The desktop starts with the sandbox." : "Built in. Agents in this sandbox can use graphical applications."}</p></div>
-      </section>}
       {draft.kind === "vm" && !builtInDesktop && !builtInNewVm && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
         {!created && computerUse && remoteOwner && (newVmSupport === "no"
-          ? <p className="text-[11px] text-muted-foreground">Update Silo on {ownerName} for built-in computer use. Until then, this sandbox can have the optional Linux desktop.</p>
-          : newVmSupport === "checking" ? <p role="status" className="text-[11px] text-muted-foreground">Checking whether {ownerName} supports built-in computer use…</p> : null)}
+          ? <p className="text-[11px] text-muted-foreground">Update Silo on {ownerName} for built-in computer use. Until then, the optional Linux desktop is available.</p>
+          : newVmSupport === "checking" ? <p role="status" className="text-[11px] text-muted-foreground">Checking {ownerName}…</p> : null)}
         {desktopInstalled ? <label className="flex items-center justify-between gap-3 text-xs">
           <span>Start desktop with sandbox<span className="mt-1 block text-[11px] text-muted-foreground">When off, start the desktop from its viewer.</span></span>
           <Switch aria-label="Start desktop with sandbox" checked={draft.desktop?.startWithSandbox ?? true} disabled={saving} onCheckedChange={startWithSandbox => update({ desktop: { startWithSandbox } })} />

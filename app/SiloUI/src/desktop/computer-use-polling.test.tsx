@@ -217,26 +217,25 @@ it("pauses document-hidden computer-use reads and refreshes once when visible", 
   expect(read).toHaveBeenCalledOnce()
 })
 
-it.each(["setup", "approval"] as const)("lets explicit %s finish while the section and document are hidden", async operation => {
+it("lets an explicit approval change finish while the section and document are hidden", async () => {
   let finish!: (value: unknown) => void
   const work = vi.fn(() => new Promise(resolve => { finish = resolve }))
   const read = vi.fn(async () => fixtureDesktopState("ready"))
-  const view = section(backend({ readDesktopState: read, ...(operation === "setup" ? { setup: work } : { setApproval: work }) }))
+  const view = section(backend({ readDesktopState: read, setApproval: work }))
   await advance(0)
-  fireEvent.click(screen.getByRole(operation === "setup" ? "button" : "switch", { name: operation === "setup" ? "Set up computer use" : /Allow without asking/ }))
+  fireEvent.click(screen.getByRole("switch", { name: /Allow without asking/ }))
   expect(work).toHaveBeenCalledOnce()
   view.setActive(false)
   visibility(true)
   await act(async () => { finish(fixtureDesktopState("ready")) })
   expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeEnabled()
-  if (operation === "setup") expect(screen.getByRole("status")).toHaveTextContent("Reconnect agent sessions")
   await advance(15_000)
   expect(read).toHaveBeenCalledOnce()
 })
 
 it("releases remote download polling while its computer-use section is inactive", async () => {
   const read = vi.fn(async () => ({ state: "downloading", receivedBytes: 1, totalBytes: 10 }))
-  const view = section(backend({ readDesktopState: async () => fixtureDesktopState("preparing"), chatGptStatus: read }))
+  const view = section(backend({ readDesktopState: async () => fixtureDesktopState("app-failed"), chatGptStatus: read }))
   await advance(0)
   expect(read).toHaveBeenCalledOnce()
   view.setActive(false)

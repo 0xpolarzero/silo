@@ -1435,7 +1435,7 @@ fn app_status_maps_to_the_computer_use_state() {
     assert!(waiting["reason"]
         .as_str()
         .unwrap()
-        .contains("Set up computer use"));
+        .contains("not set up yet"));
 }
 
 #[test]
