@@ -185,6 +185,7 @@ pub(crate) fn install(app: &AppHandle) {
             if let Err(message) = crate::runtime::image_cache::repair(&storage.join("cache")) {
                 eprintln!("Image cache repair: {message}");
             }
+            crate::preparation::start(&app, paths);
         }
         if let Err(message) = crate::runtime::configuration_recovery::recover(&app) {
             crate::notifications::notify(

@@ -379,7 +379,16 @@ fn unpack(archive: &Path, output: &mut File, expected_bytes: u64) -> Result<(), 
     Ok(())
 }
 
-pub(super) fn prepare<R: RuntimeRunner + ?Sized>(
+/// Whether the bundled image is already in the runtime's image cache. Reads the manifest and
+/// the cache metadata only.
+pub(crate) fn is_imported(paths: &RuntimePaths) -> bool {
+    let Ok((manifest, _)) = read_manifest(&paths.guest_image, None) else {
+        return false;
+    };
+    GlobalCache::new(&paths.home.join("cache")).is_ok_and(|cache| cached(&cache, &manifest))
+}
+
+pub(crate) fn prepare<R: RuntimeRunner + ?Sized>(
     runner: &R,
     paths: &RuntimePaths,
 ) -> Result<String, RuntimeError> {
@@ -388,15 +397,19 @@ pub(super) fn prepare<R: RuntimeRunner + ?Sized>(
             "VM image preparation is unavailable. Restart Silo and retry.".into(),
         )
     })?;
-    let manifest = validate_directory(&paths.guest_image).map_err(RuntimeError::Unavailable)?;
+    let (manifest, mut bundled) =
+        read_manifest(&paths.guest_image, None).map_err(RuntimeError::Unavailable)?;
     let cache = GlobalCache::new(&paths.home.join("cache")).map_err(|_| {
         RuntimeError::Unavailable(
             "Silo's VM image storage could not be opened. Check storage access and retry.".into(),
         )
     })?;
+    // An image already in the cache is not read from the bundle again, so the bundled
+    // archive is only hashed when it is about to be imported.
     if cached(&cache, &manifest) {
         return Ok(manifest.image_reference);
     }
+    hash_archive(&mut bundled, &manifest, None).map_err(RuntimeError::Unavailable)?;
     // Tar staging plus uncompressed layers and materialized filesystem data. This
     // is temporary import space, not a minimum capacity imposed on each VM.
     check_space(cache.tmp_dir(), manifest.unpacked_bytes.saturating_mul(4))
@@ -626,6 +639,43 @@ mod tests {
         }
         assert_eq!(runner.0.load(Ordering::SeqCst), 2);
     }
+    #[test]
+    fn an_uncached_image_is_not_imported_and_a_tampered_bundle_is_never_loaded() {
+        struct Unreachable;
+        impl RuntimeRunner for Unreachable {
+            fn run(
+                &self,
+                _: &RuntimePaths,
+                _: &[String],
+                _: Duration,
+            ) -> Result<super::super::CommandOutput, RuntimeError> {
+                panic!("a bundle that fails its checksum must not be imported");
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = fixture(dir.path());
+        let paths = RuntimePaths {
+            guest_image: dir.path().join("guest-image"),
+            executable: dir.path().join("msb"),
+            home: dir.path().join("home"),
+            storage_home: None,
+            library: dir.path().join("lib"),
+            metadata: dir.path().join("metadata"),
+            volumes: dir.path().join("volumes"),
+        };
+        assert!(!is_imported(&paths));
+        manifest["archiveSha256"] = json!("b".repeat(64));
+        fs::write(
+            dir.path().join("guest-image/manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert!(prepare(&Unreachable, &paths)
+            .unwrap_err()
+            .to_string()
+            .contains("integrity"));
+    }
+
     #[test]
     fn insufficient_space_is_an_error() {
         let dir = tempfile::tempdir().unwrap();

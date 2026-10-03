@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window"
 
 import "./index.css"
 import { createComputerUseBridge, nativeComputerUseBackend } from "@/desktop/computer-use-bridge"
+import { createPreparationStore, nativePreparationBackend, PreparationProvider } from "@/desktop/preparation"
 import { ComputerUseProvider } from "@/desktop/computer-use-provider"
 import { createApplicationService, emptyApplicationCatalog } from "@/desktop/applications"
 import { StatusPanelUnavailable } from "@/desktop/application-loading"
@@ -73,6 +74,7 @@ function start() {
   // Both windows must discover them; the provider refreshes them on focus.
   const applicationService = createApplicationService(settings)
   const computerUse = createComputerUseBridge(nativeComputerUseBackend)
+  const preparation = createPreparationStore(nativePreparationBackend)
   let started = false
 
   // The only steps a Retry repeats: settings must be ready before the app renders.
@@ -95,7 +97,9 @@ function start() {
           <SystemIntegrationProvider store={systemIntegrations}>
             <ApplicationCatalogProvider initialCatalog={applicationCatalog} service={applicationService}>
               <ComputerUseProvider bridge={computerUse}>
-                <ProductionSurface source={production} dependencyStore={dependencies} statusPanel={statusPanel} />
+                <PreparationProvider store={preparation}>
+                  <ProductionSurface source={production} dependencyStore={dependencies} statusPanel={statusPanel} />
+                </PreparationProvider>
               </ComputerUseProvider>
             </ApplicationCatalogProvider>
           </SystemIntegrationProvider>
