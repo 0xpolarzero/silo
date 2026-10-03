@@ -98,18 +98,54 @@ pub(super) struct Record {
     pub(super) checkpoint_operation: Option<Operation>,
 }
 
-/// Git and jj identity variables are owned by Silo's Git identity configuration, which
-/// removes them from the computer and writes the identity into the guest's own configuration.
-fn identity_override(key: &str) -> bool {
-    matches!(
-        key,
-        "GIT_AUTHOR_NAME"
-            | "GIT_AUTHOR_EMAIL"
-            | "GIT_COMMITTER_NAME"
-            | "GIT_COMMITTER_EMAIL"
-            | "JJ_USER"
-            | "JJ_EMAIL"
-    )
+/// Boot variables that older versions used to set a sandbox's Git and jj identity.
+pub(super) const IDENTITY_ENVIRONMENT: [&str; 6] = [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "JJ_USER",
+    "JJ_EMAIL",
+];
+
+#[cfg(test)]
+impl Record {
+    pub(super) fn set_environment_for_test(&mut self, entries: &[(&str, &str)]) {
+        self.desired_environment = entries
+            .iter()
+            .map(|(key, value)| Environment {
+                key: (*key).into(),
+                value: (*value).into(),
+            })
+            .collect();
+    }
+
+    pub(super) fn environment_keys_for_test(&self) -> Vec<&str> {
+        self.desired_environment
+            .iter()
+            .map(|entry| entry.key.as_str())
+            .collect()
+    }
+}
+
+/// Drops the identity boot variables from a workspace's recorded environment once Silo
+/// has removed them from the computer. A workspace without a record is left untouched.
+pub(super) fn forget_identity_environment(
+    paths: &RuntimePaths,
+    id: &str,
+) -> Result<(), RuntimeError> {
+    if !path(paths, id).exists() {
+        return Ok(());
+    }
+    let mut record = load(paths, id)?;
+    let before = record.desired_environment.len();
+    record
+        .desired_environment
+        .retain(|entry| !IDENTITY_ENVIRONMENT.contains(&entry.key.as_str()));
+    if record.desired_environment.len() == before {
+        return Ok(());
+    }
+    save(paths, id, &record)
 }
 
 fn error(message: &str) -> RuntimeError {
@@ -987,7 +1023,7 @@ pub(crate) fn import_pending_restore_with_environment(
     record.snapshot_group = Some(source_group.to_owned());
     record.desired_environment = environment
         .into_iter()
-        .filter(|entry| entry.key != "GH_TOKEN" && !identity_override(&entry.key))
+        .filter(|entry| entry.key != "GH_TOKEN")
         .collect();
     record.pending_checkpoint_restore = Some(PendingRestore {
         checkpoint_id: member.to_owned(),
@@ -1275,7 +1311,7 @@ pub(super) fn start_pending(
         args.extend(["--label".into(), label]);
     }
     for entry in &record.desired_environment {
-        if entry.key != "GH_TOKEN" && !identity_override(&entry.key) {
+        if entry.key != "GH_TOKEN" {
             args.push(format!("--env={}={}", entry.key, entry.value));
         }
     }
@@ -3491,7 +3527,7 @@ mod tests {
     }
 
     #[test]
-    fn an_import_preserves_environment_on_start_without_old_github_credentials() {
+    fn an_import_preserves_environment_until_an_identity_is_saved() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -3511,18 +3547,26 @@ mod tests {
             &config,
         )
         .unwrap();
-        assert_eq!(load(&paths, ID).unwrap().desired_environment.len(), 2);
-        let mut legacy = load(&paths, ID).unwrap();
-        legacy.desired_environment.push(Environment {
-            key: "GIT_AUTHOR_EMAIL".into(),
-            value: "legacy@example.test".into(),
-        });
-        save(&paths, ID, &legacy).unwrap();
+        assert_eq!(load(&paths, ID).unwrap().desired_environment.len(), 5);
         let runner = RestoreProbe(Mutex::new(Vec::new()));
         assert!(start_pending(&runner, &paths, &machine())
             .unwrap_err()
             .to_string()
             .contains("synthetic restore failure"));
+        let calls = runner.0.lock().unwrap();
+        let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
+        for identity in [
+            "--env=GIT_AUTHOR_NAME=Old Author",
+            "--env=GIT_COMMITTER_EMAIL=old@example.test",
+            "--env=JJ_USER=Old Author",
+        ] {
+            assert!(restore.iter().any(|arg| arg == identity));
+        }
+        drop(calls);
+        forget_identity_environment(&paths, ID).unwrap();
+        assert_eq!(load(&paths, ID).unwrap().desired_environment.len(), 2);
+        let runner = RestoreProbe(Mutex::new(Vec::new()));
+        assert!(start_pending(&runner, &paths, &machine()).is_err());
         let calls = runner.0.lock().unwrap();
         let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
         assert!(restore
@@ -3536,7 +3580,6 @@ mod tests {
             .any(|pair| pair == ["--env", "GH_TOKEN=$MSB_SILO_GITHUB"]));
         assert!(!restore.iter().any(|arg| arg.contains("Old Author")
             || arg.contains("old@example.test")
-            || arg.contains("legacy@example.test")
             || arg.contains("GIT_")
             || arg.contains("JJ_")));
         assert!(!fs::read_to_string(path(&paths, ID))
@@ -3558,6 +3601,54 @@ mod tests {
                 &serde_json::json!({"env":env})
             )
             .is_err());
+        }
+    }
+
+    #[test]
+    fn a_fork_after_an_identity_save_inherits_the_cleaned_environment() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let mut record = load(&paths, ID).unwrap();
+        record.desired_environment = vec![
+            Environment {
+                key: "PROJECT_MODE".into(),
+                value: "kept".into(),
+            },
+            Environment {
+                key: "GIT_AUTHOR_NAME".into(),
+                value: "Old Author".into(),
+            },
+            Environment {
+                key: "JJ_EMAIL".into(),
+                value: "old@example.test".into(),
+            },
+        ];
+        save(&paths, ID, &record).unwrap();
+        forget_identity_environment(&paths, ID).unwrap();
+        forget_identity_environment(&paths, "11111111-1111-4111-8111-111111111111").unwrap();
+        fork_commit(
+            &journal_runner("Running", ""),
+            &paths,
+            &FakeAssignments::new(&[]),
+            &fork,
+            "branch",
+        )
+        .unwrap();
+        let metadata = read_metadata(&paths.metadata).unwrap();
+        let child = metadata
+            .machines
+            .iter()
+            .find(|machine| machine.name() == "branch")
+            .unwrap();
+        for id in [ID, child.id()] {
+            let keys: Vec<String> = load(&paths, id)
+                .unwrap()
+                .desired_environment
+                .into_iter()
+                .map(|entry| entry.key)
+                .collect();
+            assert_eq!(keys, ["PROJECT_MODE"]);
         }
     }
 
