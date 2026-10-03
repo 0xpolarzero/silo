@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Opt-in working-account proof in a disposable VM; never reads existing VM state.
+"""Opt-in working-account proof in a disposable computer; never reads existing computer state.
 
 SILO_RUN_WORKING_ACCOUNT_LIVE=1 python3 scripts/test-working-account-live.py
   --msb PATH --library PATH --guest-image DIRECTORY --output DIRECTORY
-Logs and failed VM state are retained. Guest networking is disabled and package-manager sentinels reject unexpected installation.
+Logs and failed computer state are retained. Guest networking is disabled and package-manager sentinels reject unexpected installation.
 The guest image must contain all working-account and Git dependencies. The account is set up with the
 guest scripts Silo runs after a boot (src-tauri/guest/working-account.sh and working-account.py).
 """
@@ -40,7 +40,7 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith('MSB_')}
     env.update(MSB_HOME=str(root / 'home'), MSB_BACKEND='local',
                MSB_PATH=str(args.msb.resolve()), MSB_LIBKRUNFW_PATH=str(args.library.resolve()))
-    name, machine_id = 'e2e-working-account-proof', str(uuid.uuid4())
+    name, computer_id = 'e2e-working-account-proof', str(uuid.uuid4())
     created, passed, endpoint = False, False, None
     log = (args.output / 'live.log').open('x')
 
@@ -84,7 +84,7 @@ def main():
             shutil.copyfileobj(source, target)
         msb('image', 'load', '--input', str(archive), '--tag', manifest['imageReference'], '--quiet', timeout=300)
         msb('volume', 'create', 'account-workspace', '--kind', 'disk', '--size', '1G')
-        msb('create', manifest['imageReference'], '--name', name, '--no-start', '--net', 'none', '--memory', '1G', '--cpus', '2', '--label', f'silo.machine-id={machine_id}', '--mount-disk', f'{root / "home/volumes/account-workspace/disk.raw"}:/workspace:format=raw,fstype=ext4')
+        msb('create', manifest['imageReference'], '--name', name, '--no-start', '--net', 'none', '--memory', '1G', '--cpus', '2', '--label', f'silo.machine-id={computer_id}', '--mount-disk', f'{root / "home/volumes/account-workspace/disk.raw"}:/workspace:format=raw,fstype=ext4')
         created = True
         msb('start', name)
         guest('for tool in sudo python3 useradd; do command -v "$tool" || true; done; cat /etc/passwd')
@@ -140,7 +140,7 @@ SENTINEL
         malformed = set_up(check=False)
         assert malformed.returncode != 0, 'Malformed account marker must fail closed'
         guest('mv /var/lib/silo/working-account.json.saved /var/lib/silo/working-account.json')
-        record('PASS setup refuses collisions and malformed policy, copies root files, resumes interrupted setup, and leaves a set-up VM unchanged')
+        record('PASS setup refuses collisions and malformed policy, copies root files, resumes interrupted setup, and leaves a set-up computer unchanged')
         identity = guest('id; printf "HOME=%s USER=%s LOGNAME=%s\\n" "$HOME" "$USER" "$LOGNAME"; pwd', user='silo')
         record('IDENTITY OBSERVATION ' + identity.stdout)
         guest('set -eu; test "$(id -un)" = silo; test "$HOME" = /home/silo; test "$USER" = silo; test "$LOGNAME" = silo; printf project > /workspace/project; printf tool > "$HOME/tool"; sudo -n test "$(sudo -n id -u)" = 0; test ! -r /root/legacy-data', user='silo')
@@ -150,7 +150,7 @@ SENTINEL
         with socket.socket() as reservation:
             reservation.bind(('127.0.0.1', 0))
             port = reservation.getsockname()[1]
-        endpoint = subprocess.Popen([str(args.msb.resolve()), 'ssh', 'serve', name, '--no-start', '--exit-on-stdin-close', '--authorized-keys', str(key) + '.pub', '--host', '127.0.0.1', '--port', str(port), '--expected-machine-id', machine_id], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
+        endpoint = subprocess.Popen([str(args.msb.resolve()), 'ssh', 'serve', name, '--no-start', '--exit-on-stdin-close', '--authorized-keys', str(key) + '.pub', '--host', '127.0.0.1', '--port', str(port), '--expected-machine-id', computer_id], env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
         with selectors.DefaultSelector() as selector:
             selector.register(endpoint.stdout, selectors.EVENT_READ)
             if not selector.select(15) or endpoint.stdout.readline() != b'SILO_SSH_READY\n':
@@ -216,7 +216,7 @@ SENTINEL
             test "$(stat -c %U .git/objects .git/lfs/objects payload.bin)" = "$(printf 'silo\nsilo\nsilo')"
         """, user='silo', timeout=180)
         record('PASS normal-user Git commit, push, clone and 1MiB LFS roundtrip with matching content and ownership')
-        # Host Git uses only this test's key and explicit identity/configuration.
+        # Device-side Git uses only this test's key and explicit identity/configuration.
         # Transport reaches our loopback SSH listener; no external Git server.
         host_repo = root / 'host-git'
         ssh_command = shlex.join(['ssh', *common, '-p', str(port)])

@@ -66,7 +66,7 @@ def preflight(marker_path, require_stopped=False):
     if account.pw_uid == 0 or account.pw_dir != "/home/silo" or not Path(account.pw_dir).is_dir():
         fail("existing silo account must be non-root with home /home/silo")
     if require_stopped and marker["baselineStopped"] is not True:
-        fail("VM owner must stop the baseline desktop and set baselineStopped=true in the scratch marker")
+        fail("computer owner must stop the baseline desktop and set baselineStopped=true in the scratch marker")
     return marker, account
 
 def boot_id():
@@ -363,7 +363,7 @@ def make_shim(marker_path):
     marker_path = str(Path(marker_path).resolve())
     source = (
         "#!/usr/bin/env python3\n"
-        "# SCRATCH-ONLY helper. VM owner may install it after preserving the baseline helper.\n"
+        "# SCRATCH-ONLY helper. computer owner may install it after preserving the baseline helper.\n"
         "import runpy, sys\n"
         f"script = {script_path!r}\n"
         f"marker = {marker_path!r}\n"
@@ -379,7 +379,7 @@ def make_shim(marker_path):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("install", "start", "stop", "restart-streamer", "status", "connection", "shim"))
-    parser.add_argument("--marker", required=True, help="VM-owner-created root-owned scratch authorization JSON")
+    parser.add_argument("--marker", required=True, help="computer-owner-created root-owned scratch authorization JSON")
     args = parser.parse_args()
     {"install": install, "start": start, "stop": stop, "restart-streamer": restart_streamer, "status": status,
      "connection": connection, "shim": make_shim}[args.action](args.marker)

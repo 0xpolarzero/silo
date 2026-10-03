@@ -3,7 +3,7 @@
 
 Requires a signed msb, libkrunfw, bundled guest image, and an assets directory
 containing verified Linux Node 22.16.0 (node) and build-live-probe.mjs output
-(probe.cjs). Creates and stops only a disposable VM. No real provider credentials.
+(probe.cjs). Creates and stops only a disposable computer. No real provider credentials.
 """
 import argparse
 import gzip
@@ -32,7 +32,7 @@ def main():
     env = {key: value for key, value in os.environ.items() if not key.startswith('MSB_')}
     env.update(MSB_HOME=str(root / 'home'), MSB_BACKEND='local',
                MSB_LIBKRUNFW_PATH=str(args.library.resolve()), SILO_GITHUB='synthetic-unused-test-value')
-    name, machine_id = 'zcode-tls-regression', str(uuid.uuid4())
+    name, computer_id = 'zcode-tls-regression', str(uuid.uuid4())
     log = (args.output / 'commands.log').open('w')
     listener = None
     created = False
@@ -59,7 +59,7 @@ def main():
         msb('create', manifest['imageReference'], '--name', name, '--no-start', '--memory', '1G', '--cpus', '1',
             '--tls-intercept', '--secret', 'SILO_GITHUB@github.com,api.github.com,uploads.github.com',
             '--mount-dir', f'{args.assets.resolve()}:/test:ro',
-            '--label', f'silo.machine-id={machine_id}', *(['--log-level', 'debug'] if args.debug_runtime else []))
+            '--label', f'silo.machine-id={computer_id}', *(['--log-level', 'debug'] if args.debug_runtime else []))
         created = True
         run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(root / 'key')])
         msb('start', name)
@@ -68,7 +68,7 @@ def main():
             port = reservation.getsockname()[1]
         listener = subprocess.Popen([str(args.msb.resolve()), 'ssh', 'serve', name, '--no-start',
             '--exit-on-stdin-close', '--authorized-keys', str(root / 'key.pub'), '--host', '127.0.0.1',
-            '--port', str(port), '--no-inactivity-timeout', '--expected-machine-id', machine_id],
+            '--port', str(port), '--no-inactivity-timeout', '--expected-machine-id', computer_id],
             env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log)
         with selectors.DefaultSelector() as selector:
             selector.register(listener.stdout, selectors.EVENT_READ)
@@ -98,7 +98,7 @@ def main():
             assert 'SELF_SIGNED_CERT_IN_CHAIN' in data['original']['api.github.com'][transport]['codes'], data
             assert 'status' in data['restored']['api.github.com'][transport], data
         if args.expect == 'fixed':
-            # Existing secret assignments change live, without restarting the VM.
+            # Existing secret assignments change live, without restarting the computer.
             msb('modify', name, '--secret', 'SILO_GITHUB@api.z.ai', '--format', 'json')
             changed = run(ssh)
             (args.output / 'changed-host.json').write_text(changed.stdout)
@@ -116,7 +116,7 @@ def main():
                 assert removed['certificates'][hostname]['issuer'] != 'microsandbox CA', removed
                 for transport in ('native', 'provider'):
                     assert 'status' in removed['original'][hostname][transport], removed
-        print(f'PASS {args.expect}: real Linux VM, SSH, Node {data["node"]}, ZCode launch and provider transport', flush=True)
+        print(f'PASS {args.expect}: real Linux computer, SSH, Node {data["node"]}, ZCode launch and provider transport', flush=True)
         passed = True
     finally:
         if listener and listener.poll() is None:
@@ -133,7 +133,7 @@ def main():
         log.close()
         if passed:
             shutil.rmtree(root)
-            print(f'Evidence: {args.output}; disposable VM removed', flush=True)
+            print(f'Evidence: {args.output}; disposable computer removed', flush=True)
         else:
             print(f'Evidence: {args.output}; isolated runtime state retained: {root}', flush=True)
 

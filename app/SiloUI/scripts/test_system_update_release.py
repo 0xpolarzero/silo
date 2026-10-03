@@ -29,7 +29,7 @@ class SystemUpdateTests(unittest.TestCase):
             source.write_text('Types: deb\nEnabled: yes\n')
             with patch.object(helper, 'SOURCE', source):
                 helper.upgrade('0.5.1', run=lambda args: calls.append(args), stage=lambda name: calls.append(name), confirm=lambda: calls.append('confirmed'))
-        # Silo stops sandboxes between 'ready' and its go-ahead: only after refresh and download succeeded.
+        # Silo stops computers between 'ready' and its go-ahead: only after refresh and download succeeded.
         self.assertEqual([call for call in calls if isinstance(call, str)], ['refreshing', 'downloading', 'ready', 'confirmed', 'installing'])
         calls = [call for call in calls if not isinstance(call, str)]
         self.assertIn('update', calls[0])

@@ -99,7 +99,7 @@ def verify(browser, wait, environment, evidence):
 
     # A corrupt file only in the harness-owned XDG directory exercises the actual
     # background health transition and native notification adapter. No fake bus,
-    # notification API, production hook, credentials or existing sandbox is used.
+    # notification API, production hook, credentials or existing computer is used.
     metadata = Path(environment["XDG_DATA_HOME"]) / identifier / "runtime/computers.json"
     original = metadata.read_bytes() if metadata.exists() else None
     output_path = evidence / "gnome-notification-bus.log"

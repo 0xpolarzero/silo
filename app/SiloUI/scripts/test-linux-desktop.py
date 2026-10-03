@@ -209,13 +209,13 @@ def run():
                 settings.parent.mkdir(parents=True, exist_ok=True)
                 settings.write_text(json.dumps({"schemaVersion": 1, "settings": {
                     "onboardingComplete": True, "launchAtLogin": False,
-                    "startWorkspacesAtLaunch": False,
+                    "startComputersAtLaunch": False,
                 }, "onboardingDraft": None}))
                 browser = webdriver.Remote(f"http://127.0.0.1:{port}", options=Options())
                 wait = WebDriverWait(browser, 45, ignored_exceptions=(StaleElementReferenceException, ElementClickInterceptedException, ElementNotInteractableException))
                 wait.until(main_window)
                 wait.until(lambda _: browser.find_element(By.ID, "application-nav-backup"))
-                for page in ["workspaces", "github", "secrets", "backup", "settings"]:
+                for page in ["computers", "github", "secrets", "backup", "settings"]:
                     click(By.ID, f"application-nav-{page}")
                     wait.until(lambda _: browser.find_element(By.ID, f"application-panel-{page}").is_displayed())
                     assert "Silo could not load" not in browser.find_element(By.TAG_NAME, "body").text
@@ -278,7 +278,7 @@ def run():
 
 def run_lifecycle():
     """Exercise a supplied disposable legacy fixture through the real app UI."""
-    required = ["HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "SILO_LINUX_APPLICATION", "SILO_LINUX_WORKSPACE_NAME",
+    required = ["HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "SILO_LINUX_APPLICATION", "SILO_LINUX_COMPUTER_NAME",
                 "SILO_LINUX_MSB", "SILO_LINUX_MSB_LIBRARY"]
     missing = [name for name in required if not os.environ.get(name)]
     if missing:
@@ -312,13 +312,16 @@ def run_lifecycle():
     app_data = data_home / identifier
     app_config = config_home / identifier
     settings = app_config / "settings.json"
-    if not settings.is_file() or not (app_data / "runtime/computers.json").is_file():
-        raise RuntimeError("The supplied isolated XDG roots do not contain the seeded settings and legacy VM metadata")
+    # The fixture comes from an earlier build, so its inventory may still use the
+    # earlier file name; the first launch converts it.
+    seeded_inventory = [app_data / "runtime" / name for name in ("computers.json", "machines.json")]
+    if not settings.is_file() or not any(path.is_file() for path in seeded_inventory):
+        raise RuntimeError("The supplied isolated XDG roots do not contain the seeded settings and legacy computer metadata")
     if not Path(environment["SILO_LINUX_MSB"]).is_file() or not Path(environment["SILO_LINUX_MSB_LIBRARY"]).is_file():
         raise RuntimeError("The supplied bundled MicroSandbox executable or library is missing")
     if not Path(environment["SILO_LINUX_APPLICATION"]).exists():
         raise RuntimeError("SILO_LINUX_APPLICATION must identify the exact packaged application under test")
-    name = environment["SILO_LINUX_WORKSPACE_NAME"]
+    name = environment["SILO_LINUX_COMPUTER_NAME"]
     archive_destination = Path(environment.get("SILO_LINUX_ARCHIVE_DESTINATION", fixture_root / "archives")).resolve()
     if not archive_destination.is_relative_to(fixture_root) or not archive_destination.is_dir():
         raise RuntimeError("SILO_LINUX_ARCHIVE_DESTINATION must be an existing directory inside the task fixture")
@@ -416,8 +419,8 @@ def run_lifecycle():
             try:
                 wait.until(lambda _: (
                     "Migration stopped" in body_text(browser)
-                    or "Updating your sandboxes" in body_text(browser)
-                    or "application-nav-workspaces" in browser.page_source
+                    or "Updating your computers" in body_text(browser)
+                    or "application-nav-computers" in browser.page_source
                 ))
                 initial_body = body_text(browser)
             except InvalidSessionIdException:
@@ -428,8 +431,8 @@ def run_lifecycle():
                 phase("retrying the preserved failed migration")
                 click(browser, wait, By.XPATH, "//button[normalize-space(.)='Retry migration']")
                 try:
-                    wait.until(lambda _: "Updating your sandboxes" in body_text(browser)
-                               or "application-nav-workspaces" in browser.page_source)
+                    wait.until(lambda _: "Updating your computers" in body_text(browser)
+                               or "application-nav-computers" in browser.page_source)
                     phase("migration retry entered its running state")
                 except InvalidSessionIdException:
                     phase("migration retry restarted the app before the old session could observe progress")
@@ -437,7 +440,7 @@ def run_lifecycle():
             # production overview. Silo intentionally replaces its process after
             # conversion, so the old WebDriver session may disappear with it.
             try:
-                if "Updating your sandboxes" in initial_body:
+                if "Updating your computers" in initial_body:
                     browser.save_screenshot(str(EVIDENCE / "lifecycle-migration-gate.png"))
                     report.append("The real migration gate displayed during legacy conversion")
             except InvalidSessionIdException:
@@ -448,7 +451,7 @@ def run_lifecycle():
                                 "selected converted runtime does not match"):
                     if failure in text:
                         raise AssertionError(f"Production migration gate failed: {text}")
-                return "application-nav-workspaces" in browser.page_source or "Sandboxes" in text
+                return "application-nav-computers" in browser.page_source or "Computers" in text
             try:
                 wait.until(migrated_overview)
             except InvalidSessionIdException:
@@ -464,11 +467,11 @@ def run_lifecycle():
                 browser, wait, main_window = connect()
                 wait.until(migrated_overview)
             assert "Migration status is unavailable" not in body_text(browser), body_text(browser)
-            assert "Updating your sandboxes" not in body_text(browser), body_text(browser)
-            wait.until(lambda _: browser.find_element(By.ID, "application-nav-workspaces").is_displayed())
+            assert "Updating your computers" not in body_text(browser), body_text(browser)
+            wait.until(lambda _: browser.find_element(By.ID, "application-nav-computers").is_displayed())
             wait.until(lambda _: has_button(browser, f"Start {name}") and "Stopped" in body_text(browser))
             phase("migration complete; source is visible and stopped")
-            report.append("Legacy fixture passed the production migration gate and appears stopped in the real workspace overview")
+            report.append("Legacy fixture passed the production migration gate and appears stopped in the real computers overview")
             browser.save_screenshot(str(EVIDENCE / "lifecycle-migrated-stopped.png"))
             if os.environ.get("SILO_LINUX_MIGRATION_ONLY") == "1":
                 report.append("Migration-only run stopped after confirming the converted source in the production overview")
@@ -516,10 +519,10 @@ def run_lifecycle():
                 # Recover a disposable source through Silo's normal Restore and
                 # explicit Start after a failed export exposed a missing ancestor.
                 metadata = json.loads((app_data / "runtime-checkpoints-converted/computers.json").read_text())
-                matches = [machine for machine in metadata["computers"] if machine["name"] == name]
+                matches = [computer for computer in metadata["computers"] if computer["name"] == name]
                 assert len(matches) == 1, "Recovery source identity is ambiguous"
-                machine_id = matches[0]["id"]
-                checkpoint_record = json.loads((app_data / f"runtime-checkpoints-converted/checkpoints/{machine_id}.json").read_text())
+                computer_id = matches[0]["id"]
+                checkpoint_record = json.loads((app_data / f"runtime-checkpoints-converted/checkpoints/{computer_id}.json").read_text())
                 assert any(item["id"] == checkpoint_id and item["scope"] == "full"
                            for item in checkpoint_record["checkpoints"]), "Recovery requires a recorded full checkpoint"
                 phase("restoring the stopped source from its verified durable full checkpoint")
@@ -527,9 +530,9 @@ def run_lifecycle():
                 result = browser.execute_async_script(
                     "const done = arguments[arguments.length - 1];"
                     "window.__TAURI_INTERNALS__.invoke('restore_checkpoint',"
-                    "{workspaceId: arguments[0], checkpointId: arguments[1]})"
+                    "{computerId: arguments[0], checkpointId: arguments[1]})"
                     ".then(() => done({ok:true}), error => done({ok:false,error:String(error)}));",
-                    machine_id, checkpoint_id,
+                    computer_id, checkpoint_id,
                 )
                 assert result["ok"], result
                 wait.until(lambda _: has_button(browser, f"Start {name}"))
@@ -579,13 +582,13 @@ def run_lifecycle():
             def archive_round_trip():
                 use_ipc = os.environ.get("SILO_LINUX_ARCHIVE_IPC") == "1"
 
-                phase("exporting a v3 archive through production backup IPC" if use_ipc else "exporting a v3 archive through the production Backup UI")
+                phase("exporting a v4 archive through production backup IPC" if use_ipc else "exporting a v4 archive through the production Backup UI")
                 click(browser, wait, By.ID, "application-nav-backup")
                 wait.until(lambda _: browser.find_element(By.ID, "application-panel-backup").is_displayed())
                 old_archives = set(archive_destination.glob("*.silo-backup"))
                 click(browser, wait, By.XPATH, "//button[normalize-space()='Create backup…']")
                 labels = browser.find_elements(By.XPATH, "//h3[normalize-space()='Create backup']/ancestor::li[1]//label[button[@role='checkbox']]")
-                assert labels, "The production Backup page did not list any selectable VMs"
+                assert labels, "The production Backup page did not list any selectable computers"
                 assert sum(label.text.strip().startswith(name) for label in labels) == 1, [label.text for label in labels]
                 for label in labels:
                     checkbox = label.find_element(By.CSS_SELECTOR, "button[role='checkbox']")
@@ -596,7 +599,7 @@ def run_lifecycle():
                 if use_ipc:
                     backup_state = invoke_native("read_backup_state", {})
                     assert backup_state["destination"] == str(archive_destination), backup_state
-                    invoke_native("start_backup", {"destination": str(archive_destination), "sandboxes": [name]})
+                    invoke_native("start_backup", {"destination": str(archive_destination), "computers": [name]})
                 else:
                     click(browser, wait, By.XPATH, "//button[normalize-space()='Change…']")
                     choose_native_path(archive_destination, "Choose a backup destination")
@@ -605,35 +608,35 @@ def run_lifecycle():
                     click(browser, wait, By.XPATH, "//button[normalize-space()='Start backup']")
                 WebDriverWait(browser, 240).until(lambda _: "Backup completed successfully" in body_text(browser))
                 archives = sorted(set(archive_destination.glob("*.silo-backup")) - old_archives)
-                assert archives, f"No v3 archive was written to {archive_destination}"
+                assert archives, f"No v4 archive was written to {archive_destination}"
                 with archives[0].open("rb") as package:
-                    assert package.read(16) == b"SILO-BACKUP\0\0\0\0\0", "Backup magic differs from the v3 format"
-                    assert int.from_bytes(package.read(4), "big") == 3, "Backup is not format v3"
+                    assert package.read(16) == b"SILO-BACKUP\0\0\0\0\0", "Backup magic differs from the v4 format"
+                    assert int.from_bytes(package.read(4), "big") == 4, "Backup is not format v4"
                     manifest_size = int.from_bytes(package.read(8), "big")
                     assert 0 < manifest_size <= 1024 * 1024, "Backup manifest length is invalid"
                     manifest = json.loads(package.read(manifest_size))
-                    assert manifest["schemaVersion"] == 3, manifest
-                    assert [item["name"] for item in manifest["sandboxes"]] == [name], manifest
-                report.append(("Production backup command" if use_ipc else "Production Backup UI") + " exported a v3 archive containing only the migrated source")
+                    assert manifest["schemaVersion"] == 4, manifest
+                    assert [item["name"] for item in manifest["computers"]] == [name], manifest
+                report.append(("Production backup command" if use_ipc else "Production Backup UI") + " exported a v4 archive containing only the migrated source")
 
                 phase("importing the archive through production backup IPC" if use_ipc else "importing the archive through the production Backup UI")
-                click(browser, wait, By.ID, "application-nav-workspaces")
-                wait.until(lambda _: browser.find_element(By.ID, "application-panel-workspaces").is_displayed())
+                click(browser, wait, By.ID, "application-nav-computers")
+                wait.until(lambda _: browser.find_element(By.ID, "application-panel-computers").is_displayed())
                 click(browser, wait, By.ID, "application-nav-backup")
                 if use_ipc:
                     inspected = invoke_native("inspect_backup_archive", {"archivePath": str(archives[0])})
-                    assert inspected["valid"] and inspected["archive"]["sandboxes"] == [name], inspected
+                    assert inspected["valid"] and inspected["archive"]["computers"] == [name], inspected
                     invoke_native("start_restore", {"archivePath": str(archives[0]), "newName": archive_name, "sourceName": name})
                 else:
                     click(browser, wait, By.XPATH, "//button[normalize-space()='Choose backup…']")
                     choose_native_path(archives[0], "Choose a Silo backup")
                     wait.until(lambda _: "Backup validated" in body_text(browser))
-                    name_input = browser.find_element(By.XPATH, "//label[contains(., 'New sandbox name')]/input")
+                    name_input = browser.find_element(By.XPATH, "//label[contains(., 'New computer name')]/input")
                     name_input.clear()
                     name_input.send_keys(archive_name)
-                    click(browser, wait, By.XPATH, "//button[normalize-space()='Restore new sandbox']")
-                WebDriverWait(browser, 240).until(lambda _: "Sandbox restored successfully" in body_text(browser))
-                click(browser, wait, By.ID, "application-nav-workspaces")
+                    click(browser, wait, By.XPATH, "//button[normalize-space()='Restore new computer']")
+                WebDriverWait(browser, 240).until(lambda _: "Computer restored successfully" in body_text(browser))
+                click(browser, wait, By.ID, "application-nav-computers")
                 wait.until(lambda _: has_button(browser, f"Start {name}") and has_button(browser, f"Start {archive_name}"))
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Start {archive_name}']")
                 wait.until(lambda _: has_button(browser, f"Stop {archive_name}"))
@@ -641,13 +644,13 @@ def run_lifecycle():
                 archive_guest(f"test \"$(cat {shlex.quote(marker)})\" = {shlex.quote(baseline_marker)} && "
                               f"test ! -e {shlex.quote(source_only_path)} && "
                               f"test ! -e {shlex.quote(fork_only_path)} && echo archive-ok", "archive-ok")
-                report.append("Imported v3 archive started with original workspace bytes and no post-checkpoint files")
+                report.append("Imported v4 archive started with original workspace bytes and no post-checkpoint files")
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Stop {archive_name}']")
                 wait.until(lambda _: has_button(browser, f"Start {archive_name}"))
                 if use_ipc:
                     phase("exporting the source again after the first native capture")
                     previous = set(archive_destination.glob("*.silo-backup"))
-                    invoke_native("start_backup", {"destination": str(archive_destination), "sandboxes": [name]})
+                    invoke_native("start_backup", {"destination": str(archive_destination), "computers": [name]})
                     def second_export_done(_):
                         state = invoke_native("read_backup_state", {})
                         operation = state.get("operation") or {}
@@ -666,19 +669,19 @@ def run_lifecycle():
                 browser.save_screenshot(str(EVIDENCE / "lifecycle-complete.png"))
 
             if os.environ.get("SILO_LINUX_RESUME_IMPORTED") == "1":
-                phase("starting the already imported stopped VM from its disk snapshot")
+                phase("starting the already imported stopped computer from its disk snapshot")
                 wait.until(lambda _: has_button(browser, f"Start {archive_name}"))
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Start {archive_name}']")
                 wait.until(lambda _: has_button(browser, f"Stop {archive_name}"))
                 guest_for(archive_name, f"test \"$(cat {shlex.quote(marker)})\" = {shlex.quote(baseline_marker)} && "
                           f"test ! -e {shlex.quote(source_only_path)} && "
                           f"test ! -e {shlex.quote(fork_only_path)} && echo archive-ok", "archive-ok")
-                report.append("Imported v3 archive started from its disk snapshot with original workspace bytes")
+                report.append("Imported v4 archive started from its disk snapshot with original workspace bytes")
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Stop {archive_name}']")
                 wait.until(lambda _: has_button(browser, f"Start {archive_name}"))
                 phase("repeating source export after the retained native capture")
                 previous = set(archive_destination.glob("*.silo-backup"))
-                invoke_native("start_backup", {"destination": str(archive_destination), "sandboxes": [name]})
+                invoke_native("start_backup", {"destination": str(archive_destination), "computers": [name]})
                 wait_backup_result("backup", previous)
                 report.append("Repeated source export succeeded with native snapshot ancestry intact")
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Start {name}']")
@@ -696,29 +699,29 @@ def run_lifecycle():
                 assert archive.is_relative_to(fixture_root) and archive.suffix == ".silo-backup"
                 with archive.open("rb") as package:
                     assert package.read(16) == b"SILO-BACKUP\0\0\0\0\0"
-                    assert int.from_bytes(package.read(4), "big") == 3
+                    assert int.from_bytes(package.read(4), "big") == 4
                     manifest_size = int.from_bytes(package.read(8), "big")
                     assert 0 < manifest_size <= 1024 * 1024
-                    assert [item["name"] for item in json.loads(package.read(manifest_size))["sandboxes"]] == [name]
-                phase("importing the preserved verified v3 archive through production backup IPC")
+                    assert [item["name"] for item in json.loads(package.read(manifest_size))["computers"]] == [name]
+                phase("importing the preserved verified v4 archive through production backup IPC")
                 click(browser, wait, By.ID, "application-nav-backup")
                 inspected = invoke_native("inspect_backup_archive", {"archivePath": str(archive)})
-                assert inspected["valid"] and inspected["archive"]["sandboxes"] == [name], inspected
+                assert inspected["valid"] and inspected["archive"]["computers"] == [name], inspected
                 invoke_native("start_restore", {"archivePath": str(archive), "newName": archive_name, "sourceName": name})
                 wait_backup_result("restore")
-                click(browser, wait, By.ID, "application-nav-workspaces")
+                click(browser, wait, By.ID, "application-nav-computers")
                 wait.until(lambda _: has_button(browser, f"Start {archive_name}"))
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Start {archive_name}']")
                 wait.until(lambda _: has_button(browser, f"Stop {archive_name}"))
                 guest_for(archive_name, f"test \"$(cat {shlex.quote(marker)})\" = {shlex.quote(baseline_marker)} && "
                           f"test ! -e {shlex.quote(source_only_path)} && "
                           f"test ! -e {shlex.quote(fork_only_path)} && echo archive-ok", "archive-ok")
-                report.append("The preserved v3 archive imported as a stopped VM and started with original workspace bytes")
+                report.append("The preserved v4 archive imported as a stopped computer and started with original workspace bytes")
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Stop {archive_name}']")
                 wait.until(lambda _: has_button(browser, f"Start {archive_name}"))
                 phase("repeating source export to verify native snapshot ancestry remains available")
                 previous = set(archive_destination.glob("*.silo-backup"))
-                invoke_native("start_backup", {"destination": str(archive_destination), "sandboxes": [name]})
+                invoke_native("start_backup", {"destination": str(archive_destination), "computers": [name]})
                 wait_backup_result("backup", previous)
                 report.append("A second source export completed after the first durable native capture")
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Start {name}']")
@@ -763,7 +766,7 @@ def run_lifecycle():
             click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Start {name}']")
             wait.until(lambda _: has_button(browser, f"Stop {name}"))
             assert guest(f"cat {shlex.quote(marker)}") == baseline_marker
-            report.append("Explicit Start restored the migrated stopped VM and its workspace sentinel")
+            report.append("Explicit Start restored the migrated stopped computer and its workspace sentinel")
             baseline_pid = int(guest(f"printf baseline > {shlex.quote(memory_marker)}; "
                                      f"nohup sh -c 'while :; do sleep 1; done' {shlex.quote(baseline_token)} "
                                      "</dev/null >/dev/null 2>&1 & echo $!"))
@@ -781,28 +784,28 @@ def run_lifecycle():
 
             phase("forking the checkpoint and checking stopped-before-start behavior")
             before_fork = read_application_state_when_idle()
-            source_matches = [workspace for workspace in before_fork["workspaces"]
-                              if workspace["machine"]["name"] == name]
-            assert len(source_matches) == 1, "The source workspace identity is ambiguous before fork"
-            source_workspace = source_matches[0]
-            assert not any(workspace["machine"]["name"] == fork_name for workspace in before_fork["workspaces"]), \
+            source_matches = [computer for computer in before_fork["computers"]
+                              if computer["configuration"]["name"] == name]
+            assert len(source_matches) == 1, "The source computer identity is ambiguous before fork"
+            source_computer = source_matches[0]
+            assert not any(computer["configuration"]["name"] == fork_name for computer in before_fork["computers"]), \
                 f"Fork name {fork_name} already exists; refusing to reuse a stale child"
-            selected_checkpoint = next((item for item in source_workspace.get("checkpoints", [])
+            selected_checkpoint = next((item for item in source_computer.get("checkpoints", [])
                                         if item["name"] == checkpoint_name), None)
             assert selected_checkpoint is not None, "The selected full checkpoint is missing from source state"
-            source_id = source_workspace["machine"]["id"]
+            source_id = source_computer["configuration"]["id"]
             click(browser, wait, By.XPATH, checkpoint_row + "//button[normalize-space()='Fork']")
             browser.find_element(By.CSS_SELECTOR, "input[aria-label='Fork name']").send_keys(fork_name)
             click(browser, wait, By.XPATH, "//button[normalize-space()='Create stopped fork']")
             wait.until(lambda _: has_button(browser, f"Start {fork_name}") and
                        browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{fork_name}']").is_displayed())
             after_fork = read_application_state_when_idle()
-            child_matches = [workspace for workspace in after_fork["workspaces"]
-                             if workspace["machine"]["name"] == fork_name]
+            child_matches = [computer for computer in after_fork["computers"]
+                             if computer["configuration"]["name"] == fork_name]
             assert len(child_matches) == 1, "The new stopped fork is missing or ambiguous"
             child = child_matches[0]
             pending = child.get("pendingCheckpointRestore")
-            assert child["machine"]["id"] != source_id, "Fork reused the source identity"
+            assert child["configuration"]["id"] != source_id, "Fork reused the source identity"
             assert child.get("state", "").casefold() == "stopped", "Fork did not remain stopped"
             assert pending and pending["checkpointId"] == selected_checkpoint["id"] and pending["state"] == "full", \
                 f"Fork does not point at the newly selected full checkpoint: {pending}"
@@ -841,10 +844,10 @@ def run_lifecycle():
             browser = None
             stop_test_app(environment)
             browser, wait, main_window = connect()
-            wait.until(lambda _: browser.find_element(By.ID, "application-nav-workspaces").is_displayed())
+            wait.until(lambda _: browser.find_element(By.ID, "application-nav-computers").is_displayed())
             assert "Migration" not in body_text(browser), body_text(browser)
             wait.until(lambda _: has_button(browser, f"Start {name}") and has_button(browser, f"Start {fork_name}"))
-            report.append("Full app relaunch kept the converted generation and both VMs stopped; migration did not rerun")
+            report.append("Full app relaunch kept the converted generation and both computers stopped; migration did not rerun")
             phase("forking the recovery checkpoint to verify the pre-restore state")
             ensure_checkpoints_open()
             recovery_row = "//ol[@aria-label='Checkpoint history']/li[contains(., 'Recovery')]"
@@ -863,10 +866,10 @@ def run_lifecycle():
             try:
                 WebDriverWait(browser, 30).until(lambda _: has_button(browser, f"Start {recovery_name}"))
             except TimeoutException:
-                if "Stop failed: Another sandbox operation is still running." not in body_text(browser):
+                if "Stop failed: Another computer operation is still running." not in body_text(browser):
                     raise
                 # The restored guest can answer probes before another native
-                # sandbox operation releases the global lifecycle lock.
+                # computer operation releases the global lifecycle lock.
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Stop {recovery_name}']")
                 wait.until(lambda _: has_button(browser, f"Start {recovery_name}"))
                 report.append("Recovery fork Stop succeeded after the runtime's transient busy response")
@@ -899,14 +902,14 @@ def run_lifecycle():
         finally:
             cleanup_errors = []
             if browser:
-                for vm_name in (name, fork_name, recovery_name, archive_name):
+                for computer_name in (name, fork_name, recovery_name, archive_name):
                     try:
-                        stops = browser.find_elements(By.CSS_SELECTOR, f"button[aria-label='Stop {vm_name}']")
+                        stops = browser.find_elements(By.CSS_SELECTOR, f"button[aria-label='Stop {computer_name}']")
                         if stops and stops[0].is_displayed() and stops[0].is_enabled():
                             stops[0].click()
-                            WebDriverWait(browser, 45).until(lambda _: any(node.is_displayed() for node in browser.find_elements(By.CSS_SELECTOR, f"button[aria-label='Start {vm_name}']")))
+                            WebDriverWait(browser, 45).until(lambda _: any(node.is_displayed() for node in browser.find_elements(By.CSS_SELECTOR, f"button[aria-label='Start {computer_name}']")))
                     except Exception as error:
-                        cleanup_errors.append(f"{vm_name}: {error}")
+                        cleanup_errors.append(f"{computer_name}: {error}")
                 browser.quit()
             stop_test_app(environment)
             process.terminate()
@@ -916,7 +919,7 @@ def run_lifecycle():
                 report.append("Cleanup failed: " + "; ".join(cleanup_errors))
             (EVIDENCE / "lifecycle.json").write_text(json.dumps({"passed": passed, "checks": report}, indent=2))
             if cleanup_errors:
-                raise AssertionError("Lifecycle test could not stop all fixture VMs: " + "; ".join(cleanup_errors))
+                raise AssertionError("Lifecycle test could not stop all fixture computers: " + "; ".join(cleanup_errors))
     for assertion in report:
         print("PASS: " + assertion)
 

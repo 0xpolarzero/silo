@@ -15,7 +15,7 @@ SOURCE = Path('/etc/apt/sources.list.d/silo.sources')
 DIRECTORY = Path('/run/silo')
 MARKER = DIRECTORY / 'system-update.json'
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C', 'DEBIAN_FRONTEND': 'noninteractive'}
-# Silo stops its sandboxes after 'ready'; stopping many can take a while.
+# Silo stops its computers after 'ready'; stopping many can take a while.
 CONFIRM_TIMEOUT = 30 * 60
 
 
@@ -58,7 +58,7 @@ def stage(name):
 
 
 def confirm(stream=None, timeout=CONFIRM_TIMEOUT):
-    """Wait for Silo's go-ahead. It stops sandboxes only once everything before installation succeeded."""
+    """Wait for Silo's go-ahead. It stops computers only once everything before installation succeeded."""
     stream = sys.stdin if stream is None else stream
     deadline = time.monotonic() + timeout
     line = b''
@@ -126,7 +126,7 @@ def main():
             raise RuntimeError('Silo’s package needs repair in the system package manager before updating.')
         if current[1] == selected:
             # Package already updated; the old running app only needs to stop its
-            # sandboxes (so they resume on the new runtime) and restart.
+            # computers (so they resume on the new runtime) and restart.
             stage('ready')
             confirm()
             return 0

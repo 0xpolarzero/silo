@@ -32,7 +32,7 @@ environment["SILO_TEST_LIBKRUNFW"] = str(root / f"src-tauri/runtime/microsandbox
 for test in [
     "live_bundled_image_import_and_cache_reuse",
     "github_guest_bootstrap_and_live_identity",
-    "real_backup_restore_preserves_root_and_workspace_without_original_cache",
+    "real_backup_restore_preserves_root_and_computer_without_original_cache",
     "live_secret_adapter_uses_refs_and_preserves_boot_for_live_updates",
     "lifecycle_recovery_survives_real_worker_exit_without_repeating_restart",
 ]:

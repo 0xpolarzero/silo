@@ -365,7 +365,7 @@ class Apply(Guest):
             self.assertNotIn(field, result)
 
     def test_a_forged_record_on_the_guest_disk_changes_nothing(self):
-        # Agents in the VM have root: the approval switch is not a boundary, and the helper
+        # Agents in the computer have root: the approval switch is not a boundary, and the helper
         # no longer reads any record of it. A stale or forged file is simply ignored.
         (self.state / 'approval.json').write_text(json.dumps({'approval': 'auto', 'revision': 2 ** 62}))
         result = cu.apply('ask')
@@ -660,7 +660,7 @@ class Apply(Guest):
         self.assertTrue(any(argv[0] == 'curl' for argv, *_ in self.commands))
 
     def test_an_existing_install_of_the_previous_release_is_upgraded_in_place_from_the_locked_url(self):
-        # A v4 VM: LCU 0.8.1 installed from the image's staged archive (0.8.1), a receipt for it.
+        # A v4 computer: LCU 0.8.1 installed from the image's staged archive (0.8.1), a receipt for it.
         old_sha = hashlib.sha256(b'previous release archive').hexdigest()
         (self.image / ARCHIVE).write_bytes(b'previous release archive')
         self.write_pinned(version='0.8.1', sha256=old_sha)

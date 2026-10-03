@@ -103,31 +103,34 @@ def prepare_environment():
     evidence = root / "evidence"
     evidence.mkdir(exist_ok=True)
     app_data = Path(os.environ["XDG_DATA_HOME"]) / app_id
-    workspace_name = os.environ.get("SILO_LINUX_WORKSPACE_NAME", "linux-legacy-source")
+    computer_name = os.environ.get("SILO_LINUX_COMPUTER_NAME", "linux-legacy-source")
     if app_data.exists() and any(app_data.iterdir()):
         if os.environ.get("SILO_LINUX_REUSE_FIXTURE") != "1":
             raise RuntimeError("Use a fresh task-owned XDG data root; existing migration/runtime state must not be replaced")
         runtime = app_data / "runtime"
         operation = runtime / "configuration-operation.json"
-        machine_file = runtime / "computers.json"
+        # A reused fixture may predate the first launch that renames its files and keys.
+        inventory = next((runtime / name for name in ("computers.json", "machines.json") if (runtime / name).is_file()), None)
         if operation.is_file():
-            machines = json.loads(operation.read_text()).get("request", {}).get("computers", [])
-        elif machine_file.is_file():
-            machines = json.loads(machine_file.read_text()).get("computers", [])
+            request = json.loads(operation.read_text()).get("request", {})
+            computers = request.get("computers", request.get("machines", []))
+        elif inventory is not None:
+            saved = json.loads(inventory.read_text())
+            computers = saved.get("computers", saved.get("machines", []))
         else:
-            machines = []
-        sources = [item for item in machines if item.get("name") == workspace_name]
+            computers = []
+        sources = [item for item in computers if item.get("name") == computer_name]
         if len(sources) != 1:
             raise RuntimeError("Refusing fixture reuse unless task state contains exactly one expected source")
-        machine = sources[0]
-        expected = {"name": workspace_name, "cpus": 2, "maxCPUs": 2, "memoryGiB": 2,
+        computer = sources[0]
+        expected = {"name": computer_name, "cpus": 2, "maxCPUs": 2, "memoryGiB": 2,
                     "maxMemoryGiB": 2, "workspaceStorageGiB": 20, "runtimeStorageGiB": 40}
-        if any(machine.get(key) != value for key, value in expected.items()) or not machine.get("desktop"):
+        if any(computer.get(key) != value for key, value in expected.items()) or not computer.get("desktop"):
             raise RuntimeError("Refusing to reuse task state that differs from the expected desktop source")
     settings = Path(os.environ["XDG_CONFIG_HOME"]) / app_id / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
     settings.write_text(json.dumps({"schemaVersion": 1, "settings": {
-        "onboardingComplete": True, "launchAtLogin": False, "startWorkspacesAtLaunch": False,
+        "onboardingComplete": True, "launchAtLogin": False, "startComputersAtLaunch": False,
     }, "onboardingDraft": None}))
     return root, evidence, app_id
 
@@ -155,7 +158,7 @@ def app_window(browser, wait):
     def ready(_):
         for handle in browser.window_handles:
             browser.switch_to.window(handle)
-            if "native-status" not in browser.current_url and browser.find_elements(By.ID, "application-nav-workspaces"):
+            if "native-status" not in browser.current_url and browser.find_elements(By.ID, "application-nav-computers"):
                 return True
         return False
     wait.until(ready)
@@ -329,10 +332,10 @@ def create_source_archive(browser, wait, evidence, name, history_path):
         label_text = row["text"]
         if not label_text:
             continue
-        sandbox_name = label_text.splitlines()[0].strip()
+        computer_name = label_text.splitlines()[0].strip()
         box = row["checkbox"]
         checked = box.get_attribute("aria-checked") == "true"
-        if sandbox_name == name:
+        if computer_name == name:
             if not checked:
                 box.click()
             selected_names.append(name)
@@ -367,16 +370,16 @@ def create_source_archive(browser, wait, evidence, name, history_path):
     raise TimeoutError("Production UI backup did not produce an archive within 15 minutes")
 
 
-def open_or_create_editor_vm(browser, wait, name):
-    click(browser, wait, By.ID, "application-nav-workspaces")
-    wait.until(lambda _: browser.find_element(By.ID, "application-panel-workspaces").is_displayed())
+def open_or_create_editor_computer(browser, wait, name):
+    click(browser, wait, By.ID, "application-nav-computers")
+    wait.until(lambda _: browser.find_element(By.ID, "application-panel-computers").is_displayed())
     matches = browser.find_elements(By.CSS_SELECTOR, f"[data-computer-name='{name}']")
     if matches:
         return
     click(browser, wait, By.XPATH, "//button[normalize-space()='Add']")
-    click(browser, wait, By.XPATH, "//*[@role='menuitem' and normalize-space()='New sandbox']")
-    editor = browser.find_element(By.CSS_SELECTOR, "[data-testid^='machine-editor-']")
-    field = editor.find_element(By.CSS_SELECTOR, "input[aria-label='Machine name']")
+    click(browser, wait, By.XPATH, "//*[@role='menuitem' and normalize-space()='New computer']")
+    editor = browser.find_element(By.CSS_SELECTOR, "[data-testid^='computer-editor-']")
+    field = editor.find_element(By.CSS_SELECTOR, "input[aria-label='Computer name']")
     field.clear()
     field.send_keys(name)
     for label, value in (("CPU limit", "2"), ("CPU ceiling", "2"), ("Memory limit", "2"),
@@ -435,11 +438,11 @@ def wait_for_preserved_setup(browser, wait, evidence, name):
                     events = json.loads(activity.read_text())
                     if events:
                         event = events[-1]
-                        current = {key: event.get(key) for key in ("step", "workspace", "message", "timestamp", "elapsedSeconds")}
+                        current = {key: event.get(key) for key in ("step", "computer", "message", "timestamp", "elapsedSeconds")}
                 except (OSError, json.JSONDecodeError):
                     pass
             record = {"elapsedSeconds": round(now - (deadline - int(os.environ.get("SILO_LINUX_SETUP_WAIT_SECONDS", "1800")))),
-                      "operationPending": operation.exists(), "workspaceConfigured": configured, "activity": current}
+                      "operationPending": operation.exists(), "computerConfigured": configured, "activity": current}
             progress_path.open("a").write(json.dumps(record) + "\n")
             print(json.dumps({"setupRecovery": record}), flush=True)
             next_report = now + 30
@@ -480,14 +483,14 @@ def desktop_window(browser, wait, name):
     return browser.current_window_handle
 
 
-def start_workspace(browser, wait, name):
+def start_computer(browser, wait, name):
     row = browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']")
     if "Running" not in row.text:
         click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Start {name}']")
         wait.until(lambda _: "Running" in browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']").text)
 
 
-def stop_workspace(browser, wait, name):
+def stop_computer(browser, wait, name):
     row = browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']")
     if "Running" in row.text:
         click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Stop {name}']")
@@ -551,12 +554,12 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     changed = f"SILO_CHANGED_AFTER_CHECKPOINT_{secrets.token_hex(6)}"
     path = "/home/silo/silo-checkpoint-draft.txt"
     # The packaged app opens on Overview in the current UI. Older builds expose
-    # the Workspaces panel as a navigation route, so only navigate when the
+    # the Computers panel as a navigation route, so only navigate when the
     # observed source row is not already present.
     if not browser.find_elements(By.CSS_SELECTOR, f"[data-computer-name='{name}']"):
-        click(browser, wait, By.ID, "application-nav-workspaces")
-        wait.until(lambda _: browser.find_element(By.ID, "application-panel-workspaces").is_displayed())
-    start_workspace(browser, wait, name)
+        click(browser, wait, By.ID, "application-nav-computers")
+        wait.until(lambda _: browser.find_element(By.ID, "application-panel-computers").is_displayed())
+    start_computer(browser, wait, name)
     import_archive = os.environ.get("SILO_LINUX_IMPORT_ARCHIVE")
     if import_archive:
         import importlib.util
@@ -568,7 +571,7 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
         started_record = group.records_for_state(started_state).get(name)
         if not started_record or started_record.get("state") != "running":
             raise AssertionError(f"The imported source did not reach Running after explicit Start: {started_record}")
-        capacity = group.verify_vm_capacity(started_record)
+        capacity = group.verify_computer_capacity(started_record)
         (evidence / "production-import-started-capacity.json").write_text(json.dumps({
             "archive": str(Path(import_archive).resolve()),
             "archiveSha256": os.environ["SILO_LINUX_IMPORT_ARCHIVE_SHA256"],
@@ -608,10 +611,10 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     generation = app_data / "runtime-generation.json"
     if generation.is_file():
         runtime = app_data / json.loads(generation.read_text())["directory"]
-    machines_path = runtime / "computers.json"
-    before_machines = json.loads(machines_path.read_text())["computers"]
-    source_machine = next(item for item in before_machines if item["name"] == name)
-    source_record = json.loads((runtime / "checkpoints" / f"{source_machine['id']}.json").read_text())
+    computers_path = runtime / "computers.json"
+    before_computers = json.loads(computers_path.read_text())["computers"]
+    source_computer = next(item for item in before_computers if item["name"] == name)
+    source_record = json.loads((runtime / "checkpoints" / f"{source_computer['id']}.json").read_text())
     checkpoint = next(item for item in source_record["checkpoints"] if item["name"] == title)
     if checkpoint["scope"] != "full" or not source_record.get("snapshotGroup"):
         raise AssertionError(f"Checkpoint does not identify a full source capture group: {checkpoint!r}")
@@ -631,7 +634,7 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     browser.switch_to.window(main_handle)
     panel = checkpoint_panel(browser, wait, name)
     fork_name = f"{name}-fork-{secrets.token_hex(3)}"
-    if any(item["name"] == fork_name for item in before_machines):
+    if any(item["name"] == fork_name for item in before_computers):
         raise AssertionError(f"Refusing a duplicate fork name: {fork_name}")
     click(browser, wait, By.XPATH, f"//li[.//*[normalize-space()='{title}']]//button[normalize-space()='Fork']")
     browser.find_element(By.CSS_SELECTOR, "input[aria-label='Fork name']").send_keys(fork_name)
@@ -639,25 +642,25 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     wait.until(lambda _: browser.find_elements(By.CSS_SELECTOR, f"[data-computer-name='{fork_name}']"))
     fork = browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{fork_name}']")
     assert "Stopped" in fork.text or "stopped" in fork.text.lower(), fork.text
-    after_machines = json.loads(machines_path.read_text())["computers"]
-    fork_candidates = [item for item in after_machines if item["name"] == fork_name]
-    new_machine_ids = {item["id"] for item in after_machines} - {item["id"] for item in before_machines}
-    if len(fork_candidates) != 1 or fork_candidates[0]["id"] not in new_machine_ids:
-        raise AssertionError(f"Fork did not create one new machine identity: {fork_candidates!r}")
-    fork_machine = fork_candidates[0]
-    fork_record = json.loads((runtime / "checkpoints" / f"{fork_machine['id']}.json").read_text())
+    after_computers = json.loads(computers_path.read_text())["computers"]
+    fork_candidates = [item for item in after_computers if item["name"] == fork_name]
+    new_computer_ids = {item["id"] for item in after_computers} - {item["id"] for item in before_computers}
+    if len(fork_candidates) != 1 or fork_candidates[0]["id"] not in new_computer_ids:
+        raise AssertionError(f"Fork did not create one new computer identity: {fork_candidates!r}")
+    fork_computer = fork_candidates[0]
+    fork_record = json.loads((runtime / "checkpoints" / f"{fork_computer['id']}.json").read_text())
     pending = fork_record.get("pendingCheckpointRestore") or {}
     if (pending.get("checkpointId") != checkpoint["id"] or pending.get("state") != "full"
-            or pending.get("sourceWorkspace") != source_record["snapshotGroup"]):
+            or pending.get("sourceComputer") != source_record["snapshotGroup"]):
         raise AssertionError(f"Fork is not pending the selected full capture: {pending!r}")
     (evidence / "editor-fork-lineage.json").write_text(json.dumps({
-        "source": name, "sourceMachineId": source_machine["id"],
+        "source": name, "sourceComputerId": source_computer["id"],
         "checkpointId": checkpoint["id"], "checkpointScope": checkpoint["scope"],
         "snapshotGroup": source_record["snapshotGroup"],
-        "fork": fork_name, "forkMachineId": fork_machine["id"],
+        "fork": fork_name, "forkComputerId": fork_computer["id"],
         "pendingCheckpointRestore": pending,
     }, indent=2))
-    start_workspace(browser, wait, fork_name)
+    start_computer(browser, wait, fork_name)
     browser.switch_to.window(main_handle)
     fork_viewer = desktop_window(browser, wait, fork_name)
     screen = wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, "[aria-label='Linux desktop display']"))
@@ -675,7 +678,7 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     click(browser, wait, By.XPATH, f"//li[.//*[normalize-space()='{title}']]//button[normalize-space()='Restore']")
     click(browser, wait, By.XPATH, "//button[normalize-space()='Save recovery point and restore']")
     wait.until(lambda _: "stopped" in browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']").text.lower())
-    start_workspace(browser, wait, name)
+    start_computer(browser, wait, name)
     browser.switch_to.window(viewer)
     screen = wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, "[aria-label='Linux desktop display']"))
     ActionChains(browser).move_to_element(screen).click().perform()
@@ -687,8 +690,8 @@ def test_editor_lineage(browser, wait, evidence, name, main_handle):
     screen.screenshot(str(evidence / "editor-unsaved-after-restore.png"))
     (evidence / "clipboard-after-source-restore.txt").write_text(after_restore + "\n")
     browser.switch_to.window(main_handle)
-    stop_workspace(browser, wait, fork_name)
-    stop_workspace(browser, wait, name)
+    stop_computer(browser, wait, fork_name)
+    stop_computer(browser, wait, name)
     browser.switch_to.window(fork_viewer)
 
 
@@ -713,7 +716,7 @@ def run():
         app_window(browser, wait)
         wait.until(lambda _: "Silo could not load" not in browser.find_element(By.TAG_NAME, "body").text)
         main_handle = browser.current_window_handle
-        name = os.environ.get("SILO_LINUX_WORKSPACE_NAME", "linux-legacy-source")
+        name = os.environ.get("SILO_LINUX_COMPUTER_NAME", "linux-legacy-source")
         import_archive = os.environ.get("SILO_LINUX_IMPORT_ARCHIVE")
         if os.environ.get("SILO_LINUX_REUSE_FIXTURE") == "1":
             wait_for_preserved_setup(browser, wait, evidence, name)
@@ -731,7 +734,7 @@ def run():
             archive_path = Path(import_archive).resolve(strict=True)
             inspected = group.invoke(browser, "inspect_backup_archive", {"archivePath": str(archive_path)})
             archive_metadata = inspected.get("archive", {})
-            if not inspected.get("valid") or archive_metadata.get("sandboxes") != ["linux-legacy-source"]:
+            if not inspected.get("valid") or archive_metadata.get("computers") != ["linux-legacy-source"]:
                 raise AssertionError(f"The retained source archive failed production inspection: {inspected}")
             previous_operation = group.invoke(browser, "read_backup_state").get("operationId")
             group.invoke(browser, "start_restore", {
@@ -742,7 +745,7 @@ def run():
             restored = group.records_for_state(restored_state).get(name)
             if restored is None or restored.get("state") != "stopped":
                 raise AssertionError(f"Production restore did not register a stopped desktop source: {restored}")
-            capacity = group.verify_vm_capacity(restored)
+            capacity = group.verify_computer_capacity(restored)
             (evidence / "production-import.json").write_text(json.dumps({
                 "archive": str(archive_path), "source": "linux-legacy-source", "imported": name,
                 "state": restored.get("state"), "capacity": capacity,
@@ -757,17 +760,17 @@ def run():
                 spec.loader.exec_module(group)
                 archive_path = Path(import_archive or "").resolve(strict=True)
                 inspected = group.invoke(browser, "inspect_backup_archive", {"archivePath": str(archive_path)})
-                if not inspected.get("valid") or inspected.get("archive", {}).get("sandboxes") != ["linux-legacy-source"]:
+                if not inspected.get("valid") or inspected.get("archive", {}).get("computers") != ["linux-legacy-source"]:
                     raise AssertionError(f"The preserved source archive failed production inspection: {inspected}")
                 restored_state = group.read_state(browser)
                 restored = group.records_for_state(restored_state).get(name)
                 if restored is None or restored.get("state") != "stopped":
                     raise AssertionError(f"The imported desktop source is not stopped in the fresh runtime: {restored}")
                 browser.save_screenshot(str(evidence / "production-import-stopped-overview.png"))
-                start_workspace(browser, wait, name)
+                start_computer(browser, wait, name)
                 running_state = group.read_state(browser)
                 restored = group.records_for_state(running_state)[name]
-                capacity = group.verify_vm_capacity(restored)
+                capacity = group.verify_computer_capacity(restored)
                 (evidence / "production-import.json").write_text(json.dumps({
                     "archive": str(archive_path),
                     "archiveSha256": os.environ["SILO_LINUX_IMPORT_ARCHIVE_SHA256"],
@@ -787,15 +790,15 @@ def run():
                         or matching[0].get("completedLabel") != "Verified archive"):
                     raise RuntimeError("The preserved source-only production archive evidence is incomplete or changed")
             # The packaged app opens directly to its Overview list. The
-            # Sandboxes control is a disclosure, not an Overview route.
+            # Computers control is a disclosure, not an Overview route.
             if not imported_fixture:
                 source_row = wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']"))
                 wait.until(lambda _: "stopped" in source_row.text.lower())
                 browser.save_screenshot(str(evidence / "source-overview-stopped.png"))
                 archive = archive_path
         else:
-            open_or_create_editor_vm(browser, wait, name)
-            click(browser, wait, By.ID, "application-nav-workspaces")
+            open_or_create_editor_computer(browser, wait, name)
+            click(browser, wait, By.ID, "application-nav-computers")
             source_row = wait.until(lambda _: browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{name}']"))
             wait.until(lambda _: "stopped" in source_row.text.lower())
             browser.save_screenshot(str(evidence / "source-overview-stopped.png"))

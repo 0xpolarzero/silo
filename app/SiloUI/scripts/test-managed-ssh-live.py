@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Opt-in managed SSH acceptance test using only a disposable local VM.
+"""Opt-in managed SSH acceptance test using only a disposable local computer.
 
 Set SILO_RUN_MANAGED_SSH_LIVE=1. Pass a signed patched msb executable, its
 libkrunfw, the bundled guest-image directory, and an ignored evidence directory.
-No registry downloads or existing Silo state are used. Failed VM state is kept
+No registry downloads or existing Silo state are used. Failed computer state is kept
 under the printed temporary directory after a graceful stop attempt.
 """
 
@@ -30,14 +30,14 @@ def main():
     parser.add_argument("--network-address", help="Optional exact LAN/VPN IPv4 address to test alongside loopback")
     args = parser.parse_args()
     if os.environ.get("SILO_RUN_MANAGED_SSH_LIVE") != "1":
-        parser.error("set SILO_RUN_MANAGED_SSH_LIVE=1 to create a disposable VM")
+        parser.error("set SILO_RUN_MANAGED_SSH_LIVE=1 to create a disposable computer")
     args.output.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix="silo-ssh-live-", dir="/tmp"))
     env = {key: value for key, value in os.environ.items() if not key.startswith("MSB_")}
     env.update(MSB_HOME=str(root / "home"), MSB_BACKEND="local",
                MSB_PATH=str(args.msb.resolve()), MSB_LIBKRUNFW_PATH=str(args.library.resolve()))
     name = "managed-ssh-acceptance"
-    machine_id = str(uuid.uuid4())
+    computer_id = str(uuid.uuid4())
     listeners, clients = [], []
     created = False
     passed = False
@@ -66,7 +66,7 @@ def main():
     serve_command = [str(args.msb.resolve()), "ssh", "serve", name, "--no-start",
                      "--exit-on-stdin-close", "--authorized-keys", str(store),
                      "--host", "127.0.0.1", "--port", str(port), "--no-inactivity-timeout",
-                     "--expected-machine-id", machine_id]
+                     "--expected-machine-id", computer_id]
 
     def listening(address="127.0.0.1"):
         with socket.socket() as probe:
@@ -109,7 +109,7 @@ def main():
         with gzip.open(args.guest_image / "image.tar.gz", "rb") as source, archive.open("wb") as target:
             shutil.copyfileobj(source, target)
         msb("image", "load", "--input", str(archive), "--tag", manifest["imageReference"], "--quiet", timeout=300)
-        msb("create", manifest["imageReference"], "--name", name, "--no-start", "--memory", "512M", "--cpus", "1", "--label", f"silo.machine-id={machine_id}")
+        msb("create", manifest["imageReference"], "--name", name, "--no-start", "--memory", "512M", "--cpus", "1", "--label", f"silo.machine-id={computer_id}")
         created = True
         for key in ("allowed", "replacement", "internal"):
             run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(root / key)])
@@ -122,7 +122,7 @@ def main():
                                    stdout=subprocess.PIPE, stderr=log)
         listeners.append(stopped)
         assert stopped.wait(timeout=10) != 0 and not listening()
-        record("PASS stopped sandbox refuses SSH without starting")
+        record("PASS stopped computer refuses SSH without starting")
         msb("start", name)
         mismatched = serve_command.copy()
         mismatched[-1] = str(uuid.uuid4())
@@ -130,7 +130,7 @@ def main():
                                           stdout=subprocess.PIPE, stderr=log)
         listeners.append(wrong_identity)
         assert wrong_identity.wait(timeout=10) != 0 and not listening()
-        record("PASS mismatched machine identity refuses binding")
+        record("PASS mismatched computer identity refuses binding")
         endpoint = serve()
         assert run(ssh("allowed", "printf connected")).stdout == "connected"
         assert run(ssh("replacement", "true"), check=False).returncode != 0
@@ -141,7 +141,7 @@ def main():
         host_fingerprint = run(["ssh-keygen", "-lf", str(host_keys[0])]).stdout.split()[1]
         client_fingerprint = run(["ssh-keygen", "-lf", str(known_hosts)]).stdout.split()[1]
         assert host_fingerprint == client_fingerprint
-        record("PASS client host-key fingerprint matches sandbox")
+        record("PASS client host-key fingerprint matches computer")
         started = time.monotonic()
         assert run(ssh("allowed", "printf before; sleep 65; printf after"), timeout=90).stdout == "beforeafter"
         assert time.monotonic() - started >= 65
@@ -170,7 +170,7 @@ def main():
         assert session.wait(timeout=10) != 0 and not listening()
         if network_endpoint:
             assert network_endpoint.wait(timeout=10) == 0 and not listening(args.network_address)
-        record("PASS VM stop closes all listeners and active session with owner pipes still open")
+        record("PASS computer stop closes all listeners and active session with owner pipes still open")
         passed = True
     finally:
         for child in listeners + clients:

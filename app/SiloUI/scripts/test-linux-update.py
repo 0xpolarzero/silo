@@ -83,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix='silo-real-update-') as temporary:
         path=Path(temporary,name.lower());path.mkdir();environment[f'XDG_{name}_HOME']=str(path)
     environment['APPIMAGE_EXTRACT_AND_RUN']='1'
     settings=Path(environment['XDG_CONFIG_HOME'],'org.silo.preview/settings.json');settings.parent.mkdir()
-    settings.write_text(json.dumps({'schemaVersion':1,'settings':{'onboardingComplete':True,'launchAtLogin':False,'startWorkspacesAtLaunch':False,'reduceMotion':True},'onboardingDraft':None}))
+    settings.write_text(json.dumps({'schemaVersion':1,'settings':{'onboardingComplete':True,'launchAtLogin':False,'startComputersAtLaunch':False,'reduceMotion':True},'onboardingDraft':None}))
     with socket.socket() as probe:probe.bind(('127.0.0.1',0));port=probe.getsockname()[1]
     with socket.socket() as probe:probe.bind(('127.0.0.1',0));native=probe.getsockname()[1]
     log=(args.evidence/'driver.log').open('w')
