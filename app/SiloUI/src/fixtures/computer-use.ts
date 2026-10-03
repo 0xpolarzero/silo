@@ -29,7 +29,7 @@ export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseSta
     case "unavailable": return { ...base, state: "unavailable", reason: "This sandbox was created before computer use was built in.", agents: null }
     case "preparing": return { ...base, state: "preparing", reason: "Preparing ChatGPT for Linux.", appVersion: null, runtimeVersion: null, lcuVersion: null, agents: null }
     case "installing": return { ...base, state: "installing", reason: "Configuring Claude Code and Codex." }
-    case "failed": return { ...base, state: "failed", reason: "No supported agent was found. Install one, then choose Set up computer use.", agents: [] }
+    case "failed": return { ...base, state: "failed", reason: "No supported agent was found. Install one, then set up computer use again.", agents: [] }
     case "app-failed": return { ...base, state: "failed", cause: "app-download", reason: "The downloaded file did not match the expected checksum. It was removed.", appVersion: null, runtimeVersion: null, lcuVersion: null, agents: null }
     case "untested": return { ...base, compatibility: "untested", warning: "ChatGPT for Linux 26.1002.1 has not been tested with this version of Silo. Computer use may not work as expected." }
     case "auto": return { ...base, approval: "auto", appliedApproval: "auto" }

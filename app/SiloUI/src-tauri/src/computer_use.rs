@@ -1282,10 +1282,10 @@ pub(crate) fn app_ready(app: &AppHandle) {
 
 fn reason_text(code: &str) -> &'static str {
     match code {
-        "interrupted" => "Setup was interrupted. Choose Set up computer use to retry.",
+        "interrupted" => "Setup was interrupted. Try again.",
         "doctor-failed" => "LCU's readiness check failed. Details are in /var/log/silo-computer-use.log in the sandbox.",
-        "desktop-session-not-running" => "The Linux desktop was not running. Start it, then choose Set up computer use.",
-        "timed-out" => "Setup timed out. Choose Set up computer use to retry.",
+        "desktop-session-not-running" => "The Linux desktop was not running. Start it, then try again.",
+        "timed-out" => "Setup timed out. Try again.",
         "lcu-archive-unavailable" => "Could not download LCU (network). Silo retries at the next start; check this sandbox's network.",
         "lcu-archive-mismatch" | "lcu-archive-invalid" => "The LCU package did not pass verification.",
         "mount-missing" => "This sandbox has no shared ChatGPT folder. Create a new sandbox to use computer use.",
@@ -1300,7 +1300,7 @@ fn approval_reason_text(code: &str) -> &'static str {
         "cancelled" => "Applying was interrupted. Silo tries again when the sandbox starts.",
         "timed-out" => "Applying took too long. Silo tries again when the sandbox starts.",
         "unreachable" => "Silo could not reach the sandbox to apply it. Silo tries again when the sandbox starts.",
-        "state-not-saved" => "Silo could not save the computer-use setting, so it did not apply it. Free some disk space or check permissions, then choose Set up computer use.",
+        "state-not-saved" => "Silo could not save the computer-use setting, so it did not apply it. Free some disk space or check permissions, then try again.",
         "invalid-report" => "The sandbox returned an unreadable answer. Silo tries again when the sandbox starts.",
         "setup-partial" => "Some agents could not be configured. Details are in /var/log/silo-computer-use.log in the sandbox.",
         "mount-missing" | "mount-writable" => reason_text(code),
@@ -1466,7 +1466,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
         return (
             state_object(
                 "unavailable",
-                Some("Computer use is not set up yet. Choose Set up computer use."),
+                Some("Computer use is not set up yet. Silo sets it up at each start."),
                 inputs,
                 known,
             ),
@@ -1508,7 +1508,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
         ),
         _ => (
             "unavailable",
-            Some("Computer use is not set up yet. Choose Set up computer use.".into()),
+            Some("Computer use is not set up yet. Silo sets it up at each start.".into()),
         ),
     };
     let remembered = matches!(state, "ready" | "failed").then(|| Known {

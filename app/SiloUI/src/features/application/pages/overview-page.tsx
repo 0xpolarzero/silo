@@ -16,7 +16,7 @@ import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditin
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { CircleAlert, Code, Download, GitFork, HardDrive, History, KeyRound, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
-import { dismissOperationToast, dismissSandboxToasts, dismissSandboxToastsById, showActionFailure } from "@/lib/operation-toast"
+import { dismissOperationToast, dismissSandboxToasts, dismissSandboxToastsById, showActionFailure, showOperationNotice } from "@/lib/operation-toast"
 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
 import { ConfirmBody } from "@/components/confirm-popover"
@@ -26,6 +26,7 @@ import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "../model/check
 import { configurationFailureDiagnostic } from "../model/configuration-failure"
 import { ErrorDetails } from "@/components/error-details"
 import { ListRowIcon } from "@/components/list-row"
+import { useComputerUseBridge } from "@/desktop/computer-use-bridge"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent } from "@/contracts/silo"
@@ -291,6 +292,19 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
   // or when its sandbox can no longer be opened, so it never takes the screen over later.
   const [folderPicker, setFolderPicker] = useState<{ workspaceId: string; route: string } | null>(null)
   const [connecting, setConnecting] = useState(false)
+  const computerUseBridge = useComputerUseBridge()
+  // Targets whose computer use is being set up again, so the menu offers it once at a time.
+  const [settingUp, setSettingUp] = useState<ReadonlySet<string>>(new Set())
+  function setUpComputerUse(target: string, name: string) {
+    setSettingUp(current => new Set(current).add(target))
+    void computerUseBridge!.setup(target)
+      .then(state => {
+        if (state.computerUse?.state === "ready") showOperationNotice(`computer-use-setup:${target}`, `Computer use is set up in ${name}`, { description: "Reconnect agent sessions to load it.", sandbox: name })
+        else showActionFailure(`Could not set up computer use in ${name}`, state.computerUse?.reason ?? "Setup did not finish.", undefined, { native: false })
+      })
+      .catch(error => showActionFailure(`Could not set up computer use in ${name}`, error, undefined, { native: false }))
+      .finally(() => setSettingUp(current => { const next = new Set(current); next.delete(target); return next }))
+  }
   // Sandbox detail selection: controlled by the app's navigation when the callbacks are
   // supplied, otherwise kept locally so the page still opens details on its own.
   const controlledNav = onOpenSandbox !== undefined
@@ -474,6 +488,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     const restartPrompt = restartCheck.kind === "confirm" && availability.canRestart && !readOnly ? restartCheck.prompt : undefined
     const items: MenuAction[] = [
       ...(vm && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || availability.busy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
+      ...(vm && machine.desktop?.builtIn && computerUseBridge ? [{ label: "Set up computer use for new agents", icon: Monitor, accessibleLabel: `Set up computer use for new agents in ${machine.name}`, disabled: readOnly || workspace.state !== "running" || stale || availability.busy || settingUp.has(target), onSelect: () => setUpComputerUse(target, machine.name) }] : []),
       restartPrompt
         ? { label: "Restart…", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, popover: "restart" }
         : { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guard.request(workspace, "restart") },

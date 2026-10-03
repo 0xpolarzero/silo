@@ -695,9 +695,7 @@ fn local(
             );
         }
         if action == "setup-lcu" && crate::computer_use::is_built_in(&machine) {
-            return Err(
-                "This sandbox sets up computer use itself. Choose Set up computer use.".into(),
-            );
+            return Err("This sandbox sets up computer use itself.".into());
         }
         let inspected = match runtime::observe_vm(&runtime::ProcessRunner, &paths, workspace)
             .map_err(|e| e.to_string())?
