@@ -170,9 +170,9 @@ function sanitizeGithubDocument(document) {
   return { revision: 0, accessEnabled: Boolean(document.accessEnabled), account: typeof document.account === "string" ? document.account : null }
 }
 
-/** The connected devices of a remote config in either vocabulary (`devices`, earlier `hosts`). */
+/** The connected devices of a remote config in either vocabulary; the earlier `hosts` wins over `devices`, as in the saved-data conversion. */
 function validDevices(config) {
-  const list = Array.isArray(config.devices) ? config.devices : config.hosts
+  const list = "hosts" in config ? config.hosts : config.devices
   return (Array.isArray(list) ? list : []).filter(host =>
     isObject(host) && ["id", "name", "address"].every(key => typeof host[key] === "string" && host[key] !== ""))
 }
@@ -337,7 +337,7 @@ export async function importProductionSettings({
     remoteNames = devices.map(device => device.name)
     const existing = readJson(path.join(remoteTarget, "config.json"))
     const own = existing.value && isObject(existing.value) ? existing.value : {}
-    const ownId = [own.deviceId, own.hostId].find(id => typeof id === "string" && id !== "")
+    const ownId = [own.hostId, own.deviceId].find(id => typeof id === "string" && id !== "")
     const deviceId = ownId ?? newId()
     if (devices.length > 0) {
       addFile(`Connected devices (${devices.length}); ${DEVELOPMENT.productName} keeps its own device id and connections stay off`,

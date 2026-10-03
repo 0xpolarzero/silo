@@ -334,6 +334,28 @@ test("a device id Dev saved before the rename is kept under its new name", async
   assert.deepEqual(merged, { deviceId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", enabled: false, devices: HOSTS })
 })
 
+test("when Dev holds both the earlier and the current device id the earlier one wins", async () => {
+  const { home, target } = fixtureHome()
+  const remoteConfig = path.join(target.state, "desktop-remote", "config.json")
+  fs.mkdirSync(path.dirname(remoteConfig), { recursive: true })
+  fs.writeFileSync(remoteConfig, JSON.stringify({
+    hostId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", deviceId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", enabled: false, hosts: [], devices: [],
+  }))
+  await run(home, productionKeychain(), { yes: true })
+  assert.equal(JSON.parse(fs.readFileSync(remoteConfig, "utf8")).deviceId, "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
+})
+
+test("when production holds both the earlier and the current device list the earlier one is imported", async () => {
+  const { home, source, target } = fixtureHome()
+  fs.writeFileSync(path.join(source.state, "desktop-remote", "config.json"), JSON.stringify({
+    hostId: "99999999-9999-4999-8999-999999999999", enabled: true, hosts: HOSTS,
+    devices: [{ id: "stale", name: "stale", address: "10.0.0.9" }],
+  }))
+  await run(home, productionKeychain(), { yes: true })
+  const merged = JSON.parse(fs.readFileSync(path.join(target.state, "desktop-remote", "config.json"), "utf8"))
+  assert.deepEqual(merged.devices, HOSTS)
+})
+
 test("production data already in the current names imports the same as the earlier names", async () => {
   const earlier = fixtureHome()
   const current = fixtureHome()
