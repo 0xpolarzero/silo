@@ -2139,18 +2139,12 @@ fn configure_workspace_identities_in(
         )?;
         // Remove old boot overrides: normal Git/jj configuration must own defaults.
         let mut args = vec!["modify".into(), identity.workspace.clone()];
-        for key in [
-            "GIT_AUTHOR_NAME",
-            "GIT_AUTHOR_EMAIL",
-            "GIT_COMMITTER_NAME",
-            "GIT_COMMITTER_EMAIL",
-            "JJ_USER",
-            "JJ_EMAIL",
-        ] {
+        for key in checkpoints::IDENTITY_ENVIRONMENT {
             args.extend(["--env-rm".into(), key.into()]);
         }
         args.extend(["--format".into(), "json".into()]);
         runner.run(paths, &args, MUTATION_TIMEOUT)?;
+        checkpoints::forget_identity_environment(paths, machine.id())?;
         let script = r#"set -eu
  git config --global -- user.name "$1"
  git config --global -- user.email "$2"
@@ -11266,6 +11260,36 @@ exit 9
         assert!(!calls
             .iter()
             .any(|args| ["restart", "stop", "start"].contains(&args[0].as_str())));
+    }
+
+    #[test]
+    fn saving_an_identity_clears_its_boot_overrides_from_the_checkpoint_record() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mut record = checkpoints::load(&paths, vm().id()).unwrap();
+        record.set_environment_for_test(&[
+            ("PROJECT_MODE", "kept"),
+            ("GIT_AUTHOR_NAME", "Old Author"),
+            ("JJ_USER", "Old Author"),
+        ]);
+        checkpoints::save(&paths, vm().id(), &record).unwrap();
+        let state = inspect(&paths, "Running").to_string();
+        let runner = StubRunner::new(vec![
+            identity_output(&state),
+            identity_output(&state),
+            identity_output("{}"),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+        configure_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap();
+        assert_eq!(
+            checkpoints::load(&paths, vm().id())
+                .unwrap()
+                .environment_keys_for_test(),
+            ["PROJECT_MODE"]
+        );
     }
 
     #[test]
