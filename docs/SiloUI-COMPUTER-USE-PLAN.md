@@ -22,8 +22,8 @@ boundary (see [Approval](#approval-design-2026-10-02)).
   the official ChatGPT Linux `.deb` from OpenAI by itself, in the background,
   and keeps one read-only copy shared by all VMs on that computer. Owner
   decision 2026-10-02: no consent prompt, notice or setting. The app tells the
-  user in one sentence (Settings, bundled help) and shows the state per
-  computer in Settings, Computers. Downloading never blocks creating or
+  user in one sentence (bundled help) and shows a failed computer, with Retry,
+  in a Settings, Computers section that is otherwise absent. Downloading never blocks creating or
   starting a VM; a failure retries with backoff and can be retried by hand.
 - Silo pins a tested pair: an LCU release and a ChatGPT app version with
   per-architecture SHA-256. The owner updates the pair by hand after testing.
@@ -392,8 +392,11 @@ replaced by a model in which the host drives the guest and the guest cannot veto
   The host never reads the guest to decide. A run that finds the ChatGPT app not there yet
   is not an attempt: the apply stays pending until the app is ready.
 - **Imports, transfers and forks.** An import or transfer starts from this computer's
-  default (ask) with no attempt on record, whatever policy an earlier VM of that id had,
-  so its first boot applies ask over the configuration the imported disk carries. A fork
+  initial mode (the `computerUseAutoApproval` app setting, ask unless turned on) with no
+  attempt on record, whatever policy an earlier VM of that id had, so its first boot
+  applies it over the configuration the imported disk carries. A newly created VM starts
+  the same way; for one created on a connected computer the controller sets its own
+  setting's mode afterwards with `computer.approval` (an older Silo there keeps its own). A fork
   inherits its source's desired mode with no attempt on record, so its own first boot
   applies it.
 - **Reporting.** `approval` is the desired mode; `appliedApproval` the last mode applied

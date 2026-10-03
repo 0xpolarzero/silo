@@ -1609,12 +1609,30 @@ pub async fn remote_upsert_machine(
     expected: Option<crate::runtime::MachineConfiguration>,
 ) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
-        call_remote_typed(
+        let created = expected.is_none();
+        let id = machine.id().to_owned();
+        let state = call_remote_typed(
             &app,
             &host_id,
             "runtime.upsert",
             json!({"machine":machine,"expected":expected}),
-        )
+        )?;
+        if created {
+            // The other computer's own setting decided the new sandbox's mode; this user's
+            // setting replaces it. An older Silo there does not serve the method and keeps its own.
+            let mode = crate::settings::current_settings(&app)
+                .map(|settings| crate::computer_use::initial_approval_from(&settings))
+                .unwrap_or_default();
+            if let Err(error) = call_remote_typed(
+                &app,
+                &host_id,
+                "computer.approval",
+                json!({"vmId":id,"mode":mode.as_str()}),
+            ) {
+                eprintln!("Computer use approval was not set on the new remote sandbox: {error:?}");
+            }
+        }
+        Ok(state)
     })
     .await
     .map_err(|e| e.to_string())?

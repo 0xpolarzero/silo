@@ -21,7 +21,10 @@ use std::{
     io::Read,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::Duration,
 };
 use tauri::{AppHandle, Emitter};
@@ -182,6 +185,69 @@ pub(crate) struct Settings {
 /// Serializes every read-modify-write of a policy file.
 static POLICY_LOCK: Mutex<()> = Mutex::new(());
 const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
+
+/// The approval mode a sandbox created or imported on this computer starts with: the
+/// `computerUseAutoApproval` app setting, kept here so creation and import need no app handle.
+static NEW_SANDBOX_AUTO: AtomicBool = AtomicBool::new(false);
+
+/// The initial mode named by the app settings; anything but `true` means ask.
+pub(crate) fn initial_approval_from(settings: &serde_json::Map<String, Value>) -> Approval {
+    match settings.get("computerUseAutoApproval") {
+        Some(Value::Bool(true)) => Approval::Auto,
+        _ => Approval::Ask,
+    }
+}
+
+/// Makes `settings` the source of the initial mode of sandboxes created or imported from now on.
+pub(crate) fn sync_initial_approval(settings: &serde_json::Map<String, Value>) {
+    NEW_SANDBOX_AUTO.store(
+        initial_approval_from(settings) == Approval::Auto,
+        Ordering::SeqCst,
+    );
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_INITIAL: std::cell::Cell<Option<Approval>> = const { std::cell::Cell::new(None) };
+}
+
+/// Runs `body` with this thread seeing `mode` as the initial mode, whatever other tests do.
+#[cfg(test)]
+pub(crate) fn with_initial_approval<T>(mode: Approval, body: impl FnOnce() -> T) -> T {
+    TEST_INITIAL.with(|cell| cell.set(Some(mode)));
+    let result = body();
+    TEST_INITIAL.with(|cell| cell.set(None));
+    result
+}
+
+pub(crate) fn initial_approval() -> Approval {
+    #[cfg(test)]
+    if let Some(mode) = TEST_INITIAL.with(std::cell::Cell::get) {
+        return mode;
+    }
+    if NEW_SANDBOX_AUTO.load(Ordering::SeqCst) {
+        Approval::Auto
+    } else {
+        Approval::Ask
+    }
+}
+
+/// Gives a new or imported sandbox its starting mode and nothing else, so its first boot
+/// applies it. Only the local setting decides it: an archive never carries a mode.
+pub(crate) fn start_with(paths: &RuntimePaths, id: &str, approval: Approval) {
+    if approval == Approval::Ask {
+        return;
+    }
+    let _lock = lock_policies();
+    let _ = write_atomic(
+        paths,
+        policy_path(paths, id),
+        &Policy {
+            approval,
+            ..Policy::default()
+        },
+    );
+}
 
 fn directory(paths: &RuntimePaths) -> PathBuf {
     paths.metadata.with_file_name("computer-use")
@@ -378,8 +444,8 @@ pub(crate) fn inherit_settings(
 }
 
 /// Removes the settings of a deleted VM, or of an imported one: an import or transfer
-/// starts from the destination's default (ask) with no attempt known, so its first boot
-/// applies the default over whatever configuration the imported disk carries.
+/// starts from the destination's initial mode (`start_with`) with no attempt known, so its
+/// first boot applies it over whatever configuration the imported disk carries.
 pub(crate) fn forget(paths: &RuntimePaths, id: &str) -> Result<(), RuntimeError> {
     cancel_retry(id);
     let _lock = lock_policies();

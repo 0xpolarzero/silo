@@ -1015,10 +1015,11 @@ pub(crate) fn import_pending_restore_with_environment(
             "Imported environment is invalid.".into(),
         ));
     }
-    // An import (and so a transfer) starts from this computer's default approval (ask) with
+    // An import (and so a transfer) starts from this computer's initial approval mode with
     // no attempt known, whatever policy a VM of this id had here: its first boot applies it
     // over the configuration the imported disk carries.
     crate::computer_use::forget(paths, workspace_id)?;
+    crate::computer_use::start_with(paths, workspace_id, crate::computer_use::initial_approval());
     let mut record = Record::default();
     record.snapshot_group = Some(source_group.to_owned());
     record.desired_environment = environment

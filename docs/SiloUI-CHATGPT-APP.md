@@ -13,7 +13,7 @@ The LCU computer-use runtime needs the official ChatGPT Linux app. Silo never
 publishes OpenAI files. There is no consent step (owner decision 2026-10-02):
 every computer running Silo downloads the pinned `.deb` from OpenAI by itself, in
 the background, and keeps one read-only copy that all its VMs mount. The only
-disclosure is one sentence in Settings and the bundled help: "Silo downloads
+disclosure is one sentence in the bundled help and in Settings, Computers, which shows it only in the "Computer use components" section that appears when a computer's download failed or its status cannot be read: "Silo downloads
 ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux
 desktop." Guest architecture equals host architecture, so
 the Debian architecture is `arm64` on Apple Silicon and Arm Linux, `amd64` on
