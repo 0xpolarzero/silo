@@ -250,6 +250,7 @@ fn valid_setting(key: &str, value: &Value) -> Option<bool> {
         | "alphaNoticeDismissed"
         | "startWorkspacesAtLaunch"
         | "reduceMotion"
+        | "computerUseAutoApproval"
         | "notificationsEnabled"
         | "notifyHealth"
         | "notifyActions"
@@ -535,6 +536,7 @@ impl SettingsState {
             }
         };
         let snapshot = store.snapshot();
+        crate::computer_use::sync_initial_approval(&snapshot.settings);
         *initialized = Some(InitializedSettings { store });
         self.ready.notify_all();
         Ok(snapshot)
@@ -797,6 +799,7 @@ async fn change(
         let state = app.state::<SettingsState>();
         let mut initialized = state.initialized()?;
         let snapshot = operation(&mut initialized.as_mut().unwrap().store)?;
+        crate::computer_use::sync_initial_approval(&snapshot.settings);
         publish(&app, &snapshot);
         Ok(snapshot)
     })

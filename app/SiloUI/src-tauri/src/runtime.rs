@@ -5483,6 +5483,7 @@ fn create_machine_with_progress(
         }
         progress("desktop-installation", name, 1);
     }
+    crate::computer_use::start_with(paths, id, crate::computer_use::initial_approval());
     Ok(())
 }
 
@@ -10335,6 +10336,40 @@ exit 9
         assert!(create
             .windows(2)
             .any(|pair| pair == ["--mount-owned", "/workspace:kind=disk,size=60G"]));
+    }
+
+    #[test]
+    fn a_created_vm_takes_its_initial_approval_mode_from_the_setting() {
+        use crate::computer_use::Approval;
+        let _test_state = crate::test_support::global_state();
+        for mode in [Approval::Ask, Approval::Auto] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let published = directory.path().join("published");
+            fs::create_dir(&published).unwrap();
+            crate::computer_use::set_test_published_dir(Some(published));
+            let runner = StubRunner::successful_json(vec![
+                json!([]),
+                json!(1),
+                json!(1),
+                json!(null),
+                inspect(&paths, "Created"),
+                json!(null),
+                inspect(&paths, "Stopped"),
+                inspect(&paths, "Stopped"),
+                json!(1),
+                json!(null),
+                inspect(&paths, "Stopped"),
+            ]);
+            let machine = built_in_vm();
+            crate::computer_use::with_initial_approval(mode, || {
+                create_machine(&runner, &paths, &machine).unwrap()
+            });
+            crate::computer_use::set_test_published_dir(None);
+            let settings = crate::computer_use::settings(&paths, machine.id());
+            assert_eq!(settings.approval, mode);
+            assert_eq!((settings.applied, settings.last), (None, None));
+        }
     }
 
     #[test]

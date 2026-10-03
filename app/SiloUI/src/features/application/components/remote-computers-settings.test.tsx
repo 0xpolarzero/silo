@@ -9,6 +9,7 @@ import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { remoteManagementSchema } from "../model/remote-computers"
 import { createComputerUseBridge, type ComputerUseBackend } from "@/desktop/computer-use-bridge"
 import { ComputerUseProvider } from "@/desktop/computer-use-provider"
+import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
 
 function source(remoteManagement: ApplicationSource["remoteManagement"]): ApplicationSource {
@@ -185,7 +186,7 @@ it("explains connection removal before it is selected", async () => {
   await waitFor(() => expect(removeComputer).toHaveBeenCalledExactlyOnceWith("office"))
 })
 
-describe("ChatGPT for Linux on each computer", () => {
+describe("Computer use components", () => {
   const HOST = "11111111-1111-4111-8111-111111111111"
   const OFFLINE = "22222222-2222-4222-8222-222222222222"
   const computers = [
@@ -204,26 +205,26 @@ describe("ChatGPT for Linux on each computer", () => {
     </ComputerUseProvider>)
     return { reads, retry }
   }
-  const row = (name: string) => within(screen.getByRole("list", { name: "ChatGPT for Linux on each computer" })).getByText(name).closest("li")!
+  const section = () => screen.queryByRole("region", { name: "Computer use components" })
+  const row = (name: string) => within(screen.getByRole("list", { name: "Computers that need attention" })).getByText(name).closest("li")!
 
-  it("reveals complete computer names in the download status rows", async () => {
-    settings({ local: { state: "ready", path: "/p", version: "26.928.31416" } })
-    await screen.findByText("Ready 26.928.31416")
-    expect(within(row("Office Mac")).getByText("Office Mac")).toHaveAttribute("title", "Office Mac")
+  it("shows nothing while every computer prepares ChatGPT for Linux, ready or not", async () => {
+    const { reads } = settings({ local: { state: "downloading", receivedBytes: 42, totalBytes: 100 }, [HOST]: { state: "ready", path: "/p", version: "1" } })
+    await waitFor(() => expect(reads).toContain(HOST))
+    await waitFor(() => expect(reads).toContain(undefined))
+    expect(section()).not.toBeInTheDocument()
+    expect(screen.queryByText(/ChatGPT for Linux/)).not.toBeInTheDocument()
+    // An offline computer is not asked.
+    expect(reads).not.toContain(OFFLINE)
   })
 
-  it("explains the download in one sentence and offers nothing to accept", async () => {
-    settings({ local: { state: "ready", path: "/p", version: "26.928.31416" } })
-    expect(await screen.findByText("Ready 26.928.31416")).toBeVisible()
+  it("lists only the computers with a failed download, with the reason and the disclosure", async () => {
+    settings({ local: { state: "ready", path: "/p", version: "1" }, [HOST]: { state: "failed", reason: "Silo could not reach OpenAI.", retryable: true } })
+    expect(await screen.findByRole("region", { name: "Computer use components" })).toBeVisible()
+    expect(within(row("Office Mac")).getByRole("alert")).toHaveTextContent("Silo could not reach OpenAI. Silo tries again automatically.")
+    expect(screen.queryByText("This computer")).not.toBeInTheDocument()
     expect(screen.getByText("Silo downloads ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux desktop.")).toBeVisible()
     expect(screen.queryByRole("button", { name: /Accept|Not now|Download/ })).not.toBeInTheDocument()
-  })
-
-  it("shows each computer's own state, with progress and failure", async () => {
-    settings({ local: { state: "downloading", receivedBytes: 42, totalBytes: 100 }, [HOST]: { state: "failed", reason: "Silo could not reach OpenAI.", retryable: true } })
-    await waitFor(() => expect(within(row("This computer")).getByRole("status")).toHaveTextContent("Downloading 42%"))
-    await waitFor(() => expect(within(row("Office Mac")).getByRole("alert")).toHaveTextContent("Silo could not reach OpenAI."))
-    expect(within(row("Office Mac")).getByRole("alert")).toHaveTextContent("tries again automatically")
   })
 
   it("retries a failed computer by its host id and not through a sandbox", async () => {
@@ -233,44 +234,66 @@ describe("ChatGPT for Linux on each computer", () => {
     expect(screen.getAllByRole("button", { name: /^Retry/ })).toHaveLength(1)
   })
 
-  it("shows an owner on an older Silo, and an offline one, as unknown without errors", async () => {
+  it("treats an owner on an older Silo as no problem", async () => {
     const { reads } = settings({ local: { state: "ready", path: "/p", version: "1" }, [HOST]: { state: "notConsented" } })
-    await waitFor(() => expect(within(row("Office Mac")).getByText("Unknown")).toBeVisible())
-    expect(within(row("Laptop")).getByText(/Unknown · offline/)).toBeVisible()
+    await waitFor(() => expect(reads).toContain(HOST))
+    expect(section()).not.toBeInTheDocument()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-    // An offline computer is not asked.
-    expect(reads).not.toContain(OFFLINE)
   })
 
-  it("marks a retained status as last known when a later read fails, keeps older owners unknown, and refreshes on request", async () => {
-    let failing = false
-    const statuses: Record<string, unknown> = { local: { state: "ready", path: "/p", version: "1" }, [HOST]: { state: "ready", path: "/p", version: "2.0" } }
+  it("reveals the complete name of a computer with a problem", async () => {
+    settings({ local: { state: "ready", path: "/p", version: "1" }, [HOST]: { state: "failed", reason: "Offline.", retryable: true } })
+    await screen.findByRole("region", { name: "Computer use components" })
+    expect(within(row("Office Mac")).getByText("Office Mac")).toHaveAttribute("title", "Office Mac")
+  })
+
+  it("offers Refresh for a status that cannot be read and clears once it can", async () => {
+    let failing = true
     const backend: ComputerUseBackend = {
       readDesktopState: async () => ({}), setApproval: async () => ({}), setup: async () => ({}),
-      chatGptStatus: async computer => { if (computer && failing) throw new Error("SSH connection lost."); return statuses[computer ?? "local"] },
+      chatGptStatus: async computer => { if (computer && failing) throw new Error("SSH connection lost."); return { state: "ready", path: "/p", version: "1" } },
       retry: async () => ({}), listenStatus: async () => () => {},
     }
-    render(<ComputerUseProvider bridge={createComputerUseBridge(backend, { busy: 20, idle: 20 })}>
+    render(<ComputerUseProvider bridge={createComputerUseBridge(backend, { busy: 20000, idle: 20000 })}>
       <RemoteComputersSettings source={{ ...source(undefined), remoteComputers: computers }} actions={actions()} />
     </ComputerUseProvider>)
-    expect(await screen.findByText("Ready 2.0")).toBeVisible()
-    failing = true
-    await waitFor(() => expect(within(row("Office Mac")).getByRole("alert")).toHaveTextContent("Could not refresh: SSH connection lost."))
-    expect(within(row("Office Mac")).getByText("Last known: Ready 2.0")).toBeVisible()
-    expect(within(row("This computer")).queryByText(/Last known/)).not.toBeInTheDocument()
+    await waitFor(() => expect(within(row("Office Mac")).getByRole("alert")).toHaveTextContent("SSH connection lost."))
+    expect(screen.queryByRole("button", { name: /^Retry/ })).not.toBeInTheDocument()
     failing = false
     fireEvent.click(within(row("Office Mac")).getByRole("button", { name: "Refresh ChatGPT for Linux status on Office Mac" }))
-    await waitFor(() => expect(within(row("Office Mac")).queryByRole("alert")).not.toBeInTheDocument())
-    expect(within(row("Office Mac")).getByText("Ready 2.0")).toBeVisible()
-    // An owner on an older Silo stays Unknown, with or without a failed read.
-    statuses[HOST] = { state: "notConsented" }
-    await waitFor(() => expect(within(row("Office Mac")).getByText("Unknown")).toBeVisible())
-    failing = true
-    await waitFor(() => expect(within(row("Office Mac")).getByRole("alert")).toBeVisible())
-    expect(within(row("Office Mac")).getByText("Unknown")).toBeVisible()
-    expect(within(row("Office Mac")).queryByText(/Last known/)).not.toBeInTheDocument()
+    await waitFor(() => expect(section()).not.toBeInTheDocument())
   })
 })
+
+describe("New sandbox approval default", () => {
+  function withBridge(store = createMemorySettingsStore()) {
+    const backend: ComputerUseBackend = {
+      readDesktopState: async () => ({}), setApproval: async () => ({}), setup: async () => ({}),
+      chatGptStatus: async () => ({ state: "ready", path: "/p", version: "1" }), retry: async () => ({}), listenStatus: async () => () => {},
+    }
+    render(<SettingsProvider store={store}><ComputerUseProvider bridge={createComputerUseBridge(backend)}>
+      <RemoteComputersSettings source={source(undefined)} actions={actions()} />
+    </ComputerUseProvider></SettingsProvider>)
+    return store
+  }
+
+  it("is off by default and saves the choice", async () => {
+    const store = withBridge()
+    const toggle = screen.getByRole("switch", { name: "Allow agents to use the computer without asking in new sandboxes" })
+    expect(toggle).not.toBeChecked()
+    expect(screen.getByText("Claude Code, Codex and similar agents stop asking before using the sandbox’s desktop. Not a security boundary.")).toBeVisible()
+    fireEvent.click(toggle)
+    await waitFor(() => expect(store.getSnapshot().settings.computerUseAutoApproval).toBe(true))
+    expect(toggle).toBeChecked()
+  })
+
+  it("is not offered when this build has no built-in computer use", () => {
+    render(<RemoteComputersSettings source={source(undefined)} actions={actions()} />)
+    expect(screen.queryByRole("switch", { name: /without asking/ })).not.toBeInTheDocument()
+  })
+})
+
+
 
 
 it("stops subscription recovery timers when computer settings become inactive", async () => {

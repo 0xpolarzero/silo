@@ -1315,6 +1315,66 @@ fn app_start_applies_where_the_last_attempt_is_missing_failed_or_for_another_mod
 }
 
 #[test]
+fn the_initial_mode_comes_from_the_app_setting_and_only_true_means_auto() {
+    let setting = |value: serde_json::Value| {
+        let mut map = serde_json::Map::new();
+        map.insert("computerUseAutoApproval".into(), value);
+        initial_approval_from(&map)
+    };
+    assert_eq!(
+        initial_approval_from(&serde_json::Map::new()),
+        Approval::Ask
+    );
+    assert_eq!(setting(json!(false)), Approval::Ask);
+    assert_eq!(setting(json!("true")), Approval::Ask);
+    assert_eq!(setting(json!(true)), Approval::Auto);
+}
+
+#[test]
+fn a_new_sandbox_starts_with_the_initial_mode_and_no_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm();
+    start_with(&paths, &id, Approval::Auto);
+    let fresh = settings(&paths, &id);
+    assert_eq!(fresh.approval, Approval::Auto);
+    assert_eq!((fresh.applied, fresh.last), (None, None));
+    let guest = Guest::new(&id);
+    write_machines_of(&paths, &id);
+    boot_of(test_gate(), &guest, &paths)
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(guest.modes(), ["auto"]);
+}
+
+#[test]
+fn an_import_takes_the_local_initial_mode_whatever_the_archive_or_an_earlier_vm_had() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm();
+    let import = |mode| {
+        with_initial_approval(mode, || {
+            runtime::checkpoints::import_pending_restore(
+                &paths,
+                &id,
+                "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+                "silo-backup-0-330418-1790360984903",
+            )
+            .unwrap()
+        })
+    };
+    import(Approval::Auto);
+    assert_eq!(settings(&paths, &id).approval, Approval::Auto);
+    // An earlier VM of this id that had auto does not carry it over when the setting is off.
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    import(Approval::Ask);
+    let imported = settings(&paths, &id);
+    assert_eq!(imported.approval, Approval::Ask);
+    assert_eq!((imported.applied, imported.last), (None, None));
+}
+
+#[test]
 fn the_boot_applies_what_an_imported_or_forked_disk_does_not_have() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);

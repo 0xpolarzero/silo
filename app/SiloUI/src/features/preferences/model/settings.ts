@@ -18,6 +18,8 @@ export const settingSchemas = {
   editorUseSystemDefault: z.boolean(),
   browserUseSystemDefault: z.boolean(),
   reduceMotion: z.boolean(),
+  /** Whether sandboxes created or imported on this computer start with agents allowed to use the desktop without asking. */
+  computerUseAutoApproval: z.boolean(),
   notificationsEnabled: z.boolean(),
   notifyFailures: z.boolean(),
   notifyChanges: z.boolean(),
@@ -49,6 +51,7 @@ export const defaultSettings: Settings = {
   editorUseSystemDefault: true,
   browserUseSystemDefault: true,
   reduceMotion: false,
+  computerUseAutoApproval: false,
   notificationsEnabled: true,
   notifyFailures: true,
   notifyChanges: true,
