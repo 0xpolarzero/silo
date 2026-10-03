@@ -67,7 +67,7 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
     activeTimeout = globalThis.setTimeout(() => {
       activeTimeout = undefined
       onTimeout()
-    }, 15_000)
+    }, 60_000)
   }
   const publish = (checks: SiloPreflightCheck[]) => {
     if (disposed) return

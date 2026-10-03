@@ -18,7 +18,10 @@ const RETRY_GUIDANCE: &str =
     "Retry checks. If this keeps happening, quit and reopen Silo, then retry.";
 
 // Finish native probes before the frontend watchdog abandons the report at 15 seconds.
-const COLLECTION_TIMEOUT: Duration = Duration::from_secs(12);
+/// Each group of checks gets its own budget so one slow check cannot starve the rest.
+const SYSTEM_BUDGET: Duration = Duration::from_secs(4);
+const MICROSANDBOX_BUDGET: Duration = Duration::from_secs(15);
+const GIT_BUDGET: Duration = Duration::from_secs(10);
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(any(target_os = "linux", test))]
 const MAX_HASH_BYTES: u64 = 128 * 1024 * 1024;
@@ -866,7 +869,7 @@ fn microsandbox_check(paths: &ProbePaths, deadline: Instant) -> DependencyCheck 
     let id = "runtime-microsandbox";
     let title = "MicroSandbox runtime";
     if let Err(message) =
-        crate::runtime::guest_image::validate_bundle_until(&paths.resource_dir, deadline)
+        crate::runtime::guest_image::validate_bundle_cached(&paths.resource_dir, deadline)
     {
         let error = if Instant::now() >= deadline {
             ProbeError::Timeout
@@ -1204,14 +1207,32 @@ fn git_lfs_version_result(output: Result<String, ProbeError>) -> DependencyCheck
     }
 }
 
-fn collect(request_id: String, paths: ProbePaths) -> DependencyReport {
-    let deadline = Instant::now() + COLLECTION_TIMEOUT;
-    let mut checks = vec![
-        system_check(deadline),
-        virtualization_check(deadline),
-        microsandbox_check(&paths, deadline),
-    ];
-    checks.extend(git_checks(&paths, deadline));
+struct CheckGroup<'a> {
+    budget: Duration,
+    run: Box<dyn Fn(Instant) -> Vec<DependencyCheck> + 'a>,
+}
+
+fn timed_out(checks: &[DependencyCheck]) -> bool {
+    checks
+        .iter()
+        .any(|check| matches!(check.status, CheckStatus::Timeout))
+}
+
+/// Runs each group under its own deadline. A group that timed out (usually a
+/// busy computer) runs once more with a fresh budget before it is reported.
+fn run_groups(request_id: String, groups: &[CheckGroup]) -> DependencyReport {
+    let run = |group: &CheckGroup| (group.run)(Instant::now() + group.budget);
+    let checks = groups
+        .iter()
+        .flat_map(|group| {
+            let first = run(group);
+            if timed_out(&first) {
+                run(group)
+            } else {
+                first
+            }
+        })
+        .collect();
     DependencyReport {
         schema_version: 1,
         request_id,
@@ -1221,6 +1242,28 @@ fn collect(request_id: String, paths: ProbePaths) -> DependencyReport {
             .as_millis() as u64,
         checks,
     }
+}
+
+fn collect(request_id: String, paths: ProbePaths) -> DependencyReport {
+    run_groups(
+        request_id,
+        &[
+            CheckGroup {
+                budget: SYSTEM_BUDGET,
+                run: Box::new(|deadline| {
+                    vec![system_check(deadline), virtualization_check(deadline)]
+                }),
+            },
+            CheckGroup {
+                budget: MICROSANDBOX_BUDGET,
+                run: Box::new(|deadline| vec![microsandbox_check(&paths, deadline)]),
+            },
+            CheckGroup {
+                budget: GIT_BUDGET,
+                run: Box::new(|deadline| git_checks(&paths, deadline).into()),
+            },
+        ],
+    )
 }
 
 #[tauri::command]
@@ -1407,7 +1450,7 @@ mod tests {
             resource_dir: directory.path().join("resources"),
             frameworks_dir: Some(directory.path().join("Frameworks")),
         };
-        let check = microsandbox_check(&paths, Instant::now() + COLLECTION_TIMEOUT);
+        let check = microsandbox_check(&paths, Instant::now() + MICROSANDBOX_BUDGET);
         assert_eq!(check.id, "runtime-microsandbox");
         assert_ne!(check.status, CheckStatus::Pass);
         assert_eq!(check.remediation.as_deref(), Some(REINSTALL_GUIDANCE));
@@ -1914,5 +1957,79 @@ mod tests {
         );
         assert!(matches!(result, Err(ProbeError::Timeout)));
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    fn probe(id: &str, status: CheckStatus) -> DependencyCheck {
+        match status {
+            CheckStatus::Pass => DependencyCheck::pass(id, id, "ok"),
+            status => DependencyCheck::failure(id, id, status, "x", RETRY_GUIDANCE),
+        }
+    }
+
+    fn status_at(deadline: Instant) -> CheckStatus {
+        if Instant::now() >= deadline {
+            CheckStatus::Timeout
+        } else {
+            CheckStatus::Pass
+        }
+    }
+
+    #[test]
+    fn a_slow_group_does_not_starve_later_groups() {
+        let report = run_groups(
+            "r".into(),
+            &[
+                CheckGroup {
+                    budget: Duration::from_millis(30),
+                    run: Box::new(|deadline| {
+                        std::thread::sleep(Duration::from_millis(80));
+                        vec![probe("slow", status_at(deadline))]
+                    }),
+                },
+                CheckGroup {
+                    budget: Duration::from_secs(5),
+                    run: Box::new(|deadline| vec![probe("later", status_at(deadline))]),
+                },
+            ],
+        );
+        assert_eq!(report.checks[0].status, CheckStatus::Timeout);
+        assert_eq!(report.checks[1].status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn a_timed_out_group_is_retried_once_and_only_once() {
+        use std::cell::Cell;
+        let calls = Cell::new(0);
+        let report = run_groups(
+            "r".into(),
+            &[CheckGroup {
+                budget: Duration::from_secs(1),
+                run: Box::new(|_| {
+                    calls.set(calls.get() + 1);
+                    let status = if calls.get() == 1 {
+                        CheckStatus::Timeout
+                    } else {
+                        CheckStatus::Pass
+                    };
+                    vec![probe("flaky", status)]
+                }),
+            }],
+        );
+        assert_eq!(calls.get(), 2);
+        assert_eq!(report.checks[0].status, CheckStatus::Pass);
+
+        let always = Cell::new(0);
+        let report = run_groups(
+            "r".into(),
+            &[CheckGroup {
+                budget: Duration::from_secs(1),
+                run: Box::new(|_| {
+                    always.set(always.get() + 1);
+                    vec![probe("stuck", CheckStatus::Timeout)]
+                }),
+            }],
+        );
+        assert_eq!(always.get(), 2);
+        assert_eq!(report.checks[0].status, CheckStatus::Timeout);
     }
 }

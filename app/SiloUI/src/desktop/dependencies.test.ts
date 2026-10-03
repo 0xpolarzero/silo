@@ -111,7 +111,7 @@ describe("native dependency report validation", () => {
     const store = createNativeDependencyStore(invokeChecks)
 
     store.retry()
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(store.getSnapshot().every(({ status }) => status === "timeout")).toBe(true)
     expect(store.getSnapshot().every(({ remediation }) => remediation?.startsWith("Retry checks.") && !/reinstall/i.test(remediation))).toBe(true)
     resolveRequest(undefined)
@@ -153,7 +153,7 @@ describe("native dependency report validation", () => {
     await Promise.resolve()
     store.retry()
     expect(store.getSnapshot().every(({ status }) => status === "pending")).toBe(true)
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(store.getSnapshot().every(({ status }) => status === "timeout")).toBe(true)
     expect(invokeChecks).toHaveBeenCalledOnce()
 
@@ -169,7 +169,7 @@ describe("native dependency report validation", () => {
     const store = createNativeDependencyStore(invokeChecks)
 
     store.retry()
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(store.getSnapshot().every(({ status }) => status === "timeout")).toBe(true)
     store.retry()
     await vi.advanceTimersByTimeAsync(0)
@@ -189,7 +189,7 @@ describe("native dependency report validation", () => {
     store.retry()
     await Promise.resolve()
     store.retry()
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(store.getSnapshot().every(({ status }) => status === "timeout")).toBe(true)
     store.retry()
     await vi.advanceTimersByTimeAsync(0)
@@ -202,7 +202,7 @@ describe("native dependency report validation", () => {
     store.retry()
     await vi.advanceTimersByTimeAsync(0)
     expect(invokeChecks).toHaveBeenCalledTimes(2)
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(60_000)
     expect(store.getSnapshot().every(({ status }) => status === "timeout")).toBe(true)
 
     store.dispose()

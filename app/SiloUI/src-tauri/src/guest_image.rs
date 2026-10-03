@@ -5,10 +5,11 @@ use microsandbox_image::{Digest as ImageDigest, GlobalCache, Reference};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashMap,
     fs::File,
     io::{Read, Write},
     path::Path,
-    sync::Mutex,
+    sync::{Condvar, Mutex},
     time::{Duration, Instant},
 };
 
@@ -108,6 +109,7 @@ pub(crate) fn validate_bundle(resource_dir: &Path) -> Result<GuestImageManifest,
     validate_directory(&resource_dir.join("guest-image"))
 }
 
+#[cfg(test)]
 pub(crate) fn validate_bundle_until(
     resource_dir: &Path,
     deadline: Instant,
@@ -123,14 +125,26 @@ fn validate_directory_until(
     directory: &Path,
     deadline: Option<Instant>,
 ) -> Result<GuestImageManifest, String> {
-    let check_deadline = || {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            Err("Silo's VM image check timed out. Retry checks.".to_owned())
-        } else {
-            Ok(())
-        }
-    };
-    check_deadline()?;
+    let (manifest, mut archive) = read_manifest(directory, deadline)?;
+    hash_archive(&mut archive, &manifest, deadline)?;
+    Ok(manifest)
+}
+
+fn deadline_passed(deadline: Option<Instant>) -> Result<(), String> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        Err("Silo's VM image check timed out. Retry checks.".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+/// Parses and range-checks the manifest and confirms the archive is a regular
+/// file of the expected length. Cheap; never reads the archive contents.
+fn read_manifest(
+    directory: &Path,
+    deadline: Option<Instant>,
+) -> Result<(GuestImageManifest, File), String> {
+    deadline_passed(deadline)?;
     let file = open_bundle_file(&directory.join("manifest.json"))?;
     let mut bytes = Vec::new();
     file.take(64 * 1024 + 1)
@@ -157,7 +171,7 @@ fn validate_directory_until(
     {
         return Err("Silo's VM image information is invalid. Reinstall Silo.".into());
     }
-    let mut archive = open_bundle_file(&directory.join("image.tar.gz"))?;
+    let archive = open_bundle_file(&directory.join("image.tar.gz"))?;
     if archive
         .metadata()
         .map_err(|_| "Silo's VM image could not be read.")?
@@ -166,10 +180,18 @@ fn validate_directory_until(
     {
         return Err("Silo's bundled VM image is incomplete. Reinstall Silo and retry.".into());
     }
+    Ok((manifest, archive))
+}
+
+fn hash_archive(
+    archive: &mut File,
+    manifest: &GuestImageManifest,
+    deadline: Option<Instant>,
+) -> Result<(), String> {
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 128 * 1024];
     loop {
-        check_deadline()?;
+        deadline_passed(deadline)?;
         let count = archive
             .read(&mut buffer)
             .map_err(|_| "Silo's VM image could not be read.")?;
@@ -178,13 +200,124 @@ fn validate_directory_until(
         }
         hash.update(&buffer[..count]);
     }
-    check_deadline()?;
+    deadline_passed(deadline)?;
     if format!("{:x}", hash.finalize()) != manifest.archive_sha256 {
         return Err(
             "Silo's bundled VM image failed its integrity check. Reinstall Silo and retry.".into(),
         );
     }
-    Ok(manifest)
+    Ok(())
+}
+
+/// Identity of the archive a full verification covered: any replacement or
+/// edit moves at least one field.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ArchiveStamp {
+    path: std::path::PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    #[cfg(unix)]
+    changed: (i64, i64),
+    sha256: String,
+}
+
+fn archive_stamp(path: &Path, file: &File, manifest: &GuestImageManifest) -> Option<ArchiveStamp> {
+    let metadata = file.metadata().ok()?;
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    Some(ArchiveStamp {
+        path: path.to_path_buf(),
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        #[cfg(unix)]
+        device: metadata.dev(),
+        #[cfg(unix)]
+        inode: metadata.ino(),
+        #[cfg(unix)]
+        changed: (metadata.ctime(), metadata.ctime_nsec()),
+        sha256: manifest.archive_sha256.clone(),
+    })
+}
+
+enum Verification {
+    Running,
+    Done(Result<(), String>),
+}
+
+/// Full-hash verification of each bundled archive in this process, replaced
+/// when the archive's stamp moves.
+static VERIFIED: Mutex<Option<HashMap<std::path::PathBuf, (ArchiveStamp, Verification)>>> =
+    Mutex::new(None);
+static VERIFIED_CHANGED: Condvar = Condvar::new();
+
+#[cfg(test)]
+static HASHED: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
+
+/// Like `validate_bundle_until`, but hashes the archive once per process
+/// (and again only if its stamp changes). The hash runs on a background
+/// thread that outlives a timed-out check, so a retry waits on the same work
+/// instead of restarting it. Preparing the image for use still re-hashes.
+pub(crate) fn validate_bundle_cached(
+    resource_dir: &Path,
+    deadline: Instant,
+) -> Result<GuestImageManifest, String> {
+    let directory = resource_dir.join("guest-image");
+    let (manifest, archive) = read_manifest(&directory, Some(deadline))?;
+    let archive_path = directory.join("image.tar.gz");
+    let Some(stamp) = archive_stamp(&archive_path, &archive, &manifest) else {
+        return Err("Silo's VM image could not be read.".into());
+    };
+    let mut guard = VERIFIED.lock().unwrap_or_else(|error| error.into_inner());
+    if guard
+        .get_or_insert_default()
+        .get(&archive_path)
+        .is_none_or(|(known, _)| *known != stamp)
+    {
+        guard
+            .get_or_insert_default()
+            .insert(archive_path.clone(), (stamp.clone(), Verification::Running));
+        let worker_manifest = manifest.clone();
+        let worker_stamp = stamp.clone();
+        std::thread::spawn(move || {
+            let mut archive = archive;
+            #[cfg(test)]
+            HASHED
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push(worker_stamp.path.clone());
+            let result = hash_archive(&mut archive, &worker_manifest, None);
+            let mut guard = VERIFIED.lock().unwrap_or_else(|error| error.into_inner());
+            if let Some((known, state)) = guard.get_or_insert_default().get_mut(&worker_stamp.path)
+            {
+                if *known == worker_stamp {
+                    *state = Verification::Done(result);
+                }
+            }
+            VERIFIED_CHANGED.notify_all();
+        });
+    }
+    loop {
+        match guard.get_or_insert_default().get(&archive_path) {
+            Some((known, Verification::Done(result))) if *known == stamp => {
+                return result.clone().map(|()| manifest);
+            }
+            Some((known, _)) if *known != stamp => {
+                return Err("Silo's VM image changed during the check. Retry checks.".into());
+            }
+            _ => {}
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return Err("Silo's VM image check timed out. Retry checks.".into());
+        };
+        guard = VERIFIED_CHANGED
+            .wait_timeout(guard, remaining)
+            .unwrap_or_else(|error| error.into_inner())
+            .0;
+    }
 }
 
 fn cached(cache: &GlobalCache, manifest: &GuestImageManifest) -> bool {
@@ -362,6 +495,44 @@ mod tests {
         let error = validate_bundle_until(dir.path(), std::time::Instant::now()).unwrap_err();
         assert!(error.contains("timed out"), "{error}");
         assert!(validate_bundle(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn cached_validation_hashes_once_and_detects_a_changed_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path());
+        let archive = dir.path().join("guest-image/image.tar.gz");
+        let hashes = || {
+            HASHED
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|path| **path == archive)
+                .count()
+        };
+        let later = || Instant::now() + Duration::from_secs(30);
+        assert!(validate_bundle_cached(dir.path(), later()).is_ok());
+        assert!(validate_bundle_cached(dir.path(), later()).is_ok());
+        assert_eq!(hashes(), 1);
+        // Same length, different content.
+        let mut bytes = fs::read(&archive).unwrap();
+        *bytes.last_mut().unwrap() ^= 0xff;
+        fs::write(&archive, bytes).unwrap();
+        let error = validate_bundle_cached(dir.path(), later()).unwrap_err();
+        assert!(error.contains("integrity"), "{error}");
+        assert_eq!(hashes(), 2);
+        assert!(validate_bundle_cached(dir.path(), later())
+            .unwrap_err()
+            .contains("integrity"));
+        assert_eq!(hashes(), 2);
+    }
+
+    #[test]
+    fn cached_validation_honours_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path());
+        let error = validate_bundle_cached(dir.path(), Instant::now()).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
     }
 
     #[test]
