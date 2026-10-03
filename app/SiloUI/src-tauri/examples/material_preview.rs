@@ -1,4 +1,4 @@
-//! UI-only native fixture harness; does not initialize Silo services or touch VM state.
+//! UI-only native fixture harness; does not initialize Silo services or touch computer state.
 //! Run the frontend on localhost:1422, then `cargo run --example material_preview`.
 #[cfg(target_os = "macos")]
 #[path = "../src/titlebar.rs"]

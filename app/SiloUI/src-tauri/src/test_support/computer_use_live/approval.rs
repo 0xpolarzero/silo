@@ -1,4 +1,4 @@
-//! Live check of the per-VM approval switch against real Codex and Claude Code installs.
+//! Live check of the per-computer approval switch against real Codex and Claude Code installs.
 use super::Fixture;
 use crate::runtime;
 use serde_json::Value;
@@ -86,8 +86,8 @@ fn live_approval_switch_edits_only_the_installed_harnesses() {
     let _state = crate::test_support::global_state();
     let mut fixture = Fixture::new("silo-appr-", None, true);
     let name = "e2e-appr";
-    let machine = fixture.create(name);
-    runtime::start_disposable_test_machine(&fixture.paths, name).unwrap();
+    let configuration = fixture.create(name);
+    runtime::start_disposable_test_computer(&fixture.paths, name).unwrap();
     let (status, _) = fixture.wait_ready(name, "approval");
     assert_eq!(status["computerUse"]["approval"], "ask");
     eprintln!(
@@ -98,7 +98,7 @@ fn live_approval_switch_edits_only_the_installed_harnesses() {
         apply_approval_with(
             std::sync::Arc::new(runtime::ProcessRunner),
             &fixture.paths,
-            &machine,
+            &configuration,
             approval,
             true,
         )

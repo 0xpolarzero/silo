@@ -33,8 +33,8 @@ pub(crate) struct DirectoryPage {
 }
 static NEXT_SNAPSHOT: AtomicU64 = AtomicU64::new(1);
 struct Snapshot {
-    workspace: String,
-    workspace_id: String,
+    computer: String,
+    computer_id: String,
     path: String,
     created: Instant,
     entries: Vec<Entry>,
@@ -45,8 +45,8 @@ static SNAPSHOTS: OnceLock<Mutex<HashMap<String, Snapshot>>> = OnceLock::new();
 
 fn cached_page(
     cache: &HashMap<String, Snapshot>,
-    workspace: &str,
-    workspace_id: &str,
+    computer: &str,
+    computer_id: &str,
     path: &str,
     offset: usize,
     snapshot_id: Option<&str>,
@@ -56,8 +56,8 @@ fn cached_page(
         .get(id)
         .filter(|s| {
             s.created.elapsed() < Duration::from_secs(120)
-                && s.workspace == workspace
-                && s.workspace_id == workspace_id
+                && s.computer == computer
+                && s.computer_id == computer_id
                 && s.path == path
         })
         .ok_or(EXPIRED)?;
@@ -137,9 +137,9 @@ fn page(entries: &[Entry], offset: usize, snapshot_id: &str) -> Result<Directory
     })
 }
 #[tauri::command]
-pub(crate) async fn list_workspace_directory(
+pub(crate) async fn list_computer_directory(
     app: AppHandle,
-    workspace: String,
+    computer: String,
     path: String,
     offset: usize,
     snapshot_id: Option<String>,
@@ -148,49 +148,49 @@ pub(crate) async fn list_workspace_directory(
         return Err("Invalid folder request.".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
+        if let Some((device, computer)) = crate::remote_access::target(&computer)? {
             let value = crate::remote::call_remote(
                 &app,
-                &host,
+                &device,
                 "files.list",
                 serde_json::json!({
-                    "vmId": vm, "path": path, "offset": offset, "snapshotId": snapshot_id,
+                    "computerId": computer, "path": path, "offset": offset, "snapshotId": snapshot_id,
                 }),
             )?;
             return serde_json::from_value(value)
-                .map_err(|_| "The remote computer returned an invalid folder listing.".into());
+                .map_err(|_| "The remote device returned an invalid folder listing.".into());
         }
-        crate::runtime::validate_name(&workspace).map_err(|error| error.to_string())?;
+        crate::runtime::validate_name(&computer).map_err(|error| error.to_string())?;
         let paths = runtime_paths(&app).map_err(|_| FAILED.to_owned())?;
         let metadata =
             crate::runtime::read_metadata(&paths.metadata).map_err(|_| FAILED.to_owned())?;
-        let workspace_id = metadata
-            .machines
+        let computer_id = metadata
+            .computers
             .iter()
-            .find(|machine| machine.name() == workspace)
-            .ok_or("Sandbox no longer exists.")?
+            .find(|configuration| configuration.name() == computer)
+            .ok_or("Computer no longer exists.")?
             .id()
             .to_owned();
-        let state = match crate::runtime::observe_vm(&ProcessRunner, &paths, &workspace)
+        let state = match crate::runtime::observe_computer(&ProcessRunner, &paths, &computer)
             .map_err(|_| FAILED.to_owned())?
         {
-            crate::runtime::VmRuntime::Absent => {
-                return Err("Start this VM to browse its files.".into())
+            crate::runtime::ComputerRuntime::Absent => {
+                return Err("Start this computer to browse its files.".into())
             }
-            crate::runtime::VmRuntime::Present(state) => state,
+            crate::runtime::ComputerRuntime::Present(state) => state,
         };
         ensure_managed(&state).map_err(|_| FAILED.to_owned())?;
         let user = crate::working_account::USER;
         if state.status != "Running" {
-            return Err("Start this VM to browse its files.".into());
+            return Err("Start this computer to browse its files.".into());
         }
         let snapshots = SNAPSHOTS.get_or_init(|| Mutex::new(HashMap::new()));
         if offset != 0 {
             let cache = snapshots.lock().map_err(|_| FAILED.to_owned())?;
             return cached_page(
                 &cache,
-                &workspace,
-                &workspace_id,
+                &computer,
+                &computer_id,
                 &path,
                 offset,
                 snapshot_id.as_deref(),
@@ -200,7 +200,7 @@ pub(crate) async fn list_workspace_directory(
             &paths,
             &[
                 "exec".into(),
-                workspace.clone(),
+                computer.clone(),
                 "--user".into(),
                 user.into(),
                 "--env".into(),
@@ -252,8 +252,8 @@ pub(crate) async fn list_workspace_directory(
         cache.insert(
             id,
             Snapshot {
-                workspace,
-                workspace_id,
+                computer,
+                computer_id,
                 path,
                 created: Instant::now(),
                 entries,
@@ -331,8 +331,8 @@ mod tests {
     #[test]
     fn two_windows_listing_one_folder_keep_their_own_snapshots() {
         let snapshot = |name: &str| Snapshot {
-            workspace: "dev".into(),
-            workspace_id: "vm-a".into(),
+            computer: "dev".into(),
+            computer_id: "computer-a".into(),
             path: "/workspace".into(),
             created: Instant::now(),
             entries: (0..300)
@@ -347,50 +347,66 @@ mod tests {
             ("1".to_string(), snapshot("main")),
             ("2".to_string(), snapshot("status")),
         ]);
-        let main = cached_page(&cache, "dev", "vm-a", "/workspace", 200, Some("1")).unwrap();
-        let status = cached_page(&cache, "dev", "vm-a", "/workspace", 200, Some("2")).unwrap();
+        let main = cached_page(&cache, "dev", "computer-a", "/workspace", 200, Some("1")).unwrap();
+        let status =
+            cached_page(&cache, "dev", "computer-a", "/workspace", 200, Some("2")).unwrap();
         assert_eq!(main.entries[0].name, "main200");
         assert_eq!(status.entries[0].name, "status200");
         assert_eq!(
-            cached_page(&cache, "other", "vm-a", "/workspace", 200, Some("1")).unwrap_err(),
+            cached_page(&cache, "other", "computer-a", "/workspace", 200, Some("1")).unwrap_err(),
             EXPIRED
         );
         assert_eq!(
-            cached_page(&cache, "dev", "vm-a", "/workspace/x", 200, Some("1")).unwrap_err(),
+            cached_page(&cache, "dev", "computer-a", "/workspace/x", 200, Some("1")).unwrap_err(),
             EXPIRED
         );
         assert_eq!(
-            cached_page(&cache, "dev", "vm-a", "/workspace", 200, None).unwrap_err(),
+            cached_page(&cache, "dev", "computer-a", "/workspace", 200, None).unwrap_err(),
             EXPIRED
         );
     }
     #[test]
-    fn replacement_vm_with_the_same_name_cannot_page_the_previous_vm_snapshot() {
+    fn replacement_computer_with_the_same_name_cannot_page_the_previous_computer_snapshot() {
         let cache = HashMap::from([(
             "snapshot".to_owned(),
             Snapshot {
-                workspace: "dev".into(),
-                workspace_id: "vm-a".into(),
+                computer: "dev".into(),
+                computer_id: "computer-a".into(),
                 path: "/workspace".into(),
                 created: Instant::now(),
                 entries: (0..201)
                     .map(|i| Entry {
-                        name: format!("previous-vm-{i}"),
-                        path: format!("/workspace/previous-vm-{i}"),
+                        name: format!("previous-computer-{i}"),
+                        path: format!("/workspace/previous-computer-{i}"),
                         kind: "file".into(),
                     })
                     .collect(),
             },
         )]);
         assert_eq!(
-            cached_page(&cache, "dev", "vm-a", "/workspace", 200, Some("snapshot"))
-                .unwrap()
-                .entries[0]
+            cached_page(
+                &cache,
+                "dev",
+                "computer-a",
+                "/workspace",
+                200,
+                Some("snapshot")
+            )
+            .unwrap()
+            .entries[0]
                 .name,
-            "previous-vm-200"
+            "previous-computer-200"
         );
         assert_eq!(
-            cached_page(&cache, "dev", "vm-b", "/workspace", 200, Some("snapshot")).unwrap_err(),
+            cached_page(
+                &cache,
+                "dev",
+                "computer-b",
+                "/workspace",
+                200,
+                Some("snapshot")
+            )
+            .unwrap_err(),
             EXPIRED
         );
     }

@@ -70,7 +70,7 @@ fn application_and_remote_snapshot_match_wire_contract() {
         }
     }
     let _reset = ResetSecrets;
-    let machine = MachineConfiguration {
+    let configuration = ComputerConfiguration {
         id: ID.into(),
         name: "dev".into(),
         cpus: 2,
@@ -83,9 +83,9 @@ fn application_and_remote_snapshot_match_wire_contract() {
     };
     write_metadata(
         &paths.metadata,
-        &MachineConfigurationRequest {
+        &ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![machine],
+            computers: vec![configuration],
         },
     )
     .unwrap();
@@ -103,11 +103,11 @@ fn application_and_remote_snapshot_match_wire_contract() {
         }
     }).to_string()).unwrap();
     fs::write(
-        directory.path().join("sandbox-activity.json"),
+        directory.path().join("computer-activity.json"),
         json!([{
-            "id":"contract-lifecycle-1", "action":"start", "workspace":"dev", "machineId":ID,
+            "id":"contract-lifecycle-1", "action":"start", "computer":"dev", "computerId":ID,
             "timestamp":1767225600000u64, "completed":true,
-            "failure":"The sandbox could not start.", "diagnostic":"Runtime startup failed.",
+            "failure":"The computer could not start.", "diagnostic":"Runtime startup failed.",
             "dismissed":false, "process":0
         }])
         .to_string(),
@@ -118,7 +118,7 @@ fn application_and_remote_snapshot_match_wire_contract() {
         let mut source = read_application_state_with(&SnapshotRunner(status), &paths).unwrap();
         // Host capacity is the only environment-dependent field. Keep its real
         // serializer while giving it a fixed measured value for this contract.
-        source.host_capacity = HostCapacity::of(&HostResources {
+        source.device_capacity = DeviceCapacity::of(&DeviceResources {
             logical_cpus: 8,
             physical_memory_bytes: Some(16 * 1024 * 1024 * 1024),
         });
@@ -126,10 +126,10 @@ fn application_and_remote_snapshot_match_wire_contract() {
     }
     assert_fixture("application-state.json", &states);
     // runtime.remote_ops dispatch serializes the same ApplicationSource to Value;
-    // remote_host_snapshot passes that JSON through. Cover that wire conversion.
+    // device_snapshot passes that JSON through. Cover that wire conversion.
     let remote: Vec<Value> = states
         .iter()
         .map(|source| serde_json::to_value(source).unwrap())
         .collect();
-    assert_fixture("remote-host-snapshot.json", remote);
+    assert_fixture("device-snapshot.json", remote);
 }

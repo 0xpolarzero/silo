@@ -1,11 +1,11 @@
-//! Update installation changes the app, never VM disks. Keep the original running
+//! Update installation changes the app, never computer disks. Keep the original running
 //! set durable before stopping anything, then restore only those exact identities.
 use super::*;
 use std::io::Read;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
-struct RunningMachine {
+struct RunningComputer {
     id: String,
     name: String,
 }
@@ -13,12 +13,12 @@ struct RunningMachine {
 #[serde(deny_unknown_fields)]
 struct Journal {
     version: u8,
-    machines: Vec<RunningMachine>,
+    computers: Vec<RunningComputer>,
 }
 fn path(paths: &RuntimePaths) -> PathBuf {
     paths.metadata.with_file_name("update-resume.json")
 }
-fn save(paths: &RuntimePaths, machines: &[RunningMachine]) -> Result<(), String> {
+fn save(paths: &RuntimePaths, computers: &[RunningComputer]) -> Result<(), String> {
     let destination = path(paths);
     let parent = destination
         .parent()
@@ -30,7 +30,7 @@ fn save(paths: &RuntimePaths, machines: &[RunningMachine]) -> Result<(), String>
         &mut temporary,
         &Journal {
             version: 1,
-            machines: machines.to_vec(),
+            computers: computers.to_vec(),
         },
     )
     .map_err(|_| "Update recovery could not be encoded.")?;
@@ -62,7 +62,7 @@ fn load(paths: &RuntimePaths) -> Result<Option<Journal>, String> {
         .map_err(|_| "Update recovery is invalid; it was preserved.")?;
     let mut ids = HashSet::new();
     if journal.version != 1
-        || journal.machines.iter().any(|m| {
+        || journal.computers.iter().any(|m| {
             uuid::Uuid::parse_str(&m.id).is_err()
                 || validate_name(&m.name).is_err()
                 || !ids.insert(&m.id)
@@ -75,31 +75,32 @@ fn load(paths: &RuntimePaths) -> Result<Option<Journal>, String> {
 fn inspect_exact(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &RunningMachine,
+    configuration: &RunningComputer,
 ) -> Result<InspectedSandbox, String> {
     let saved = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
     if !saved
-        .machines
+        .computers
         .iter()
-        .any(|m| m.id() == machine.id && m.name() == machine.name)
+        .any(|m| m.id() == configuration.id && m.name() == configuration.name)
     {
         return Err(format!(
-            "{} was removed or replaced. No replacement sandbox was changed.",
-            machine.name
+            "{} was removed or replaced. No replacement computer was changed.",
+            configuration.name
         ));
     }
-    let inspected = inspect_workspace(runner, paths, &machine.name).map_err(|e| e.to_string())?;
+    let inspected =
+        inspect_computer(runner, paths, &configuration.name).map_err(|e| e.to_string())?;
     ensure_managed(&inspected).map_err(|e| e.to_string())?;
-    if inspected.name != machine.name
+    if inspected.name != configuration.name
         || inspected
             .config
             .pointer("/labels/silo.machine-id")
             .and_then(Value::as_str)
-            != Some(&machine.id)
+            != Some(&configuration.id)
     {
         return Err(format!(
-            "{} has a different identity. No replacement sandbox was changed.",
-            machine.name
+            "{} has a different identity. No replacement computer was changed.",
+            configuration.name
         ));
     }
     Ok(inspected)
@@ -107,18 +108,17 @@ fn inspect_exact(
 fn running(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-) -> Result<Vec<RunningMachine>, String> {
+) -> Result<Vec<RunningComputer>, String> {
     let metadata = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
     let mut result = vec![];
     let mut listed: Option<HashSet<String>> = None;
-    let unfinished: Vec<_> = configuration_recovery::shutdown_machines(paths)
+    let unfinished: Vec<_> = configuration_recovery::shutdown_computers(paths)
         .map_err(|e| e.to_string())?
         .into_iter()
-        .filter(|machine| {
-            !metadata
-                .machines
-                .iter()
-                .any(|saved| saved.id() == machine.id() && saved.name() == machine.name())
+        .filter(|configuration| {
+            !metadata.computers.iter().any(|saved| {
+                saved.id() == configuration.id() && saved.name() == configuration.name()
+            })
         })
         .collect();
     if !unfinished.is_empty() {
@@ -127,16 +127,16 @@ fn running(
             .into_iter()
             .map(|entry| entry.name)
             .collect();
-        if let Some(machine) = unfinished
+        if let Some(configuration) = unfinished
             .iter()
-            .find(|machine| present.contains(machine.name()))
+            .find(|configuration| present.contains(configuration.name()))
         {
-            return Err(format!("{} has unfinished sandbox configuration. Retry or correct its setup before updating.", machine.name()));
+            return Err(format!("{} has unfinished computer configuration. Retry or correct its setup before updating.", configuration.name()));
         }
         listed = Some(present);
     }
-    for m in metadata.machines.iter() {
-        // Unstarted forks, restores and imports have no runtime VM yet, so they
+    for m in metadata.computers.iter() {
+        // Unstarted forks, restores and imports have no runtime computer yet, so they
         // cannot be running and must not block updates.
         if checkpoints::pending_view(paths, m.id(), false).map_err(|e| e.to_string())? {
             if listed.is_none() {
@@ -155,13 +155,13 @@ fn running(
                 continue;
             }
         }
-        let machine = RunningMachine {
+        let configuration = RunningComputer {
             id: m.id().into(),
             name: m.name().into(),
         };
-        let inspected = inspect_exact(runner, paths, &machine)?;
+        let inspected = inspect_exact(runner, paths, &configuration)?;
         match inspected.status.to_ascii_lowercase().as_str() {
-            "running" => result.push(machine),
+            "running" => result.push(configuration),
             "created" | "stopped" | "crashed" => (),
             _ => {
                 return Err(format!(
@@ -181,7 +181,7 @@ pub(crate) fn running_names(app: &AppHandle) -> Result<Vec<String>, String> {
     };
     running(&ProcessRunner, &paths).map(|v| v.into_iter().map(|m| m.name).collect())
 }
-/// Caller holds the operation gate (computer scope) for the whole installation,
+/// Caller holds the operation gate (device scope) for the whole installation,
 /// including every stop.
 pub(crate) fn prepare(app: &AppHandle, consent: bool) -> Result<(), String> {
     debug_assert!(
@@ -193,34 +193,37 @@ pub(crate) fn prepare(app: &AppHandle, consent: bool) -> Result<(), String> {
     };
     if load(&paths)?.is_some() {
         return Err(
-            "A previous update still has sandboxes to resume. Relaunch Silo before updating again."
+            "A previous update still has computers to resume. Relaunch Silo before updating again."
                 .into(),
         );
     }
-    let machines = running(&ProcessRunner, &paths)?;
-    let host = host_resources().map_err(|e| e.to_string())?;
-    stop_selected(&paths, &machines, consent, |machine| {
-        inspect_exact(&ProcessRunner, &paths, machine)?;
-        workspace_action_with(&ProcessRunner, &paths, &host, "stop", &machine.name)
+    let computers = running(&ProcessRunner, &paths)?;
+    let device = device_resources().map_err(|e| e.to_string())?;
+    stop_selected(&paths, &computers, consent, |configuration| {
+        inspect_exact(&ProcessRunner, &paths, configuration)?;
+        computer_action_with(&ProcessRunner, &paths, &device, "stop", &configuration.name)
             .map_err(|e| safe_activity_error(&e))
     })?;
     // Only the saved running set resumes after the update; a saved action for any
-    // other VM (for example a failed start kept for Retry) must not start it (D-22).
-    let resuming = machines.into_iter().map(|machine| machine.id).collect();
+    // other computer (for example a failed start kept for Retry) must not start it (D-22).
+    let resuming = computers
+        .into_iter()
+        .map(|configuration| configuration.id)
+        .collect();
     lifecycle_recovery::retire_except(&paths, &resuming).map_err(|e| e.to_string())
 }
 fn stop_selected(
     paths: &RuntimePaths,
-    machines: &[RunningMachine],
+    computers: &[RunningComputer],
     consent: bool,
-    mut stop: impl FnMut(&RunningMachine) -> Result<(), String>,
+    mut stop: impl FnMut(&RunningComputer) -> Result<(), String>,
 ) -> Result<(), String> {
-    if !machines.is_empty() && !consent {
-        return Err("Confirm stopping the running sandboxes before installing this update.".into());
+    if !computers.is_empty() && !consent {
+        return Err("Confirm stopping the running computers before installing this update.".into());
     }
-    save(paths, machines)?;
-    for machine in machines {
-        stop(machine)?;
+    save(paths, computers)?;
+    for configuration in computers {
+        stop(configuration)?;
     }
     Ok(())
 }
@@ -234,47 +237,53 @@ pub(crate) fn restore_locked(app: &AppHandle) -> Result<(), String> {
     let Some(paths) = runtime_paths_if_in_use(app)? else {
         return Ok(());
     };
-    let host = host_resources().map_err(|e| e.to_string())?;
-    restore_pending(&paths, |machine| {
-        resume_unless_removed(&paths, machine, |machine| {
-            let inspected = inspect_exact(&ProcessRunner, &paths, machine)?;
+    let device = device_resources().map_err(|e| e.to_string())?;
+    restore_pending(&paths, |configuration| {
+        resume_unless_removed(&paths, configuration, |configuration| {
+            let inspected = inspect_exact(&ProcessRunner, &paths, configuration)?;
             if !inspected.status.eq_ignore_ascii_case("running") {
-                workspace_action_with(&ProcessRunner, &paths, &host, "start", &machine.name)
-                    .map_err(|e| safe_activity_error(&e))?;
+                computer_action_with(
+                    &ProcessRunner,
+                    &paths,
+                    &device,
+                    "start",
+                    &configuration.name,
+                )
+                .map_err(|e| safe_activity_error(&e))?;
             }
             Ok(())
         })
     })
 }
-/// A sandbox deleted after an update stopped it has nothing left to resume. Treat
+/// A computer deleted after an update stopped it has nothing left to resume. Treat
 /// it as resolved so a stale entry cannot block startup and every later update.
 fn resume_unless_removed(
     paths: &RuntimePaths,
-    machine: &RunningMachine,
-    resume: impl FnOnce(&RunningMachine) -> Result<(), String>,
+    configuration: &RunningComputer,
+    resume: impl FnOnce(&RunningComputer) -> Result<(), String>,
 ) -> Result<(), String> {
     let saved = read_saved_metadata(&paths.metadata)
         .map_err(|e| e.to_string())?
-        .ok_or("Silo's sandbox configuration is missing. Update recovery was preserved; restore the configuration before retrying.")?;
-    let configured = saved.machines.iter().any(|m| m.id() == machine.id);
+        .ok_or("Silo's computer configuration is missing. Update recovery was preserved; restore the configuration before retrying.")?;
+    let configured = saved.computers.iter().any(|m| m.id() == configuration.id);
     if !configured {
         return Ok(());
     }
-    resume(machine)
+    resume(configuration)
 }
 fn restore_pending(
     paths: &RuntimePaths,
-    mut resume: impl FnMut(&RunningMachine) -> Result<(), String>,
+    mut resume: impl FnMut(&RunningComputer) -> Result<(), String>,
 ) -> Result<(), String> {
     let Some(mut journal) = load(paths)? else {
         return Ok(());
     };
     let mut failures = vec![];
-    for machine in journal.machines.clone() {
-        match resume(&machine) {
+    for configuration in journal.computers.clone() {
+        match resume(&configuration) {
             Ok(()) => {
-                journal.machines.retain(|m| m.id != machine.id);
-                save(paths, &journal.machines)?;
+                journal.computers.retain(|m| m.id != configuration.id);
+                save(paths, &journal.computers)?;
             }
             Err(error) => failures.push(error),
         }
@@ -290,8 +299,8 @@ fn restore_pending(
 
 pub(crate) fn recover(app: &AppHandle) -> Result<bool, String> {
     let _guard = OPERATIONS
-        .computer("Resuming sandboxes after update")
-        .map_err(|_| "Sandbox operations are unavailable.")?;
+        .device("Resuming computers after update")
+        .map_err(|_| "Computer operations are unavailable.")?;
     let Some(paths) = runtime_paths_if_in_use(app)? else {
         return Ok(false);
     };
@@ -304,10 +313,10 @@ pub(crate) fn recover(app: &AppHandle) -> Result<bool, String> {
 mod tests {
     use super::*;
     #[test]
-    fn uncommitted_runtime_vm_blocks_update_without_replaying_configuration() {
+    fn uncommitted_runtime_computer_blocks_update_without_replaying_configuration() {
         let _test_state = crate::test_support::global_state();
         struct Runtime {
-            committed: Option<MachineConfiguration>,
+            committed: Option<ComputerConfiguration>,
         }
         impl RuntimeRunner for Runtime {
             fn run(
@@ -319,11 +328,11 @@ mod tests {
                 let stdout = match args[0].as_str() {
                     "list" => json!([{"name":"unfinished"}]).to_string(),
                     "inspect" => {
-                        let machine = self.committed.as_ref().unwrap();
-                        assert_eq!(args[1], machine.name());
-                        json!({"name":machine.name(),"status":"Stopped","config":{"labels":{"silo.managed":"true","silo.machine-id":machine.id()}}}).to_string()
+                        let configuration = self.committed.as_ref().unwrap();
+                        assert_eq!(args[1], configuration.name());
+                        json!({"name":configuration.name(),"status":"Stopped","config":{"labels":{"silo.managed":"true","silo.machine-id":configuration.id()}}}).to_string()
                     }
-                    _ => panic!("update inventory must not mutate VMs: {args:?}"),
+                    _ => panic!("update inventory must not mutate computers: {args:?}"),
                 };
                 Ok(CommandOutput {
                     stdout,
@@ -334,23 +343,23 @@ mod tests {
         for has_committed in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let paths = super::super::tests::paths(&dir);
-            let mut request: MachineConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+            let mut request: ComputerConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"computers":[{"id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
             let committed = has_committed.then(|| {
-                let mut machine = request.machines[0].clone();
+                let mut configuration = request.computers[0].clone();
                 {
-                    let MachineConfiguration { id, name, .. } = &mut machine;
+                    let ComputerConfiguration { id, name, .. } = &mut configuration;
                     *id = uuid::Uuid::new_v4().to_string();
                     *name = "committed".into();
                 }
-                machine
+                configuration
             });
-            if let Some(machine) = &committed {
-                let saved = MachineConfigurationRequest {
+            if let Some(configuration) = &committed {
+                let saved = ComputerConfigurationRequest {
                     schema_version: 1,
-                    machines: vec![machine.clone()],
+                    computers: vec![configuration.clone()],
                 };
                 write_metadata(&paths.metadata, &saved).unwrap();
-                request.machines.push(machine.clone());
+                request.computers.push(configuration.clone());
             }
             configuration_recovery::begin(&paths, &request).unwrap();
             let error = running(&Runtime { committed }, &paths).unwrap_err();
@@ -364,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn unfinished_configuration_without_a_runtime_vm_does_not_block_update() {
+    fn unfinished_configuration_without_a_runtime_computer_does_not_block_update() {
         let _test_state = crate::test_support::global_state();
         struct EmptyRuntime;
         impl RuntimeRunner for EmptyRuntime {
@@ -383,7 +392,7 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"computers":[{"id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         configuration_recovery::begin(&paths, &request).unwrap();
         assert!(running(&EmptyRuntime, &paths).unwrap().is_empty());
     }
@@ -393,19 +402,19 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let machine = RunningMachine {
+        let configuration = RunningComputer {
             id: uuid::Uuid::new_v4().to_string(),
             name: "dev".into(),
         };
-        save(&paths, std::slice::from_ref(&machine)).unwrap();
+        save(&paths, std::slice::from_ref(&configuration)).unwrap();
         assert_eq!(
-            load(&paths).unwrap().unwrap().machines,
-            vec![machine.clone()]
+            load(&paths).unwrap().unwrap().computers,
+            vec![configuration.clone()]
         );
-        save(&paths, &[machine.clone(), machine]).unwrap();
+        save(&paths, &[configuration.clone(), configuration]).unwrap();
         assert!(load(&paths).is_err());
         assert!(path(&paths).exists());
-        fs::write(path(&paths), br#"{"version":2,"machines":[]}"#).unwrap();
+        fs::write(path(&paths), br#"{"version":2,"computers":[]}"#).unwrap();
         assert!(load(&paths).is_err());
     }
     #[test]
@@ -413,28 +422,28 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let first = RunningMachine {
+        let first = RunningComputer {
             id: uuid::Uuid::new_v4().to_string(),
             name: "first".into(),
         };
-        let second = RunningMachine {
+        let second = RunningComputer {
             id: uuid::Uuid::new_v4().to_string(),
             name: "second".into(),
         };
         save(&paths, &[first, second.clone()]).unwrap();
         let interrupted = std::panic::catch_unwind(|| {
-            restore_pending(&paths, |machine| {
-                if machine.name == "second" {
+            restore_pending(&paths, |configuration| {
+                if configuration.name == "second" {
                     panic!("simulated process interruption");
                 }
                 Ok(())
             })
         });
         assert!(interrupted.is_err());
-        assert_eq!(load(&paths).unwrap().unwrap().machines, vec![second]);
+        assert_eq!(load(&paths).unwrap().unwrap().computers, vec![second]);
         let mut resumed = vec![];
-        restore_pending(&paths, |machine| {
-            resumed.push(machine.name.clone());
+        restore_pending(&paths, |configuration| {
+            resumed.push(configuration.name.clone());
             Ok(())
         })
         .unwrap();
@@ -446,19 +455,19 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let first = RunningMachine {
+        let first = RunningComputer {
             id: uuid::Uuid::new_v4().to_string(),
             name: "first".into(),
         };
-        let second = RunningMachine {
+        let second = RunningComputer {
             id: uuid::Uuid::new_v4().to_string(),
             name: "second".into(),
         };
         save(&paths, &[first.clone(), second]).unwrap();
         let mut calls = vec![];
-        assert!(restore_pending(&paths, |machine| {
-            calls.push(machine.name.clone());
-            if machine.name == "first" {
+        assert!(restore_pending(&paths, |configuration| {
+            calls.push(configuration.name.clone());
+            if configuration.name == "first" {
                 Err("start failed".into())
             } else {
                 Ok(())
@@ -466,7 +475,7 @@ mod tests {
         })
         .is_err());
         assert_eq!(calls, vec!["first", "second"]);
-        assert_eq!(load(&paths).unwrap().unwrap().machines, vec![first]);
+        assert_eq!(load(&paths).unwrap().unwrap().computers, vec![first]);
     }
 
     #[test]
@@ -525,55 +534,55 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let machine = RunningMachine {
+        let configuration = RunningComputer {
             id: uuid::Uuid::new_v4().to_string(),
             name: "saved".into(),
         };
-        save(&paths, &[machine]).unwrap();
+        save(&paths, &[configuration]).unwrap();
         let before = fs::read(path(&paths)).unwrap();
-        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
-        let error = restore_pending(&paths, |machine| {
-            resume_unless_removed(&paths, machine, |_| {
-                panic!("unknown configuration must not start a VM")
+        assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
+        let error = restore_pending(&paths, |configuration| {
+            resume_unless_removed(&paths, configuration, |_| {
+                panic!("unknown configuration must not start a computer")
             })
         })
         .unwrap_err();
         assert!(error.contains("configuration"), "{error}");
         assert_eq!(fs::read(path(&paths)).unwrap(), before);
-        let empty = MachineConfigurationRequest {
+        let empty = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![],
+            computers: vec![],
         };
         write_metadata(&paths.metadata, &empty).unwrap();
-        restore_pending(&paths, |machine| {
-            resume_unless_removed(&paths, machine, |_| {
-                panic!("a confirmed removed VM must not start")
+        restore_pending(&paths, |configuration| {
+            resume_unless_removed(&paths, configuration, |_| {
+                panic!("a confirmed removed computer must not start")
             })
         })
         .unwrap();
         assert!(!path(&paths).exists());
     }
     #[test]
-    fn removed_sandbox_entries_are_resolved_instead_of_blocking_every_launch() {
+    fn removed_computer_entries_are_resolved_instead_of_blocking_every_launch() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let kept = uuid::Uuid::new_v4().to_string();
-        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":kept,"name":"kept","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"computers":[{"id":kept,"name":"kept","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
-        let removed = RunningMachine {
+        let removed = RunningComputer {
             id: uuid::Uuid::new_v4().to_string(),
             name: "removed".into(),
         };
-        let kept = RunningMachine {
+        let kept = RunningComputer {
             id: kept,
             name: "kept".into(),
         };
         save(&paths, &[removed, kept]).unwrap();
         let mut resumed = vec![];
-        restore_pending(&paths, |machine| {
-            resume_unless_removed(&paths, machine, |machine| {
-                resumed.push(machine.name.clone());
+        restore_pending(&paths, |configuration| {
+            resume_unless_removed(&paths, configuration, |configuration| {
+                resumed.push(configuration.name.clone());
                 Ok(())
             })
         })
@@ -583,7 +592,7 @@ mod tests {
     }
 
     #[test]
-    fn unstarted_pending_sandbox_does_not_block_updates() {
+    fn unstarted_pending_computer_does_not_block_updates() {
         let _test_state = crate::test_support::global_state();
         struct NoRuntime;
         impl RuntimeRunner for NoRuntime {
@@ -595,7 +604,7 @@ mod tests {
             ) -> Result<CommandOutput, RuntimeError> {
                 assert_eq!(
                     args[0], "list",
-                    "a pending sandbox has no runtime VM to inspect"
+                    "a pending computer has no runtime computer to inspect"
                 );
                 Ok(CommandOutput {
                     stdout: "[]".into(),
@@ -606,12 +615,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let id = uuid::Uuid::new_v4().to_string();
-        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":id,"name":"fork","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"computers":[{"id":id,"name":"fork","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
         let mut record = checkpoints::Record::default();
         record.pending_checkpoint_restore = Some(checkpoints::PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         checkpoints::save(&paths, &id, &record).unwrap();
@@ -623,40 +632,40 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let machines = vec![
-            RunningMachine {
+        let computers = vec![
+            RunningComputer {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: "first".into(),
             },
-            RunningMachine {
+            RunningComputer {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: "second".into(),
             },
         ];
-        assert!(stop_selected(&paths, &machines, false, |_| panic!(
+        assert!(stop_selected(&paths, &computers, false, |_| panic!(
             "must not stop without consent"
         ))
         .is_err());
         assert!(!path(&paths).exists());
-        assert!(stop_selected(&paths, &machines, true, |_| {
-            assert_eq!(load(&paths).unwrap().unwrap().machines, machines);
+        assert!(stop_selected(&paths, &computers, true, |_| {
+            assert_eq!(load(&paths).unwrap().unwrap().computers, computers);
             Err("stop failed".into())
         })
         .is_err());
-        assert_eq!(load(&paths).unwrap().unwrap().machines, machines);
+        assert_eq!(load(&paths).unwrap().unwrap().computers, computers);
     }
     #[test]
     fn empty_running_set_is_still_a_durable_update_recovery() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        stop_selected(&paths, &[], false, |_| panic!("no running machines")).unwrap();
+        stop_selected(&paths, &[], false, |_| panic!("no running computers")).unwrap();
         assert!(load(&paths).unwrap().is_some());
-        restore_pending(&paths, |_| panic!("no machines to resume")).unwrap();
+        restore_pending(&paths, |_| panic!("no computers to resume")).unwrap();
         assert!(load(&paths).unwrap().is_none());
     }
     #[test]
-    fn crashed_sandbox_does_not_block_update_but_transitions_and_unknown_states_do() {
+    fn crashed_computer_does_not_block_update_but_transitions_and_unknown_states_do() {
         let _test_state = crate::test_support::global_state();
         struct Inspect(Value);
         impl RuntimeRunner for Inspect {
@@ -676,7 +685,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let id = uuid::Uuid::new_v4().to_string();
-        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request = serde_json::from_value(json!({"schemaVersion":1,"computers":[{"id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
         for status in [
             "Crashed", "Stopped", "Created", "Running", "Starting", "Draining", "Unknown",
@@ -716,7 +725,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let id = uuid::Uuid::new_v4().to_string();
-        let request: MachineConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        let request: ComputerConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"computers":[{"id":id,"name":"dev","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
         write_metadata(&paths.metadata, &request).unwrap();
         let runner = Inspect(
             json!({"name":"dev","status":"running","config":{"labels":{"silo.managed":"true","silo.machine-id":uuid::Uuid::new_v4().to_string()}}}),
@@ -724,7 +733,7 @@ mod tests {
         assert!(inspect_exact(
             &runner,
             &paths,
-            &RunningMachine {
+            &RunningComputer {
                 id,
                 name: "dev".into()
             }

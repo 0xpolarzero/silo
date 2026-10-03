@@ -1,15 +1,15 @@
 //! Opt-in live regressions for the built-in desktop and computer use, run against the
-//! real runtime with disposable homes under `SILO_TEST_TMP` (default /tmp) and `e2e-*` sandboxes. They need the guest
+//! real runtime with disposable homes under `SILO_TEST_TMP` (default /tmp) and `e2e-*` computers. They need the guest
 //! image directory (`SILO_TEST_GUEST_IMAGE`, a directory with manifest.json and
 //! image.tar.gz), a published ChatGPT folder (`SILO_TEST_PUBLISHED`, `<root>/published` of
 //! a prepared app), a signed msb (`SILO_TEST_MSB`, `SILO_TEST_LIBKRUNFW`) and
 //! `SILO_LIVE_TEST_CONFIRM`.
-use crate::runtime::{self, MachineConfiguration, RuntimePaths};
+use crate::runtime::{self, ComputerConfiguration, RuntimePaths};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-/// One disposable runtime home with its own metadata and, for built-in VMs, the published
+/// One disposable runtime home with its own metadata and, for built-in computers, the published
 /// ChatGPT folder registered for this thread.
 pub(crate) struct Fixture {
     directory: Option<tempfile::TempDir>,
@@ -19,7 +19,7 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     /// `image` overrides `SILO_TEST_GUEST_IMAGE` (a directory with manifest.json and
-    /// image.tar.gz), for example to create a pre-v4 VM.
+    /// image.tar.gz), for example to create a pre-v4 computer.
     pub(crate) fn new(prefix: &str, image: Option<PathBuf>, with_published: bool) -> Self {
         crate::test_support::live::require_confirmation();
         let directory = tempfile::Builder::new()
@@ -50,7 +50,7 @@ impl Fixture {
             library: PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").unwrap()),
             home: directory.path().join("home"),
             storage_home: None,
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         std::fs::create_dir_all(&paths.home).unwrap();
@@ -62,22 +62,22 @@ impl Fixture {
         }
     }
 
-    /// Stops `name` when the fixture drops, for sandboxes created by other paths (forks).
+    /// Stops `name` when the fixture drops, for computers created by other paths (forks).
     pub(crate) fn track(&mut self, name: &str) {
         self.names.push(name.to_owned());
     }
 
-    pub(crate) fn create(&mut self, name: &str) -> MachineConfiguration {
+    pub(crate) fn create(&mut self, name: &str) -> ComputerConfiguration {
         self.names.push(name.to_owned());
-        runtime::create_disposable_desktop_machine(&self.paths, name).unwrap()
+        runtime::create_disposable_desktop_computer(&self.paths, name).unwrap()
     }
 
-    pub(crate) fn machine(&self, name: &str) -> MachineConfiguration {
+    pub(crate) fn computer_configuration(&self, name: &str) -> ComputerConfiguration {
         runtime::read_metadata(&self.paths.metadata)
             .unwrap()
-            .machines
+            .computers
             .into_iter()
-            .find(|machine| machine.name() == name)
+            .find(|configuration| configuration.name() == name)
             .unwrap()
     }
 
@@ -115,7 +115,7 @@ impl Fixture {
 
     /// The desktop state Silo's own status path reports, computer use included.
     pub(crate) fn status(&self, name: &str) -> Value {
-        crate::desktop::test_status(&self.paths, &self.machine(name)).unwrap()
+        crate::desktop::test_status(&self.paths, &self.computer_configuration(name)).unwrap()
     }
 
     /// Polls Silo's status until the session runs and computer use is ready.

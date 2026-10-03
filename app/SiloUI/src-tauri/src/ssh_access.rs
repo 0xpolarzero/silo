@@ -19,8 +19,8 @@ const FAILED: &str = "Could not read SSH access settings.";
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Configuration {
-    workspace: String,
-    machine_id: String,
+    computer: String,
+    computer_id: String,
     enabled: bool,
     port: u16,
     bind_address: String,
@@ -30,9 +30,9 @@ struct Configuration {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Workspace {
-    workspace: String,
-    vm_id: String,
+pub(crate) struct Computer {
+    computer: String,
+    computer_id: String,
     enabled: bool,
     port: u16,
     bind_address: String,
@@ -40,14 +40,14 @@ pub(crate) struct Workspace {
     state: &'static str,
     message: Option<String>,
     fingerprint: Option<String>,
-    computer_name: String,
+    device_name: String,
     addresses: Vec<String>,
     /// Guest account SSH clients log in as.
     user: &'static str,
 }
 #[derive(Serialize)]
 pub(crate) struct State {
-    workspaces: Vec<Workspace>,
+    computers: Vec<Computer>,
 }
 struct Listener {
     children: Vec<Child>,
@@ -66,15 +66,15 @@ struct Owners {
     listeners: BTreeMap<String, Listener>,
     errors: BTreeMap<String, String>,
     /// Bumped by every close. A reconcile pass discards a listener it started when
-    /// that sandbox (or everything) was closed meanwhile, instead of reopening access
+    /// that computer (or everything) was closed meanwhile, instead of reopening access
     /// the close just revoked.
     generation: u64,
     closed: BTreeMap<String, u64>,
     all_closed: u64,
 }
 impl Owners {
-    fn closed_since(&self, workspace: &str, generation: u64) -> bool {
-        self.all_closed > generation || self.closed.get(workspace).is_some_and(|g| *g > generation)
+    fn closed_since(&self, computer: &str, generation: u64) -> bool {
+        self.all_closed > generation || self.closed.get(computer).is_some_and(|g| *g > generation)
     }
 }
 /// The listeners and their errors. Held only briefly, never across runtime
@@ -108,22 +108,22 @@ fn read(paths: &RuntimePaths) -> Result<Vec<Configuration>, String> {
     let mut seen = BTreeSet::new();
     for config in &configs {
         validate(config)?;
-        if !seen.insert(&config.workspace) {
+        if !seen.insert(&config.computer) {
             return Err(FAILED.into());
         }
     }
     Ok(configs)
 }
 fn validate(config: &Configuration) -> Result<(), String> {
-    runtime::validate_name(&config.workspace).map_err(|e| e.to_string())?;
-    uuid::Uuid::parse_str(&config.machine_id).map_err(|_| "Invalid sandbox identity.")?;
+    runtime::validate_name(&config.computer).map_err(|e| e.to_string())?;
+    uuid::Uuid::parse_str(&config.computer_id).map_err(|_| "Invalid computer identity.")?;
     if config.port == 0 {
         return Err("Enter a port from 1 to 65535.".into());
     }
     let ip: Ipv4Addr = config
         .bind_address
         .parse()
-        .map_err(|_| "Choose an IPv4 address assigned to the computer.")?;
+        .map_err(|_| "Choose an IPv4 address assigned to the device.")?;
     if ip.is_unspecified()
         || ip.is_multicast()
         || ip.is_broadcast()
@@ -159,11 +159,11 @@ fn normalize_key(key: &str) -> Result<String, String> {
     editor::validate_public_key(&normalized)?;
     Ok(normalized)
 }
-fn host_name() -> String {
+fn device_name() -> String {
     let mut bytes = [0u8; 256];
     // SAFETY: gethostname writes at most the supplied buffer length.
     if unsafe { libc::gethostname(bytes.as_mut_ptr().cast(), bytes.len()) } != 0 {
-        return "Unnamed computer".into();
+        return "Unnamed device".into();
     }
     String::from_utf8_lossy(&bytes)
         .trim_end_matches('\0')
@@ -222,7 +222,7 @@ fn spawn(paths: &RuntimePaths, config: &Configuration) -> Result<Listener, Strin
     let root = paths.home.join("ssh/managed-access");
     editor::private_directory(&paths.home.join("ssh"))?;
     editor::private_directory(&root)?;
-    let authorized = root.join(format!("{}.authorized_keys", config.machine_id));
+    let authorized = root.join(format!("{}.authorized_keys", config.computer_id));
     // Deliberately never read or write the editor's shared authorized_keys or private client key.
     editor::write_private(
         &authorized,
@@ -231,11 +231,11 @@ fn spawn(paths: &RuntimePaths, config: &Configuration) -> Result<Listener, Strin
     let host_root = paths
         .home
         .join("sandboxes")
-        .join(&config.workspace)
+        .join(&config.computer)
         .join("ssh");
     editor::private_directory(&host_root)?;
     editor::key(&host_root.join("host_ed25519"))?;
-    fingerprint(paths, &config.workspace)?;
+    fingerprint(paths, &config.computer)?;
     let mut listener = Listener {
         children: vec![],
         config: config.clone(),
@@ -249,14 +249,14 @@ fn spawn(paths: &RuntimePaths, config: &Configuration) -> Result<Listener, Strin
             .args([
                 "ssh",
                 "serve",
-                &config.workspace,
+                &config.computer,
                 "--no-start",
                 "--no-inactivity-timeout",
                 "--exit-on-stdin-close",
                 "--authorized-keys",
             ])
             .arg(&authorized)
-            .args(["--expected-machine-id", &config.machine_id])
+            .args(["--expected-machine-id", &config.computer_id])
             .args(["--host", host, "--port", &config.port.to_string()])
             .env("MSB_HOME", &paths.home)
             .env("MSB_PATH", &paths.executable)
@@ -294,25 +294,25 @@ fn spawn(paths: &RuntimePaths, config: &Configuration) -> Result<Listener, Strin
     Ok(listener)
 }
 fn inspect_running(paths: &RuntimePaths, config: &Configuration) -> Result<bool, String> {
-    let inspected = match runtime::observe_vm(&ProcessRunner, paths, &config.workspace)
-        .map_err(|e| format!("Could not verify sandbox status ({e}). SSH access is closed."))?
+    let inspected = match runtime::observe_computer(&ProcessRunner, paths, &config.computer)
+        .map_err(|e| format!("Could not verify computer status ({e}). SSH access is closed."))?
     {
-        runtime::VmRuntime::Absent => return Ok(false),
-        runtime::VmRuntime::Present(inspected) => inspected,
+        runtime::ComputerRuntime::Absent => return Ok(false),
+        runtime::ComputerRuntime::Present(inspected) => inspected,
     };
-    runtime::ensure_managed(&inspected).map_err(|_| "This sandbox is not managed by Silo.")?;
+    runtime::ensure_managed(&inspected).map_err(|_| "This computer is not managed by Silo.")?;
     if inspected
         .config
         .pointer("/labels/silo.machine-id")
         .and_then(serde_json::Value::as_str)
-        != Some(config.machine_id.as_str())
+        != Some(config.computer_id.as_str())
     {
-        return Err("The sandbox identity changed. Configure SSH access again.".into());
+        return Err("The computer identity changed. Configure SSH access again.".into());
     }
     crate::working_account::require_runtime(paths)?;
     Ok(inspected.status == "Running")
 }
-/// Bring the listeners in line with the saved settings and each sandbox's runtime
+/// Bring the listeners in line with the saved settings and each computer's runtime
 /// state. Runtime inspection and listener start-up (up to 8 s each) run without the
 /// `owners()` lock, so state reads and closes never wait behind a pass (C-10).
 pub(crate) fn reconcile(paths: &RuntimePaths) {
@@ -334,8 +334,8 @@ pub(crate) fn reconcile(paths: &RuntimePaths) {
         close_all();
         return;
     };
-    // A close after this point (a sandbox stopping, a save revoking access, Quit)
-    // makes a listener this pass starts for that sandbox stale.
+    // A close after this point (a computer stopping, a save revoking access, Quit)
+    // makes a listener this pass starts for that computer stale.
     let generation = owned().generation;
     let addresses = addresses();
     let observed: Vec<_> = configs
@@ -343,13 +343,13 @@ pub(crate) fn reconcile(paths: &RuntimePaths) {
         .filter(|c| c.enabled)
         .map(|config| {
             let observed = if metadata
-                .machines
+                .computers
                 .iter()
-                .any(|m| m.name() == config.workspace && m.id() == config.machine_id)
+                .any(|m| m.name() == config.computer && m.id() == config.computer_id)
             {
                 inspect_running(paths, config)
             } else {
-                Err("The sandbox identity changed. Configure SSH access again.".into())
+                Err("The computer identity changed. Configure SSH access again.".into())
             };
             (config, observed)
         })
@@ -365,7 +365,7 @@ pub(crate) fn reconcile(paths: &RuntimePaths) {
             .filter(|name| {
                 !configs
                     .iter()
-                    .any(|c| &c.workspace == *name && c.enabled && !c.keys.is_empty())
+                    .any(|c| &c.computer == *name && c.enabled && !c.keys.is_empty())
             })
             .cloned()
             .collect();
@@ -397,7 +397,7 @@ pub(crate) fn reconcile(paths: &RuntimePaths) {
     let accepting = runtime::shutdown::ensure_accepting_operations().is_ok();
     for (config, listener) in launched {
         if accepting
-            && !owned.closed_since(&config.workspace, generation)
+            && !owned.closed_since(&config.computer, generation)
             && current.contains(config)
         {
             finish_one(&mut owned, config, listener, &mut retired);
@@ -421,7 +421,7 @@ fn prepare_one(
 ) -> bool {
     let result = (|| {
         if !config.enabled || !observed? {
-            retired.extend(owned.listeners.remove(&config.workspace));
+            retired.extend(owned.listeners.remove(&config.computer));
             return Ok(false);
         }
         if config.keys.is_empty() {
@@ -432,7 +432,7 @@ fn prepare_one(
                 "The selected network address is unavailable. Choose an active interface.".into(),
             );
         }
-        if let Some(listener) = owned.listeners.get_mut(&config.workspace) {
+        if let Some(listener) = owned.listeners.get_mut(&config.computer) {
             if listener.config == *config
                 && listener
                     .children
@@ -442,18 +442,18 @@ fn prepare_one(
                 return Ok(false);
             }
         }
-        retired.extend(owned.listeners.remove(&config.workspace));
+        retired.extend(owned.listeners.remove(&config.computer));
         runtime::shutdown::ensure_accepting_operations()?;
         Ok(true)
     })();
     match result {
         Ok(launch) => {
-            owned.errors.remove(&config.workspace);
+            owned.errors.remove(&config.computer);
             launch
         }
         Err(error) => {
-            retired.extend(owned.listeners.remove(&config.workspace));
-            owned.errors.insert(config.workspace.clone(), error);
+            retired.extend(owned.listeners.remove(&config.computer));
+            owned.errors.insert(config.computer.clone(), error);
             false
         }
     }
@@ -466,16 +466,16 @@ fn finish_one(
 ) {
     match listener {
         Ok(listener) => {
-            retired.extend(owned.listeners.insert(config.workspace.clone(), listener));
-            owned.errors.remove(&config.workspace);
+            retired.extend(owned.listeners.insert(config.computer.clone(), listener));
+            owned.errors.remove(&config.computer);
         }
         Err(error) => {
-            retired.extend(owned.listeners.remove(&config.workspace));
-            owned.errors.insert(config.workspace.clone(), error);
+            retired.extend(owned.listeners.remove(&config.computer));
+            owned.errors.insert(config.computer.clone(), error);
         }
     }
 }
-/// `prepare_one`, start, `finish_one` in one step, for tests of a single sandbox.
+/// `prepare_one`, start, `finish_one` in one step, for tests of a single computer.
 #[cfg(test)]
 fn reconcile_one(
     owned: &mut Owners,
@@ -491,7 +491,7 @@ fn reconcile_one(
     }
 }
 
-pub(crate) fn close_workspace(name: &str) {
+pub(crate) fn close_computer(name: &str) {
     let mut owned = owned();
     owned.generation += 1;
     let generation = owned.generation;
@@ -512,13 +512,13 @@ pub(crate) fn close_all() {
     drop(listeners);
 }
 /// Repair the shared SSH listeners under the operation gate, skipping busy periods.
-/// Listener reconciliation changes shared computer state, so it takes the gate;
+/// Listener reconciliation changes shared device state, so it takes the gate;
 /// observation paths (`state`, `read_ssh_access_state`) must never call this
-/// inline. Callers already holding a gate guard (the VM lifecycle in `run_msb`,
+/// inline. Callers already holding a gate guard (the computer lifecycle in `run_msb`,
 /// backups, checkpoints, and the write commands) call `reconcile` directly.
 fn reconcile_if_idle(app: &AppHandle) {
     // Background listener reconcile touches shared SSH state; skip when busy.
-    if let Ok(_guard) = runtime::OPERATIONS.try_computer_hidden("Reconciling SSH access") {
+    if let Ok(_guard) = runtime::OPERATIONS.try_device_hidden("Reconciling SSH access") {
         if runtime::shutdown::ensure_accepting_operations().is_ok() {
             if let Ok(paths) = runtime::runtime_paths(app) {
                 reconcile(&paths);
@@ -544,13 +544,13 @@ fn schedule_reconcile(app: &AppHandle) {
         RUNNING.store(false, std::sync::atomic::Ordering::Release);
     });
 }
-/// Background safety net for changes nothing reports: a sandbox stopping outside
+/// Background safety net for changes nothing reports: a computer stopping outside
 /// Silo, a listener exiting, a network interface going away. Lifecycle commands,
 /// saves, backups and checkpoints reconcile directly, so this runs rarely (C-10).
 const MONITOR_INTERVAL: Duration = Duration::from_secs(15);
 /// Whether a background pass has anything to open, check or close. Without any
 /// enabled SSH access and without owned listeners or errors, a pass would only take
-/// the computer gate and inspect nothing, so it is skipped.
+/// the device gate and inspect nothing, so it is skipped.
 fn needs_reconcile(paths: &RuntimePaths) -> bool {
     let enabled = read(paths).map_or(true, |configs| configs.iter().any(|c| c.enabled));
     enabled || {
@@ -578,30 +578,30 @@ fn state(paths: &RuntimePaths) -> Result<State, String> {
             owned.listeners.keys().cloned().collect(),
         )
     };
-    let computer_name = host_name();
+    let device_name = device_name();
     let addresses = addresses();
     Ok(State {
-        workspaces: metadata
-            .machines
+        computers: metadata
+            .computers
             .iter()
-            .map(|machine| {
-                let config = configs
-                    .iter()
-                    .find(|c| c.workspace == machine.name() && c.machine_id == machine.id());
+            .map(|configuration| {
+                let config = configs.iter().find(|c| {
+                    c.computer == configuration.name() && c.computer_id == configuration.id()
+                });
                 let enabled = config.is_some_and(|c| c.enabled);
-                let message = errors.get(machine.name()).cloned();
+                let message = errors.get(configuration.name()).cloned();
                 let status = if !enabled {
                     "disabled"
                 } else if message.is_some() {
                     "error"
-                } else if listening.contains(machine.name()) {
+                } else if listening.contains(configuration.name()) {
                     "listening"
                 } else {
                     "waiting"
                 };
-                Workspace {
-                    workspace: machine.name().into(),
-                    vm_id: machine.id().into(),
+                Computer {
+                    computer: configuration.name().into(),
+                    computer_id: configuration.id().into(),
                     enabled,
                     port: config.map_or(2222, |c| c.port),
                     bind_address: config
@@ -611,11 +611,11 @@ fn state(paths: &RuntimePaths) -> Result<State, String> {
                     state: status,
                     message,
                     fingerprint: if enabled {
-                        fingerprint(paths, machine.name()).ok()
+                        fingerprint(paths, configuration.name()).ok()
                     } else {
                         None
                     },
-                    computer_name: computer_name.clone(),
+                    device_name: device_name.clone(),
                     addresses: addresses.clone(),
                     user: "silo",
                 }
@@ -640,7 +640,7 @@ pub(crate) async fn read_ssh_access_state(app: AppHandle) -> Result<State, Strin
 #[tauri::command]
 pub(crate) async fn save_ssh_access(
     app: AppHandle,
-    workspace: String,
+    computer: String,
     enabled: bool,
     port: u16,
     bind_address: String,
@@ -648,15 +648,15 @@ pub(crate) async fn save_ssh_access(
 ) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _operation = crate::updates::operation_guard()?;
-        // Saving SSH access reconciles the shared listeners/port map; computer scope.
+        // Saving SSH access reconciles the shared listeners/port map; device scope.
         let _guard = runtime::OPERATIONS
-            .computer("Saving SSH access")
+            .device("Saving SSH access")
             .map_err(|_| FAILED)?;
         runtime::shutdown::ensure_accepting_operations()?;
         let paths = runtime::runtime_paths(&app)?;
         let result = save_with(
             &paths,
-            Target::Name(&workspace),
+            Target::Name(&computer),
             Settings {
                 enabled,
                 port,
@@ -685,7 +685,7 @@ enum Target<'a> {
     Id(&'a str),
 }
 fn client_key(paths: &RuntimePaths, id: &str) -> Result<PathBuf, String> {
-    uuid::Uuid::parse_str(id).map_err(|_| "Invalid sandbox identity.")?;
+    uuid::Uuid::parse_str(id).map_err(|_| "Invalid computer identity.")?;
     let root = paths.home.join("ssh/managed-clients");
     editor::private_directory(&root)?;
     let path = root.join(id);
@@ -707,8 +707,8 @@ fn managed_public_key(paths: &RuntimePaths, id: &str) -> Option<String> {
         normalize_key(std::str::from_utf8(&bytes).ok()?.trim()).ok()
     })
 }
-/// Comment marking a key another computer registered through `ssh.access.connection`,
-/// followed by that computer's Silo identity.
+/// Comment marking a key another device registered through `ssh.access.connection`,
+/// followed by that device's Silo identity.
 const CONTROLLER_TAG: &str = "silo-controller:";
 fn is_controller_key(key: &str) -> bool {
     key.split_whitespace()
@@ -717,21 +717,21 @@ fn is_controller_key(key: &str) -> bool {
 }
 
 // Only an explicit local connection/export request reads the managed private key,
-// and it never leaves this computer. Ordinary state responses, persisted settings
+// and it never leaves this device. Ordinary state responses, persisted settings
 // and remote responses contain public keys only.
 pub(crate) fn connection_material(
     paths: &RuntimePaths,
-    vm_id: &str,
+    computer_id: &str,
 ) -> Result<serde_json::Value, String> {
-    uuid::Uuid::parse_str(vm_id).map_err(|_| "Invalid sandbox identity.")?;
+    uuid::Uuid::parse_str(computer_id).map_err(|_| "Invalid computer identity.")?;
     let config = read(paths)?
         .into_iter()
-        .find(|c| c.machine_id == vm_id && c.enabled)
+        .find(|c| c.computer_id == computer_id && c.enabled)
         .ok_or("Enable SSH access first.")?;
-    let user = crate::working_account::inspect_user(paths, &config.workspace)?;
+    let user = crate::working_account::inspect_user(paths, &config.computer)?;
     save_with(
         paths,
-        Target::Id(vm_id),
+        Target::Id(computer_id),
         Settings {
             enabled: true,
             port: config.port,
@@ -739,37 +739,37 @@ pub(crate) fn connection_material(
             keys: None,
         },
     )?;
-    let key = client_key(paths, vm_id)?;
+    let key = client_key(paths, computer_id)?;
     let private = std::fs::read_to_string(key).map_err(|_| "Could not read the connection key.")?;
     Ok(
         serde_json::json!({"privateKey":private,"port":config.port,"address":config.bind_address,"user":user}),
     )
 }
 
-/// Authorize another computer's own SSH key for one sandbox and tell it where to
-/// connect (C-15). The connecting computer generates and keeps its private key; only
-/// its public key crosses computers, tagged with that computer's Silo identity so a
+/// Authorize another device's own SSH key for one computer and tell it where to
+/// connect (C-15). The connecting device generates and keeps its private key; only
+/// its public key crosses devices, tagged with that device's Silo identity so a
 /// new key replaces its previous one. Turning SSH access off revokes every such key.
 fn authorize_controller(
     paths: &RuntimePaths,
-    vm_id: &str,
+    computer_id: &str,
     request: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    uuid::Uuid::parse_str(vm_id).map_err(|_| "Invalid sandbox identity.")?;
+    uuid::Uuid::parse_str(computer_id).map_err(|_| "Invalid computer identity.")?;
     let config = read(paths)?
         .into_iter()
-        .find(|c| c.machine_id == vm_id && c.enabled)
+        .find(|c| c.computer_id == computer_id && c.enabled)
         .ok_or("Enable SSH access first.")?;
-    let user = crate::working_account::inspect_user(paths, &config.workspace)?;
+    let user = crate::working_account::inspect_user(paths, &config.computer)?;
     crate::working_account::require_client_protocol(request)?;
     let (Some(public), Some(controller)) = (
         request["publicKey"].as_str(),
         request["controllerId"].as_str(),
     ) else {
-        return Err("Update Silo on the connecting computer to connect over SSH.".into());
+        return Err("Update Silo on the connecting device to connect over SSH.".into());
     };
     editor::validate_public_key(public)?;
-    uuid::Uuid::parse_str(controller).map_err(|_| "Invalid computer identity.")?;
+    uuid::Uuid::parse_str(controller).map_err(|_| "Invalid device identity.")?;
     let entry = format!("{public} {CONTROLLER_TAG}{controller}");
     let mut keys = config.keys;
     if !keys.contains(&entry) {
@@ -784,7 +784,7 @@ fn authorize_controller(
     }
     save_with(
         paths,
-        Target::Id(vm_id),
+        Target::Id(computer_id),
         Settings {
             enabled: true,
             port: config.port,
@@ -813,20 +813,20 @@ fn save_with(
     settings: Settings,
 ) -> Result<State, String> {
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|_| FAILED)?;
-    let machine = metadata
-        .machines
+    let configuration = metadata
+        .computers
         .iter()
         .find(|m| match target {
             Target::Name(name) => m.name() == name,
             Target::Id(id) => m.id() == id,
         })
-        .ok_or("This sandbox no longer exists on its computer. Refresh SSH access.")?;
-    let workspace = machine.name().to_owned();
+        .ok_or("This computer no longer exists on its device. Refresh SSH access.")?;
+    let computer = configuration.name().to_owned();
     let mut configs = read(paths)?;
-    let previous = configs.iter().find(|c| c.machine_id == machine.id());
+    let previous = configs.iter().find(|c| c.computer_id == configuration.id());
     let managed = previous
         .and_then(|c| c.managed_key.clone())
-        .or_else(|| managed_public_key(paths, machine.id()));
+        .or_else(|| managed_public_key(paths, configuration.id()));
     let Settings {
         enabled,
         port,
@@ -835,7 +835,7 @@ fn save_with(
     } = settings;
     let mut keys = keys.unwrap_or_else(|| previous.map_or_else(Vec::new, |c| c.keys.clone()));
     let managed_key = if enabled {
-        let public = editor::public_key(&client_key(paths, machine.id())?)?;
+        let public = editor::public_key(&client_key(paths, configuration.id())?)?;
         if let Some(old) = &managed {
             if old != &public {
                 keys.retain(|key| normalize_key(key).ok().as_deref() != Some(old.as_str()));
@@ -849,8 +849,8 @@ fn save_with(
         }
         Some(public)
     } else {
-        // Turning access off revokes every key Silo manages: other computers'
-        // registered keys and this computer's managed key, which is replaced on the
+        // Turning access off revokes every key Silo manages: other devices'
+        // registered keys and this device's managed key, which is replaced on the
         // next enable (C-15). Keys the user added stay for next time.
         if managed.is_none() && previous.is_some_and(|c| c.enabled) && !keys.is_empty() {
             return Err("Could not identify the previous SSH connection key. Restore its managed public key file before disabling SSH access.".into());
@@ -864,8 +864,8 @@ fn save_with(
         None
     };
     let mut config = Configuration {
-        workspace: workspace.clone(),
-        machine_id: machine.id().into(),
+        computer: computer.clone(),
+        computer_id: configuration.id().into(),
         enabled,
         port,
         bind_address,
@@ -880,11 +880,11 @@ fn save_with(
     // Deleted or replaced identities must not reserve a port forever.
     configs.retain(|c| {
         metadata
-            .machines
+            .computers
             .iter()
-            .any(|m| m.name() == c.workspace && m.id() == c.machine_id)
+            .any(|m| m.name() == c.computer && m.id() == c.computer_id)
     });
-    if enabled && port == 2222 && !configs.iter().any(|c| c.machine_id == machine.id()) {
+    if enabled && port == 2222 && !configs.iter().any(|c| c.computer_id == configuration.id()) {
         config.port = available_port(&configs, &config.bind_address, |address, port| {
             std::net::TcpListener::bind((address, port)).is_ok()
         })
@@ -893,29 +893,29 @@ fn save_with(
     if enabled
         && configs
             .iter()
-            .any(|c| c.enabled && c.workspace != workspace && c.port == config.port)
+            .any(|c| c.enabled && c.computer != computer && c.port == config.port)
     {
-        return Err("Another sandbox already uses this SSH port. Choose a different port.".into());
+        return Err("Another computer already uses this SSH port. Choose a different port.".into());
     }
     if !configs.iter().any(|c| c == &config) {
-        configs.retain(|c| c.workspace != workspace);
+        configs.retain(|c| c.computer != computer);
         configs.push(config);
         let bytes = serde_json::to_vec(&configs).map_err(|_| FAILED)?;
         if bytes.len() > 1024 * 1024 || configs.len() > 4096 {
             return Err("SSH settings are too large. Remove unused client keys first.".into());
         }
         // Revoke live sessions before committing changed authorization.
-        close_workspace(&workspace);
+        close_computer(&computer);
         editor::write_private(&path(&paths), &bytes)?;
     }
     if !enabled {
         // The revoked managed key is no longer authorized; drop it and this
-        // computer's connection copy so the next enable creates a fresh one.
+        // device's connection copy so the next enable creates a fresh one.
         let managed = paths.home.join("ssh/managed-clients");
         for key in [
-            managed.join(machine.id()),
-            managed.join(format!("{}.pub", machine.id())),
-            paths.home.join("ssh/connections").join(machine.id()),
+            managed.join(configuration.id()),
+            managed.join(format!("{}.pub", configuration.id())),
+            paths.home.join("ssh/connections").join(configuration.id()),
         ] {
             if let Err(error) = std::fs::remove_file(&key) {
                 if error.kind() != std::io::ErrorKind::NotFound {
@@ -931,7 +931,7 @@ fn save_with(
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct RemoteSave {
-    vm_id: String,
+    computer_id: String,
     settings: Settings,
 }
 
@@ -941,7 +941,7 @@ pub(crate) fn remote_dispatch(
     method: &str,
     params: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    crate::remote::ensure_management_enabled()?;
+    crate::remote::ensure_connections_enabled()?;
     let paths = runtime::runtime_paths(app)?;
     if method == "ssh.access.state" {
         // Observation only: report the currently owned listeners without taking the
@@ -953,9 +953,9 @@ pub(crate) fn remote_dispatch(
         return result;
     }
     let _operation = crate::updates::operation_guard()?;
-    // Remote SSH changes reconcile the shared listeners; wait in order (computer).
+    // Remote SSH changes reconcile the shared listeners; wait in order (device).
     let _guard = runtime::OPERATIONS
-        .computer("Applying remote SSH change")
+        .device("Applying remote SSH change")
         .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
     let result = remote_with(&paths, method, params);
@@ -970,7 +970,9 @@ fn remote_with(
     params: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     if method == "ssh.access.connection" {
-        let id = params["vmId"].as_str().ok_or("Missing sandbox identity.")?;
+        let id = params["computerId"]
+            .as_str()
+            .ok_or("Missing computer identity.")?;
         return authorize_controller(paths, id, params);
     }
     let result = match method {
@@ -981,8 +983,9 @@ fn remote_with(
         "ssh.access.save" => {
             let request: RemoteSave = serde_json::from_value(params.clone())
                 .map_err(|_| "Invalid remote SSH settings.")?;
-            uuid::Uuid::parse_str(&request.vm_id).map_err(|_| "Invalid sandbox identity.")?;
-            save_with(paths, Target::Id(&request.vm_id), request.settings)?
+            uuid::Uuid::parse_str(&request.computer_id)
+                .map_err(|_| "Invalid computer identity.")?;
+            save_with(paths, Target::Id(&request.computer_id), request.settings)?
         }
         _ => return Err("Unsupported remote SSH operation.".into()),
     };
@@ -1004,8 +1007,8 @@ mod tests {
         let mut bytes = b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20".to_vec();
         bytes.extend_from_slice(&[1; 32]);
         Configuration {
-            workspace: "dev".into(),
-            machine_id: "00000000-0000-4000-8000-000000000001".into(),
+            computer: "dev".into(),
+            computer_id: "00000000-0000-4000-8000-000000000001".into(),
             enabled: true,
             port: 2222,
             bind_address: "127.0.0.1".into(),
@@ -1089,7 +1092,7 @@ mod tests {
         assert!(editor::write_private(&path(&p), b"[]").is_err());
     }
     // A deterministic runtime substitute validates actual TCP ownership, stream
-    // cleanup and command arguments. It never starts or accesses a real VM.
+    // cleanup and command arguments. It never starts or accesses a real computer.
     fn fake_runtime(p: &RuntimePaths) {
         fs::write(
             &p.executable,
@@ -1161,7 +1164,7 @@ sys.stdin.buffer.read()
         assert_eq!(
             fs::read_to_string(p.home.join(format!(
                 "ssh/managed-access/{}.authorized_keys",
-                c.machine_id
+                c.computer_id
             )))
             .unwrap(),
             format!("{}\n", c.keys.join("\n"))
@@ -1200,7 +1203,7 @@ sys.stdin.buffer.read()
         assert!(TcpStream::connect(occupied.local_addr().unwrap()).is_ok());
     }
     #[test]
-    fn reconciliation_never_launches_stopped_disabled_unverified_or_keyless_sandboxes() {
+    fn reconciliation_never_launches_stopped_disabled_unverified_or_keyless_computers() {
         let _test_state = crate::test_support::global_state();
         let mut owned = Owners::default();
         let mut c = config();
@@ -1287,8 +1290,8 @@ sys.stdin.buffer.read()
         fs::write(&p.library, "fixture").unwrap();
         fs::write(
             &p.metadata,
-            serde_json::json!({"schemaVersion":1,"machines":[{
-                "id":config().machine_id,"name":"dev","cpus":2,"maxCPUs":2,
+            serde_json::json!({"schemaVersion":1,"computers":[{
+                "id":config().computer_id,"name":"dev","cpus":2,"maxCPUs":2,
                 "memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10
             }]})
             .to_string(),
@@ -1296,7 +1299,7 @@ sys.stdin.buffer.read()
         .unwrap();
     }
     fn remote_request(c: &Configuration) -> serde_json::Value {
-        serde_json::json!({"vmId":c.machine_id,"settings":{
+        serde_json::json!({"computerId":c.computer_id,"settings":{
             "enabled":c.enabled,"port":c.port,"bindAddress":c.bind_address,"keys":c.keys
         }})
     }
@@ -1314,7 +1317,7 @@ sys.stdin.buffer.read()
         let c = config();
         let mut owned = Owners::default();
         owned.listeners.insert(
-            c.workspace.clone(),
+            c.computer.clone(),
             Listener {
                 children: vec![],
                 config: c.clone(),
@@ -1322,12 +1325,12 @@ sys.stdin.buffer.read()
         );
         for _ in 0..2 {
             let observed = inspect_running(&p, &c);
-            assert_eq!(observed.as_ref().unwrap_err(), "The bundled runtime cannot open this sandbox's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo.");
+            assert_eq!(observed.as_ref().unwrap_err(), "The bundled runtime cannot open this computer's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo.");
             reconcile_one(&mut owned, &c, observed, &["127.0.0.1".into()], || {
                 panic!("unsafe runtime must not bind a listener")
             });
-            assert!(!owned.listeners.contains_key(&c.workspace));
-            assert_eq!(owned.errors[&c.workspace], "The bundled runtime cannot open this sandbox's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo.");
+            assert!(!owned.listeners.contains_key(&c.computer));
+            assert_eq!(owned.errors[&c.computer], "The bundled runtime cannot open this computer's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo.");
         }
     }
 
@@ -1340,18 +1343,17 @@ sys.stdin.buffer.read()
         let c = config();
         editor::write_private(&path(&p), &serde_json::to_vec(&vec![c.clone()]).unwrap()).unwrap();
         let (public, controller) = controller_identity(&dir, "laptop");
-        let request =
-            serde_json::json!({"vmId":c.machine_id,"publicKey":public,"controllerId":controller});
+        let request = serde_json::json!({"computerId":c.computer_id,"publicKey":public,"controllerId":controller});
         let error = remote_with(&p, "ssh.access.connection", &request).unwrap_err();
-        assert!(error.contains("Update Silo on the connecting computer"));
+        assert!(error.contains("Update Silo on the connecting device"));
         assert!(!p.home.join("ssh/managed-clients").exists());
-        let request = serde_json::json!({"vmId":c.machine_id,"accountProtocol":1,"publicKey":public,"controllerId":controller});
+        let request = serde_json::json!({"computerId":c.computer_id,"accountProtocol":1,"publicKey":public,"controllerId":controller});
         let connection = remote_with(&p, "ssh.access.connection", &request).unwrap();
         assert_eq!(connection["user"], "silo");
         assert!(connection.get("privateKey").is_none());
     }
 
-    /// A connecting computer's own key pair and identity. Only the public key is sent.
+    /// A connecting device's own key pair and identity. Only the public key is sent.
     fn controller_identity(dir: &tempfile::TempDir, name: &str) -> (String, String) {
         let key = dir.path().join(format!("controller-{name}"));
         editor::key(&key).unwrap();
@@ -1370,13 +1372,13 @@ sys.stdin.buffer.read()
             p,
             "ssh.access.connection",
             &serde_json::json!({
-                "vmId":c.machine_id,"accountProtocol":1,"publicKey":public,"controllerId":controller
+                "computerId":c.computer_id,"accountProtocol":1,"publicKey":public,"controllerId":controller
             }),
         )
     }
 
     #[test]
-    fn remote_connections_authorize_each_computers_own_key_and_never_send_a_private_key() {
+    fn remote_connections_authorize_each_devices_own_key_and_never_send_a_private_key() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
@@ -1400,7 +1402,7 @@ sys.stdin.buffer.read()
         let before = read(&p).unwrap();
         connect(&p, &c, &laptop, &laptop_id).unwrap();
         assert_eq!(read(&p).unwrap(), before);
-        // A second computer gets its own entry; a new key from the first replaces its old one.
+        // A second device gets its own entry; a new key from the first replaces its old one.
         let (desk, desk_id) = controller_identity(&dir, "desk");
         connect(&p, &c, &desk, &desk_id).unwrap();
         let (replacement, _) = controller_identity(&dir, "laptop-2");
@@ -1413,9 +1415,9 @@ sys.stdin.buffer.read()
         assert!(keys.contains(&c.keys[0]));
         assert_eq!(keys.len(), 4);
         for invalid in [
-            serde_json::json!({"vmId":c.machine_id,"accountProtocol":1}),
-            serde_json::json!({"vmId":c.machine_id,"accountProtocol":1,"publicKey":format!("{laptop} comment"),"controllerId":laptop_id}),
-            serde_json::json!({"vmId":c.machine_id,"accountProtocol":1,"publicKey":laptop,"controllerId":"laptop"}),
+            serde_json::json!({"computerId":c.computer_id,"accountProtocol":1}),
+            serde_json::json!({"computerId":c.computer_id,"accountProtocol":1,"publicKey":format!("{laptop} comment"),"controllerId":laptop_id}),
+            serde_json::json!({"computerId":c.computer_id,"accountProtocol":1,"publicKey":laptop,"controllerId":"laptop"}),
         ] {
             assert!(
                 remote_with(&p, "ssh.access.connection", &invalid).is_err(),
@@ -1513,7 +1515,7 @@ sys.stdin.buffer.read()
         let mut c = config();
         c.port = unused_port();
         remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
-        let key = client_key(&p, &c.machine_id).unwrap();
+        let key = client_key(&p, &c.computer_id).unwrap();
         let managed = editor::public_key(&key).unwrap();
         fs::remove_file(&key).unwrap();
         fs::remove_file(key.with_extension("pub")).unwrap();
@@ -1524,7 +1526,7 @@ sys.stdin.buffer.read()
         let mut reenabled = read(&p).unwrap()[0].clone();
         reenabled.enabled = true;
         remote_with(&p, "ssh.access.save", &remote_request(&reenabled)).unwrap();
-        let rotated = editor::public_key(&client_key(&p, &c.machine_id).unwrap()).unwrap();
+        let rotated = editor::public_key(&client_key(&p, &c.computer_id).unwrap()).unwrap();
         assert_ne!(rotated, managed);
         assert!(!read(&p).unwrap()[0].keys.contains(&managed));
     }
@@ -1538,7 +1540,7 @@ sys.stdin.buffer.read()
         let mut c = config();
         c.port = unused_port();
         remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
-        let key = client_key(&p, &c.machine_id).unwrap();
+        let key = client_key(&p, &c.computer_id).unwrap();
         let public = fs::read(key.with_extension("pub")).unwrap();
         fs::remove_file(&key).unwrap();
         fs::remove_file(key.with_extension("pub")).unwrap();
@@ -1560,7 +1562,7 @@ sys.stdin.buffer.read()
     }
 
     #[test]
-    fn disabling_ssh_access_revokes_computer_keys_and_rotates_the_managed_key() {
+    fn disabling_ssh_access_revokes_device_keys_and_rotates_the_managed_key() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
@@ -1570,8 +1572,8 @@ sys.stdin.buffer.read()
         remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
         let (laptop, laptop_id) = controller_identity(&dir, "laptop");
         connect(&p, &c, &laptop, &laptop_id).unwrap();
-        let managed = editor::public_key(&client_key(&p, &c.machine_id).unwrap()).unwrap();
-        connection_material(&p, &c.machine_id).unwrap();
+        let managed = editor::public_key(&client_key(&p, &c.computer_id).unwrap()).unwrap();
+        connection_material(&p, &c.computer_id).unwrap();
         // Disable with every key the state reported, as the app does.
         let mut disabled = read(&p).unwrap()[0].clone();
         disabled.enabled = false;
@@ -1584,10 +1586,10 @@ sys.stdin.buffer.read()
         assert!(!p
             .home
             .join("ssh/managed-clients")
-            .join(&c.machine_id)
+            .join(&c.computer_id)
             .exists());
         remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
-        let rotated = editor::public_key(&client_key(&p, &c.machine_id).unwrap()).unwrap();
+        let rotated = editor::public_key(&client_key(&p, &c.computer_id).unwrap()).unwrap();
         assert_ne!(rotated, managed);
         let keys = read(&p).unwrap()[0].keys.clone();
         assert!(!keys
@@ -1609,9 +1611,9 @@ sys.stdin.buffer.read()
         c.port = unused_port();
         let request = remote_request(&c);
         let first = remote_with(&p, "ssh.access.save", &request).unwrap();
-        assert_eq!(first["workspaces"][0]["keys"].as_array().unwrap().len(), 1);
+        assert_eq!(first["computers"][0]["keys"].as_array().unwrap().len(), 1);
         assert!(!first.to_string().contains("PRIVATE KEY"));
-        let key_path = client_key(&p, &c.machine_id).unwrap();
+        let key_path = client_key(&p, &c.computer_id).unwrap();
         let first_key = fs::read(&key_path).unwrap();
         assert_eq!(
             fs::metadata(&key_path).unwrap().permissions().mode() & 0o777,
@@ -1619,12 +1621,12 @@ sys.stdin.buffer.read()
         );
         let second = remote_with(&p, "ssh.access.save", &request).unwrap();
         assert_eq!(
-            first["workspaces"][0]["keys"],
-            second["workspaces"][0]["keys"]
+            first["computers"][0]["keys"],
+            second["computers"][0]["keys"]
         );
         assert_eq!(first_key, fs::read(&key_path).unwrap());
-        // Only a local connection reads the managed private key; it never crosses computers.
-        let exported = connection_material(&p, &c.machine_id).unwrap();
+        // Only a local connection reads the managed private key; it never crosses devices.
+        let exported = connection_material(&p, &c.computer_id).unwrap();
         assert!(exported["privateKey"]
             .as_str()
             .unwrap()
@@ -1633,7 +1635,7 @@ sys.stdin.buffer.read()
         assert!(!p.home.join("running").exists());
         c.enabled = false;
         remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
-        assert!(connection_material(&p, &c.machine_id).is_err());
+        assert!(connection_material(&p, &c.computer_id).is_err());
         assert!(client_key(&p, "../../escape").is_err());
     }
 
@@ -1643,7 +1645,7 @@ sys.stdin.buffer.read()
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                close_workspace("dev");
+                close_computer("dev");
             }
         }
         let _cleanup = Cleanup;
@@ -1654,16 +1656,16 @@ sys.stdin.buffer.read()
         c.port = unused_port();
         let request = remote_request(&c);
         let waiting = remote_with(&p, "ssh.access.save", &request).unwrap();
-        assert_eq!(waiting["workspaces"][0]["state"], "waiting");
+        assert_eq!(waiting["computers"][0]["state"], "waiting");
         assert!(
             !p.home.join("running").exists(),
-            "remote toggle must not start a VM"
+            "remote toggle must not start a computer"
         );
         assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, c.port)).is_err());
         fs::write(p.home.join("running"), "").unwrap();
         let response = remote_with(&p, "ssh.access.state", &serde_json::json!({})).unwrap();
-        assert_eq!(response["workspaces"][0]["vmId"], c.machine_id);
-        assert_eq!(response["workspaces"][0]["state"], "listening");
+        assert_eq!(response["computers"][0]["computerId"], c.computer_id);
+        assert_eq!(response["computers"][0]["state"], "listening");
         drop(response); // Returning/dropping a controller reply does not own the listener.
         let mut session = TcpStream::connect((Ipv4Addr::LOCALHOST, c.port)).unwrap();
         session
@@ -1679,7 +1681,7 @@ sys.stdin.buffer.read()
         );
         c.enabled = false;
         let result = remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
-        assert_eq!(result["workspaces"][0]["state"], "disabled");
+        assert_eq!(result["computers"][0]["state"], "disabled");
         assert!(session.read(&mut [0]).map_or(true, |n| n == 0));
         assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, c.port)).is_err());
         assert_eq!(read(&p).unwrap()[0].keys, c.keys);
@@ -1702,7 +1704,7 @@ sys.stdin.buffer.read()
     struct CloseDev;
     impl Drop for CloseDev {
         fn drop(&mut self) {
-            close_workspace("dev");
+            close_computer("dev");
         }
     }
     #[test]
@@ -1716,19 +1718,19 @@ sys.stdin.buffer.read()
             let p = p.clone();
             std::thread::spawn(move || reconcile(&p))
         };
-        // Let the pass inspect the sandbox and begin starting the listener.
+        // Let the pass inspect the computer and begin starting the listener.
         std::thread::sleep(Duration::from_millis(600));
         let start = Instant::now();
         let observed = state(&p).unwrap();
-        close_workspace("other");
+        close_computer("other");
         let waited = start.elapsed();
         pass.join().unwrap();
         assert!(
             waited < Duration::from_millis(1000),
             "state waited {waited:?} for listener start-up"
         );
-        assert_eq!(observed.workspaces[0].state, "waiting");
-        assert_eq!(state(&p).unwrap().workspaces[0].state, "listening");
+        assert_eq!(observed.computers[0].state, "waiting");
+        assert_eq!(state(&p).unwrap().computers[0].state, "listening");
         assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, c.port)).is_ok());
     }
     #[test]
@@ -1743,8 +1745,8 @@ sys.stdin.buffer.read()
             std::thread::spawn(move || reconcile(&p))
         };
         std::thread::sleep(Duration::from_millis(500));
-        // The sandbox is being stopped: its sessions are revoked before the stop.
-        close_workspace("dev");
+        // The computer is being stopped: its sessions are revoked before the stop.
+        close_computer("dev");
         pass.join().unwrap();
         assert!(!owners().lock().unwrap().listeners.contains_key("dev"));
         assert!(TcpStream::connect((Ipv4Addr::LOCALHOST, c.port)).is_err());
@@ -1779,13 +1781,13 @@ sys.stdin.buffer.read()
         remote_fixture(&p);
         // An empty settings file makes `read` (and therefore `state`) succeed.
         editor::write_private(&path(&p), b"[]").unwrap();
-        // Hold a computer guard on another thread for the whole read. `state` must
+        // Hold a device guard on another thread for the whole read. `state` must
         // observe without taking the gate, so it returns promptly regardless.
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
         let holder = std::thread::spawn(move || {
             let _guard = runtime::OPERATIONS
-                .computer("Blocking SSH read test")
+                .device("Blocking SSH read test")
                 .unwrap();
             held_tx.send(()).unwrap();
             release_rx.recv().unwrap();
@@ -1811,15 +1813,15 @@ sys.stdin.buffer.read()
         remote_fixture(&p);
         let request = remote_request(&config());
         let mut replaced = request.clone();
-        replaced["vmId"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
+        replaced["computerId"] = serde_json::json!(uuid::Uuid::new_v4().to_string());
         assert!(remote_with(&p, "ssh.access.save", &replaced)
             .unwrap_err()
             .contains("no longer exists"));
         let mut invalid = request.clone();
-        invalid["vmId"] = serde_json::json!("dev");
+        invalid["computerId"] = serde_json::json!("dev");
         assert!(remote_with(&p, "ssh.access.save", &invalid).is_err());
         let mut invalid = request.clone();
-        invalid["workspace"] = serde_json::json!("dev");
+        invalid["computer"] = serde_json::json!("dev");
         assert!(remote_with(&p, "ssh.access.save", &invalid).is_err());
         for (field, value) in [
             ("port", serde_json::json!(0)),
@@ -1846,9 +1848,9 @@ mod contract_tests {
         let states: Vec<State> = ["disabled", "waiting", "listening", "error"]
             .into_iter()
             .map(|status| State {
-                workspaces: vec![Workspace {
-                    workspace: "dev".into(),
-                    vm_id: "00000000-0000-4000-8000-000000000001".into(),
+                computers: vec![Computer {
+                    computer: "dev".into(),
+                    computer_id: "00000000-0000-4000-8000-000000000001".into(),
                     enabled: status != "disabled",
                     port: 2222,
                     bind_address: "127.0.0.1".into(),
@@ -1863,7 +1865,7 @@ mod contract_tests {
                     message: (status == "error").then(|| "SSH listener could not start.".into()),
                     fingerprint: (status == "listening")
                         .then(|| "SHA256:contract-public-fingerprint".into()),
-                    computer_name: "Contract computer".into(),
+                    device_name: "Contract device".into(),
                     addresses: vec!["192.0.2.10".into()],
                     user: "silo",
                 }],

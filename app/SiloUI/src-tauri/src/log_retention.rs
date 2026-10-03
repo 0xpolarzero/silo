@@ -1,4 +1,4 @@
-//! Shared with the pinned runtime patch. Only call from Silo for stopped VMs.
+//! Shared with the pinned runtime patch. Only call from Silo for stopped computers.
 //! Live runtime writers serialize retention and writes with their process lock.
 use std::{
     fs, io,

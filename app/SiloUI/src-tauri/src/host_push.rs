@@ -15,7 +15,7 @@ use std::{
 };
 use tauri::{Emitter, Manager};
 
-/// Repository discovery per VM: the last finished read (with its start time)
+/// Repository discovery per computer: the last finished read (with its start time)
 /// and whether a background read is in flight.
 #[derive(Default)]
 struct Discovery {
@@ -69,25 +69,25 @@ fn dismiss_result(entries: &mut HashMap<String, (Value, Instant)>, key: &str) {
 #[tauri::command]
 pub async fn dismiss_repository_push(
     app: tauri::AppHandle,
-    workspace: String,
+    computer: String,
     repository_path: String,
 ) -> Result<(), String> {
-    if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
+    if let Some((device, computer)) = crate::remote_access::target(&computer)? {
         return tauri::async_runtime::spawn_blocking(move || {
             crate::remote::call_remote(
                 &app,
-                &host,
+                &device,
                 "repository.dismiss",
-                json!({"vmId":vm,"path":repository_path}),
+                json!({"computerId":computer,"path":repository_path}),
             )
             .map(|_| ())
         })
         .await
         .map_err(|_| "Remote repository request failed.".to_string())?;
     }
-    crate::host_push_operations::dismiss(&app, &workspace, &repository_path)?;
+    crate::host_push_operations::dismiss(&app, &computer, &repository_path)?;
     let mut entries = results().lock().map_err(|_| "Push state unavailable.")?;
-    dismiss_result(&mut entries, &format!("{workspace}\0{repository_path}"));
+    dismiss_result(&mut entries, &format!("{computer}\0{repository_path}"));
     drop(entries);
     let _ = app.emit("silo://application-state-changed", ());
     Ok(())
@@ -130,7 +130,7 @@ fn guest_within(
     command.extend(args.iter().map(|s| s.to_string()));
     runtime::run_msb(paths, &command, Duration::from_secs(seconds + 15))
         .map(|o| o.stdout)
-        .map_err(|_| "Could not read committed repository data from the sandbox.".into())
+        .map_err(|_| "Could not read committed repository data from the computer.".into())
 }
 /// The system store carries administrator-installed and updated roots (for
 /// example TLS-inspecting proxies); the bundled file is only a fallback.
@@ -214,23 +214,23 @@ git -C "$1" update-ref --no-deref "$2" "$3" "$4"
 "#;
 /// Rows at most this old are served without reading the guest again.
 const DISCOVERY_FRESH: Duration = Duration::from_secs(15);
-/// A state refresh waits this long for a VM's first discovery; later refreshes
+/// A state refresh waits this long for a computer's first discovery; later refreshes
 /// never wait, so a slow or hostile guest cannot stall them.
 const DISCOVERY_FIRST_WAIT: Duration = Duration::from_secs(3);
 /// Guest time limit for one discovery; an explicit refresh waits for it.
 const DISCOVERY_SECONDS: u64 = 20;
 
-/// Repositories of a running VM. Reads run in the background, one per VM at a
+/// Repositories of a running computer. Reads run in the background, one per computer at a
 /// time; callers get the last known rows while a newer read is in flight.
 /// `refresh` (the user's Refresh) waits for a read that started after the call.
 pub(crate) fn discover(
     paths: &RuntimePaths,
     name: &str,
-    vm_id: &str,
+    computer_id: &str,
     refresh: bool,
 ) -> Result<Vec<Value>, String> {
     let requested = Instant::now();
-    let key = format!("{}:{vm_id}", paths.home.display());
+    let key = format!("{}:{computer_id}", paths.home.display());
     let (lock, changed) = discoveries();
     let wait_until = requested
         + if refresh {
@@ -287,7 +287,7 @@ pub(crate) fn discover(
     }
 }
 // The guest deadline and runtime output budget bound discovery. An entry-count
-// cutoff discards every result when a workspace contains many Git worktrees.
+// cutoff discards every result when a computer contains many Git worktrees.
 // Dependency and cache trees are skipped; they hold no repositories to push.
 const DISCOVER_REPOSITORIES: &str = r#"find "$1" \( -name node_modules -o -name .venv -o -name __pycache__ -o -name .tox -o -name .gradle -o -name .pnpm-store \) -prune -o -name .git -prune -print 2>/dev/null | while IFS= read -r directory; do
 p=${directory%/.git}
@@ -348,8 +348,8 @@ struct HostGit {
     deadline: Option<Instant>,
 }
 const CANCELLED: &str = "Push cancelled. The branch was not updated.";
-/// Precedes output relayed from the sandbox, which the guest controls.
-const SANDBOX_OUTPUT: &str = "Output from the sandbox (not from Silo or GitHub):";
+/// Precedes output relayed from the computer, which the guest controls.
+const COMPUTER_OUTPUT: &str = "Output from the computer (not from Silo or GitHub):";
 const CREDENTIAL_EXPIRED: &str =
     "The push took longer than its GitHub credential allows. Push again to continue.";
 const STEP_TIMED_OUT: &str = "Git operation timed out. Check the remote before retrying.";
@@ -396,11 +396,11 @@ fn credential_origin(remote: &str) -> Result<&str, String> {
     let (scheme, rest) = remote
         .split_once("://")
         .ok_or("Invalid push destination.")?;
-    let host = rest.split('/').next().unwrap_or_default();
-    if !matches!(scheme, "https" | "http") || host.is_empty() {
+    let device = rest.split('/').next().unwrap_or_default();
+    if !matches!(scheme, "https" | "http") || device.is_empty() {
         return Err("Invalid push destination.".into());
     }
-    Ok(&remote[..scheme.len() + 3 + host.len()])
+    Ok(&remote[..scheme.len() + 3 + device.len()])
 }
 impl HostGit {
     fn run(&self, args: &[&str], token: Option<&str>, remote: &str) -> Result<String, String> {
@@ -608,11 +608,11 @@ impl HostGit {
             .copied()
             .collect::<Vec<_>>()
             .join(" ");
-        // Stages reading from the sandbox relay text the guest controls. Keep it
+        // Stages reading from the computer relay text the guest controls. Keep it
         // out of the visible message and label it in the details.
-        let from_sandbox = args.contains(&"silo-source");
-        let diagnostic = if from_sandbox && !diagnostic.is_empty() {
-            format!("{SANDBOX_OUTPUT} {diagnostic}")
+        let from_computer = args.contains(&"silo-source");
+        let diagnostic = if from_computer && !diagnostic.is_empty() {
+            format!("{COMPUTER_OUTPUT} {diagnostic}")
         } else {
             diagnostic
         };
@@ -635,8 +635,8 @@ impl HostGit {
                     }
                 }
                 // The first line is the summary; the rest becomes diagnostic details.
-                return Err(if from_sandbox {
-                    format!("Reading committed data from the sandbox failed (Git {stage}, {status}).\n{diagnostic}")
+                return Err(if from_computer {
+                    format!("Reading committed data from the computer failed (Git {stage}, {status}).\n{diagnostic}")
                 } else {
                     format!("Git {stage} failed ({status}).\n{diagnostic}")
                 });
@@ -717,32 +717,32 @@ fn transfer_diagnostic(mut input: impl Read) -> String {
         .collect()
 }
 
-fn require_running(paths: &RuntimePaths, workspace: &str) -> Result<(), String> {
+fn require_running(paths: &RuntimePaths, computer: &str) -> Result<(), String> {
     let inspected = runtime::run_msb(
         paths,
         &[
             "inspect".into(),
             "--format".into(),
             "json".into(),
-            workspace.into(),
+            computer.into(),
         ],
         Duration::from_secs(15),
     )
-    .map_err(|_| "Cannot verify sandbox state.")?;
+    .map_err(|_| "Cannot verify computer state.")?;
     let inspected: runtime::InspectedSandbox =
-        serde_json::from_str(&inspected.stdout).map_err(|_| "Invalid sandbox state.")?;
-    validate_running(&inspected, workspace)
+        serde_json::from_str(&inspected.stdout).map_err(|_| "Invalid computer state.")?;
+    validate_running(&inspected, computer)
 }
-fn validate_running(inspected: &runtime::InspectedSandbox, workspace: &str) -> Result<(), String> {
+fn validate_running(inspected: &runtime::InspectedSandbox, computer: &str) -> Result<(), String> {
     runtime::ensure_managed(inspected).map_err(|e| e.to_string())?;
-    if inspected.name != workspace || !inspected.status.eq_ignore_ascii_case("running") {
-        return Err("Start the sandbox before pushing its committed changes.".into());
+    if inspected.name != computer || !inspected.status.eq_ignore_ascii_case("running") {
+        return Err("Start the computer before pushing its committed changes.".into());
     }
     Ok(())
 }
 fn perform(
     app: &tauri::AppHandle,
-    workspace: &str,
+    computer: &str,
     path: &str,
     target: &PushTarget,
 ) -> Result<u64, String> {
@@ -751,28 +751,28 @@ fn perform(
         return Err("Choose a repository inside /workspace.".into());
     }
     target.validate()?;
-    runtime::validate_name(workspace).map_err(|e| e.to_string())?;
+    runtime::validate_name(computer).map_err(|e| e.to_string())?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
-    let vm_id = metadata
-        .machines
+    let computer_id = metadata
+        .computers
         .iter()
-        .find(|m| m.name() == workspace)
+        .find(|m| m.name() == computer)
         .map(|m| m.id().to_owned())
-        .ok_or("Choose a managed Silo VM.")?;
-    // Host-push reads and writes one VM's guest; it waits its turn for that VM.
+        .ok_or("Choose a managed Silo computer.")?;
+    // Host-push reads and writes one computer's guest; it waits its turn for that computer.
     let read_guard = runtime::OPERATIONS
-        .vm(
-            &vm_id,
-            workspace,
-            &format!("Reading repository in {workspace}"),
+        .computer(
+            &computer_id,
+            computer,
+            &format!("Reading repository in {computer}"),
         )
         .map_err(|e| e.to_string())?;
     runtime::shutdown::ensure_accepting_operations()?;
-    require_running(&paths, workspace)?;
+    require_running(&paths, computer)?;
     let origin = guest(
         &paths,
-        workspace,
+        computer,
         "git -C \"$1\" remote get-url origin",
         &[path],
     )?;
@@ -782,16 +782,16 @@ fn perform(
         return Err(TARGET_CHANGED.into());
     }
     // Revoked when this function returns, whatever the outcome.
-    let credential = crate::github::host_push_credential(app, workspace, &target.repository)?;
+    let credential = crate::github::host_push_credential(app, computer, &target.repository)?;
     let guard = runtime::OPERATIONS
         .kind(runtime::operation_gate::OperationKind::Push)
-        .vm(&vm_id, workspace, &format!("Pushing from {workspace}"))
+        .computer(&computer_id, computer, &format!("Pushing from {computer}"))
         .map_err(|e| e.to_string())?;
     // A push can run for a long time; the user may stop it (and Quit may cancel it).
     guard.allow_cancel();
     let result = (|| {
         runtime::shutdown::ensure_accepting_operations()?;
-        require_running(&paths, workspace)?;
+        require_running(&paths, computer)?;
         let executable = crate::bundled_tools::directory(app)?.join("git");
         let support = app
             .path()
@@ -800,8 +800,8 @@ fn perform(
             .join("git-support");
         push_target(
             &paths,
-            workspace,
-            &vm_id,
+            computer,
+            &computer_id,
             path,
             target,
             credential.repository(),
@@ -857,7 +857,7 @@ fn publish_committed(
         &mut imported,
     )
 }
-/// `imported` becomes true once the sandbox commit is fully in the cache;
+/// `imported` becomes true once the computer commit is fully in the cache;
 /// later failures (remote rejections, network) leave the cache consistent.
 #[allow(clippy::too_many_arguments)]
 fn publish_committed_tracking(
@@ -897,7 +897,7 @@ fn publish_committed_tracking(
     )?;
     let imported = git.run(&["rev-parse", "refs/silo/push"], None, "")?;
     if imported.trim() != expected_commit {
-        return Err("The sandbox repository changed during export. Retry the push.".into());
+        return Err("The computer repository changed during export. Retry the push.".into());
     }
     *imported_into_cache = true;
     // fetch.fsckObjects verifies incoming objects without rescanning the
@@ -948,7 +948,7 @@ fn publish_committed_tracking(
         // Ask Git before spending time transferring LFS data. The final push
         // still performs Git's own concurrent-update/non-fast-forward checks.
         git.run(&["merge-base", "--is-ancestor", "refs/remotes/origin/published", "refs/silo/push"], None, "")
-            .map_err(|_| "The remote branch has commits missing from this sandbox. Fetch and integrate them before pushing.".to_string())?;
+            .map_err(|_| "The remote branch has commits missing from this computer. Fetch and integrate them before pushing.".to_string())?;
         "refs/remotes/origin/published..refs/silo/push"
     };
     let count = git
@@ -958,7 +958,7 @@ fn publish_committed_tracking(
         .map_err(|_| "Invalid commit count.")?;
 
     // --all includes LFS data referenced only by historical commits. An object
-    // absent from the sandbox may already exist upstream. LFS itself decides
+    // absent from the computer may already exist upstream. LFS itself decides
     // whether such an object is needed; a source fetch alone is not the gate.
     let source_result = git.run(
         &[
@@ -1015,12 +1015,12 @@ fn publish_committed_tracking(
     Ok(count)
 }
 
-// The opt-in live regression pushes the sandbox's current branch, as the UI
+// The opt-in live regression pushes the computer's current branch, as the UI
 // would after the user confirmed it.
 #[cfg(test)]
 pub(crate) fn push_committed(
     paths: &RuntimePaths,
-    workspace: &str,
+    computer: &str,
     path: &str,
     repo: &str,
     token: &str,
@@ -1028,15 +1028,15 @@ pub(crate) fn push_committed(
     support: &Path,
 ) -> Result<u64, String> {
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
-    let vm_id = metadata
-        .machines
+    let computer_id = metadata
+        .computers
         .iter()
-        .find(|m| m.name() == workspace)
+        .find(|m| m.name() == computer)
         .map(|m| m.id().to_owned())
-        .ok_or("Choose a managed Silo VM.")?;
+        .ok_or("Choose a managed Silo computer.")?;
     let head = guest(
         paths,
-        workspace,
+        computer,
         "set -eu\nprintf '%s\\n' \"$(git -C \"$1\" symbolic-ref --quiet --short HEAD)\" \"$(git -C \"$1\" rev-parse --verify HEAD)\"",
         &[path],
     )?;
@@ -1048,17 +1048,26 @@ pub(crate) fn push_committed(
     };
     target.validate()?;
     push_target(
-        paths, workspace, &vm_id, path, &target, repo, token, None, executable, support,
+        paths,
+        computer,
+        &computer_id,
+        path,
+        &target,
+        repo,
+        token,
+        None,
+        executable,
+        support,
     )
 }
 
-// The same publication path is exercised with disposable VMs and scoped
+// The same publication path is exercised with disposable computers and scoped
 // credentials in the opt-in live regression. Authorization stays in perform.
 #[allow(clippy::too_many_arguments)]
 fn push_target(
     paths: &RuntimePaths,
-    workspace: &str,
-    vm_id: &str,
+    computer: &str,
+    computer_id: &str,
     path: &str,
     target: &PushTarget,
     repo: &str,
@@ -1074,16 +1083,16 @@ fn push_target(
     let result = (|| {
         let temp = tempfile::tempdir().map_err(|_| "Cannot create isolated host Git directory.")?;
         let root = temp.path();
-        let cache_key = format!("{workspace}\0{path}\0{repo}");
+        let cache_key = format!("{computer}\0{path}\0{repo}");
         let cache = crate::host_push_cache::acquire(&paths.home.join("push-cache"), &cache_key)?;
         let mut transport =
-            crate::host_push_transport::prepare(paths, workspace, &root.join("ssh"))?;
+            crate::host_push_transport::prepare(paths, computer, &root.join("ssh"))?;
         transport.install_lfs_server(&support.join("lfs-transfer/git-lfs-transfer"), &export)?;
         // Export only the confirmed branch, and only while it still points at
         // the confirmed commit. The host verifies the imported commit again.
         let data = guest(
             paths,
-            workspace,
+            computer,
             r#"set -eu
 commit=$(git -C "$1" rev-parse --verify --quiet "refs/heads/$4^{commit}") || commit=
 if [ "$commit" != "$5" ]; then printf 'changed\n'; exit 0; fi
@@ -1151,7 +1160,7 @@ printf '%s\n%s\n%s\n' "$commit" "$tracking" "$origin"
         let _ = runtime::operation_gate::uncancellable(|| {
             guest(
                 paths,
-                workspace,
+                computer,
                 UPDATE_TRACKING_REF,
                 &[
                     path,
@@ -1164,7 +1173,8 @@ printf '%s\n%s\n%s\n' "$commit" "$tracking" "$origin"
         });
         // The next state refresh reads the repository again.
         if let Ok(mut entries) = discoveries().0.lock() {
-            if let Some(entry) = entries.get_mut(&format!("{}:{vm_id}", paths.home.display())) {
+            if let Some(entry) = entries.get_mut(&format!("{}:{computer_id}", paths.home.display()))
+            {
                 entry.invalidate();
             }
         }
@@ -1174,27 +1184,27 @@ printf '%s\n%s\n%s\n' "$commit" "$tracking" "$origin"
     let _ = runtime::operation_gate::uncancellable(|| {
         guest(
             paths,
-            workspace,
+            computer,
             "git -C \"$1\" update-ref -d \"$3\"; rm -rf -- \"$2\"",
             &[path, &export, &export_ref],
         )
     });
     result
 }
-/// Push a local sandbox repository. Remote computers run this through their
+/// Push a local computer repository. Remote devices run this through their
 /// own push journal (`repository.push.start`).
 pub(crate) async fn push_repository(
     app: tauri::AppHandle,
-    workspace: String,
+    computer: String,
     repository_path: String,
     target: PushTarget,
 ) -> Result<Value, String> {
-    let key = format!("{workspace}\0{repository_path}");
+    let key = format!("{computer}\0{repository_path}");
     let planned_count = {
-        let (app, workspace, repository_path) =
-            (app.clone(), workspace.clone(), repository_path.clone());
+        let (app, computer, repository_path) =
+            (app.clone(), computer.clone(), repository_path.clone());
         runtime::operation_gate::spawn_blocking(move || {
-            planned_count(&app, &workspace, &repository_path)
+            planned_count(&app, &computer, &repository_path)
         })
         .await
         .map_err(|_| "Host push task failed.".to_string())?
@@ -1204,18 +1214,18 @@ pub(crate) async fn push_repository(
         if r.get(&key).is_some_and(|(v, _)| v["status"] == "pushing") {
             return Err("This repository is already being pushed.".into());
         }
-        r.insert(key.clone(),(json!({"workspace":workspace,"repositoryPath":repository_path,"commitCount":planned_count,"status":"pushing","target":target}),Instant::now()));
+        r.insert(key.clone(),(json!({"computer":computer,"repositoryPath":repository_path,"commitCount":planned_count,"status":"pushing","target":target}),Instant::now()));
     }
     let _ = app.emit("silo://application-state-changed", ());
     let task = {
-        let (app, workspace, repository_path, target) = (
+        let (app, computer, repository_path, target) = (
             app.clone(),
-            workspace.clone(),
+            computer.clone(),
             repository_path.clone(),
             target.clone(),
         );
         runtime::operation_gate::spawn_blocking(move || {
-            perform(&app, &workspace, &repository_path, &target)
+            perform(&app, &computer, &repository_path, &target)
         })
     };
     // A panicked task must still resolve the entry, or it would stay
@@ -1223,7 +1233,7 @@ pub(crate) async fn push_repository(
     let outcome = task
         .await
         .unwrap_or_else(|_| Err("Host push task failed.".into()));
-    let value = finished_result(&workspace, &repository_path, &target, outcome);
+    let value = finished_result(&computer, &repository_path, &target, outcome);
     results()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1233,21 +1243,21 @@ pub(crate) async fn push_repository(
 }
 /// The commit count last shown for this repository, so an active push reports
 /// the planned number instead of zero.
-pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_path: &str) -> u64 {
+pub(crate) fn planned_count(app: &tauri::AppHandle, computer: &str, repository_path: &str) -> u64 {
     runtime::runtime_paths(app)
         .ok()
         .and_then(|paths| {
             let metadata = runtime::read_metadata(&paths.metadata).ok()?;
-            let vm_id = metadata
-                .machines
+            let computer_id = metadata
+                .computers
                 .iter()
-                .find(|machine| machine.name() == workspace)?
+                .find(|configuration| configuration.name() == computer)?
                 .id();
             discoveries()
                 .0
                 .lock()
                 .ok()?
-                .get(&format!("{}:{vm_id}", paths.home.display()))?
+                .get(&format!("{}:{computer_id}", paths.home.display()))?
                 .last
                 .as_ref()?
                 .1
@@ -1260,21 +1270,21 @@ pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_
         .unwrap_or(0)
 }
 fn finished_result(
-    workspace: &str,
+    computer: &str,
     repository_path: &str,
     target: &PushTarget,
     outcome: Result<u64, String>,
 ) -> Value {
     match outcome {
         Ok(count) => json!({
-            "workspace": workspace,
+            "computer": computer,
             "repositoryPath": repository_path,
             "commitCount": count,
             "status": "succeeded",
             "target": target,
         }),
         Err(message) if message == PUBLICATION_UNKNOWN => json!({
-            "workspace": workspace,
+            "computer": computer,
             "repositoryPath": repository_path,
             "commitCount": 0,
             "status": "unknown",
@@ -1283,7 +1293,7 @@ fn finished_result(
         }),
         Err(message) => {
             let mut value = json!({
-                "workspace": workspace,
+                "computer": computer,
                 "repositoryPath": repository_path,
                 "commitCount": 0,
                 "status": "failed",
@@ -1326,7 +1336,7 @@ mod tests {
 
     use super::*;
     #[test]
-    fn recreated_vm_cannot_receive_the_previous_vms_repository_discovery() {
+    fn recreated_computer_cannot_receive_the_previous_computers_repository_discovery() {
         let root = tempfile::tempdir().unwrap();
         let paths = RuntimePaths {
             executable: root.path().join("missing-msb"),
@@ -1337,8 +1347,8 @@ mod tests {
             metadata: root.path().join("metadata"),
             volumes: root.path().join("volumes"),
         };
-        let key = format!("{}:vm-old", paths.home.display());
-        let cached = vec![json!({"path": "previous-vm-private-repository"})];
+        let key = format!("{}:computer-old", paths.home.display());
+        let cached = vec![json!({"path": "previous-computer-private-repository"})];
         discoveries().0.lock().unwrap().insert(
             key.clone(),
             Discovery {
@@ -1347,15 +1357,18 @@ mod tests {
                 generation: 0,
             },
         );
-        assert_eq!(discover(&paths, "dev", "vm-old", false).unwrap(), cached);
-        let replacement = discover(&paths, "dev", "vm-new", false);
+        assert_eq!(
+            discover(&paths, "dev", "computer-old", false).unwrap(),
+            cached
+        );
+        let replacement = discover(&paths, "dev", "computer-new", false);
         discoveries().0.lock().unwrap().remove(&key);
         discoveries()
             .0
             .lock()
             .unwrap()
-            .remove(&format!("{}:vm-new", paths.home.display()));
-        assert!(replacement.is_err(), "The replacement VM must discover its own repositories instead of returning the previous VM's cached rows: {replacement:?}");
+            .remove(&format!("{}:computer-new", paths.home.display()));
+        assert!(replacement.is_err(), "The replacement computer must discover its own repositories instead of returning the previous computer's cached rows: {replacement:?}");
     }
 
     #[test]
@@ -1371,7 +1384,7 @@ mod tests {
             metadata: root.path().join("metadata"),
             volumes: root.path().join("volumes"),
         };
-        let key = format!("{}:vm-1", paths.home.display());
+        let key = format!("{}:computer-1", paths.home.display());
         let cached = vec![json!({"path": "removed-repository"})];
         discoveries().0.lock().unwrap().insert(
             key.clone(),
@@ -1381,12 +1394,15 @@ mod tests {
                 generation: 0,
             },
         );
-        assert_eq!(discover(&paths, "test", "vm-1", false).unwrap(), cached);
+        assert_eq!(
+            discover(&paths, "test", "computer-1", false).unwrap(),
+            cached
+        );
         // A forced read must reach the missing runtime instead of returning
-        // the fresh cached rows. No real VM or runtime is involved.
-        let refreshed = discover(&paths, "test", "vm-1", true);
+        // the fresh cached rows. No real computer or runtime is involved.
+        let refreshed = discover(&paths, "test", "computer-1", true);
         assert!(refreshed.is_err());
-        assert_eq!(discover(&paths, "test", "vm-1", false), refreshed);
+        assert_eq!(discover(&paths, "test", "computer-1", false), refreshed);
         discoveries().0.lock().unwrap().remove(&key);
     }
 
@@ -1432,16 +1448,16 @@ mod tests {
                 .stdout,
         )
         .unwrap();
-        let workspace = root.path().join("workspace with spaces");
-        fs::create_dir(&workspace).unwrap();
+        let computer = root.path().join("computer with spaces");
+        fs::create_dir(&computer).unwrap();
         for index in 0..216 {
-            let repo = workspace.join(format!("repo-{index}"));
+            let repo = computer.join(format!("repo-{index}"));
             fs::create_dir(&repo).unwrap();
             symlink(seed.join(".git"), repo.join(".git")).unwrap();
         }
         let output = Command::new("sh")
             .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
-            .arg(&workspace)
+            .arg(&computer)
             .output()
             .unwrap();
         assert!(
@@ -1457,8 +1473,8 @@ mod tests {
             assert_eq!(record[2], "1 0");
             assert_eq!(record[3], "");
         }
-        // The workspace root is outside /workspace here; rename it for parsing.
-        let rows = discovered_rows(&output.replace(workspace.to_str().unwrap(), "/workspace"));
+        // The computer root is outside /workspace here; rename it for parsing.
+        let rows = discovered_rows(&output.replace(computer.to_str().unwrap(), "/workspace"));
         assert_eq!(rows.len(), 216);
         assert_eq!(rows[0]["repository"], "Owner/Repo");
         assert_eq!(rows[0]["head"], head.trim());
@@ -1506,7 +1522,7 @@ mod tests {
             storage_home: None,
             // The runtime checks that its library exists; the script stands in.
             library: root.join("msb"),
-            metadata: root.join("machines.json"),
+            metadata: root.join("computers.json"),
             volumes: root.join("volumes"),
         };
         let count = root.join("discoveries");
@@ -1529,7 +1545,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_reads_each_vm_once_in_the_background_and_serves_known_rows() {
+    fn discovery_reads_each_computer_once_in_the_background_and_serves_known_rows() {
         let root = tempfile::tempdir().unwrap();
         // The guest read blocks until the test opens the gate, so no step depends on timing.
         let gate = root.path().join("gate");
@@ -1546,7 +1562,7 @@ mod tests {
         let readers: Vec<_> = (0..3)
             .map(|_| {
                 let paths = paths.clone();
-                thread::spawn(move || discover(&paths, "dev", "vm-1", false))
+                thread::spawn(move || discover(&paths, "dev", "computer-1", false))
             })
             .collect();
         wait_until("the guest read never started", &|| runs(&count) >= 1);
@@ -1557,7 +1573,7 @@ mod tests {
         }
         assert_eq!(runs(&count), 1);
         // Once stale, the known rows are returned at once while a new read runs.
-        let key = format!("{}:vm-1", paths.home.display());
+        let key = format!("{}:computer-1", paths.home.display());
         discoveries()
             .0
             .lock()
@@ -1569,7 +1585,10 @@ mod tests {
             .unwrap()
             .0 = Instant::now() - Duration::from_secs(60);
         fs::remove_file(&gate).unwrap();
-        assert_eq!(discover(&paths, "dev", "vm-1", false).unwrap().len(), 1);
+        assert_eq!(
+            discover(&paths, "dev", "computer-1", false).unwrap().len(),
+            1
+        );
         // The call returned while the new read is still blocked in the guest: it served
         // the known rows instead of waiting for it.
         wait_until("background discovery never started", &|| runs(&count) >= 2);
@@ -1587,20 +1606,27 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (paths, count) = slow_discovery_runtime(root.path(), "sleep 6");
         let started = Instant::now();
-        assert!(discover(&paths, "dev", "vm-1", false).unwrap().is_empty());
+        assert!(discover(&paths, "dev", "computer-1", false)
+            .unwrap()
+            .is_empty());
         assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
         // Later refreshes do not start another read or wait for this one.
         let started = Instant::now();
-        assert!(discover(&paths, "dev", "vm-1", false).unwrap().is_empty());
+        assert!(discover(&paths, "dev", "computer-1", false)
+            .unwrap()
+            .is_empty());
         assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
         assert_eq!(runs(&count), 1);
         // An explicit refresh waits for the read to finish.
-        assert_eq!(discover(&paths, "dev", "vm-1", true).unwrap().len(), 1);
+        assert_eq!(
+            discover(&paths, "dev", "computer-1", true).unwrap().len(),
+            1
+        );
         discoveries()
             .0
             .lock()
             .unwrap()
-            .remove(&format!("{}:vm-1", paths.home.display()));
+            .remove(&format!("{}:computer-1", paths.home.display()));
     }
 
     #[test]
@@ -1656,8 +1682,8 @@ mod tests {
     #[test]
     fn discovery_counts_only_unpublished_commits_of_a_new_branch() {
         let root = tempfile::tempdir().unwrap();
-        let workspace = root.path().join("workspace");
-        let repository = workspace.join("repo");
+        let computer = root.path().join("computer");
+        let repository = computer.join("repo");
         fs::create_dir_all(&repository).unwrap();
         let git = |args: &[&str]| {
             let output = Command::new("git")
@@ -1684,7 +1710,7 @@ mod tests {
         git(&["commit", "--quiet", "--allow-empty", "-m", "three"]);
         let output = Command::new("sh")
             .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
-            .arg(&workspace)
+            .arg(&computer)
             .output()
             .unwrap();
         let output = String::from_utf8(output.stdout).unwrap();
@@ -1697,13 +1723,13 @@ mod tests {
     #[test]
     fn discovery_skips_dependency_trees() {
         let root = tempfile::tempdir().unwrap();
-        let workspace = root.path().join("workspace");
+        let computer = root.path().join("computer");
         for repository in [
             "app",
             "app/node_modules/dependency",
             "tool/.venv/lib/package",
         ] {
-            let directory = workspace.join(repository);
+            let directory = computer.join(repository);
             fs::create_dir_all(&directory).unwrap();
             assert!(Command::new("git")
                 .args(["init", "--quiet", "--initial-branch=main"])
@@ -1714,7 +1740,7 @@ mod tests {
         }
         let output = Command::new("sh")
             .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
-            .arg(&workspace)
+            .arg(&computer)
             .output()
             .unwrap();
         let output = String::from_utf8(output.stdout).unwrap();
@@ -1723,7 +1749,7 @@ mod tests {
             .step_by(DISCOVERY_FIELDS)
             .filter(|path| !path.is_empty())
             .collect();
-        assert_eq!(paths, [workspace.join("app").to_str().unwrap()]);
+        assert_eq!(paths, [computer.join("app").to_str().unwrap()]);
     }
 
     #[test]
@@ -1866,7 +1892,7 @@ mod tests {
         );
     }
     #[test]
-    fn accepts_native_running_status_and_rejects_stopped_or_unmanaged_sandboxes() {
+    fn accepts_native_running_status_and_rejects_stopped_or_unmanaged_computers() {
         let mut inspected: runtime::InspectedSandbox = serde_json::from_value(
             json!({"name":"dev","status":"Running","config":{"labels":{"silo.managed":"true"}}}),
         )
@@ -1908,13 +1934,13 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_output_is_labelled_and_never_the_visible_message() {
+    fn computer_output_is_labelled_and_never_the_visible_message() {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("git");
         fs::write(
             &executable,
-            "#!/bin/sh\necho 'remote: Silo needs you to paste your GitHub token into the sandbox terminal' >&2\nexit 1\n",
+            "#!/bin/sh\necho 'remote: Silo needs you to paste your GitHub token into the computer terminal' >&2\nexit 1\n",
         )
         .unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
@@ -1953,17 +1979,17 @@ mod tests {
             let result = finished_result("dev", "/workspace/repo", &target, Err(error));
             let message = result["message"].as_str().unwrap();
             assert!(
-                message.starts_with("Reading committed data from the sandbox failed"),
+                message.starts_with("Reading committed data from the computer failed"),
                 "{message}"
             );
             assert!(!message.contains("paste"));
             let details = result["diagnosticDetails"].as_str().unwrap();
-            assert!(details.starts_with(SANDBOX_OUTPUT), "{details}");
+            assert!(details.starts_with(COMPUTER_OUTPUT), "{details}");
         }
         // Host-side stages keep their Git summary.
         let error = git.run(&["push", "origin"], None, "").unwrap_err();
         assert!(error.starts_with("Git push failed"));
-        assert!(!error.contains(SANDBOX_OUTPUT));
+        assert!(!error.contains(COMPUTER_OUTPUT));
     }
 
     #[test]
@@ -1972,7 +1998,9 @@ mod tests {
         let git = sleeping_git(directory.path());
         let gate: &'static runtime::operation_gate::OperationGate =
             Box::leak(Box::new(runtime::operation_gate::OperationGate::new()));
-        let guard = gate.vm("vm", "dev", "Pushing from dev").unwrap();
+        let guard = gate
+            .computer("computer", "dev", "Pushing from dev")
+            .unwrap();
         guard.allow_cancel();
         let token = guard.cancel_token();
         thread::spawn(move || {
@@ -2173,9 +2201,9 @@ mod tests {
             "dev",
             "/workspace/repo",
             &target,
-            Err("Start the sandbox.".into()),
+            Err("Start the computer.".into()),
         );
-        assert_eq!(plain["message"], "Start the sandbox.");
+        assert_eq!(plain["message"], "Start the computer.");
         assert!(plain.get("diagnosticDetails").is_none());
     }
     #[test]
@@ -2191,7 +2219,7 @@ mod tests {
         assert_eq!(super::ca_bundle_from(&[system.as_path()], &support), system);
     }
     #[test]
-    fn requires_workspace_repository_paths() {
+    fn requires_computer_repository_paths() {
         assert!(valid_path("/workspace/repo"));
         for path in [
             "/etc",

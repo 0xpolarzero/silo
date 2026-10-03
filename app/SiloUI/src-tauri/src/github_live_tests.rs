@@ -247,7 +247,7 @@ const QUERY: &str =
     "query($owner:String!,$name:String!){repository(owner:$owner,name:$name){id nameWithOwner}}";
 const UPDATE: &str =
     "mutation($input:UpdateIssueInput!){updateIssue(input:$input){issue{id title}}}";
-fn verify(f: Fixture, vm: bool) -> Check<()> {
+fn verify(f: Fixture, computer: bool) -> Check<()> {
     let api = Api {
         client: Client::builder()
             .timeout(Duration::from_secs(30))
@@ -532,9 +532,9 @@ fn verify(f: Fixture, vm: bool) -> Check<()> {
             "Child revocation affected parent or sibling.",
         )?;
         children.retain(|token| token != &all);
-        stage = "authenticated VM workflow";
-        if vm {
-            run_vm(
+        stage = "authenticated computer workflow";
+        if computer {
+            run_computer(
                 &f,
                 issue_id.as_deref().ok_or("Missing fixture issue ID.")?,
                 json!({"version":1,"owners":[{"login":f.repos[0].name.split('/').next().unwrap(),"repositoryIds":[f.repos[0].id,f.repos[1].id],"readToken":read,"writeToken":write,"expiresAt":read_expiry.min(write_expiry)}]}),
@@ -571,7 +571,7 @@ fn guest_regression_command(executable: &std::path::Path) -> std::process::Comma
     ]);
     command
 }
-fn run_vm(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
+fn run_computer(f: &Fixture, issue_id: &str, profile: Value) -> Check<()> {
     let executable = std::env::current_exe()
         .map_err(|_| "Cannot locate authenticated guest regression executable.")?;
     let mut command = guest_regression_command(&executable);

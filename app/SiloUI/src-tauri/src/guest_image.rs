@@ -156,7 +156,7 @@ fn read_manifest(
     let manifest: GuestImageManifest = serde_json::from_slice(&bytes)
         .map_err(|_| "Silo's VM image information is invalid. Reinstall Silo.")?;
     if manifest.schema_version != 1 || manifest.architecture != std::env::consts::ARCH {
-        return Err("Silo's bundled VM image does not support this computer. Install the matching Silo build.".into());
+        return Err("Silo's bundled VM image does not support this device. Install the matching Silo build.".into());
     }
     if !valid_sha256(&manifest.archive_sha256)
         || !manifest
@@ -411,7 +411,7 @@ pub(crate) fn prepare<R: RuntimeRunner + ?Sized>(
     }
     hash_archive(&mut bundled, &manifest, None).map_err(RuntimeError::Unavailable)?;
     // Tar staging plus uncompressed layers and materialized filesystem data. This
-    // is temporary import space, not a minimum capacity imposed on each VM.
+    // is temporary import space, not a minimum capacity imposed on each computer.
     check_space(cache.tmp_dir(), manifest.unpacked_bytes.saturating_mul(4))
         .map_err(RuntimeError::Unavailable)?;
     let mut archive = tempfile::NamedTempFile::new_in(cache.tmp_dir()).map_err(|_| {
@@ -715,7 +715,7 @@ mod tests {
                 .into(),
             home: directory.path().join("msb"),
             storage_home: None,
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         struct CountingImporter(std::sync::atomic::AtomicUsize);

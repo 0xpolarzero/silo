@@ -1,9 +1,9 @@
 //! The previous runtime generation, kept as a pre-upgrade backup after a migration that
-//! converted every sandbox, and deleted 14 days later or when the user asks.
+//! converted every computer, and deleted 14 days later or when the user asks.
 //!
 //! `<app_data>/runtime` is that backup only while the migration is complete and the
 //! converted generation is selected (`runtime_migration::previous_generation_is_backup`).
-//! After "Continue" the same folder holds the only copy of the unconverted sandboxes, so
+//! After "Continue" the same folder holds the only copy of the unconverted computers, so
 //! nothing here offers, measures, reveals or deletes it then.
 //!
 //! The 14-day window is recorded in `pre-upgrade-backup.json`, not in
@@ -15,7 +15,7 @@
 //! The folder may also hold `before-checkpoints-backup-history.json`, which the migration moved
 //! there so the old export-folder choice is not replayed against the new runtime, and
 //! `before-checkpoints-backup-operation.json` when an earlier build moved the export journal
-//! there too. A migration that converts every sandbox moves no journal into it now: one that
+//! there too. A migration that converts every computer moves no journal into it now: one that
 //! recorded its result, or whose cleanup only the runtime can do and so waits for the upgrade,
 //! stays in the app data folder for the converted storage's recovery to report or finish (the
 //! backup keeps its copy of what the operation left, untouched), and one that cannot be read is
@@ -44,13 +44,13 @@ const FILE: &str = "pre-upgrade-backup.json";
 const VERSION: u32 = 1;
 const MAX_RECORD_BYTES: u64 = 64 * 1024;
 const RETENTION: time::Duration = time::Duration::days(14);
-/// Hourly rather than daily: the sleep does not count time the computer spent asleep, and a
+/// Hourly rather than daily: the sleep does not count time the device spent asleep, and a
 /// check that finds nothing due only reads one small file.
 const CHECK_EVERY: Duration = Duration::from_secs(60 * 60);
 const CHANGED: &str = "silo://pre-upgrade-backup-changed";
 
-const NOT_A_BACKUP: &str = "The previous sandbox storage is only treated as a deletable backup after a migration that converted every sandbox. Nothing was deleted.";
-const IN_USE: &str = "Silo reads sandboxes from this folder, so it was not deleted.";
+const NOT_A_BACKUP: &str = "The previous computer storage is only treated as a deletable backup after a migration that converted every computer. Nothing was deleted.";
+const IN_USE: &str = "Silo reads computers from this folder, so it was not deleted.";
 const REDIRECTED: &str =
     "The pre-upgrade backup is a link, not a folder, so Silo left it alone. Nothing was deleted.";
 const UNINSPECTABLE: &str = "Silo could not inspect the pre-upgrade backup. Nothing was deleted.";
@@ -178,7 +178,7 @@ enum Backup {
     Present(PathBuf),
 }
 
-/// What `<app_data>/runtime` is, given the folder Silo currently reads sandboxes from.
+/// What `<app_data>/runtime` is, given the folder Silo currently reads computers from.
 fn locate(previous: &Path, selected: &Path) -> Backup {
     if selected == previous {
         return Backup::Refused(IN_USE);
@@ -324,7 +324,7 @@ fn measure(app_data: &Path) -> Result<Option<u64>, String> {
 }
 
 /// Converted runtimes made by earlier Silo versions still named the previous runtime's image
-/// files. Startup repairs that too, but this must not depend on which runs first: a VM whose
+/// files. Startup repairs that too, but this must not depend on which runs first: a computer whose
 /// image still reads from the backup stops booting once the backup is gone.
 fn ensure_converted_runtime_is_independent(app_data: &Path, previous: &Path) -> Result<(), String> {
     let cache = runtime_migration::backup_locations(app_data)
@@ -336,8 +336,8 @@ fn ensure_converted_runtime_is_independent(app_data: &Path, previous: &Path) -> 
     }
     match image_cache::reads_from(&cache, previous) {
         Ok(false) => Ok(()),
-        Ok(true) => Err("A converted sandbox's image still reads files from the pre-upgrade backup, so Silo kept it. Relaunch Silo and try again.".into()),
-        Err(_) => Err("Silo could not check that your sandboxes no longer need the pre-upgrade backup, so it kept it. Relaunch Silo and try again.".into()),
+        Ok(true) => Err("A converted computer's image still reads files from the pre-upgrade backup, so Silo kept it. Relaunch Silo and try again.".into()),
+        Err(_) => Err("Silo could not check that your computers no longer need the pre-upgrade backup, so it kept it. Relaunch Silo and try again.".into()),
     }
 }
 
@@ -402,7 +402,7 @@ fn delete_backup(app_data: &Path, user_home: Option<&Path>) -> Result<bool, Stri
     // `remove_dir_all` unlinks symlinks instead of following them. A failure part-way keeps
     // the rest, the record and the row, so the user can retry.
     fs::remove_dir_all(&previous).map_err(|error| {
-        format!("Silo could not finish deleting the pre-upgrade backup: {error}. Your sandboxes were not affected. Try again.")
+        format!("Silo could not finish deleting the pre-upgrade backup: {error}. Your computers were not affected. Try again.")
     })?;
     let _ = fs::File::open(app_data).and_then(|directory| directory.sync_all());
     remove_previous_alias(app_data, user_home);
@@ -721,7 +721,7 @@ mod tests {
     #[test]
     fn deletion_is_idempotent_and_leaves_the_converted_runtime_alone() {
         let dir = complete();
-        let converted = dir.path().join(CONVERTED).join("machines.json");
+        let converted = dir.path().join(CONVERTED).join("computers.json");
         fs::write(&converted, b"converted").unwrap();
         assert!(delete_backup(dir.path(), None).unwrap());
         assert!(!dir.path().join("runtime").exists());

@@ -65,12 +65,12 @@ fn workspace_checksum_preserves_sorted_and_empty_streams() {
 fn fixture() -> (
     tempfile::TempDir,
     RuntimePaths,
-    MachineConfiguration,
+    ComputerConfiguration,
     InspectedSandbox,
 ) {
     let directory = tempfile::tempdir().unwrap();
     let paths = super::super::tests::paths(&directory);
-    let machine = MachineConfiguration {
+    let configuration = ComputerConfiguration {
         id: "00000000-0000-4000-8000-000000000001".into(),
         name: "dev".into(),
         cpus: 1,
@@ -83,23 +83,23 @@ fn fixture() -> (
     };
     write_metadata(
         &paths.metadata,
-        &MachineConfigurationRequest {
+        &ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![machine.clone()],
+            computers: vec![configuration.clone()],
         },
     )
     .unwrap();
     fs::create_dir_all(owned_disk(&paths, "dev").parent().unwrap()).unwrap();
     fs::write(owned_disk(&paths, "dev"), vec![7u8; 8192]).unwrap();
     let observed = serde_json::from_value(json!({"name":"dev", "status":"Running", "runtime_instance_id":"run-1", "config": {
-        "labels":{"silo.managed":"true","silo.machine-id":machine.id()},
+        "labels":{"silo.managed":"true","silo.machine-id":configuration.id()},
         "mounts":[{"type":"Owned","guest":"/workspace","storage":{"kind":"disk","capacity_mib":1024}}]
     }})).unwrap();
-    verified_starts()
-        .lock()
-        .unwrap()
-        .insert((paths.home.clone(), machine.id().into()), "run-1".into());
-    (directory, paths, machine, observed)
+    verified_starts().lock().unwrap().insert(
+        (paths.home.clone(), configuration.id().into()),
+        "run-1".into(),
+    );
+    (directory, paths, configuration, observed)
 }
 fn owned_disk(paths: &RuntimePaths, name: &str) -> PathBuf {
     paths
@@ -183,11 +183,27 @@ fn exact_intervals_and_clock_rollback() {
 #[test]
 fn manual_reclaim_bypasses_schedule_and_persists_actual_host_result() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, observed) = fixture();
+    let (_dir, paths, configuration, observed) = fixture();
     let runner = Runner::new();
-    trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).unwrap();
-    trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).unwrap();
-    let record = load(&paths, machine.id()).unwrap();
+    trim(
+        &runner,
+        &paths,
+        &configuration,
+        &observed,
+        TRIM_BUDGET,
+        now(),
+    )
+    .unwrap();
+    trim(
+        &runner,
+        &paths,
+        &configuration,
+        &observed,
+        TRIM_BUDGET,
+        now(),
+    )
+    .unwrap();
+    let record = load(&paths, configuration.id()).unwrap();
     assert!(record.last_trim_at.is_some());
     assert_eq!(record.last_reclaimed_bytes, Some(0)); // Never use fstrim's logical byte count.
     assert!(record.last_error.is_none());
@@ -199,13 +215,13 @@ fn manual_reclaim_bypasses_schedule_and_persists_actual_host_result() {
 #[test]
 fn failure_is_durable_and_does_not_count_as_success_or_block_stop() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, observed) = fixture();
+    let (_dir, paths, configuration, observed) = fixture();
     let runner = Runner {
         fail: true,
         ..Runner::new()
     };
     before_stop(&runner, &paths, &observed);
-    let record = load(&paths, machine.id()).unwrap();
+    let record = load(&paths, configuration.id()).unwrap();
     assert!(record.last_trim_at.is_none());
     assert!(record.last_error.is_some());
     assert!(!due(&record, now(), DAY));
@@ -215,28 +231,60 @@ fn failure_is_durable_and_does_not_count_as_success_or_block_stop() {
 #[test]
 fn rejects_stopped_replaced_and_wrong_mount_without_guest_execution() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, mut observed) = fixture();
+    let (_dir, paths, configuration, mut observed) = fixture();
     let runner = Runner::new();
     observed.status = "Stopped".into();
-    assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
+    assert!(trim(
+        &runner,
+        &paths,
+        &configuration,
+        &observed,
+        TRIM_BUDGET,
+        now()
+    )
+    .is_err());
     observed.status = "Running".into();
     observed.config["labels"]["silo.machine-id"] = json!("replacement");
-    assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
-    observed.config["labels"]["silo.machine-id"] = json!(machine.id());
+    assert!(trim(
+        &runner,
+        &paths,
+        &configuration,
+        &observed,
+        TRIM_BUDGET,
+        now()
+    )
+    .is_err());
+    observed.config["labels"]["silo.machine-id"] = json!(configuration.id());
     observed.active_config = Some(json!({"mounts":[]}));
-    assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
+    assert!(trim(
+        &runner,
+        &paths,
+        &configuration,
+        &observed,
+        TRIM_BUDGET,
+        now()
+    )
+    .is_err());
     observed.active_config = None;
     observed.config["mounts"][0]["storage"]["kind"] = json!("directory");
-    assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
+    assert!(trim(
+        &runner,
+        &paths,
+        &configuration,
+        &observed,
+        TRIM_BUDGET,
+        now()
+    )
+    .is_err());
     assert!(runner.calls.lock().unwrap().is_empty());
 }
 #[test]
 fn stopped_usage_reports_allocated_blocks_without_starting_guest() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, mut observed) = fixture();
+    let (_dir, paths, configuration, mut observed) = fixture();
     observed.status = "Stopped".into();
     let runner = Runner::new();
-    let value = state(&runner, &paths, &machine, &observed).unwrap();
+    let value = state(&runner, &paths, &configuration, &observed).unwrap();
     assert_eq!(
         value.workspace_host_bytes,
         Some(allocated(&owned_disk(&paths, "dev")).unwrap())
@@ -271,7 +319,7 @@ fn failed_pending_restore_reports_present_disks_and_preserves_errors() {
         }
     }
     for status in ["Running", "Stopped"] {
-        let (_dir, paths, machine, mut observed) = fixture();
+        let (_dir, paths, configuration, mut observed) = fixture();
         observed.status = status.into();
         let root = paths.home.join("sandboxes/dev/rootfs.raw");
         fs::write(&root, vec![3u8; 8192]).unwrap();
@@ -281,15 +329,15 @@ fn failed_pending_restore_reports_present_disks_and_preserves_errors() {
             "restoreAttempted":true,
             "pendingCheckpointRestore":{
                 "checkpointId":"c000000000000000000000000000000",
-                "sourceWorkspace":"source",
+                "sourceComputer":"source",
                 "state":"disk"
             }
         }))
         .unwrap();
-        checkpoints::save(&paths, machine.id(), &pending).unwrap();
+        checkpoints::save(&paths, configuration.id(), &pending).unwrap();
         save(
             &paths,
-            machine.id(),
+            configuration.id(),
             &Record {
                 last_error: Some("Previous trim failed.".into()),
                 ..Record::default()
@@ -300,14 +348,14 @@ fn failed_pending_restore_reports_present_disks_and_preserves_errors() {
             observed,
             guest: Runner::new(),
         };
-        let value = storage_with(&runner, &paths, machine.id(), false).unwrap();
+        let value = storage_with(&runner, &paths, configuration.id(), false).unwrap();
         assert_eq!(
             value.workspace_host_bytes,
             Some(allocated(&owned_disk(&paths, "dev")).unwrap())
         );
         assert_eq!(value.runtime_host_bytes, Some(allocated(&root).unwrap()));
         assert_eq!(value.last_error.as_deref(), Some("Previous trim failed."));
-        let error = storage_with(&runner, &paths, machine.id(), true).unwrap_err();
+        let error = storage_with(&runner, &paths, configuration.id(), true).unwrap_err();
         assert!(error.to_string().contains("restore"), "{error}");
         assert!(runner
             .guest
@@ -320,7 +368,7 @@ fn failed_pending_restore_reports_present_disks_and_preserves_errors() {
 }
 
 #[test]
-fn unstarted_pending_restore_reports_zero_without_starting_a_vm() {
+fn unstarted_pending_restore_reports_zero_without_starting_a_computer() {
     let _test_state = crate::test_support::global_state();
     struct EmptyRuntime;
     impl RuntimeRunner for EmptyRuntime {
@@ -330,66 +378,71 @@ fn unstarted_pending_restore_reports_zero_without_starting_a_vm() {
             args: &[String],
             _: Duration,
         ) -> Result<CommandOutput, RuntimeError> {
-            assert_eq!(args[0], "list", "storage must not start an absent VM");
+            assert_eq!(args[0], "list", "storage must not start an absent computer");
             Ok(CommandOutput {
                 stdout: "[]".into(),
                 stderr: String::new(),
             })
         }
     }
-    let (_dir, paths, machine, _) = fixture();
+    let (_dir, paths, configuration, _) = fixture();
     fs::remove_dir_all(paths.home.join("sandboxes/dev")).unwrap();
     let mut pending = checkpoints::Record::default();
     pending.pending_checkpoint_restore = Some(checkpoints::PendingRestore {
         checkpoint_id: "c000000000000000000000000000000".into(),
-        source_workspace: "source".into(),
+        source_computer: "source".into(),
         state: "disk".into(),
     });
-    checkpoints::save(&paths, machine.id(), &pending).unwrap();
-    let value = storage_with(&EmptyRuntime, &paths, machine.id(), false).unwrap();
+    checkpoints::save(&paths, configuration.id(), &pending).unwrap();
+    let value = storage_with(&EmptyRuntime, &paths, configuration.id(), false).unwrap();
     assert_eq!(value.workspace_host_bytes, Some(0));
     assert_eq!(value.runtime_host_bytes, Some(0));
-    assert!(storage_with(&EmptyRuntime, &paths, machine.id(), true).is_err());
+    assert!(storage_with(&EmptyRuntime, &paths, configuration.id(), true).is_err());
 }
 #[test]
 fn runtime_tail_truncation_is_repaired_and_reported_even_on_timeout() {
     let _test_state = crate::test_support::global_state();
     for fail in [false, true] {
-        let (_dir, paths, machine, observed) = fixture();
+        let (_dir, paths, configuration, observed) = fixture();
         let runner = Runner {
             fail,
             truncate: true,
             ..Runner::new()
         };
-        assert!(
-            trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now())
-                .unwrap_err()
-                .to_string()
-                .contains("original length was restored")
-        );
+        assert!(trim(
+            &runner,
+            &paths,
+            &configuration,
+            &observed,
+            TRIM_BUDGET,
+            now()
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("original length was restored"));
         let content = fs::read(owned_disk(&paths, "dev")).unwrap();
         assert_eq!(content.len(), 8192);
         assert_eq!(&content[..4096], &[7; 4096]);
-        let record = load(&paths, machine.id()).unwrap();
+        let record = load(&paths, configuration.id()).unwrap();
         assert!(record.last_trim_at.is_none());
     }
 }
 #[test]
 fn expired_budget_does_not_enter_guest_or_record_attempt() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, observed) = fixture();
+    let (_dir, paths, configuration, observed) = fixture();
     let runner = Runner::new();
     assert!(trim(
         &runner,
         &paths,
-        &machine,
+        &configuration,
         &observed,
         Duration::from_secs(3),
         now()
     )
     .is_err());
     assert!(runner.calls.lock().unwrap().is_empty());
-    assert!(load(&paths, machine.id())
+    assert!(load(&paths, configuration.id())
         .unwrap()
         .last_attempt_at
         .is_none());
@@ -401,14 +454,22 @@ fn malformed_measurements_and_history_are_not_silent_success() {
     assert!(stats("1 2 3").is_err());
     assert!(stats("-1 2").is_err());
     assert_eq!(stats(" 123 456\n").unwrap(), (123, 456));
-    let (_dir, paths, machine, observed) = fixture();
-    fs::create_dir_all(record_path(&paths, machine.id()).parent().unwrap()).unwrap();
-    fs::write(record_path(&paths, machine.id()), b"broken").unwrap();
+    let (_dir, paths, configuration, observed) = fixture();
+    fs::create_dir_all(record_path(&paths, configuration.id()).parent().unwrap()).unwrap();
+    fs::write(record_path(&paths, configuration.id()), b"broken").unwrap();
     let runner = Runner::new();
-    assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
+    assert!(trim(
+        &runner,
+        &paths,
+        &configuration,
+        &observed,
+        TRIM_BUDGET,
+        now()
+    )
+    .is_err());
     assert!(runner.calls.lock().unwrap().is_empty());
     assert_eq!(
-        fs::read(record_path(&paths, machine.id())).unwrap(),
+        fs::read(record_path(&paths, configuration.id())).unwrap(),
         b"broken"
     );
 }
@@ -441,34 +502,37 @@ fn normal_stop_completes_after_a_failed_trim_and_does_not_retry_it() {
             })
         }
     }
-    let (_dir, paths, machine, observed) = fixture();
+    let (_dir, paths, configuration, observed) = fixture();
     let runner = LifecycleRunner {
         running: Mutex::new(true),
         calls: Mutex::new(vec![]),
         config: observed.config,
     };
-    let host = HostResources {
+    let device = DeviceResources {
         logical_cpus: 0,
         physical_memory_bytes: None,
     };
-    lifecycle_recovery::perform(&runner, &paths, &host, "stop", "dev").unwrap();
+    lifecycle_recovery::perform(&runner, &paths, &device, "stop", "dev").unwrap();
     assert!(!*runner.running.lock().unwrap());
     assert_eq!(
         *runner.calls.lock().unwrap(),
         ["inspect", "exec", "stop", "inspect"]
     );
-    assert!(load(&paths, machine.id()).unwrap().last_error.is_some());
+    assert!(load(&paths, configuration.id())
+        .unwrap()
+        .last_error
+        .is_some());
 }
 
 #[test]
 fn next_start_trims_once_and_recent_success_skips_automatic_work() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, observed) = fixture();
+    let (_dir, paths, configuration, observed) = fixture();
     let runner = Runner::new();
     verified_starts()
         .lock()
         .unwrap()
-        .remove(&(paths.home.clone(), machine.id().into()));
+        .remove(&(paths.home.clone(), configuration.id().into()));
     after_start(&runner, &paths, &observed);
     before_stop(&runner, &paths, &observed);
     after_start(&runner, &paths, &observed);
@@ -482,28 +546,44 @@ fn next_start_trims_once_and_recent_success_skips_automatic_work() {
             .count(),
         1
     );
-    assert!(load(&paths, machine.id()).unwrap().last_trim_at.is_some());
+    assert!(load(&paths, configuration.id())
+        .unwrap()
+        .last_trim_at
+        .is_some());
 }
 
 #[test]
 fn old_or_replaced_worker_requires_restart_before_any_trim() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, mut observed) = fixture();
+    let (_dir, paths, configuration, mut observed) = fixture();
     let runner = Runner::new();
     observed.runtime_instance_id = Some("different-run".into());
-    assert!(
-        trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now())
-            .unwrap_err()
-            .to_string()
-            .contains("Restart this VM")
-    );
+    assert!(trim(
+        &runner,
+        &paths,
+        &configuration,
+        &observed,
+        TRIM_BUDGET,
+        now()
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("Restart this computer"));
     observed.runtime_instance_id = None;
-    assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
+    assert!(trim(
+        &runner,
+        &paths,
+        &configuration,
+        &observed,
+        TRIM_BUDGET,
+        now()
+    )
+    .is_err());
     assert!(runner.calls.lock().unwrap().is_empty());
 }
 
 #[test]
-fn periodic_reclaims_due_running_vm_once_without_starting_any_vm() {
+fn periodic_reclaims_due_running_computer_once_without_starting_any_computer() {
     let _test_state = crate::test_support::global_state();
     struct PeriodicRunner {
         guest: Runner,
@@ -524,7 +604,7 @@ fn periodic_reclaims_due_running_vm_once_without_starting_any_vm() {
             self.guest.run(paths, args, timeout)
         }
     }
-    let (_dir, paths, machine, observed) = fixture();
+    let (_dir, paths, configuration, observed) = fixture();
     let runner = PeriodicRunner {
         guest: Runner::new(),
         config: observed.config,
@@ -532,7 +612,7 @@ fn periodic_reclaims_due_running_vm_once_without_starting_any_vm() {
     };
     save(
         &paths,
-        machine.id(),
+        configuration.id(),
         &Record {
             last_trim_at: Some(now() - WEEK),
             last_attempt_at: Some(now() - WEEK),
@@ -570,18 +650,18 @@ fn maintenance_tick_preserves_damaged_checkpoint_and_trims_healthy_owner() {
             self.guest.run(paths, args, timeout)
         }
     }
-    let (_dir, paths, machine, observed) = fixture();
-    let mut damaged = machine.clone();
+    let (_dir, paths, configuration, observed) = fixture();
+    let mut damaged = configuration.clone();
     {
-        let MachineConfiguration { id, name, .. } = &mut damaged;
+        let ComputerConfiguration { id, name, .. } = &mut damaged;
         *id = "00000000-0000-4000-8000-000000000002".into();
         *name = "damaged".into();
     }
     write_metadata(
         &paths.metadata,
-        &MachineConfigurationRequest {
+        &ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![damaged.clone(), machine.clone()],
+            computers: vec![damaged.clone(), configuration.clone()],
         },
     )
     .unwrap();
@@ -597,7 +677,10 @@ fn maintenance_tick_preserves_damaged_checkpoint_and_trims_healthy_owner() {
     };
     assert!(maintenance_tick(&runner, &paths).unwrap());
     assert_eq!(fs::read(&checkpoint_path).unwrap(), b"{broken");
-    assert!(load(&paths, machine.id()).unwrap().last_trim_at.is_some());
+    assert!(load(&paths, configuration.id())
+        .unwrap()
+        .last_trim_at
+        .is_some());
     assert!(load(&paths, damaged.id())
         .unwrap()
         .last_attempt_at
@@ -608,21 +691,21 @@ fn maintenance_tick_preserves_damaged_checkpoint_and_trims_healthy_owner() {
 #[test]
 fn unavailable_guest_stats_do_not_hide_a_maintenance_failure() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, observed) = fixture();
+    let (_dir, paths, configuration, observed) = fixture();
     let runner = Runner {
         fail: true,
         ..Runner::new()
     };
     save(
         &paths,
-        machine.id(),
+        configuration.id(),
         &Record {
             last_error: Some("Preserved maintenance failure".into()),
             ..Record::default()
         },
     )
     .unwrap();
-    let value = state(&runner, &paths, &machine, &observed).unwrap();
+    let value = state(&runner, &paths, &configuration, &observed).unwrap();
     assert_eq!(
         value.last_error.as_deref(),
         Some("Preserved maintenance failure")
@@ -631,23 +714,23 @@ fn unavailable_guest_stats_do_not_hide_a_maintenance_failure() {
 }
 
 #[test]
-fn starting_vm_does_not_begin_maintenance_during_quit() {
+fn starting_computer_does_not_begin_maintenance_during_quit() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, observed) = fixture();
+    let (_dir, paths, configuration, observed) = fixture();
     let runner = Runner::new();
     shutdown::begin();
     after_start(&runner, &paths, &observed);
     assert!(runner.calls.lock().unwrap().is_empty());
-    assert!(load(&paths, machine.id())
+    assert!(load(&paths, configuration.id())
         .unwrap()
         .last_attempt_at
         .is_none());
 }
 
-// Explicitly opt-in: boots and trims the named local VM, preserving its files.
+// Explicitly opt-in: boots and trims the named local computer, preserving its files.
 // Keep separate from ordinary tests and never distribute the test executable.
 #[test]
-#[ignore = "requires explicit live VM runtime, home, identity and baseline checksum"]
+#[ignore = "requires explicit live computer runtime, home, identity and baseline checksum"]
 fn live_reclaim_preserves_capacity_contents_and_reboots() {
     let _test_state = crate::test_support::global_state();
     crate::test_support::live::require_confirmation();
@@ -657,7 +740,7 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
     let home = PathBuf::from(
         std::env::var("SILO_STORAGE_LIVE_HOME").expect("explicit runtime home required"),
     );
-    let id = std::env::var("SILO_STORAGE_LIVE_ID").expect("explicit VM ID required");
+    let id = std::env::var("SILO_STORAGE_LIVE_ID").expect("explicit computer ID required");
     let expected_hash = std::env::var("SILO_STORAGE_EXPECTED_SHA256")
         .expect("pre-existing workspace checksum required");
     let storage = fs::canonicalize(&home)
@@ -677,28 +760,28 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
         library,
         home,
         storage_home: None,
-        metadata: storage.join("machines.json"),
+        metadata: storage.join("computers.json"),
         volumes: storage.join("volumes"),
         guest_image: storage.join("unused-image"),
     };
-    let _guard = OPERATIONS.computer("Live reclaim test").unwrap();
-    let machine = machine(&paths, &id).unwrap();
+    let _guard = OPERATIONS.device("Live reclaim test").unwrap();
+    let configuration = computer_configuration(&paths, &id).unwrap();
     let runner = ProcessRunner;
-    let initial = inspect_workspace(&runner, &paths, machine.name()).unwrap();
+    let initial = inspect_computer(&runner, &paths, configuration.name()).unwrap();
     assert!(
         initial.status.eq_ignore_ascii_case("stopped"),
-        "Do not interrupt an existing running VM"
+        "Do not interrupt an existing running computer"
     );
-    let disk = owned_disk(&paths, machine.name());
+    let disk = owned_disk(&paths, configuration.name());
     let length = fs::metadata(&disk).unwrap().len();
-    let host = host_resources().unwrap();
+    let device = device_resources().unwrap();
     let checksum = WORKSPACE_CHECKSUM;
     let mut previous_instance = None;
     for _ in 0..2 {
         let result = (|| -> Result<(), RuntimeError> {
-            lifecycle_recovery::perform(&runner, &paths, &host, "start", machine.name())?;
-            let observed = inspect_workspace(&runner, &paths, machine.name())?;
-            if !verified_worker(&paths, &machine, &observed)
+            lifecycle_recovery::perform(&runner, &paths, &device, "start", configuration.name())?;
+            let observed = inspect_computer(&runner, &paths, configuration.name())?;
+            if !verified_worker(&paths, &configuration, &observed)
                 || observed.runtime_instance_id == previous_instance
             {
                 return Err(failure(
@@ -708,7 +791,7 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
             previous_instance = observed.runtime_instance_id.clone();
             let before = runner.run(
                 &paths,
-                &guest_args(machine.name(), 29, checksum),
+                &guest_args(configuration.name(), 29, checksum),
                 Duration::from_secs(30),
             )?;
             if before.stdout.split_whitespace().next() != Some(expected_hash.as_str()) {
@@ -716,16 +799,23 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
                     "Workspace checksum differs from the pre-existing baseline.",
                 ));
             }
-            trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now())?;
+            trim(
+                &runner,
+                &paths,
+                &configuration,
+                &observed,
+                TRIM_BUDGET,
+                now(),
+            )?;
             let after = runner.run(
                 &paths,
-                &guest_args(machine.name(), 29, checksum),
+                &guest_args(configuration.name(), 29, checksum),
                 Duration::from_secs(30),
             )?;
             if after.stdout != before.stdout || fs::metadata(&disk).unwrap().len() != length {
-                return Err(failure("Workspace contents or logical capacity changed."));
+                return Err(failure("Computer contents or logical capacity changed."));
             }
-            let measurements = state(&runner, &paths, &machine, &observed)?;
+            let measurements = state(&runner, &paths, &configuration, &observed)?;
             if measurements.workspace_used_bytes.is_none() || measurements.last_error.is_some() {
                 return Err(failure(
                     "Live storage measurements or trim result were unavailable.",
@@ -737,11 +827,12 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
             );
             Ok(())
         })();
-        let stopped = lifecycle_recovery::perform(&runner, &paths, &host, "stop", machine.name());
+        let stopped =
+            lifecycle_recovery::perform(&runner, &paths, &device, "stop", configuration.name());
         result.unwrap();
         stopped.unwrap();
         assert_eq!(fs::metadata(&disk).unwrap().len(), length);
-        assert!(inspect_workspace(&runner, &paths, machine.name())
+        assert!(inspect_computer(&runner, &paths, configuration.name())
             .unwrap()
             .status
             .eq_ignore_ascii_case("stopped"));
@@ -753,11 +844,11 @@ fn workspace_dir(paths: &RuntimePaths, name: &str) -> PathBuf {
 }
 
 #[test]
-fn restored_layered_workspace_is_measured_and_a_missing_disk_is_unknown() {
+fn restored_layered_computer_is_measured_and_a_missing_disk_is_unknown() {
     let _test_state = crate::test_support::global_state();
-    // A VM restored from a checkpoint keeps its workspace as sealed layers plus a
+    // A computer restored from a checkpoint keeps its computer as sealed layers plus a
     // writable qcow2 head; there is no disk.raw.
-    let (_dir, paths, machine, mut observed) = fixture();
+    let (_dir, paths, configuration, mut observed) = fixture();
     let directory = workspace_dir(&paths, "dev");
     fs::remove_file(owned_disk(&paths, "dev")).unwrap();
     fs::write(directory.join("sealed-000.raw"), vec![1u8; 16384]).unwrap();
@@ -766,40 +857,40 @@ fn restored_layered_workspace_is_measured_and_a_missing_disk_is_unknown() {
     let runner = Runner::new();
     let expected = allocated(&directory.join("sealed-000.raw")).unwrap()
         + allocated(&directory.join("writable.qcow2")).unwrap();
-    let value = state(&runner, &paths, &machine, &observed).unwrap();
+    let value = state(&runner, &paths, &configuration, &observed).unwrap();
     assert_eq!(value.workspace_host_bytes, Some(expected));
     assert!(expected > 0);
-    assert!(workspace_mount(&paths, &machine, &observed));
+    assert!(workspace_mount(&paths, &configuration, &observed));
 
     fs::remove_dir_all(&directory).unwrap();
-    let value = state(&runner, &paths, &machine, &observed).unwrap();
+    let value = state(&runner, &paths, &configuration, &observed).unwrap();
     assert_eq!(
         value.workspace_host_bytes, None,
         "a missing workspace disk is unknown, not 0 B"
     );
-    assert!(!workspace_mount(&paths, &machine, &observed));
+    assert!(!workspace_mount(&paths, &configuration, &observed));
 }
 
 #[test]
-fn runtime_usage_counts_flat_roots_and_is_unknown_without_a_sandbox_directory() {
+fn runtime_usage_counts_flat_roots_and_is_unknown_without_a_computer_directory() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, mut observed) = fixture();
+    let (_dir, paths, configuration, mut observed) = fixture();
     observed.status = "Stopped".into();
-    let sandbox = paths.home.join("sandboxes/dev");
-    fs::write(sandbox.join("rootfs.raw"), vec![3u8; 8192]).unwrap();
-    fs::write(sandbox.join("upper.ext4"), vec![4u8; 8192]).unwrap();
-    let expected = allocated(&sandbox.join("rootfs.raw")).unwrap()
-        + allocated(&sandbox.join("upper.ext4")).unwrap();
+    let computer = paths.home.join("sandboxes/dev");
+    fs::write(computer.join("rootfs.raw"), vec![3u8; 8192]).unwrap();
+    fs::write(computer.join("upper.ext4"), vec![4u8; 8192]).unwrap();
+    let expected = allocated(&computer.join("rootfs.raw")).unwrap()
+        + allocated(&computer.join("upper.ext4")).unwrap();
     let runner = Runner::new();
     assert_eq!(
-        state(&runner, &paths, &machine, &observed)
+        state(&runner, &paths, &configuration, &observed)
             .unwrap()
             .runtime_host_bytes,
         Some(expected)
     );
-    fs::remove_dir_all(&sandbox).unwrap();
+    fs::remove_dir_all(&computer).unwrap();
     assert_eq!(
-        state(&runner, &paths, &machine, &observed)
+        state(&runner, &paths, &configuration, &observed)
             .unwrap()
             .runtime_host_bytes,
         None
@@ -807,7 +898,7 @@ fn runtime_usage_counts_flat_roots_and_is_unknown_without_a_sandbox_directory() 
 }
 
 #[test]
-fn layered_workspace_reclaim_measures_the_whole_chain_and_guards_every_layer_length() {
+fn layered_computer_reclaim_measures_the_whole_chain_and_guards_every_layer_length() {
     let _test_state = crate::test_support::global_state();
     struct LayerRunner {
         shrink: bool,
@@ -840,18 +931,18 @@ fn layered_workspace_reclaim_measures_the_whole_chain_and_guards_every_layer_len
         }
     }
     for shrink in [false, true] {
-        let (_dir, paths, machine, observed) = fixture();
+        let (_dir, paths, configuration, observed) = fixture();
         let head = workspace_dir(&paths, "dev").join("writable.qcow2");
         fs::write(&head, vec![5u8; 1024 * 1024]).unwrap();
         let result = trim(
             &LayerRunner { shrink },
             &paths,
-            &machine,
+            &configuration,
             &observed,
             TRIM_BUDGET,
             now(),
         );
-        let record = load(&paths, machine.id()).unwrap();
+        let record = load(&paths, configuration.id()).unwrap();
         assert_eq!(
             fs::metadata(&head).unwrap().len(),
             1024 * 1024,
@@ -899,7 +990,7 @@ fn qcow2_growth_during_reclaim_is_not_a_disk_capacity_change() {
         }
     }
     for qcow2 in [true, false] {
-        let (_dir, paths, machine, observed) = fixture();
+        let (_dir, paths, configuration, observed) = fixture();
         let disk = if qcow2 {
             let head = workspace_dir(&paths, "dev").join("writable.qcow2");
             fs::write(&head, vec![7u8; 8192]).unwrap();
@@ -910,12 +1001,12 @@ fn qcow2_growth_during_reclaim_is_not_a_disk_capacity_change() {
         let result = trim(
             &GrowingDisk(disk.clone()),
             &paths,
-            &machine,
+            &configuration,
             &observed,
             TRIM_BUDGET,
             now(),
         );
-        let record = load(&paths, machine.id()).unwrap();
+        let record = load(&paths, configuration.id()).unwrap();
         if qcow2 {
             result.unwrap();
             assert!(record.last_trim_at.is_some());
@@ -933,12 +1024,12 @@ fn qcow2_growth_during_reclaim_is_not_a_disk_capacity_change() {
 #[test]
 fn history_retains_latest_fifty_attempts_including_failures() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, observed) = fixture();
+    let (_dir, paths, configuration, observed) = fixture();
     for at in 0..51 {
         trim_triggered(
             &Runner::new(),
             &paths,
-            &machine,
+            &configuration,
             &observed,
             TRIM_BUDGET,
             at,
@@ -953,14 +1044,14 @@ fn history_retains_latest_fifty_attempts_including_failures() {
     assert!(trim_triggered(
         &failing,
         &paths,
-        &machine,
+        &configuration,
         &observed,
         TRIM_BUDGET,
         51,
         "manual"
     )
     .is_err());
-    let record = load(&paths, machine.id()).unwrap();
+    let record = load(&paths, configuration.id()).unwrap();
     assert_eq!(record.history.len(), 50);
     assert_eq!(record.history[0].at, 51);
     assert_eq!(record.history[49].at, 2);
@@ -1026,21 +1117,21 @@ fn malformed_known_maintenance_fields_still_preserve_the_file() {
 #[test]
 fn legacy_record_keeps_last_success_when_history_is_introduced() {
     let _test_state = crate::test_support::global_state();
-    let (_dir, paths, machine, _) = fixture();
-    let path = record_path(&paths, machine.id());
+    let (_dir, paths, configuration, _) = fixture();
+    let path = record_path(&paths, configuration.id());
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(
         path,
         r#"{"lastTrimAt":100,"lastAttemptAt":100,"lastReclaimedBytes":2048,"lastError":null}"#,
     )
     .unwrap();
-    let record = load(&paths, machine.id()).unwrap();
+    let record = load(&paths, configuration.id()).unwrap();
     assert_eq!(record.history.len(), 1);
     assert_eq!(record.history[0].at, 100);
     assert_eq!(record.history[0].reclaimed_bytes, Some(2048));
     assert_eq!(record.history[0].trigger, "legacy");
-    save(&paths, machine.id(), &record).unwrap();
-    assert_eq!(load(&paths, machine.id()).unwrap().history.len(), 1);
+    save(&paths, configuration.id(), &record).unwrap();
+    assert_eq!(load(&paths, configuration.id()).unwrap().history.len(), 1);
 }
 
 fn parsed(status: &str, instance: Option<Value>) -> InspectedSandbox {
@@ -1060,7 +1151,7 @@ fn a_reported_instance_is_the_running_identity() {
 }
 
 #[test]
-fn a_stopped_sandbox_or_an_instance_not_established_yet_is_quietly_none() {
+fn a_stopped_computer_or_an_instance_not_established_yet_is_quietly_none() {
     let directory = tempfile::tempdir().unwrap();
     let paths = super::super::tests::paths(&directory);
     // Stopped: nothing runs, whatever the runtime reports.

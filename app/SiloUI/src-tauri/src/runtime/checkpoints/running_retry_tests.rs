@@ -1,13 +1,13 @@
 //! The retry of a restore whose attempt is already running: `start_pending` accepts the
-//! running VM through `running_child_matches`, and a built-in VM must still pass
+//! running computer through `running_child_matches`, and a built-in computer must still pass
 //! `require_mount` first. Kept apart from the main checkpoint tests.
 use super::*;
 
 const ID: &str = "00000000-0000-4000-8000-000000000001";
 const ATTEMPT: &str = "6b79cf8f-70b3-4d2f-93d1-3b8b7a7c0001";
 
-fn built_in_machine() -> MachineConfiguration {
-    MachineConfiguration {
+fn built_in_computer() -> ComputerConfiguration {
+    ComputerConfiguration {
         id: ID.into(),
         name: "dev".into(),
         cpus: 1,
@@ -17,13 +17,13 @@ fn built_in_machine() -> MachineConfiguration {
         workspace_storage_gib: 1,
         runtime_storage_gib: 1,
         desktop: Some(crate::desktop::DesktopConfiguration {
-            start_with_sandbox: true,
+            start_with_computer: true,
             built_in: true,
         }),
     }
 }
 
-/// A runtime where the earlier restore attempt is up and running with the VM's labels,
+/// A runtime where the earlier restore attempt is up and running with the computer's labels,
 /// the saved network policy and the GitHub secret entry; `mounts` is what it reports.
 struct RunningAttempt {
     mounts: serde_json::Value,
@@ -57,7 +57,7 @@ impl RuntimeRunner for RunningAttempt {
                 "mounts": self.mounts,
             }})
             .to_string(),
-            _ => panic!("accepting a running attempt must not change the VM: {args:?}"),
+            _ => panic!("accepting a running attempt must not change the computer: {args:?}"),
         };
         Ok(CommandOutput {
             stdout,
@@ -114,7 +114,7 @@ fn a_running_attempt_without_the_computer_use_mount_is_not_accepted() {
             mounts,
             calls: Mutex::new(Vec::new()),
         };
-        let failure = start_pending(&runner, &paths, &built_in_machine())
+        let failure = start_pending(&runner, &paths, &built_in_computer())
             .unwrap_err()
             .to_string();
         assert!(failure.contains("computer-use folder"), "{failure}");
@@ -141,7 +141,7 @@ fn a_running_attempt_with_the_read_only_mount_is_accepted_and_the_restore_comple
         mounts: mount(true),
         calls: Mutex::new(Vec::new()),
     };
-    start_pending(&runner, &paths, &built_in_machine()).unwrap();
+    start_pending(&runner, &paths, &built_in_computer()).unwrap();
     assert!(only_reads(&runner));
     let record = load(&paths, ID).unwrap();
     assert!(record.pending_checkpoint_restore.is_none());

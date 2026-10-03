@@ -1,4 +1,4 @@
-//! Read configured author defaults without opening a repository or changing host settings.
+//! Read configured author defaults without opening a repository or changing device settings.
 use serde::Serialize;
 use std::{
     ffi::OsString,
@@ -11,7 +11,7 @@ use std::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct HostIdentity {
+pub struct DeviceIdentity {
     pub name: String,
     pub email: String,
 }
@@ -20,17 +20,17 @@ pub struct HostIdentity {
 const CACHE_TTL: Duration = Duration::from_secs(60);
 static CACHE: Cache = Cache::new();
 
-/// The last known host identity, without waiting. Reading runs Git and Jujutsu
+/// The last known device identity, without waiting. Reading runs Git and Jujutsu
 /// processes, so it never happens on the caller's thread (which may hold locks):
 /// a missing or stale value is refreshed by one background read, and `changed`
 /// runs if that read finds a different identity.
-pub fn cached(changed: impl FnOnce() + Send + 'static) -> Option<HostIdentity> {
+pub fn cached(changed: impl FnOnce() + Send + 'static) -> Option<DeviceIdentity> {
     CACHE.get(Instant::now(), CACHE_TTL, read, changed)
 }
 
 struct Cache(Mutex<CacheState>);
 struct CacheState {
-    value: Option<HostIdentity>,
+    value: Option<DeviceIdentity>,
     read_at: Option<Instant>,
     reading: bool,
 }
@@ -43,16 +43,16 @@ impl Cache {
         }))
     }
     fn state(&self) -> std::sync::MutexGuard<'_, CacheState> {
-        // A cache of a value re-read from the host; recover after a panic (K-24).
+        // A cache of a value re-read from the device; recover after a panic (K-24).
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
     fn get(
         &'static self,
         now: Instant,
         ttl: Duration,
-        read: impl FnOnce() -> Option<HostIdentity> + Send + 'static,
+        read: impl FnOnce() -> Option<DeviceIdentity> + Send + 'static,
         changed: impl FnOnce() + Send + 'static,
-    ) -> Option<HostIdentity> {
+    ) -> Option<DeviceIdentity> {
         let mut state = self.state();
         let stale = state
             .read_at
@@ -60,7 +60,7 @@ impl Cache {
         if stale && !state.reading {
             state.reading = true;
             let refresh = thread::Builder::new()
-                .name("host-identity".into())
+                .name("device-identity".into())
                 .spawn(move || self.refresh(read, changed));
             if refresh.is_err() {
                 state.reading = false;
@@ -68,7 +68,7 @@ impl Cache {
         }
         state.value.clone()
     }
-    fn refresh(&self, read: impl FnOnce() -> Option<HostIdentity>, changed: impl FnOnce()) {
+    fn refresh(&self, read: impl FnOnce() -> Option<DeviceIdentity>, changed: impl FnOnce()) {
         struct Reading<'a>(&'a Cache);
         impl Drop for Reading<'_> {
             fn drop(&mut self) {
@@ -90,7 +90,7 @@ impl Cache {
     }
 }
 
-fn read() -> Option<HostIdentity> {
+fn read() -> Option<DeviceIdentity> {
     let home = std::env::var_os("HOME")?;
     let mut directories: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|value| {
@@ -161,12 +161,12 @@ fn developer_git_installed(directories: &[PathBuf]) -> bool {
         .any(|directory| directory.join("usr/bin/git").is_file())
 }
 
-fn read_with(mut get: impl FnMut(&str, &str) -> Option<String>) -> Option<HostIdentity> {
+fn read_with(mut get: impl FnMut(&str, &str) -> Option<String>) -> Option<DeviceIdentity> {
     for tool in ["git", "jj"] {
         let name = get(tool, "user.name").and_then(valid_value);
         let email = get(tool, "user.email").and_then(valid_value);
         if let (Some(name), Some(email)) = (name, email) {
-            return Some(HostIdentity { name, email });
+            return Some(DeviceIdentity { name, email });
         }
     }
     None
@@ -240,8 +240,8 @@ fn query(
 mod tests {
     use super::*;
 
-    fn identity(name: &str) -> Option<HostIdentity> {
-        Some(HostIdentity {
+    fn identity(name: &str) -> Option<DeviceIdentity> {
+        Some(DeviceIdentity {
             name: name.into(),
             email: "author@example.test".into(),
         })

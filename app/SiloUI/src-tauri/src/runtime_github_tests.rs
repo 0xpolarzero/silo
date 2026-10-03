@@ -1,4 +1,4 @@
-//! Explicit hardware integration test. Uses only a disposable managed VM and
+//! Explicit hardware integration test. Uses only a disposable managed computer and
 //! synthetic or explicitly authorized scoped test credentials. Run with signed
 //! SILO_TEST_MSB and SILO_TEST_LIBKRUNFW.
 use super::*;
@@ -6,10 +6,10 @@ use super::*;
 fn restore_live_checkpoint_with_current_profile(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    source: &MachineConfiguration,
+    source: &ComputerConfiguration,
     fork_name: &str,
     profile: &Value,
-) -> Result<MachineConfiguration, String> {
+) -> Result<ComputerConfiguration, String> {
     let checkpoint_id = format!("c{}", &uuid::Uuid::new_v4().simple().to_string()[..31]);
     runner
         .run(
@@ -34,10 +34,10 @@ fn restore_live_checkpoint_with_current_profile(
     fork.name = fork_name.into();
     let mut metadata =
         read_metadata(&paths.metadata).map_err(|_| "Could not prepare the checkpoint fixture.")?;
-    metadata.machines.push(fork.clone());
+    metadata.computers.push(fork.clone());
     write_metadata(&paths.metadata, &metadata)
         .map_err(|_| "Could not prepare the checkpoint fixture.")?;
-    let observed = inspect_workspace(runner, paths, source.name())
+    let observed = inspect_computer(runner, paths, source.name())
         .map_err(|_| "Could not inspect the checkpoint source.")?;
     let policy = observed
         .config
@@ -47,7 +47,7 @@ fn restore_live_checkpoint_with_current_profile(
     let mut record = checkpoints::Record::default();
     record.pending_checkpoint_restore = Some(checkpoints::PendingRestore {
         checkpoint_id,
-        source_workspace: source.name().into(),
+        source_computer: source.name().into(),
         state: "full".into(),
     });
     record.desired_network_policy = Some(policy);
@@ -55,7 +55,7 @@ fn restore_live_checkpoint_with_current_profile(
         .map_err(|_| "Could not prepare the checkpoint restore record.")?;
 
     // The fork's current host assignment is installed before the production
-    // restore command runs. The source's write profile is not used for this VM.
+    // restore command runs. The source's write profile is not used for this computer.
     GITHUB_PROFILES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -69,7 +69,7 @@ fn restore_live_checkpoint_with_current_profile(
 fn cleanup_live_checkpoint_fork(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    fork: &MachineConfiguration,
+    fork: &ComputerConfiguration,
 ) {
     let _ = runner.run(
         paths,
@@ -83,8 +83,8 @@ fn cleanup_live_checkpoint_fork(
     );
     if let Ok(mut metadata) = read_metadata(&paths.metadata) {
         metadata
-            .machines
-            .retain(|machine| machine.id() != fork.id());
+            .computers
+            .retain(|configuration| configuration.id() != fork.id());
         let _ = write_metadata(&paths.metadata, &metadata);
     }
     let _ = checkpoints::forget_removed(paths, fork.id());
@@ -115,7 +115,7 @@ fn github_guest_bootstrap_and_live_identity() {
         library,
         home: directory.path().join("msb"),
         storage_home: None,
-        metadata: directory.path().join("machines.json"),
+        metadata: directory.path().join("computers.json"),
         volumes: directory.path().join("volumes"),
     };
     let name = "github-integration-test";
@@ -127,15 +127,15 @@ fn github_guest_bootstrap_and_live_identity() {
             timeout,
         )
     };
-    let mut restored_fork: Option<MachineConfiguration> = None;
+    let mut restored_fork: Option<ComputerConfiguration> = None;
     let result = (|| -> Result<(), String> {
-        create_disposable_test_machine(&paths, name).map_err(|e| e.to_string())?;
-        let initial = inspect_workspace(&runner, &paths, name).map_err(|e| e.to_string())?;
+        create_disposable_test_computer(&paths, name).map_err(|e| e.to_string())?;
+        let initial = inspect_computer(&runner, &paths, name).map_err(|e| e.to_string())?;
         if initial.status != "Stopped" {
             return Err("Bootstrap did not restore stopped state".into());
         }
-        let host = host_resources().map_err(|e| e.to_string())?;
-        workspace_action_with(&runner, &paths, &host, "start", name).map_err(|e| e.to_string())?;
+        let device = device_resources().map_err(|e| e.to_string())?;
+        computer_action_with(&runner, &paths, &device, "start", name).map_err(|e| e.to_string())?;
         apply_disposable_test_identity(&paths, name).map_err(|e| e.to_string())?;
         let output = run(
             &[
@@ -203,9 +203,9 @@ fn github_guest_bootstrap_and_live_identity() {
             .lock()
             .unwrap()
             .insert((paths.home.clone(), name.into()), profile.to_string());
-        workspace_action_with(&runner, &paths, &host, "stop", name).map_err(|e| e.to_string())?;
+        computer_action_with(&runner, &paths, &device, "stop", name).map_err(|e| e.to_string())?;
         for action in ["start", "restart"] {
-            workspace_action_with(&runner, &paths, &host, action, name)
+            computer_action_with(&runner, &paths, &device, action, name)
                 .map_err(|e| e.to_string())?;
             let response = run(
                 &[
@@ -310,14 +310,14 @@ fn github_guest_bootstrap_and_live_identity() {
         .map_err(|e| e.to_string())?
         .stdout;
         if after != boot_id {
-            return Err("GitHub profile update restarted the VM".into());
+            return Err("GitHub profile update restarted the computer".into());
         }
-        if inspect_workspace(&runner, &paths, name)
+        if inspect_computer(&runner, &paths, name)
             .map_err(|e| e.to_string())?
             .status
             != "Running"
         {
-            return Err("Live identity check did not preserve the running VM".into());
+            return Err("Live identity check did not preserve the running computer".into());
         }
         GITHUB_PROFILES
             .get_or_init(|| Mutex::new(HashMap::new()))
@@ -336,11 +336,11 @@ fn github_guest_bootstrap_and_live_identity() {
             MUTATION_TIMEOUT,
         )
         .map_err(|_| "Could not prepare synthetic checkpoint credentials.")?;
-        let source_machine = read_metadata(&paths.metadata)
+        let source_computer = read_metadata(&paths.metadata)
             .map_err(|_| "Could not inspect synthetic checkpoint source metadata.")?
-            .machines
+            .computers
             .into_iter()
-            .find(|machine| machine.name() == name)
+            .find(|configuration| configuration.name() == name)
             .ok_or("Synthetic checkpoint source metadata is missing.")?;
         let fork_name = format!(
             "github-restore-{}",
@@ -349,7 +349,7 @@ fn github_guest_bootstrap_and_live_identity() {
         let fork = restore_live_checkpoint_with_current_profile(
             &runner,
             &paths,
-            &source_machine,
+            &source_computer,
             &fork_name,
             &profile,
         )?;
@@ -392,8 +392,8 @@ fn github_guest_bootstrap_and_live_identity() {
         .unwrap()
         .remove(&(paths.home.clone(), name.into()));
     assert!(result.is_ok(), "{}", result.unwrap_err());
-    assert!(stopped.is_ok(), "Disposable VM could not be stopped");
-    assert!(removed.is_ok(), "Disposable VM could not be removed");
+    assert!(stopped.is_ok(), "Disposable computer could not be stopped");
+    assert!(removed.is_ok(), "Disposable computer could not be removed");
 }
 
 /// Invoked by github_live_tests with SILO_GITHUB_TEST_VM=1.
@@ -441,7 +441,7 @@ fn github_authenticated_guest_workflow() {
         library: PathBuf::from(required("SILO_TEST_LIBKRUNFW")),
         home: directory.path().join("msb"),
         storage_home: None,
-        metadata: directory.path().join("machines.json"),
+        metadata: directory.path().join("computers.json"),
         volumes: directory.path().join("volumes"),
     };
     let name = "github-authenticated-test";
@@ -488,24 +488,24 @@ fn github_authenticated_guest_workflow() {
         .map_err(|_| "Live test credential update failed.".into())
     };
     let mut created = false;
-    let mut restored_fork: Option<MachineConfiguration> = None;
+    let mut restored_fork: Option<ComputerConfiguration> = None;
     let result = (|| -> Result<(), String> {
-        create_disposable_test_machine(&paths, name)
-            .map_err(|_| "Live test VM bootstrap failed.")?;
+        create_disposable_test_computer(&paths, name)
+            .map_err(|_| "Live test computer bootstrap failed.")?;
         created = true;
         GITHUB_PROFILES
             .get_or_init(|| Mutex::new(HashMap::new()))
             .lock()
             .unwrap()
             .insert((paths.home.clone(), name.into()), raw_profile.clone());
-        workspace_action_with(
+        computer_action_with(
             &runner,
             &paths,
-            &host_resources().map_err(|_| "Cannot measure host resources.")?,
+            &device_resources().map_err(|_| "Cannot measure host resources.")?,
             "start",
             name,
         )
-        .map_err(|_| "Production Start failed for authenticated test VM.")?;
+        .map_err(|_| "Production Start failed for authenticated test computer.")?;
         apply_disposable_test_identity(&paths, name)
             .map_err(|_| "Live test identity setup failed.")?;
         let exposed = guest("env; git config --list --show-origin; printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill")
@@ -607,11 +607,11 @@ if git push origin "HEAD:refs/heads/$4" >/dev/null 2>&1; then exit 1; fi
         // read-only. Production restore must select the fork profile before
         // starting the checkpoint, without reviving the source's write grant.
         install(&profile)?;
-        let source_machine = read_metadata(&paths.metadata)
+        let source_computer = read_metadata(&paths.metadata)
             .map_err(|_| "Could not inspect the checkpoint source metadata.")?
-            .machines
+            .computers
             .into_iter()
-            .find(|machine| machine.name() == name)
+            .find(|configuration| configuration.name() == name)
             .ok_or("Checkpoint source metadata is missing.")?;
         let fork_name = format!(
             "github-restore-{}",
@@ -620,7 +620,7 @@ if git push origin "HEAD:refs/heads/$4" >/dev/null 2>&1; then exit 1; fi
         let fork = restore_live_checkpoint_with_current_profile(
             &runner,
             &paths,
-            &source_machine,
+            &source_computer,
             &fork_name,
             &readonly,
         )?;
@@ -676,7 +676,7 @@ if gh api graphql -f query='mutation($id:ID!){updateIssue(input:{id:$id,title:"u
         )
         .map_err(|_| "Restored checkpoint did not use its current read-only assignment.")?;
         // Host Push uses its separately authorized scoped write token while the
-        // VM remains read-only. Exercise the production binary/LFS transfer.
+        // Computer remains read-only. Exercise the production binary/LFS transfer.
         guest(
             r#"set -eu
 cd /workspace/silo-live/write
@@ -743,7 +743,7 @@ gh api "repos/$2" >/dev/null
             .stdout
             != boot
         {
-            return Err("Live access changes restarted the test VM.".into());
+            return Err("Live access changes restarted the test computer.".into());
         }
         Ok(())
     })();
@@ -782,7 +782,7 @@ exit "$cleanup_failed"
     let absent = run(&["list".into(), "--format".into(), "json".into()])
         .ok()
         .and_then(|output| serde_json::from_str::<Vec<ListedSandbox>>(&output.stdout).ok())
-        .is_some_and(|sandboxes| sandboxes.iter().all(|sandbox| sandbox.name != name));
+        .is_some_and(|computers| computers.iter().all(|computer| computer.name != name));
     GITHUB_PROFILES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -790,7 +790,7 @@ exit "$cleanup_failed"
         .remove(&(paths.home.clone(), name.into()));
     assert!(
         cleanup.is_ok() && absent,
-        "Live test cleanup failed. Inspect both explicit fixture repositories for the unique test branch and the disposable VM. Main workflow passed: {}",
+        "Live test cleanup failed. Inspect both explicit fixture repositories for the unique test branch and the disposable computer. Main workflow passed: {}",
         result.is_ok()
     );
     assert!(result.is_ok(), "{}", result.unwrap_err());

@@ -1,6 +1,6 @@
 //! The background worker that keeps the pinned ChatGPT app published.
 //!
-//! Every computer running Silo prepares its own copy without asking: at app start, and
+//! Every device running Silo prepares its own copy without asking: at app start, and
 //! again after a retryable failure, with a growing delay. The pieces here are pure so
 //! the schedule, the single-worker rule and the ready hook can be tested without an app.
 
@@ -136,7 +136,7 @@ impl Wake {
 }
 
 /// Lowers the calling thread's priority so a 450 MB download and the unpacking never
-/// compete with the app, VMs or the user's work. Child tools inherit it.
+/// compete with the app, computers or the user's work. Child tools inherit it.
 pub(super) fn lower_priority() {
     #[cfg(target_os = "macos")]
     // SAFETY: sets the quality of service of the calling thread only.
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(status, ready());
         assert_eq!(calls.get(), 4);
         assert_eq!(*waits.borrow(), [30, 60, 120]);
-        // The ready hook (the sync of running VMs) runs exactly once, at the end.
+        // The ready hook (the sync of running computers) runs exactly once, at the end.
         assert_eq!(readied.get(), 1);
     }
 

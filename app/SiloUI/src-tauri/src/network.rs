@@ -23,17 +23,17 @@ fn network_lock() -> std::sync::MutexGuard<'static, ()> {
     crate::sync::lock_or_recover(&NETWORK_LOCK, "network settings")
 }
 
-/// Serializes one VM's runtime forwarding calls: a repair's add/remove sequence and
-/// a read's snapshot of that VM's live forwards. Runtime calls can each take up to
-/// their 3 s timeout, so they never run under the shared `network_lock`; other VMs'
+/// Serializes one computer's runtime forwarding calls: a repair's add/remove sequence and
+/// a read's snapshot of that computer's live forwards. Runtime calls can each take up to
+/// their 3 s timeout, so they never run under the shared `network_lock`; other computers'
 /// reads and saves do not wait behind them (C-26). Lock order: this lock first, then
 /// `network_lock` only briefly for the settings file. Like `network_lock` it guards
 /// no in-memory state, so poisoning is recovered.
-fn forwarding_lock(workspace: &str) -> std::sync::Arc<Mutex<()>> {
+fn forwarding_lock(computer: &str) -> std::sync::Arc<Mutex<()>> {
     static LOCKS: std::sync::OnceLock<Mutex<BTreeMap<String, std::sync::Arc<Mutex<()>>>>> =
         std::sync::OnceLock::new();
     crate::sync::lock_or_recover(LOCKS.get_or_init(Default::default), "port forwarding")
-        .entry(workspace.to_owned())
+        .entry(computer.to_owned())
         .or_default()
         .clone()
 }
@@ -45,7 +45,7 @@ const LIMIT: usize = 128;
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Mapping {
-    workspace: String,
+    computer: String,
     port: u16,
     host_port: Option<u16>,
     scheme: Option<String>,
@@ -69,25 +69,25 @@ pub(crate) struct Port {
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct Workspace {
-    workspace: String,
+pub(crate) struct Computer {
+    computer: String,
     ports: Vec<Port>,
     error: Option<String>,
-    /// Host name this sandbox's published websites open at (see `sandbox_host`).
+    /// Host name this computer's published websites open at (see `computer_host`).
     /// Assigned when local observations are assembled into the network state.
     #[serde(skip_serializing_if = "Option::is_none")]
     host: Option<String>,
 }
 
-/// A per-sandbox loopback host name for published websites (C-24). Browsers keep
-/// cookies per host name, not per port, so opening every sandbox at `127.0.0.1`
-/// let one sandbox's page read and overwrite cookies of other local services and
-/// sandboxes. `*.localhost` resolves to loopback (RFC 6761) while the forward still
-/// binds `127.0.0.1` only. The label joins the sanitised sandbox name and the start
-/// of its immutable id, so a recreated sandbox with the same name gets a new host.
+/// A per-computer loopback host name for published websites (C-24). Browsers keep
+/// cookies per host name, not per port, so opening every computer at `127.0.0.1`
+/// let one computer's page read and overwrite cookies of other local services and
+/// computers. `*.localhost` resolves to loopback (RFC 6761) while the forward still
+/// binds `127.0.0.1` only. The label joins the sanitised computer name and the start
+/// of its immutable id, so a recreated computer with the same name gets a new host.
 /// Cross-site requests to other loopback services are not prevented by this.
-pub(crate) fn sandbox_host(name: &str, vm_id: &str) -> String {
-    let id: String = vm_id
+pub(crate) fn computer_host(name: &str, computer_id: &str) -> String {
+    let id: String = computer_id
         .chars()
         .filter(char::is_ascii_hexdigit)
         .take(8)
@@ -105,7 +105,7 @@ pub(crate) fn sandbox_host(name: &str, vm_id: &str) -> String {
     // One DNS label is at most 63 bytes, including the "-" and the id suffix.
     label.truncate(63 - 1 - id.len());
     let label = label.trim_end_matches('-');
-    let label = if label.is_empty() { "sandbox" } else { label };
+    let label = if label.is_empty() { "computer" } else { label };
     if id.is_empty() {
         format!("{label}.localhost")
     } else {
@@ -119,7 +119,7 @@ pub(crate) fn website_url(scheme: &str, host: Option<&str>, port: u16) -> String
 }
 #[derive(Serialize)]
 pub(crate) struct State {
-    workspaces: Vec<Workspace>,
+    computers: Vec<Computer>,
 }
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 struct Published {
@@ -162,7 +162,7 @@ fn read_config(paths: &RuntimePaths) -> Result<Configuration, String> {
     }
     for mapping in &config.mappings {
         validate(mapping)?;
-        if !seen.insert((&mapping.workspace, mapping.port)) {
+        if !seen.insert((&mapping.computer, mapping.port)) {
             return Err("Saved ports contain duplicates.".into());
         }
     }
@@ -235,12 +235,12 @@ fn parse_listeners(output: &str) -> Result<BTreeMap<u16, bool>, String> {
     }
     Ok(ports)
 }
-fn listeners(paths: &RuntimePaths, workspace: &str) -> Result<BTreeMap<u16, bool>, String> {
+fn listeners(paths: &RuntimePaths, computer: &str) -> Result<BTreeMap<u16, bool>, String> {
     let output = runtime::run_msb(
         paths,
         &[
             "exec".into(),
-            workspace.into(),
+            computer.into(),
             "--no-start".into(),
             "--no-tty".into(),
             "--quiet".into(),
@@ -262,7 +262,7 @@ fn listeners(paths: &RuntimePaths, workspace: &str) -> Result<BTreeMap<u16, bool
 fn control_response(socket: &Path, request: Value) -> Result<Value, String> {
     use std::os::unix::net::UnixStream;
     let mut stream = UnixStream::connect(socket)
-        .map_err(|_| "Network controls are unavailable. Restart this VM and retry.")?;
+        .map_err(|_| "Network controls are unavailable. Restart this computer and retry.")?;
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .map_err(|_| FAILED)?;
@@ -285,7 +285,7 @@ fn control_response(socket: &Path, request: Value) -> Result<Value, String> {
         let message = value["error"].as_str().unwrap_or("");
         return Err(if message.contains("Address already in use") || message.contains("address already in use") { "This local port is already in use. Choose another or use Automatic." }
             else if message.contains("Permission denied") || message.contains("permission denied") { "This local port needs elevated privileges. Choose a port above 1023." }
-            else { "Could not update port forwarding. Restart the VM if its runtime was updated, then retry." }.into());
+            else { "Could not update port forwarding. Restart the computer if its runtime was updated, then retry." }.into());
     }
     Ok(value)
 }
@@ -310,46 +310,46 @@ fn control(socket: &Path, request: Value) -> Result<Vec<Published>, String> {
     Ok(ports)
 }
 
-fn socket_path(paths: &RuntimePaths, workspace: &str) -> std::path::PathBuf {
+fn socket_path(paths: &RuntimePaths, computer: &str) -> std::path::PathBuf {
     use sha2::{Digest, Sha256};
-    let digest = format!("{:x}", Sha256::digest(workspace.as_bytes()));
+    let digest = format!("{:x}", Sha256::digest(computer.as_bytes()));
     paths
         .home
-        .join("run/sandboxes")
+        .join("run/computers")
         .join(&digest[..24])
         .join("control.sock")
 }
-/// Forget saved forwarding intent before a deleted sandbox's name becomes reusable.
-pub(crate) fn workspace_removed(paths: &RuntimePaths, workspace: &str) -> Result<(), String> {
-    let forwarding = forwarding_lock(workspace);
+/// Forget saved forwarding intent before a deleted computer's name becomes reusable.
+pub(crate) fn computer_removed(paths: &RuntimePaths, computer: &str) -> Result<(), String> {
+    let forwarding = forwarding_lock(computer);
     let _forwarding = hold(&forwarding);
     let _data = network_lock();
     let mut config = read_config(paths)?;
     let before = config.mappings.len();
-    config.mappings.retain(|m| m.workspace != workspace);
+    config.mappings.retain(|m| m.computer != computer);
     if config.mappings.len() != before {
         write_config(paths, &config)?;
     }
     Ok(())
 }
 
-/// Observe one workspace's saved forwards with a single enabled mapping for `port`.
+/// Observe one computer's saved forwards with a single enabled mapping for `port`.
 #[cfg(test)]
 pub(crate) fn observe_saved_port_for_test(
     paths: &RuntimePaths,
-    workspace: &str,
+    computer: &str,
     port: u16,
 ) -> (Option<String>, Vec<(&'static str, Option<String>)>) {
     let config = Configuration {
         mappings: vec![Mapping {
-            workspace: workspace.into(),
+            computer: computer.into(),
             port,
             host_port: None,
             scheme: Some("http".into()),
             enabled: true,
         }],
     };
-    let observed = observe(paths, workspace, &config, &BTreeMap::new());
+    let observed = observe(paths, computer, &config, &BTreeMap::new());
     (
         observed.error,
         observed
@@ -360,24 +360,24 @@ pub(crate) fn observe_saved_port_for_test(
     )
 }
 
-/// A Silo VM's runtime state, or `None` when it is stopped with no runtime sandbox yet.
-fn configured_vm(
+/// A Silo computer's runtime state, or `None` when it is stopped with no runtime computer yet.
+fn configured_computer(
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<Option<runtime::InspectedSandbox>, String> {
     let metadata = runtime::read_metadata(&paths.metadata)
-        .map_err(|_| "Could not read sandbox configuration.")?;
-    if !metadata.machines.iter().any(|m| m.name() == name) {
-        return Err("Choose a local Silo VM.".into());
+        .map_err(|_| "Could not read computer configuration.")?;
+    if !metadata.computers.iter().any(|m| m.name() == name) {
+        return Err("Choose a local Silo computer.".into());
     }
-    let inspected = match runtime::observe_vm(&ProcessRunner, paths, name)
-        .map_err(|error| format!("Could not inspect this VM: {error}"))?
+    let inspected = match runtime::observe_computer(&ProcessRunner, paths, name)
+        .map_err(|error| format!("Could not inspect this computer: {error}"))?
     {
-        runtime::VmRuntime::Present(inspected) => inspected,
+        runtime::ComputerRuntime::Present(inspected) => inspected,
         // Not created yet (waiting for a checkpoint restore on Start): it is stopped.
-        runtime::VmRuntime::Absent => return Ok(None),
+        runtime::ComputerRuntime::Absent => return Ok(None),
     };
-    runtime::ensure_managed(&inspected).map_err(|_| "This VM is not managed by Silo.")?;
+    runtime::ensure_managed(&inspected).map_err(|_| "This computer is not managed by Silo.")?;
     Ok(Some(inspected))
 }
 fn pending(mapping: &Mapping, message: Option<String>, state: &'static str) -> Port {
@@ -391,29 +391,29 @@ fn pending(mapping: &Mapping, message: Option<String>, state: &'static str) -> P
         message,
     }
 }
-/// Read-only observation of one VM's forwards. It never publishes, removes, or
+/// Read-only observation of one computer's forwards. It never publishes, removes, or
 /// rewrites a forward and never takes the operation gate, so a status read stays
 /// available while other operations run. `failures` carries per-port messages from
 /// a just-completed repair on a write path; it is empty for a plain read. Repair
 /// itself lives in `reconcile_forwarding`.
 fn observe(
     paths: &RuntimePaths,
-    workspace: &str,
+    computer: &str,
     config: &Configuration,
     failures: &BTreeMap<u16, String>,
-) -> Workspace {
+) -> Computer {
     let desired: Vec<_> = config
         .mappings
         .iter()
-        .filter(|m| m.workspace == workspace)
+        .filter(|m| m.computer == computer)
         .collect();
-    let mut result = Workspace {
-        workspace: workspace.into(),
+    let mut result = Computer {
+        computer: computer.into(),
         ports: vec![],
         error: None,
         host: None,
     };
-    let state = match configured_vm(paths, workspace) {
+    let state = match configured_computer(paths, computer) {
         Ok(Some(state)) => state,
         Ok(None) => {
             result.ports = desired
@@ -440,11 +440,11 @@ fn observe(
             .collect();
         return result;
     }
-    // Hold this VM's forwarding lock only to read a consistent snapshot of the desired
-    // settings and the live forwards, so a repair of this VM is never seen half done.
+    // Hold this computer's forwarding lock only to read a consistent snapshot of the desired
+    // settings and the live forwards, so a repair of this computer is never seen half done.
     // It is dropped before the slow guest probes, and this read never mutates the
-    // forwarding table or the settings file. Other VMs never wait on it.
-    let forwarding = forwarding_lock(workspace);
+    // forwarding table or the settings file. Other computers never wait on it.
+    let forwarding = forwarding_lock(computer);
     let guard = hold(&forwarding);
     // Read the current desired revision only after obtaining the lock.
     // An older refresh must never observe against access removed by another window.
@@ -461,14 +461,14 @@ fn observe(
     let desired: Vec<_> = config
         .mappings
         .iter()
-        .filter(|m| m.workspace == workspace)
+        .filter(|m| m.computer == computer)
         .collect();
-    let socket = socket_path(paths, workspace);
+    let socket = socket_path(paths, computer);
     let published = match control(&socket, json!({"op":"ports_list"})) {
         Ok(ports) => ports,
         Err(e) => {
             drop(guard);
-            result.ports = listeners(paths, workspace)
+            result.ports = listeners(paths, computer)
                 .unwrap_or_default()
                 .keys()
                 .map(|port| Port {
@@ -494,7 +494,7 @@ fn observe(
     };
     drop(guard);
     // Discovery and reachability can be slow; they run without the data lock.
-    let listeners = match listeners(paths, workspace) {
+    let listeners = match listeners(paths, computer) {
         Ok(ports) => ports,
         Err(e) => {
             result.ports = desired
@@ -578,7 +578,7 @@ fn observe(
         } else if let Some(Err(e)) = reachable.get(&mapping.port) {
             ("unknown", Some(e.clone()))
         } else if active.is_some() {
-            ("waiting", Some("The service is not reachable through this port. Check its bind address and network policy; use 0.0.0.0 inside the VM.".into()))
+            ("waiting", Some("The service is not reachable through this port. Check its bind address and network policy; use 0.0.0.0 inside the computer.".into()))
         } else {
             (
                 "unknown",
@@ -610,14 +610,14 @@ fn observe(
         let current: Vec<_> = current
             .mappings
             .iter()
-            .filter(|m| m.workspace == workspace)
+            .filter(|m| m.computer == computer)
             .cloned()
             .collect();
         let previous: Vec<_> = config
             .mappings
             .iter()
             .filter(|m| {
-                m.workspace == workspace
+                m.computer == computer
                     && (m.enabled || published.iter().any(|p| p.guest_port == m.port))
             })
             .cloned()
@@ -639,44 +639,44 @@ fn observe(
     }
     result
 }
-/// Apply one VM's saved desired forwards to its live runtime: add and remove
+/// Apply one computer's saved desired forwards to its live runtime: add and remove
 /// published ports and prune confirmed tombstones. This changes shared host
-/// networking, so every caller must already hold the operation gate for this VM.
+/// networking, so every caller must already hold the operation gate for this computer.
 /// It never takes the gate itself (that would be `GateError::Nested`): the write
-/// commands hold `OPERATIONS.vm`, the background scheduler holds `OPERATIONS.try_vm`,
-/// and `reconcile_started` runs while the VM lifecycle caller holds the VM guard.
+/// commands hold `OPERATIONS.computer`, the background scheduler holds `OPERATIONS.try_computer`,
+/// and `reconcile_started` runs while the computer lifecycle caller holds the computer guard.
 /// Returns per-port failure messages so a write path can surface them, and an
 /// error when the saved settings cannot be read. When the runtime's controls cannot
-/// be reached every saved port of the VM carries that failure; a write path shows it
-/// only while the VM runs (a stopped VM's ports read as waiting and reconcile on the
-/// next start). Nothing is published when the VM is not running.
+/// be reached every saved port of the computer carries that failure; a write path shows it
+/// only while the computer runs (a stopped computer's ports read as waiting and reconcile on the
+/// next start). Nothing is published when the computer is not running.
 ///
 /// The shared `network_lock` is held only to read the settings and to prune them;
-/// the runtime calls run under this VM's `forwarding_lock`, so a slow or hung runtime
-/// never blocks other VMs' reads and saves (C-26).
+/// the runtime calls run under this computer's `forwarding_lock`, so a slow or hung runtime
+/// never blocks other computers' reads and saves (C-26).
 fn reconcile_forwarding(
     paths: &RuntimePaths,
-    workspace: &str,
+    computer: &str,
 ) -> Result<BTreeMap<u16, String>, String> {
     debug_assert!(
         runtime::operation_gate::held(),
-        "port reconciliation requires the VM operation gate"
+        "port reconciliation requires the computer operation gate"
     );
     let mut failures = BTreeMap::new();
-    let forwarding = forwarding_lock(workspace);
+    let forwarding = forwarding_lock(computer);
     let _forwarding = hold(&forwarding);
     let desired: Vec<Mapping> = {
         let _data = network_lock();
         read_config(paths)?
             .mappings
             .into_iter()
-            .filter(|m| m.workspace == workspace)
+            .filter(|m| m.computer == computer)
             .collect()
     };
     if desired.is_empty() {
         return Ok(failures);
     }
-    let socket = socket_path(paths, workspace);
+    let socket = socket_path(paths, computer);
     let mut published = match control(&socket, json!({"op":"ports_list"})) {
         Ok(ports) => ports,
         Err(e) => {
@@ -710,14 +710,12 @@ fn reconcile_forwarding(
         }
     }
     // Remove confirmed tombstones, so repeated add/remove never grows settings forever.
-    // Other VMs may have saved while the runtime calls ran: prune the current file.
+    // Other computers may have saved while the runtime calls ran: prune the current file.
     let _data = network_lock();
     if let Ok(mut current) = read_config(paths) {
         let before = current.mappings.len();
         current.mappings.retain(|m| {
-            m.workspace != workspace
-                || m.enabled
-                || published.iter().any(|p| p.guest_port == m.port)
+            m.computer != computer || m.enabled || published.iter().any(|p| p.guest_port == m.port)
         });
         if current.mappings.len() != before {
             let _ = write_config(paths, &current);
@@ -725,19 +723,15 @@ fn reconcile_forwarding(
     }
     Ok(failures)
 }
-fn reconcile_workspaces(config: &Configuration) -> BTreeSet<String> {
-    config
-        .mappings
-        .iter()
-        .map(|m| m.workspace.clone())
-        .collect()
+fn reconcile_computers(config: &Configuration) -> BTreeSet<String> {
+    config.mappings.iter().map(|m| m.computer.clone()).collect()
 }
-/// Reconcile the affected VM's forwards on a background thread, skipping it when
-/// that VM is busy, so a read can return immediately while repair converges. Each
-/// VM is repaired under its own gate guard.
+/// Reconcile the affected computer's forwards on a background thread, skipping it when
+/// that computer is busy, so a read can return immediately while repair converges. Each
+/// Computer is repaired under its own gate guard.
 fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
-    let workspaces = reconcile_workspaces(config);
-    if workspaces.is_empty() {
+    let computers = reconcile_computers(config);
+    if computers.is_empty() {
         return;
     }
     // Reads can arrive in bursts; one repair pass at a time is enough.
@@ -760,32 +754,32 @@ fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
         if runtime::shutdown::ensure_accepting_operations().is_err() {
             return;
         }
-        for workspace in workspaces {
-            let Ok(vm_id) = runtime::resolve_vm_id(&paths, &workspace) else {
+        for computer in computers {
+            let Ok(computer_id) = runtime::resolve_computer_id(&paths, &computer) else {
                 continue;
             };
-            if let Ok(_gate) = runtime::OPERATIONS.try_vm_hidden(
-                &vm_id,
-                &workspace,
-                &format!("Reconciling ports on {workspace}"),
+            if let Ok(_gate) = runtime::OPERATIONS.try_computer_hidden(
+                &computer_id,
+                &computer,
+                &format!("Reconciling ports on {computer}"),
             ) {
-                let _ = reconcile_forwarding(&paths, &workspace);
+                let _ = reconcile_forwarding(&paths, &computer);
             }
         }
     });
 }
-/// Every local VM's observed ports, each with its sandbox host name.
+/// Every local computer's observed ports, each with its computer host name.
 fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, String> {
     let metadata = runtime::read_metadata(&paths.metadata)
-        .map_err(|_| "Could not read sandbox configuration.")?;
-    let mut workspaces = vec![];
+        .map_err(|_| "Could not read computer configuration.")?;
+    let mut computers = vec![];
     let empty = BTreeMap::new();
-    let machines: Vec<_> = metadata
-        .machines
+    let configured: Vec<_> = metadata
+        .computers
         .iter()
         .map(|m| (m.name(), m.id()))
         .collect();
-    for batch in machines.chunks(3) {
+    for batch in configured.chunks(3) {
         std::thread::scope(|scope| {
             let handles: Vec<_> = batch
                 .iter()
@@ -795,34 +789,30 @@ fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, Str
                 })
                 .collect();
             for ((name, id), handle) in batch.iter().zip(handles) {
-                let mut workspace = handle.join().unwrap_or_else(|_| Workspace {
-                    workspace: (*name).into(),
+                let mut computer = handle.join().unwrap_or_else(|_| Computer {
+                    computer: (*name).into(),
                     ports: vec![],
                     error: Some(FAILED.into()),
                     host: None,
                 });
-                workspace.host = Some(sandbox_host(name, id));
-                workspaces.push(workspace);
+                computer.host = Some(computer_host(name, id));
+                computers.push(computer);
             }
         });
     }
-    Ok(State { workspaces })
+    Ok(State { computers })
 }
 
-/// Apply one VM's just-saved intent under the caller's VM gate and return the new
-/// state, with any failure from that repair shown on the VM's ports. Every window is
+/// Apply one computer's just-saved intent under the caller's computer gate and return the new
+/// state, with any failure from that repair shown on the computer's ports. Every window is
 /// told to refresh even when the repair could not run, because the intent was saved.
-fn apply_saved(app: &AppHandle, paths: &RuntimePaths, workspace: &str) -> Result<State, String> {
-    let result = reconcile_forwarding(paths, workspace).and_then(|failures| {
+fn apply_saved(app: &AppHandle, paths: &RuntimePaths, computer: &str) -> Result<State, String> {
+    let result = reconcile_forwarding(paths, computer).and_then(|failures| {
         let config = read_config(paths)?;
         let mut state = state_with(paths, &config)?;
         if !failures.is_empty() {
-            let mut repaired = observe(paths, workspace, &config, &failures);
-            if let Some(slot) = state
-                .workspaces
-                .iter_mut()
-                .find(|w| w.workspace == workspace)
-            {
+            let mut repaired = observe(paths, computer, &config, &failures);
+            if let Some(slot) = state.computers.iter_mut().find(|w| w.computer == computer) {
                 repaired.host = slot.host.take();
                 *slot = repaired;
             }
@@ -851,7 +841,7 @@ pub(crate) async fn read_network_state(app: AppHandle) -> Result<State, String> 
 #[tauri::command]
 pub(crate) async fn save_network_port(
     app: AppHandle,
-    workspace: String,
+    computer: String,
     port: u16,
     host_port: Option<u16>,
     scheme: Option<String>,
@@ -859,21 +849,22 @@ pub(crate) async fn save_network_port(
     runtime::operation_gate::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
-        // Publishing a port changes this VM's shared host forwarding; wait its turn
-        // for that VM. NETWORK_LOCK stays the short data lock around the saved table.
-        let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
+        // Publishing a port changes this computer's shared host forwarding; wait its turn
+        // for that computer. NETWORK_LOCK stays the short data lock around the saved table.
+        let computer_id =
+            runtime::resolve_computer_id(&paths, &computer).map_err(|e| e.to_string())?;
         let _gate = runtime::OPERATIONS
             .kind(runtime::operation_gate::OperationKind::PortPublish)
-            .vm(
-                &vm_id,
-                &workspace,
-                &format!("Publishing a port on {workspace}"),
+            .computer(
+                &computer_id,
+                &computer,
+                &format!("Publishing a port on {computer}"),
             )
             .map_err(|e| e.to_string())?;
         runtime::shutdown::ensure_accepting_operations()?;
-        configured_vm(&paths, &workspace)?;
+        configured_computer(&paths, &computer)?;
         let mapping = Mapping {
-            workspace: workspace.clone(),
+            computer: computer.clone(),
             port,
             host_port,
             scheme,
@@ -886,22 +877,22 @@ pub(crate) async fn save_network_port(
             if config
                 .mappings
                 .iter()
-                .filter(|m| m.workspace == workspace && m.enabled && m.port != port)
+                .filter(|m| m.computer == computer && m.enabled && m.port != port)
                 .count()
                 >= LIMIT
             {
-                return Err("This VM already has 128 published ports.".into());
+                return Err("This computer already has 128 published ports.".into());
             }
             config
                 .mappings
-                .retain(|m| m.workspace != workspace || m.port != port);
+                .retain(|m| m.computer != computer || m.port != port);
             config.mappings.push(mapping);
             if config.mappings.len() > 4096 {
                 return Err("Too many saved ports. Remove an unused port first.".into());
             }
             write_config(&paths, &config)?;
         }
-        apply_saved(&app, &paths, &workspace)
+        apply_saved(&app, &paths, &computer)
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -909,25 +900,26 @@ pub(crate) async fn save_network_port(
 #[tauri::command]
 pub(crate) async fn remove_network_port(
     app: AppHandle,
-    workspace: String,
+    computer: String,
     port: u16,
 ) -> Result<State, String> {
     runtime::operation_gate::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
-        // Removing a port changes this VM's shared host forwarding; wait its turn
-        // for that VM. NETWORK_LOCK stays the short data lock around the saved table.
-        let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
+        // Removing a port changes this computer's shared host forwarding; wait its turn
+        // for that computer. NETWORK_LOCK stays the short data lock around the saved table.
+        let computer_id =
+            runtime::resolve_computer_id(&paths, &computer).map_err(|e| e.to_string())?;
         let _gate = runtime::OPERATIONS
             .kind(runtime::operation_gate::OperationKind::PortRemove)
-            .vm(
-                &vm_id,
-                &workspace,
-                &format!("Removing a port on {workspace}"),
+            .computer(
+                &computer_id,
+                &computer,
+                &format!("Removing a port on {computer}"),
             )
             .map_err(|e| e.to_string())?;
         runtime::shutdown::ensure_accepting_operations()?;
-        configured_vm(&paths, &workspace)?;
+        configured_computer(&paths, &computer)?;
         {
             let _guard = network_lock();
             let mut config = read_config(&paths)?;
@@ -936,15 +928,15 @@ pub(crate) async fn remove_network_port(
             if let Some(mapping) = config
                 .mappings
                 .iter_mut()
-                .find(|m| m.workspace == workspace && m.port == port)
+                .find(|m| m.computer == computer && m.port == port)
             {
                 mapping.enabled = false;
             }
             write_config(&paths, &config)?;
         }
-        // Other computers forward the port through guest streams, not this listener.
-        crate::remote::revoke_port_streams(&vm_id, port);
-        apply_saved(&app, &paths, &workspace)
+        // Other devices forward the port through guest streams, not this listener.
+        crate::remote::revoke_port_streams(&computer_id, port);
+        apply_saved(&app, &paths, &computer)
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -952,13 +944,13 @@ pub(crate) async fn remove_network_port(
 #[tauri::command]
 pub(crate) async fn open_network_port(
     app: AppHandle,
-    workspace: String,
+    computer: String,
     port: u16,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         // Opening an already-reachable endpoint only observes; it takes no gate.
-        let state = observe(&paths, &workspace, &read_config(&paths)?, &BTreeMap::new());
+        let state = observe(&paths, &computer, &read_config(&paths)?, &BTreeMap::new());
         let endpoint = state
             .ports
             .iter()
@@ -969,8 +961,9 @@ pub(crate) async fn open_network_port(
             .as_deref()
             .ok_or("This TCP service is not configured as a website.")?;
         let host_port = endpoint.host_port.ok_or("This service is not reachable.")?;
-        let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
-        let host = sandbox_host(&workspace, &vm_id);
+        let computer_id =
+            runtime::resolve_computer_id(&paths, &computer).map_err(|e| e.to_string())?;
+        let host = computer_host(&computer, &computer_id);
         crate::applications::open_browser(&app, &website_url(scheme, Some(&host), host_port))
     })
     .await
@@ -978,14 +971,14 @@ pub(crate) async fn open_network_port(
 }
 
 // Called after successful starts, including launch-at-login and temporary starts.
-// Port failures must not turn a successful VM start into a VM lifecycle failure.
-// The lifecycle caller already holds this VM's operation guard, so this repair must
+// Port failures must not turn a successful computer start into a computer lifecycle failure.
+// The lifecycle caller already holds this computer's operation guard, so this repair must
 // NOT take the gate (that would be `GateError::Nested`); it calls the gate-free
 // `reconcile_forwarding` directly.
-pub(crate) fn reconcile_started(paths: &RuntimePaths, workspace: &str) {
+pub(crate) fn reconcile_started(paths: &RuntimePaths, computer: &str) {
     if let Ok(config) = read_config(paths) {
-        if config.mappings.iter().any(|m| m.workspace == workspace) {
-            let _ = reconcile_forwarding(paths, workspace);
+        if config.mappings.iter().any(|m| m.computer == computer) {
+            let _ = reconcile_forwarding(paths, computer);
         }
     }
 }
@@ -1005,7 +998,7 @@ mod tests {
         let paths = crate::test_support::paths(directory.path());
         let config = Configuration {
             mappings: vec![Mapping {
-                workspace: "fixture-workspace".into(),
+                computer: "fixture-computer".into(),
                 port: 3000,
                 host_port: None,
                 scheme: Some("http".into()),
@@ -1139,7 +1132,7 @@ mod tests {
     fn rejects_invalid_ports_and_schemes() {
         let _test_state = crate::test_support::global_state();
         let mut m = Mapping {
-            workspace: "dev".into(),
+            computer: "dev".into(),
             port: 3000,
             host_port: None,
             scheme: Some("http".into()),
@@ -1163,12 +1156,12 @@ mod tests {
             home: temp.path().into(),
             storage_home: None,
             library: temp.path().join("lib"),
-            metadata: temp.path().join("machines.json"),
+            metadata: temp.path().join("computers.json"),
             volumes: temp.path().join("volumes"),
         };
         let config = Configuration {
             mappings: vec![Mapping {
-                workspace: "dev".into(),
+                computer: "dev".into(),
                 port: 3000,
                 host_port: None,
                 scheme: Some("http".into()),
@@ -1188,18 +1181,18 @@ mod tests {
         let paths = RuntimePaths {
             guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("runtime/guest-image"),
-            // A nonexistent executable makes VM inspection fail fast, so the read
+            // A nonexistent executable makes computer inspection fail fast, so the read
             // never blocks on a live runtime and never mutates anything.
             executable: temp.path().join("msb"),
             home: temp.path().into(),
             storage_home: None,
             library: temp.path().join("lib"),
-            metadata: temp.path().join("machines.json"),
+            metadata: temp.path().join("computers.json"),
             volumes: temp.path().join("volumes"),
         };
         fs::write(
             &paths.metadata,
-            serde_json::json!({"schemaVersion":1,"machines":[{
+            serde_json::json!({"schemaVersion":1,"computers":[{
                 "id":"00000000-0000-4000-8000-000000000001","name":"dev",
                 "cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,
                 "workspaceStorageGiB":10,"runtimeStorageGiB":10
@@ -1208,13 +1201,13 @@ mod tests {
         )
         .unwrap();
         let config = Configuration::default();
-        // Hold a per-VM guard for "dev" on another thread for the whole read. The
+        // Hold a per-computer guard for "dev" on another thread for the whole read. The
         // read path takes no gate, so it must return promptly regardless.
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
         let holder = std::thread::spawn(move || {
             let _guard = runtime::OPERATIONS
-                .vm(
+                .computer(
                     "00000000-0000-4000-8000-000000000001",
                     "dev",
                     "Blocking network read test",
@@ -1230,9 +1223,9 @@ mod tests {
         release_tx.send(()).unwrap();
         holder.join().unwrap();
         let state = state.expect("read state");
-        assert_eq!(state.workspaces.len(), 1);
+        assert_eq!(state.computers.len(), 1);
         assert_eq!(
-            state.workspaces[0].host.as_deref(),
+            state.computers[0].host.as_deref(),
             Some("dev-00000000.localhost")
         );
         assert!(
@@ -1242,25 +1235,28 @@ mod tests {
     }
 
     #[test]
-    fn each_sandbox_gets_its_own_valid_localhost_name() {
+    fn each_computer_gets_its_own_valid_localhost_name() {
         let _test_state = crate::test_support::global_state();
         let id = "1A2B3C4D-0000-4000-8000-000000000001";
-        assert_eq!(sandbox_host("dev", id), "dev-1a2b3c4d.localhost");
-        // Same name, different sandbox: a different host, so no shared cookies.
+        assert_eq!(computer_host("dev", id), "dev-1a2b3c4d.localhost");
+        // Same name, different computer: a different host, so no shared cookies.
         assert_ne!(
-            sandbox_host("dev", id),
-            sandbox_host("dev", "99999999-0000-4000-8000-000000000001")
+            computer_host("dev", id),
+            computer_host("dev", "99999999-0000-4000-8000-000000000001")
         );
-        // Names from another computer are sanitised into one DNS label.
-        assert_eq!(sandbox_host("My App_2!", id), "my-app-2-1a2b3c4d.localhost");
-        assert_eq!(sandbox_host("--", id), "sandbox-1a2b3c4d.localhost");
-        assert_eq!(sandbox_host("dev", ""), "dev.localhost");
+        // Names from another device are sanitised into one DNS label.
+        assert_eq!(
+            computer_host("My App_2!", id),
+            "my-app-2-1a2b3c4d.localhost"
+        );
+        assert_eq!(computer_host("--", id), "computer-1a2b3c4d.localhost");
+        assert_eq!(computer_host("dev", ""), "dev.localhost");
         for name in [
             "a".repeat(80),
             format!("{}-b", "a".repeat(53)),
             "ünïcode.évil/../x".into(),
         ] {
-            let host = sandbox_host(&name, id);
+            let host = computer_host(&name, id);
             let label = host.strip_suffix(".localhost").unwrap();
             assert!(label.len() <= 63, "{host}");
             assert!(
@@ -1288,15 +1284,15 @@ mod tests {
             home: temp.path().into(),
             storage_home: None,
             library: temp.path().join("lib"),
-            metadata: temp.path().join("machines.json"),
+            metadata: temp.path().join("computers.json"),
             volumes: temp.path().join("volumes"),
         }
     }
 
-    fn one_port(workspace: &str, port: u16, enabled: bool) -> Configuration {
+    fn one_port(computer: &str, port: u16, enabled: bool) -> Configuration {
         Configuration {
             mappings: vec![Mapping {
-                workspace: workspace.into(),
+                computer: computer.into(),
                 port,
                 host_port: None,
                 scheme: Some("http".into()),
@@ -1309,7 +1305,9 @@ mod tests {
     fn poisoned_network_lock_is_recovered_and_reconcile_failures_are_reported() {
         let _test_state = crate::test_support::global_state();
         let gate = runtime::operation_gate::OperationGate::new();
-        let _guard = gate.vm("test-id", "dev", "Reconciling test ports").unwrap();
+        let _guard = gate
+            .computer("test-id", "dev", "Reconciling test ports")
+            .unwrap();
         let temp = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
         let paths = temp_paths(&temp);
         write_config(&paths, &one_port("dev", 3000, true)).unwrap();
@@ -1320,7 +1318,7 @@ mod tests {
         .join();
         assert!(NETWORK_LOCK.is_poisoned());
         // No control socket exists, so the runtime cannot be reached: that is a
-        // failure for every saved port of the VM, never an empty (successful) result.
+        // failure for every saved port of the computer, never an empty (successful) result.
         let failures = reconcile_forwarding(&paths, "dev").unwrap();
         assert!(
             failures
@@ -1372,7 +1370,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn repairing_one_vm_never_holds_the_network_lock_across_runtime_calls() {
+    fn repairing_one_computer_never_holds_the_network_lock_across_runtime_calls() {
         let _test_state = crate::test_support::global_state();
         let temp = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
         let paths = temp_paths(&temp);
@@ -1394,12 +1392,14 @@ mod tests {
             let paths = paths.clone();
             std::thread::spawn(move || {
                 let gate = runtime::operation_gate::OperationGate::new();
-                let _guard = gate.vm("test-id", "dev", "Reconciling test ports").unwrap();
+                let _guard = gate
+                    .computer("test-id", "dev", "Reconciling test ports")
+                    .unwrap();
                 reconcile_forwarding(&paths, "dev")
             })
         };
         assert_eq!(added.recv_timeout(Duration::from_secs(5)).unwrap(), 3000);
-        // Another VM's read or save needs only the short data lock.
+        // Another computer's read or save needs only the short data lock.
         let started = std::time::Instant::now();
         drop(network_lock());
         let waited = started.elapsed();
@@ -1437,12 +1437,14 @@ mod tests {
             let paths = paths.clone();
             std::thread::spawn(move || {
                 let gate = runtime::operation_gate::OperationGate::new();
-                let _guard = gate.vm("test-id", "dev", "Reconciling test ports").unwrap();
+                let _guard = gate
+                    .computer("test-id", "dev", "Reconciling test ports")
+                    .unwrap();
                 reconcile_forwarding(&paths, "dev")
             })
         };
         assert_eq!(added.recv_timeout(Duration::from_secs(5)).unwrap(), 3000);
-        // Another VM saves a port while this VM's repair waits on its runtime.
+        // Another computer saves a port while this computer's repair waits on its runtime.
         {
             let _guard = network_lock();
             let mut current = read_config(&paths).unwrap();
@@ -1457,7 +1459,7 @@ mod tests {
             .unwrap()
             .mappings
             .into_iter()
-            .map(|m| (m.workspace, m.port))
+            .map(|m| (m.computer, m.port))
             .collect();
         assert_eq!(
             saved,
@@ -1471,8 +1473,8 @@ mod tests {
         use std::os::unix::net::UnixListener;
         let _test_state = crate::test_support::global_state();
         let config = one_port("dev", 3000, false);
-        let workspaces = reconcile_workspaces(&config);
-        assert_eq!(workspaces, BTreeSet::from(["dev".into()]));
+        let computers = reconcile_computers(&config);
+        assert_eq!(computers, BTreeSet::from(["dev".into()]));
         let temp = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
         let paths = temp_paths(&temp);
         write_config(&paths, &config).unwrap();
@@ -1500,11 +1502,11 @@ mod tests {
             }
         });
         let gate = runtime::operation_gate::OperationGate::new();
-        for workspace in workspaces {
+        for computer in computers {
             let _guard = gate
-                .vm("test-id", &workspace, "Retrying removed port")
+                .computer("test-id", &computer, "Retrying removed port")
                 .unwrap();
-            assert!(reconcile_forwarding(&paths, &workspace).unwrap().is_empty());
+            assert!(reconcile_forwarding(&paths, &computer).unwrap().is_empty());
         }
         server.join().unwrap();
         assert!(read_config(&paths).unwrap().mappings.is_empty());
@@ -1516,7 +1518,7 @@ mod tests {
         fs::write(&paths.library, "fixture").unwrap();
         fs::write(
             &paths.metadata,
-            json!({"schemaVersion":1,"machines":[{
+            json!({"schemaVersion":1,"computers":[{
                 "id":"00000000-0000-4000-8000-000000000001","name":"dev",
                 "cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,
                 "workspaceStorageGiB":10,"runtimeStorageGiB":10
@@ -1599,7 +1601,7 @@ mod contract_tests {
     #[test]
     fn network_state_matches_wire_contract() {
         let mapping = Mapping {
-            workspace: "dev".into(),
+            computer: "dev".into(),
             port: 3000,
             host_port: Some(13000),
             scheme: Some("http".into()),
@@ -1607,9 +1609,9 @@ mod contract_tests {
         };
         let states = vec![
             State {
-                workspaces: vec![Workspace {
-                    workspace: "dev".into(),
-                    host: Some(sandbox_host("dev", "00000000-0000-4000-8000-000000000001")),
+                computers: vec![Computer {
+                    computer: "dev".into(),
+                    host: Some(computer_host("dev", "00000000-0000-4000-8000-000000000001")),
                     error: None,
                     ports: vec![
                         Port {
@@ -1635,8 +1637,8 @@ mod contract_tests {
                 }],
             },
             State {
-                workspaces: vec![Workspace {
-                    workspace: "dev".into(),
+                computers: vec![Computer {
+                    computer: "dev".into(),
                     host: None,
                     error: Some("Network state could not be read.".into()),
                     ports: vec![pending(

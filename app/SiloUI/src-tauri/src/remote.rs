@@ -1,4 +1,4 @@
-//! App-lifetime remote management. SSH only transports framed requests to the running owner.
+//! App-lifetime Connections. SSH only transports framed requests to the running owner.
 use crate::bridge_error::{BridgeError, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -31,12 +31,12 @@ fn authorized_key_options() -> String {
 fn silo_key_comment() -> &'static str {
     crate::channel::current().remote_key_comment()
 }
-/// Bridge protocol version; both computers must match. 3 moves published-port tunnels
+/// Bridge protocol version; both devices must match. 3 moves published-port tunnels
 /// into guest SSH so owner management keys no longer permit forwarding.
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
 const LIMIT: usize = 4 * 1024 * 1024;
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
-const CONFIG_TOO_LARGE: &str = "Remote management settings exceed the 1 MiB safety limit.";
+const CONFIG_TOO_LARGE: &str = "Connections settings exceed the 1 MiB safety limit.";
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 /// Serializes `config.json` reads and writes. Every holder reloads the file (written
 /// atomically) after locking, so a panic under the lock leaves no in-memory state to
@@ -47,7 +47,7 @@ fn config_lock() -> std::sync::MutexGuard<'static, ()> {
 static REMOTE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RemoteHost {
+pub struct Device {
     pub id: String,
     pub name: String,
     pub address: String,
@@ -55,36 +55,36 @@ pub struct RemoteHost {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
-    host_id: String,
+    device_id: String,
     enabled: bool,
-    hosts: Vec<RemoteHost>,
+    devices: Vec<Device>,
     #[serde(flatten)]
     extra: serde_json::Map<String, Value>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ManagementStatus {
+pub struct ConnectionsStatus {
     enabled: bool,
-    host_id: String,
+    device_id: String,
     name: String,
     address: String,
-    /// Addresses other computers may reach this one at, most likely first.
-    addresses: Vec<ManagementAddress>,
-    /// Why remote management does not work on this computer right now, if it does not.
+    /// Addresses other devices may reach this one at, most likely first.
+    addresses: Vec<ConnectionAddress>,
+    /// Why Connections does not work on this device right now, if it does not.
     error: Option<String>,
 }
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ManagementAddress {
+pub struct ConnectionAddress {
     address: String,
     /// `name` (local network name), `tailscale`, or `network` (an interface address).
     kind: &'static str,
 }
 /// `user@…` candidates: the host name (as `.local` when it has no domain, which Bonjour and
 /// Avahi resolve), then Tailscale addresses, then other interface addresses.
-fn management_addresses(user: &str, name: &str, interfaces: &[String]) -> Vec<ManagementAddress> {
-    let entry = |host: &str, kind| ManagementAddress {
-        address: format!("{user}@{host}"),
+fn connection_addresses(user: &str, name: &str, interfaces: &[String]) -> Vec<ConnectionAddress> {
+    let entry = |device: &str, kind| ConnectionAddress {
+        address: format!("{user}@{device}"),
         kind,
     };
     let mut list = Vec::new();
@@ -148,7 +148,7 @@ fn read_config_in(dir: &Path) -> Result<Config, String> {
                 .map_err(|error| error.to_string())?
                 .is_file()
             {
-                return Err("Remote management settings must be a regular file.".into());
+                return Err("Connections settings must be a regular file.".into());
             }
             let mut bytes = Vec::new();
             file.take(MAX_CONFIG_BYTES as u64 + 1)
@@ -157,14 +157,13 @@ fn read_config_in(dir: &Path) -> Result<Config, String> {
             if bytes.len() > MAX_CONFIG_BYTES {
                 return Err(CONFIG_TOO_LARGE.into());
             }
-            serde_json::from_slice(&bytes)
-                .map_err(|_| "Remote management settings are damaged.".into())
+            serde_json::from_slice(&bytes).map_err(|_| "Connections settings are damaged.".into())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let config = Config {
-                host_id: uuid::Uuid::new_v4().to_string(),
+                device_id: uuid::Uuid::new_v4().to_string(),
                 enabled: false,
-                hosts: vec![],
+                devices: vec![],
                 extra: serde_json::Map::new(),
             };
             save_config_in(dir, &config)?;
@@ -196,7 +195,7 @@ fn save_config_in(dir: &Path, config: &Config) -> Result<(), String> {
 enum Access {
     /// Observes state only; repeating it changes nothing.
     Read,
-    /// Changes state on this computer: accepted once per request identity, never replayed.
+    /// Changes state on this device: accepted once per request identity, never replayed.
     Change,
     /// An interactive byte stream, served before request dispatch.
     Stream,
@@ -216,7 +215,7 @@ const METHODS: &[(&str, Access)] = &[
     ("desktop.action", Access::Change),
     ("chatgpt.status", Access::Read),
     ("chatgpt.retry", Access::Change),
-    ("computer.approval", Access::Change),
+    ("computerUse.approval", Access::Change),
     ("ssh.access.state", Access::Read),
     ("ssh.access.connection", Access::Change),
     ("ssh.access.save", Access::Change),
@@ -234,7 +233,7 @@ const METHODS: &[(&str, Access)] = &[
     ("checkpoint.fork", Access::Change),
     ("checkpoint.restore", Access::Change),
 ];
-/// The error an older or newer computer reports for a method it does not serve.
+/// The error an older or newer device reports for a method it does not serve.
 const UNSUPPORTED: &str = "This Silo version does not support that remote operation.";
 fn access(method: &str) -> Option<Access> {
     METHODS
@@ -251,42 +250,42 @@ fn name() -> String {
         .trim_end_matches('\0')
         .to_string()
 }
-fn status(config: &Config) -> ManagementStatus {
+fn status(config: &Config) -> ConnectionsStatus {
     let name = name();
     let user = std::env::var("USER").unwrap_or_default();
-    let addresses = management_addresses(&user, &name, &crate::ssh_access::addresses());
-    ManagementStatus {
+    let addresses = connection_addresses(&user, &name, &crate::ssh_access::addresses());
+    ConnectionsStatus {
         enabled: config.enabled,
-        host_id: config.host_id.clone(),
+        device_id: config.device_id.clone(),
         address: addresses
             .first()
             .map(|entry| entry.address.clone())
             .unwrap_or_else(|| format!("{user}@{name}")),
         addresses,
         name,
-        error: crate::sync::lock_or_recover(&START_ERROR, "remote management status").clone(),
+        error: crate::sync::lock_or_recover(&START_ERROR, "connections status").clone(),
     }
 }
-/// Why remote management is not working although Silo runs, such as another Silo
+/// Why Connections is not working although Silo runs, such as another Silo
 /// process owning it or a file in the way of the bridge link. Cleared once fixed.
 static START_ERROR: Mutex<Option<String>> = Mutex::new(None);
 /// True once this process serves the control socket.
 static LISTENING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 fn record_start_error(error: Option<String>) {
     if let Some(error) = &error {
-        eprintln!("Remote management is unavailable: {error}");
+        eprintln!("Connections are unavailable: {error}");
     }
-    *crate::sync::lock_or_recover(&START_ERROR, "remote management status") = error;
+    *crate::sync::lock_or_recover(&START_ERROR, "connections status") = error;
 }
 async fn settings_io<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work)
         .await
-        .map_err(|_| "Remote management settings are unavailable.".to_string())?
+        .map_err(|_| "Connections settings are unavailable.".to_string())?
 }
 #[tauri::command]
-pub async fn remote_management_status() -> Result<ManagementStatus, String> {
+pub async fn connections_status() -> Result<ConnectionsStatus, String> {
     settings_io(|| {
         let _guard = config_lock();
         Ok(status(&read_config()?))
@@ -311,7 +310,10 @@ fn select_bridge_target(app_image: Option<PathBuf>, current: PathBuf) -> Result<
         .components()
         .any(|part| part.as_os_str() == "AppTranslocation")
     {
-        return Err("Move Silo to the Applications folder and open it again before using remote management.".into());
+        return Err(
+            "Move Silo to the Applications folder and open it again before using Connections."
+                .into(),
+        );
     }
     Ok(current)
 }
@@ -346,7 +348,7 @@ fn link_bridge(home: &Path, target: &Path) -> Result<(), String> {
                             }))
             });
         if !ours {
-            return Err(format!("~/.local/bin/{name} already exists. Choose a different name for that file before enabling remote management."));
+            return Err(format!("~/.local/bin/{name} already exists. Choose a different name for that file before turning on Connections."));
         }
         if previous.as_deref() == Some(target) {
             return Ok(());
@@ -365,10 +367,10 @@ fn link_bridge_for_this_account() -> Result<(), String> {
     link_bridge(&home, &bridge_target()?)
 }
 #[tauri::command]
-pub async fn set_remote_management(
+pub async fn set_connections_enabled(
     app: AppHandle,
     enabled: bool,
-) -> Result<ManagementStatus, String> {
+) -> Result<ConnectionsStatus, String> {
     settings_io(move || {
         let _guard = config_lock();
         if enabled {
@@ -379,7 +381,7 @@ pub async fn set_remote_management(
         save_config(&config)?;
         REMOTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
         if enabled {
-            // The link is in place now; a launch that could not serve remote management tries again.
+            // The link is in place now; a launch that could not serve Connections tries again.
             let listening = if LISTENING.load(std::sync::atomic::Ordering::Acquire) {
                 Ok(())
             } else {
@@ -392,33 +394,33 @@ pub async fn set_remote_management(
     .await
 }
 #[tauri::command]
-pub async fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
-    settings_io(saved_hosts).await
+pub async fn device_list() -> Result<Vec<Device>, String> {
+    settings_io(saved_devices).await
 }
-pub(crate) fn saved_hosts() -> Result<Vec<RemoteHost>, String> {
+pub(crate) fn saved_devices() -> Result<Vec<Device>, String> {
     let _guard = config_lock();
-    Ok(read_config()?.hosts)
+    Ok(read_config()?.devices)
 }
 #[tauri::command]
-pub async fn remove_remote_host(app: AppHandle, host_id: String) -> Result<(), String> {
+pub async fn remove_device(app: AppHandle, device_id: String) -> Result<(), String> {
     // Closing tunnels and viewers waits for their processes; keep it off the main thread.
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = config_lock();
         let mut config = read_config()?;
-        // Keep the computer available for retry if its local key cleanup fails.
+        // Keep the device available for retry if its local key cleanup fails.
         if let Ok(paths) = crate::runtime::runtime_paths(&app) {
-            crate::ssh_connection::forget_host(&paths.home, &host_id)?;
+            crate::ssh_connection::forget_device(&paths.home, &device_id)?;
         }
-        config.hosts.retain(|h| h.id != host_id);
+        config.devices.retain(|h| h.id != device_id);
         save_config(&config)?;
         drop(_guard);
-        poll_succeeded(&host_id);
-        crate::remote_network::close_host(&host_id);
-        crate::desktop_viewer::close_host(&host_id);
+        poll_succeeded(&device_id);
+        crate::remote_network::close_device(&device_id);
+        crate::desktop_viewer::close_device(&device_id);
         Ok(())
     })
     .await
-    .map_err(|_| "Could not remove the computer.".to_string())?
+    .map_err(|_| "Could not remove the device.".to_string())?
 }
 fn validate_address(address: &str) -> Result<(), String> {
     let invalid = || {
@@ -465,7 +467,7 @@ fn validate_address(address: &str) -> Result<(), String> {
     Ok(())
 }
 #[tauri::command]
-pub async fn remote_authorize_ssh(app: AppHandle, address: String) -> Result<(), String> {
+pub async fn authorize_device(app: AppHandle, address: String) -> Result<(), String> {
     // Resolving and launching the terminal can take seconds (application lookup, an
     // AppleScript for Ghostty), so it runs off the main thread.
     tauri::async_runtime::spawn_blocking(move || {
@@ -536,7 +538,7 @@ fn write_reply(mut writer: impl Write, value: &Value) -> Result<(), String> {
 /// Reads the bridge's reply from ssh output, skipping anything printed before it.
 fn read_reply(mut reader: impl std::io::BufRead) -> Result<Value, String> {
     let ended = || {
-        "The remote Silo connection ended. Check that Silo is running and remote management is enabled.".to_string()
+        "The remote Silo connection ended. Check that Silo is running and Connections are turned on.".to_string()
     };
     let (mut matched, mut skipped) = (0, 0);
     while matched < REPLY_PREAMBLE.len() {
@@ -552,7 +554,7 @@ fn read_reply(mut reader: impl std::io::BufRead) -> Result<Value, String> {
             skipped += matched + 1 - restart;
             matched = restart;
             if skipped > REPLY_SEARCH_LIMIT {
-                return Err("The other computer printed unexpected text before Silo's reply. Remove output from its shell startup files, such as echo in .bashrc.".into());
+                return Err("The other device printed unexpected text before Silo's reply. Remove output from its shell startup files, such as echo in .bashrc.".into());
             }
         }
     }
@@ -599,7 +601,7 @@ fn read_socket_frame(socket: &mut UnixStream, timeout: Duration) -> Result<Value
 
 fn read_frame(mut reader: impl Read) -> Result<Value, String> {
     let mut len = [0; 4];
-    reader.read_exact(&mut len).map_err(|_|"The remote Silo connection ended. Check that Silo is running and remote management is enabled.".to_string())?;
+    reader.read_exact(&mut len).map_err(|_|"The remote Silo connection ended. Check that Silo is running and Connections are turned on.".to_string())?;
     let len = u32::from_be_bytes(len) as usize;
     if len > LIMIT {
         return Err("Remote response exceeds the size limit.".into());
@@ -608,7 +610,7 @@ fn read_frame(mut reader: impl Read) -> Result<Value, String> {
     reader.read_exact(&mut bytes).map_err(|e| e.to_string())?;
     serde_json::from_slice(&bytes).map_err(|_| "Invalid remote Silo response.".into())
 }
-/// Which keys ssh offers the other computer.
+/// Which keys ssh offers the other device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Identity {
     /// Only Silo's key (and keys the user's ssh config names for that host), so a
@@ -764,7 +766,7 @@ fn tunnel_commands(
 }
 
 #[tauri::command]
-pub async fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(), String> {
+pub async fn setup_device_key(app: AppHandle, address: String) -> Result<(), String> {
     // ssh-keygen and the terminal launch run off the main thread.
     tauri::async_runtime::spawn_blocking(move || {
         let address = address.trim();
@@ -823,7 +825,7 @@ fn silo_key_blob(public: &str) -> Result<&str, String> {
         _ => Err("Invalid Silo SSH public key.".into()),
     }
 }
-/// The `authorized_keys` line Silo installs for its remote-management key.
+/// The `authorized_keys` line Silo installs for its connections key.
 fn authorized_key_line(public: &str) -> Result<String, String> {
     let blob = silo_key_blob(public)?;
     Ok(format!(
@@ -913,7 +915,7 @@ fn rewrite_authorized_keys_file(
 fn handshake_key_in(path: &Path, public: Option<&str>) -> Result<Value, BridgeError> {
     if let Some(public) = public {
         restrict_authorized_keys_file(path, public).map_err(|error| {
-            BridgeError::from(format!("Silo could not restrict its SSH key on the other computer. Repair ~/.ssh/authorized_keys there and reconnect. {error}"))
+            BridgeError::from(format!("Silo could not restrict its SSH key on the other device. Repair ~/.ssh/authorized_keys there and reconnect. {error}"))
         })?;
     }
     Ok(Value::Null)
@@ -939,11 +941,11 @@ fn request_timeout(request: &Value) -> Duration {
         return 2
             * (crate::runtime::checkpoints::RESTORE_EXPECTED_DURATION + Duration::from_secs(60));
     }
-    // A new VM may get a desktop from the owner (it defaults one on v4 images), so
+    // A new computer may get a desktop from the owner (it defaults one on v4 images), so
     // creation needs the desktop-capable time even when the request names none.
     if (request["method"] == "runtime.upsert"
         && (request
-            .pointer("/params/machine/desktop")
+            .pointer("/params/configuration/desktop")
             .is_some_and(|v| !v.is_null())
             || request
                 .pointer("/params/expected")
@@ -953,38 +955,38 @@ fn request_timeout(request: &Value) -> Duration {
                 request["params"]["action"].as_str(),
                 Some("update-streamer" | "setup-lcu" | "setup-computer-use")
             ))
-        || request["method"] == "computer.approval"
+        || request["method"] == "computerUse.approval"
     {
         Duration::from_secs(2100)
     } else {
         Duration::from_secs(600)
     }
 }
-const CONNECTION_HELP: &str = "Cannot connect to Silo over SSH. Verify the address, authorize its host key using SSH, and configure an SSH key or agent. On the other computer, keep Silo running with remote management enabled.";
+const CONNECTION_HELP: &str = "Cannot connect to Silo over SSH. Verify the address, authorize its host key using SSH, and configure an SSH key or agent. On the other device, keep Silo running with Connections turned on.";
 /// Names the cause of a failed connection from the ssh exit code and stderr, without echoing raw output.
-const AUTHENTICATION_FAILED: &str = "SSH authentication failed. Set up Silo's SSH key for this computer, or configure an SSH key or agent.";
+const AUTHENTICATION_FAILED: &str = "SSH authentication failed. Set up Silo's SSH key for this device, or configure an SSH key or agent.";
 fn connection_failure(code: Option<i32>, stderr: &str) -> String {
     let has = |needle: &str| stderr.contains(needle);
     if code == Some(255) {
         let cause = if has("REMOTE HOST IDENTIFICATION HAS CHANGED") {
-            "The other computer's SSH host key changed. Verify the computer before trusting its new key (Host key verification failed)."
+            "The other device's SSH host key changed. Verify the device before trusting its new key (Host key verification failed)."
         } else if has("Host key verification failed") {
-            "Host key verification failed. Connect once with SSH in a terminal to verify and trust the other computer's host key."
+            "Host key verification failed. Connect once with SSH in a terminal to verify and trust the other device's host key."
         } else if has("Permission denied") || has("Too many authentication failures") {
             AUTHENTICATION_FAILED
         } else if has("Could not resolve hostname") {
-            "Cannot resolve the computer's address. Check the address and network."
+            "Cannot resolve the device's address. Check the address and network."
         } else if has("Connection refused") {
-            "The other computer refused the SSH connection. Turn on Remote Login (SSH) there."
+            "The other device refused the SSH connection. Turn on Remote Login (SSH) there."
         } else if has("timed out") {
-            "The SSH connection timed out. Check that the other computer is awake and reachable."
+            "The SSH connection timed out. Check that the other device is awake and reachable."
         } else {
             CONNECTION_HELP
         };
         return cause.into();
     }
-    if has("Silo is not running on this computer.") {
-        return "Silo is not running on the other computer. Open Silo there with remote management enabled.".into();
+    if has("Silo is not running on this device.") {
+        return "Silo is not running on the other device. Open Silo there with Connections turned on.".into();
     }
     let missing_bridge = [
         crate::channel::Channel::Production,
@@ -997,17 +999,17 @@ fn connection_failure(code: Option<i32>, stderr: &str) -> String {
             .any(|cause| has(&format!("{}: {cause}", channel.remote_bridge_name())))
     });
     if code == Some(127) || missing_bridge {
-        return "Silo's remote bridge is missing on the other computer. Turn remote management off and on again there.".into();
+        return "Silo's remote bridge is missing on the other device. Turn Connections off and on again there.".into();
     }
     CONNECTION_HELP.into()
 }
-/// The command the bridge runs on the other computer (also forced by Silo's restricted key).
+/// The command the bridge runs on the other device (also forced by Silo's restricted key).
 /// Pauses before sending a change again after its connection was lost.
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(4)];
-/// Why an exchange with another computer failed.
+/// Why an exchange with another device failed.
 #[derive(Debug, PartialEq)]
 enum Failure {
-    /// The other computer answered with this error.
+    /// The other device answered with this error.
     Reported(BridgeError),
     /// The connection was lost; the request may or may not have arrived.
     Lost(String),
@@ -1086,7 +1088,7 @@ fn run_exchange(
         .stderr(stderr.try_clone().map_err(failed)?)
         .spawn()
         .map_err(failed)?;
-    // Input stays open until the reply: the bridge takes its end to mean this computer left.
+    // Input stays open until the reply: the bridge takes its end to mean this device left.
     let mut input = child.stdin.take();
     let monitored = (|| {
         if let Some(input) = &input {
@@ -1156,28 +1158,28 @@ fn run_exchange(
 /// Legacy adapter for callers whose command error contract has not migrated yet.
 pub(crate) fn call_remote(
     app: &AppHandle,
-    host_id: &str,
+    device_id: &str,
     method: &str,
     params: Value,
 ) -> Result<Value, String> {
-    call_remote_typed(app, host_id, method, params).map_err(|error| error.message)
+    call_remote_typed(app, device_id, method, params).map_err(|error| error.message)
 }
-/// The methods the connected computer `host_id` serves (its handshake), remembered for a
+/// The methods the connected device `device_id` serves (its handshake), remembered for a
 /// minute so frequent callers (status polling) do not add a round trip each time.
 /// Failures are not remembered.
-pub(crate) fn host_capabilities(
+pub(crate) fn device_capabilities(
     app: &AppHandle,
-    host_id: &str,
+    device_id: &str,
 ) -> Result<Vec<String>, BridgeError> {
     static KNOWN: Mutex<Vec<(String, Instant, Vec<String>)>> = Mutex::new(Vec::new());
     const FRESH: Duration = Duration::from_secs(60);
     if let Some((_, _, known)) = crate::sync::lock_or_recover(&KNOWN, "remote capabilities")
         .iter()
-        .find(|(id, at, _)| id == host_id && at.elapsed() < FRESH)
+        .find(|(id, at, _)| id == device_id && at.elapsed() < FRESH)
     {
         return Ok(known.clone());
     }
-    let reply = call_remote_typed(app, host_id, "handshake", json!({}))?;
+    let reply = call_remote_typed(app, device_id, "handshake", json!({}))?;
     let names: Vec<String> = reply["capabilities"]
         .as_array()
         .map(|names| {
@@ -1188,38 +1190,39 @@ pub(crate) fn host_capabilities(
         })
         .unwrap_or_default();
     let mut known = crate::sync::lock_or_recover(&KNOWN, "remote capabilities");
-    known.retain(|(id, ..)| id != host_id);
-    known.push((host_id.to_owned(), Instant::now(), names.clone()));
+    known.retain(|(id, ..)| id != device_id);
+    known.push((device_id.to_owned(), Instant::now(), names.clone()));
     Ok(names)
 }
 
 pub(crate) fn call_remote_typed(
     _app: &AppHandle,
-    host_id: &str,
+    device_id: &str,
     method: &str,
     params: Value,
 ) -> Result<Value, BridgeError> {
     crate::runtime::shutdown::ensure_accepting_operations()?;
-    let host = {
+    let device = {
         let _guard = config_lock();
         read_config()?
-            .hosts
+            .devices
             .into_iter()
-            .find(|h| h.id == host_id)
-            .ok_or("This computer is no longer connected.")?
+            .find(|h| h.id == device_id)
+            .ok_or("This device is no longer connected.")?
     };
-    let mut request = json!({"version":VERSION,"hostId":host.id,"method":method,"params":params});
+    let mut request =
+        json!({"version":VERSION,"deviceId":device.id,"method":method,"params":params});
     let deadline = Instant::now() + request_timeout(&request);
     if access(method) != Some(Access::Change) {
-        return exchange(&host.address, &request, deadline).map_err(Failure::error);
+        return exchange(&device.address, &request, deadline).map_err(Failure::error);
     }
     request["operationId"] = json!(uuid::Uuid::new_v4().to_string());
     send_change(&mut request, deadline, &RETRY_DELAYS, |request| {
-        exchange(&host.address, request, deadline)
+        exchange(&device.address, request, deadline)
     })
 }
 /// Sends a change, and after a lost connection sends it again with the same
-/// `operationId`, so the other computer attaches the retry to the change it already
+/// `operationId`, so the other device attaches the retry to the change it already
 /// accepted instead of running it twice.
 fn send_change(
     request: &mut Value,
@@ -1243,7 +1246,7 @@ fn send_change_with_clock(
         if crate::runtime::shutdown::generation() != quit {
             return Err(BridgeError::new(
                 ErrorCode::Cancelled,
-                "The remote action was cancelled when Silo began shutting down. Refresh the remote computer to check its state.",
+                "The remote action was cancelled when Silo began shutting down. Refresh the remote device to check its state.",
             ));
         }
         crate::runtime::shutdown::ensure_accepting_operations()?;
@@ -1251,7 +1254,7 @@ fn send_change_with_clock(
         if remaining.is_zero() {
             return Err("Remote operation timed out. Its outcome is unknown; reconnect and inspect before issuing another change.".into());
         }
-        // Queued work must start early enough to finish while this computer still waits.
+        // Queued work must start early enough to finish while this device still waits.
         request["startWithinMs"] = json!((remaining / 2).as_millis() as u64);
         match send(request) {
             Err(Failure::Lost(message)) => match delays.next() {
@@ -1267,25 +1270,25 @@ fn send_change_with_clock(
 }
 
 fn checkpoint_remote_request(
-    vm_id: &str,
+    computer_id: &str,
     action: &str,
     name: Option<&str>,
     checkpoint_id: Option<&str>,
     new_name: Option<&str>,
 ) -> Result<(&'static str, Value), String> {
-    uuid::Uuid::parse_str(vm_id).map_err(|_| "Invalid sandbox identity.")?;
+    uuid::Uuid::parse_str(computer_id).map_err(|_| "Invalid computer identity.")?;
     let params = match action {
         "create" => (
             "checkpoint.create",
-            json!({"vmId":vm_id,"name":name.ok_or("Missing checkpoint name.")?}),
+            json!({"computerId":computer_id,"name":name.ok_or("Missing checkpoint name.")?}),
         ),
         "fork" => (
             "checkpoint.fork",
-            json!({"vmId":vm_id,"checkpointId":checkpoint_id,"newName":new_name.ok_or("Missing fork name.")?}),
+            json!({"computerId":computer_id,"checkpointId":checkpoint_id,"newName":new_name.ok_or("Missing fork name.")?}),
         ),
         "restore" => (
             "checkpoint.restore",
-            json!({"vmId":vm_id,"checkpointId":checkpoint_id.ok_or("Missing checkpoint identity.")?}),
+            json!({"computerId":computer_id,"checkpointId":checkpoint_id.ok_or("Missing checkpoint identity.")?}),
         ),
         _ => return Err("Unsupported checkpoint operation.".into()),
     };
@@ -1295,8 +1298,8 @@ fn checkpoint_remote_request(
 #[tauri::command]
 pub async fn remote_checkpoint_action(
     app: AppHandle,
-    host_id: String,
-    vm_id: String,
+    device_id: String,
+    computer_id: String,
     action: String,
     name: Option<String>,
     checkpoint_id: Option<String>,
@@ -1304,112 +1307,110 @@ pub async fn remote_checkpoint_action(
 ) -> Result<(), BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         let (method, params) = checkpoint_remote_request(
-            &vm_id,
+            &computer_id,
             &action,
             name.as_deref(),
             checkpoint_id.as_deref(),
             new_name.as_deref(),
         )?;
-        call_remote_typed(&app, &host_id, method, params).map(|_| ())
+        call_remote_typed(&app, &device_id, method, params).map(|_| ())
     })
     .await
-    .map_err(|_| "Silo could not finish the checkpoint action on the remote computer. Reconnect to it and refresh the sandbox before retrying.".to_string())?
+    .map_err(|_| "Silo could not finish the checkpoint action on the remote device. Reconnect to it and refresh the computer before retrying.".to_string())?
 }
 
 #[tauri::command]
-pub async fn connect_remote_host(
-    address: String,
-    replace: Option<bool>,
-) -> Result<RemoteHost, String> {
+pub async fn connect_device(address: String, replace: Option<bool>) -> Result<Device, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let address = address.trim().to_owned();
         let handshake = json!({"version": VERSION, "method": "handshake", "params": {"sshKey": silo_public_key()}});
         let result = exchange(&address, &handshake, Instant::now() + request_timeout(&handshake))
             .map_err(Failure::message)?;
         if result["version"].as_u64() != Some(VERSION as u64) {
-            return Err("Silo versions are incompatible. Update Silo on both computers.".into());
+            return Err("Silo versions are incompatible. Update Silo on both devices.".into());
         }
-        let id = result["hostId"]
+        let id = result["deviceId"]
             .as_str()
             .filter(|id| uuid::Uuid::parse_str(id).is_ok())
-            .ok_or("Invalid computer identity.")?;
+            .ok_or("Invalid device identity.")?;
         let name = result["name"]
             .as_str()
             .filter(|name| {
                 !name.is_empty() && name.len() <= 255 && !name.chars().any(char::is_control)
             })
-            .ok_or("Invalid computer name.")?;
-        let host = RemoteHost {
+            .ok_or("Invalid device name.")?;
+        let device = Device {
             id: id.into(),
             name: name.into(),
             address,
         };
         let _guard = config_lock();
-        save_connected_host(&directory()?, host, &self::name(), replace.unwrap_or(false))
+        save_connected_device(&directory()?, device, &self::name(), replace.unwrap_or(false))
     })
     .await
     .map_err(|error| error.to_string())?
 }
-/// Shown when a computer's identity is already saved at another address; the connect
+/// Shown when a device's identity is already saved at another address; the connect
 /// form offers to replace the saved address after it.
 const ALREADY_SAVED: &str = "is already saved at";
-/// Saves the computer that answered at `host.address`. The identity is reported by that
-/// computer, so it never silently takes over another saved entry: a known identity at a new
+/// Saves the device that answered at `device.address`. The identity is reported by that
+/// device, so it never silently takes over another saved entry: a known identity at a new
 /// address is saved only when the user confirmed (`replace`).
-fn save_connected_host(
+fn save_connected_device(
     dir: &Path,
-    host: RemoteHost,
+    device: Device,
     local_name: &str,
     replace: bool,
-) -> Result<RemoteHost, String> {
+) -> Result<Device, String> {
     let mut config = read_config_in(dir)?;
-    if config.host_id == host.id {
-        return Err(if host.name == local_name {
-            "This address points to this computer. Its VMs are already available locally.".into()
+    if config.device_id == device.id {
+        return Err(if device.name == local_name {
+            "This address points to this device. Its computers are already available locally."
+                .into()
         } else {
             let production = crate::channel::Channel::Production;
             let development = crate::channel::Channel::Development;
-            format!("{} uses this computer's Silo identity, probably because its Silo settings were copied from here. On {}, quit Silo, delete ~/{}/desktop-remote/config.json (~/{}/desktop-remote/config.json for {}), and open Silo again.", host.name, host.name, production.state_dir_name(), development.state_dir_name(), development.product_name())
+            format!("{} uses this device's Silo identity, probably because its Silo settings were copied from here. On {}, quit Silo, delete ~/{}/desktop-remote/config.json (~/{}/desktop-remote/config.json for {}), and open Silo again.", device.name, device.name, production.state_dir_name(), development.state_dir_name(), development.product_name())
         });
     }
-    if let Some(saved) = config.hosts.iter().find(|saved| saved.id == host.id) {
-        if saved.address != host.address && !replace {
+    if let Some(saved) = config.devices.iter().find(|saved| saved.id == device.id) {
+        if saved.address != device.address && !replace {
             return Err(format!(
-                "{} {ALREADY_SAVED} {}. Use {} for it instead only if that computer moved to this address.",
-                saved.name, saved.address, host.address
+                "{} {ALREADY_SAVED} {}. Use {} for it instead only if that device moved to this address.",
+                saved.name, saved.address, device.address
             ));
         }
     }
-    config.hosts.retain(|saved| saved.id != host.id);
-    config.hosts.push(host.clone());
+    config.devices.retain(|saved| saved.id != device.id);
+    config.devices.push(device.clone());
     save_config_in(dir, &config)?;
-    Ok(host)
+    Ok(device)
 }
 
 #[tauri::command]
-pub async fn remote_host_snapshot(
+pub async fn device_snapshot(
     app: AppHandle,
-    host_id: String,
+    device_id: String,
     refresh_repositories: Option<bool>,
 ) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         let result = call_remote_typed(
             &app,
-            &host_id,
+            &device_id,
             "runtime.snapshot",
             json!({"refreshRepositories": refresh_repositories.unwrap_or(false)}),
         );
         match &result {
-            Ok(_) => poll_succeeded(&host_id),
+            Ok(_) => poll_succeeded(&device_id),
             Err(error) if error.code == ErrorCode::UpdateInProgress => {}
-            Err(error) => close_after_failed_poll(&host_id, &error.message),
+            Err(error) => close_after_failed_poll(&device_id, &error.message),
         }
         result
     })
     .await
     .map_err(|e| e.to_string())?
 }
-/// Consecutive failed polls of one saved computer.
+/// Consecutive failed polls of one saved device.
 struct Health {
     failures: u32,
     last_error: String,
@@ -1417,40 +1418,40 @@ struct Health {
 }
 static HEALTH: Mutex<std::collections::BTreeMap<String, Health>> =
     Mutex::new(std::collections::BTreeMap::new());
-/// Failed polls in a row before this computer's tunnels and viewers are closed.
+/// Failed polls in a row before this device's tunnels and viewers are closed.
 const CLOSE_AFTER_FAILURES: u32 = 3;
-/// How long an unreachable computer is answered from its last error without asking again.
+/// How long an unreachable device is answered from its last error without asking again.
 const OFFLINE_FOR: Duration = Duration::from_secs(20);
-/// What a failed poll means for connections to that computer.
+/// What a failed poll means for connections to that device.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PollFailure {
     /// Possibly a blip (network, timeout, a busy owner): keep everything open.
     Transient,
     /// Failed repeatedly: close live connections, but reopen tunnels when it answers again.
     Disconnected,
-    /// Another computer answers at the address, or access was withdrawn: close everything.
+    /// Another device answers at the address, or access was withdrawn: close everything.
     Revoked,
 }
-/// Errors that mean the saved computer is not the one answering or no longer admits this one.
+/// Errors that mean the saved device is not the one answering or no longer admits this one.
 fn revoked(error: &str) -> bool {
     [
-        "This address now belongs to a different Silo computer",
-        "Remote management is disabled",
+        "This address now belongs to a different Silo device",
+        "Connections are turned off",
         "Silo versions are incompatible",
-        "This computer is no longer connected.",
+        "This device is no longer connected.",
         AUTHENTICATION_FAILED,
-        "The other computer's SSH host key changed",
+        "The other device's SSH host key changed",
         "Host key verification failed",
     ]
     .iter()
     .any(|marker| error.starts_with(marker))
 }
-pub(crate) fn poll_succeeded(host: &str) {
-    crate::sync::lock_or_recover(&HEALTH, "remote computer health").remove(host);
+pub(crate) fn poll_succeeded(device: &str) {
+    crate::sync::lock_or_recover(&HEALTH, "remote device health").remove(device);
 }
-pub(crate) fn poll_failed(host: &str, error: &str) -> PollFailure {
-    let mut health = crate::sync::lock_or_recover(&HEALTH, "remote computer health");
-    let entry = health.entry(host.to_owned()).or_insert(Health {
+pub(crate) fn poll_failed(device: &str, error: &str) -> PollFailure {
+    let mut health = crate::sync::lock_or_recover(&HEALTH, "remote device health");
+    let entry = health.entry(device.to_owned()).or_insert(Health {
         failures: 0,
         last_error: String::new(),
         at: Instant::now(),
@@ -1466,68 +1467,69 @@ pub(crate) fn poll_failed(host: &str, error: &str) -> PollFailure {
         PollFailure::Transient
     }
 }
-/// The last error of a computer that failed repeatedly just now, so reads can answer at
+/// The last error of a device that failed repeatedly just now, so reads can answer at
 /// once instead of opening another SSH connection; `None` once it is worth asking again.
-pub(crate) fn offline(host: &str) -> Option<String> {
-    offline_at(host, Instant::now())
+pub(crate) fn offline(device: &str) -> Option<String> {
+    offline_at(device, Instant::now())
 }
-fn offline_at(host: &str, now: Instant) -> Option<String> {
-    let health = crate::sync::lock_or_recover(&HEALTH, "remote computer health");
+fn offline_at(device: &str, now: Instant) -> Option<String> {
+    let health = crate::sync::lock_or_recover(&HEALTH, "remote device health");
     health
-        .get(host)
+        .get(device)
         .filter(|entry| {
             entry.failures >= CLOSE_AFTER_FAILURES && now.duration_since(entry.at) < OFFLINE_FOR
         })
         .map(|entry| entry.last_error.clone())
 }
 /// Applies a failed poll: one blip closes nothing; repeated failures close live tunnels
-/// (reopened on the same local ports later) and desktop viewers; a revoked computer loses all.
-pub(crate) fn close_after_failed_poll(host: &str, error: &str) {
-    match poll_failed(host, error) {
+/// (reopened on the same local ports later) and desktop viewers; a revoked device loses all.
+pub(crate) fn close_after_failed_poll(device: &str, error: &str) {
+    match poll_failed(device, error) {
         PollFailure::Transient => {}
         PollFailure::Disconnected => {
-            crate::remote_network::disconnect_host(host);
-            crate::desktop_viewer::close_host(host);
+            crate::remote_network::disconnect_device(device);
+            crate::desktop_viewer::close_device(device);
         }
         PollFailure::Revoked => {
-            crate::remote_network::close_host(host);
-            crate::desktop_viewer::close_host(host);
+            crate::remote_network::close_device(device);
+            crate::desktop_viewer::close_device(device);
         }
     }
 }
 #[tauri::command]
-pub async fn remote_workspace_action(
+pub async fn remote_computer_action(
     app: AppHandle,
-    host_id: String,
-    vm_id: String,
+    device_id: String,
+    computer_id: String,
     action: String,
     name: Option<String>,
 ) -> Result<Value, BridgeError> {
     // Elapsed time counts from the command, like a local action.
     let started = std::time::Instant::now();
     let notice_app = app.clone();
-    let (notice_id, notice_action, notice_host) = (vm_id.clone(), action.clone(), host_id.clone());
+    let (notice_id, notice_action, notice_device) =
+        (computer_id.clone(), action.clone(), device_id.clone());
     let result = tauri::async_runtime::spawn_blocking(move || {
         call_remote_typed(
             &app,
-            &host_id,
+            &device_id,
             "runtime.action",
-            json!({"vmId":vm_id,"action":action}),
+            json!({"computerId":computer_id,"action":action}),
         )
     })
     .await
     .map_err(|e| e.to_string())?;
-    // The owning computer reports only a state snapshot; the caller's name (or the
-    // snapshot) names the sandbox. Without either, the notice says "this sandbox".
+    // The owning device reports only a state snapshot; the caller's name (or the
+    // snapshot) names the computer. Without either, the notice says "this computer".
     let name = name
         .or_else(|| {
             result
                 .as_ref()
                 .ok()
-                .and_then(|state| sandbox_name(state, &notice_id))
+                .and_then(|state| computer_name(state, &notice_id))
         })
-        .unwrap_or_else(|| "this sandbox".into());
-    let sandbox = remote_notice_sandbox(&notice_host, &notice_id, &name);
+        .unwrap_or_else(|| "this computer".into());
+    let computer = remote_notice_computer(&notice_device, &notice_id, &name);
     let outcome = match &result {
         Ok(_) => crate::notifications::Outcome::Succeeded,
         Err(error) if error.code == ErrorCode::Cancelled => {
@@ -1541,7 +1543,7 @@ pub async fn remote_workspace_action(
     if let Some(notice) = crate::notifications::lifecycle_notice(
         &notice_action,
         &name,
-        Some(sandbox),
+        Some(computer),
         started.elapsed(),
         outcome,
     ) {
@@ -1550,13 +1552,13 @@ pub async fn remote_workspace_action(
     result
 }
 
-fn remote_notice_sandbox(
-    host_id: &str,
-    vm_id: &str,
+fn remote_notice_computer(
+    device_id: &str,
+    computer_id: &str,
     name: &str,
-) -> crate::notifications::NoticeSandbox {
-    crate::notifications::NoticeSandbox {
-        id: format!("silo-remote:{host_id}:{vm_id}"),
+) -> crate::notifications::NoticeComputer {
+    crate::notifications::NoticeComputer {
+        id: format!("silo-remote:{device_id}:{computer_id}"),
         name: name.into(),
     }
 }
@@ -1567,68 +1569,70 @@ mod notice_tests {
     use crate::notifications::{lifecycle_notice, Outcome, LONG_OPERATION};
 
     #[test]
-    fn remote_notices_route_and_group_by_the_owning_computer() {
-        for host in ["office", "lab"] {
+    fn remote_notices_route_and_group_by_the_owning_device() {
+        for device in ["office", "lab"] {
             for outcome in [Outcome::Succeeded, Outcome::Failed("start failed")] {
                 let notice = lifecycle_notice(
                     "start",
                     "dev",
-                    Some(remote_notice_sandbox(host, "same-vm-id", "dev")),
+                    Some(remote_notice_computer(device, "same-computer-id", "dev")),
                     LONG_OPERATION,
                     outcome,
                 )
                 .unwrap();
-                let target = format!("silo-remote:{host}:same-vm-id");
+                let target = format!("silo-remote:{device}:same-computer-id");
                 assert_eq!(
                     notice.route(),
-                    json!({"tab": "workspaces", "workspace": target})
+                    json!({"tab": "computers", "computer": target})
                 );
                 assert_eq!(notice.thread(), target);
-                assert_eq!(notice.key, format!("vm:{target}:lifecycle"));
-                assert_eq!(notice.sandbox.unwrap().name, "dev");
+                assert_eq!(notice.key, format!("computer:{target}:lifecycle"));
+                assert_eq!(notice.computer.unwrap().name, "dev");
             }
         }
     }
 }
 
-/// Display name of one sandbox in a remote application snapshot.
-fn sandbox_name(state: &Value, vm_id: &str) -> Option<String> {
-    state["workspaces"]
+/// Display name of one computer in a remote application snapshot.
+fn computer_name(state: &Value, computer_id: &str) -> Option<String> {
+    state["computers"]
         .as_array()?
         .iter()
-        .find(|workspace| workspace["machine"]["id"] == vm_id)
-        .and_then(|workspace| workspace["machine"]["name"].as_str())
+        .find(|computer| computer["configuration"]["id"] == computer_id)
+        .and_then(|computer| computer["configuration"]["name"].as_str())
         .map(str::to_owned)
 }
 #[tauri::command]
-pub async fn remote_upsert_machine(
+pub async fn remote_upsert_computer(
     app: AppHandle,
-    host_id: String,
-    machine: crate::runtime::MachineConfiguration,
-    expected: Option<crate::runtime::MachineConfiguration>,
+    device_id: String,
+    configuration: crate::runtime::ComputerConfiguration,
+    expected: Option<crate::runtime::ComputerConfiguration>,
 ) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         let created = expected.is_none();
-        let id = machine.id().to_owned();
+        let id = configuration.id().to_owned();
         let state = call_remote_typed(
             &app,
-            &host_id,
+            &device_id,
             "runtime.upsert",
-            json!({"machine":machine,"expected":expected}),
+            json!({"configuration":configuration,"expected":expected}),
         )?;
         if created {
-            // The other computer's own setting decided the new sandbox's mode; this user's
+            // The other device's own setting decided the new computer's mode; this user's
             // setting replaces it. An older Silo there does not serve the method and keeps its own.
             let mode = crate::settings::current_settings(&app)
                 .map(|settings| crate::computer_use::initial_approval_from(&settings))
                 .unwrap_or_default();
             if let Err(error) = call_remote_typed(
                 &app,
-                &host_id,
-                "computer.approval",
-                json!({"vmId":id,"mode":mode.as_str()}),
+                &device_id,
+                "computerUse.approval",
+                json!({"computerId":id,"mode":mode.as_str()}),
             ) {
-                eprintln!("Computer use approval was not set on the new remote sandbox: {error:?}");
+                eprintln!(
+                    "Computer use approval was not set on the new remote computer: {error:?}"
+                );
             }
         }
         Ok(state)
@@ -1637,34 +1641,34 @@ pub async fn remote_upsert_machine(
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
-pub async fn remote_delete_machine(
+pub async fn remote_delete_computer(
     app: AppHandle,
-    host_id: String,
-    vm_id: String,
-    expected: crate::runtime::MachineConfiguration,
+    device_id: String,
+    computer_id: String,
+    expected: crate::runtime::ComputerConfiguration,
 ) -> Result<Value, BridgeError> {
     let notice_app = app.clone();
-    let deleted = format!("silo-remote:{host_id}:{vm_id}");
+    let deleted = format!("silo-remote:{device_id}:{computer_id}");
     let result = tauri::async_runtime::spawn_blocking(move || {
         call_remote_typed(
             &app,
-            &host_id,
+            &device_id,
             "runtime.delete",
-            json!({"vmId":vm_id,"expected":expected}),
+            json!({"computerId":computer_id,"expected":expected}),
         )
     })
     .await
     .map_err(|e| e.to_string())?;
     if result.is_ok() {
-        // A deleted sandbox has nothing left to open: withdraw its delivered notices.
-        crate::notifications::clear_sandbox(&notice_app, &deleted);
+        // A deleted computer has nothing left to open: withdraw its delivered notices.
+        crate::notifications::clear_computer(&notice_app, &deleted);
     }
     result
 }
 /// Called before constructing Tauri. A bridge never launches the GUI or runtime.
 pub(crate) fn run_bridge() -> Result<(), String> {
     let mut socket = UnixStream::connect(directory()?.join("control.sock"))
-        .map_err(|_| "Silo is not running on this computer.".to_string())?;
+        .map_err(|_| "Silo is not running on this device.".to_string())?;
     let request = read_frame(std::io::stdin().lock())?;
     let streaming = request["method"] == "guest.ssh";
     write_bridge_request(&mut socket, &request, Duration::from_secs(30))?;
@@ -1716,33 +1720,37 @@ fn watch_controller(mut input: impl Read + Send + 'static, owner: UnixStream) {
         let _ = owner.shutdown(std::net::Shutdown::Write);
     });
 }
-/// The `guest.ssh` params for `--remote-guest HOST VM [PORT]`: a trailing guest port marks
+/// The `guest.ssh` params for `--remote-guest HOST computer [PORT]`: a trailing guest port marks
 /// a published-port forward.
 pub(crate) fn guest_stream_params(args: &[String]) -> Result<Value, String> {
     match args {
-        [_, vm] => Ok(json!({"vmId": vm})),
-        [_, vm, port] => {
+        [_, computer] => Ok(json!({"computerId": computer})),
+        [_, computer, port] => {
             let port = port
                 .parse::<u16>()
                 .ok()
                 .filter(|port| *port != 0)
                 .ok_or("Invalid forwarded port.")?;
-            Ok(json!({"vmId": vm, "purpose": "port", "port": port}))
+            Ok(json!({"computerId": computer, "purpose": "port", "port": port}))
         }
-        _ => Err("Expected a computer and VM identity.".into()),
+        _ => Err("Expected a device and computer identity.".into()),
     }
 }
-pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> Result<(), String> {
-    let host = read_config()?
-        .hosts
+pub(crate) fn run_remote_stream(
+    device_id: &str,
+    method: &str,
+    params: Value,
+) -> Result<(), String> {
+    let device = read_config()?
+        .devices
         .into_iter()
-        .find(|h| h.id == host_id)
-        .ok_or("Saved computer not found.")?;
-    validate_address(&host.address)?;
-    let mut child = ssh_for_address(&host.address)?
+        .find(|h| h.id == device_id)
+        .ok_or("Saved device not found.")?;
+    validate_address(&device.address)?;
+    let mut child = ssh_for_address(&device.address)?
         .args([
             "--",
-            &host.address,
+            &device.address,
             &crate::channel::current().remote_bridge_command(),
         ])
         .stdin(Stdio::piped())
@@ -1756,7 +1764,7 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
             std::io::BufReader::new(child.stdout.take().ok_or("SSH output unavailable.")?);
         write_frame(
             &mut input,
-            &json!({"version":VERSION,"hostId":host.id,"method":method,"params":params}),
+            &json!({"version":VERSION,"deviceId":device.id,"method":method,"params":params}),
         )?;
         let reply = read_reply(&mut output)?;
         decode_reply(&reply).map_err(Failure::message)?;
@@ -1785,14 +1793,14 @@ fn serve_connections<S>(
                 handle(stream);
             }
             Err(error) => {
-                eprintln!("Remote management could not accept a connection: {error}");
+                eprintln!("Connections could not accept a connection: {error}");
                 thread::sleep(backoff);
                 backoff = (backoff * 2).min(limit);
             }
         }
     }
 }
-/// Holds `control.lock` in `dir`; only one Silo process serves remote management.
+/// Holds `control.lock` in `dir`; only one Silo process serves Connections.
 fn lease_control(dir: &Path) -> Result<fs::File, String> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
@@ -1805,7 +1813,7 @@ fn lease_control(dir: &Path) -> Result<fs::File, String> {
         .open(dir.join("control.lock"))
         .map_err(|e| e.to_string())?;
     if unsafe { libc::flock(lease.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err("Another Silo instance owns remote management.".into());
+        return Err("Another Silo instance owns Connections.".into());
     }
     Ok(lease)
 }
@@ -1814,13 +1822,13 @@ fn bind_control_socket(dir: &Path) -> Result<UnixListener, String> {
     let path = dir.join("control.sock");
     if path.exists() {
         match UnixStream::connect(&path) {
-            Ok(_) => return Err("Another Silo instance owns remote management.".into()),
+            Ok(_) => return Err("Another Silo instance owns Connections.".into()),
             Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
                 fs::remove_file(&path).map_err(|e| e.to_string())?;
             }
             Err(error) => {
                 return Err(format!(
-                    "Could not verify remote management socket ownership: {error}"
+                    "Could not verify Connections socket ownership: {error}"
                 ))
             }
         }
@@ -1829,9 +1837,9 @@ fn bind_control_socket(dir: &Path) -> Result<UnixListener, String> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
     Ok(listener)
 }
-/// Serves remote management for the app's lifetime. A failure never stops Silo from
+/// Serves Connections for the app's lifetime. A failure never stops Silo from
 /// opening: it is kept for the settings page (`error`) and retried when the user turns
-/// remote management on again.
+/// Connections on again.
 pub(crate) fn start(app: AppHandle) {
     let enabled = match read_config() {
         Ok(config) => config.enabled,
@@ -1857,7 +1865,7 @@ fn listen(app: AppHandle) -> Result<(), String> {
             let Some(permit) = CONNECTIONS.acquire() else {
                 let _ = write_frame(
                     &mut stream,
-                    &json!({"error":"This computer has too many active Silo connections. Close an unused connection and retry."}),
+                    &json!({"error":"This device has too many active Silo connections. Close an unused connection and retry."}),
                 );
                 return;
             };
@@ -1903,10 +1911,10 @@ fn listen(app: AppHandle) -> Result<(), String> {
     });
     Ok(())
 }
-pub(crate) fn ensure_management_enabled() -> Result<(), String> {
+pub(crate) fn ensure_connections_enabled() -> Result<(), String> {
     let _guard = config_lock();
     if !read_config()?.enabled {
-        return Err("Remote management is disabled on this computer.".into());
+        return Err("Connections are turned off on this device.".into());
     }
     Ok(())
 }
@@ -1925,16 +1933,15 @@ fn authorize_in(dir: &Path, request: &Value) -> Result<Config, String> {
 
 fn validate_authorization(config: &Config, request: &Value) -> Result<(), String> {
     if !config.enabled {
-        return Err("Remote management is disabled on this computer.".into());
+        return Err("Connections are turned off on this device.".into());
     }
     crate::runtime::shutdown::ensure_accepting_operations()?;
     if request["version"].as_u64() != Some(VERSION as u64) {
-        return Err("Silo versions are incompatible. Update Silo on both computers.".into());
+        return Err("Silo versions are incompatible. Update Silo on both devices.".into());
     }
-    if request["method"] != "handshake" && request["hostId"].as_str() != Some(&config.host_id) {
+    if request["method"] != "handshake" && request["deviceId"].as_str() != Some(&config.device_id) {
         return Err(
-            "This address now belongs to a different Silo computer. Reconnect it explicitly."
-                .into(),
+            "This address now belongs to a different Silo device. Reconnect it explicitly.".into(),
         );
     }
     Ok(())
@@ -1953,7 +1960,7 @@ fn dispatch(
         |method, params| execute(app, method, params),
     )
 }
-/// Runs one authorized, classified request against this computer.
+/// Runs one authorized, classified request against this device.
 fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, BridgeError> {
     match method {
         "handshake" => {
@@ -1973,7 +1980,7 @@ fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, Bridg
         _ => crate::remote_access::dispatch(app, method, params).map_err(BridgeError::from),
     }
 }
-/// The methods this computer serves, reported in the handshake.
+/// The methods this device serves, reported in the handshake.
 fn capabilities() -> Vec<&'static str> {
     METHODS.iter().map(|(method, _)| *method).collect()
 }
@@ -1997,7 +2004,7 @@ fn handle(
         Some(Access::Read) if method == "handshake" => {
             execute(method, params)?;
             Ok(
-                json!({"hostId":config.host_id,"name":name(),"version":VERSION,"capabilities":capabilities()}),
+                json!({"deviceId":config.device_id,"name":name(),"version":VERSION,"capabilities":capabilities()}),
             )
         }
         Some(Access::Read) => execute(method, params),
@@ -2037,9 +2044,9 @@ fn handle(
         }
     }
 }
-/// Changes requested by other computers, by `operationId`.
+/// Changes requested by other devices, by `operationId`.
 static CHANGES: operations::Registry = operations::Registry::new();
-/// True while this computer accepts remote changes.
+/// True while this device accepts remote changes.
 fn changes_allowed() -> bool {
     REMOTE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
         && crate::runtime::shutdown::ensure_accepting_operations().is_ok()
@@ -2083,34 +2090,44 @@ mod tests {
         CONFIG_LOCK.clear_poison();
     }
     #[test]
-    fn sandbox_name_is_read_from_a_remote_snapshot() {
+    fn computer_name_is_read_from_a_remote_snapshot() {
         let _test_state = crate::test_support::global_state();
-        let state = json!({"workspaces":[{"machine":{"id":"a","name":"one"}},{"machine":{"id":"b","name":"two"}}]});
-        assert_eq!(sandbox_name(&state, "b").as_deref(), Some("two"));
-        assert_eq!(sandbox_name(&state, "c"), None);
-        assert_eq!(sandbox_name(&json!({}), "a"), None);
+        let state = json!({"computers":[{"configuration":{"id":"a","name":"one"}},{"configuration":{"id":"b","name":"two"}}]});
+        assert_eq!(computer_name(&state, "b").as_deref(), Some("two"));
+        assert_eq!(computer_name(&state, "c"), None);
+        assert_eq!(computer_name(&json!({}), "a"), None);
     }
     #[test]
-    fn checkpoint_actions_build_owner_routed_requests_with_vm_identity() {
+    fn checkpoint_actions_build_owner_routed_requests_with_computer_identity() {
         let _test_state = crate::test_support::global_state();
-        let vm = "11111111-1111-4111-8111-111111111111";
+        let computer = "11111111-1111-4111-8111-111111111111";
         assert_eq!(
-            checkpoint_remote_request(vm, "create", Some("Point"), None, None).unwrap(),
-            ("checkpoint.create", json!({"vmId":vm,"name":"Point"}))
-        );
-        assert_eq!(
-            checkpoint_remote_request(vm, "fork", None, Some("checkpoint-id"), Some("Branch"))
-                .unwrap(),
+            checkpoint_remote_request(computer, "create", Some("Point"), None, None).unwrap(),
             (
-                "checkpoint.fork",
-                json!({"vmId":vm,"checkpointId":"checkpoint-id","newName":"Branch"})
+                "checkpoint.create",
+                json!({"computerId":computer,"name":"Point"})
             )
         );
         assert_eq!(
-            checkpoint_remote_request(vm, "restore", None, Some("checkpoint-id"), None).unwrap(),
+            checkpoint_remote_request(
+                computer,
+                "fork",
+                None,
+                Some("checkpoint-id"),
+                Some("Branch")
+            )
+            .unwrap(),
+            (
+                "checkpoint.fork",
+                json!({"computerId":computer,"checkpointId":"checkpoint-id","newName":"Branch"})
+            )
+        );
+        assert_eq!(
+            checkpoint_remote_request(computer, "restore", None, Some("checkpoint-id"), None)
+                .unwrap(),
             (
                 "checkpoint.restore",
-                json!({"vmId":vm,"checkpointId":"checkpoint-id"})
+                json!({"computerId":computer,"checkpointId":"checkpoint-id"})
             )
         );
         assert!(
@@ -2147,7 +2164,7 @@ mod tests {
             let journal = tempfile::tempdir().unwrap();
             let registry: &'static operations::Registry =
                 Box::leak(Box::new(operations::Registry::new()));
-            let mut request = json!({"method":method,"operationId":uuid::Uuid::new_v4().to_string(),"params":{"vmId":uuid::Uuid::new_v4().to_string()}});
+            let mut request = json!({"method":method,"operationId":uuid::Uuid::new_v4().to_string(),"params":{"computerId":uuid::Uuid::new_v4().to_string()}});
             let budget = request_timeout(&request);
             let start = Instant::now();
             let deadline = start + budget;
@@ -2208,20 +2225,28 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_remote_vm_has_time_for_an_owner_defaulted_desktop() {
+    fn creating_a_remote_computer_has_time_for_an_owner_defaulted_desktop() {
         let _test_state = crate::test_support::global_state();
-        let vm = json!({"name":"dev"});
-        let upsert = |machine: Value, expected: Value| {
+        let computer = json!({"name":"dev"});
+        let upsert = |configuration: Value, expected: Value| {
             request_timeout(
-                &json!({"method":"runtime.upsert","params":{"machine":machine,"expected":expected}}),
+                &json!({"method":"runtime.upsert","params":{"configuration":configuration,"expected":expected}}),
             )
         };
-        assert_eq!(upsert(vm.clone(), Value::Null), Duration::from_secs(2100));
         assert_eq!(
-            request_timeout(&json!({"method":"runtime.upsert","params":{"machine":vm}})),
+            upsert(computer.clone(), Value::Null),
             Duration::from_secs(2100)
         );
-        assert_eq!(upsert(vm.clone(), vm.clone()), Duration::from_secs(600));
+        assert_eq!(
+            request_timeout(
+                &json!({"method":"runtime.upsert","params":{"configuration":computer}})
+            ),
+            Duration::from_secs(2100)
+        );
+        assert_eq!(
+            upsert(computer.clone(), computer.clone()),
+            Duration::from_secs(600)
+        );
     }
 
     #[test]
@@ -2385,7 +2410,7 @@ struct PortRegistration {
 }
 struct PortStream {
     id: u64,
-    vm: String,
+    computer: String,
     port: u16,
     revoked: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -2400,13 +2425,13 @@ fn port_streams() -> std::sync::MutexGuard<'static, Vec<PortStream>> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 impl PortRegistration {
-    fn open(vm: &str, port: u16) -> Self {
+    fn open(computer: &str, port: u16) -> Self {
         use std::sync::atomic::{AtomicBool, Ordering};
         let id = NEXT_PORT_STREAM.fetch_add(1, Ordering::Relaxed);
         let revoked = Arc::new(AtomicBool::new(false));
         port_streams().push(PortStream {
             id,
-            vm: vm.to_owned(),
+            computer: computer.to_owned(),
             port,
             revoked: revoked.clone(),
         });
@@ -2421,12 +2446,12 @@ impl Drop for PortRegistration {
         port_streams().retain(|stream| stream.id != self.id);
     }
 }
-/// Ends every open stream forwarding `port` of the VM with this id, so an unpublished
-/// port stops working for other computers immediately.
-pub(crate) fn revoke_port_streams(vm: &str, port: u16) {
+/// Ends every open stream forwarding `port` of the computer with this id, so an unpublished
+/// port stops working for other devices immediately.
+pub(crate) fn revoke_port_streams(computer: &str, port: u16) {
     for stream in port_streams()
         .iter()
-        .filter(|stream| stream.vm == vm && stream.port == port)
+        .filter(|stream| stream.computer == computer && stream.port == port)
     {
         stream
             .revoked
@@ -2447,7 +2472,7 @@ fn serve_guest_stream(
     let _stream_permit = admit_stream(permit, streams)?;
     let registration = match kind {
         GuestStream::Port(port) => Some(PortRegistration::open(
-            params["vmId"].as_str().ok_or("Missing vmId.")?,
+            params["computerId"].as_str().ok_or("Missing computerId.")?,
             port,
         )),
         GuestStream::Interactive => None,
@@ -2609,7 +2634,7 @@ mod stream_tests {
             .unwrap()
             .contains("too many active Silo streams"));
         assert!(extra.is_some());
-        // Management requests (snapshots, unpublish, VM actions) still fit beside the streams.
+        // Management requests (snapshots, unpublish, computer actions) still fit beside the streams.
         let second = MANAGEMENT.acquire();
         assert!(second.is_some());
         assert!(MANAGEMENT.acquire().is_none());
@@ -2689,8 +2714,8 @@ mod port_stream_tests {
             .spawn()
             .unwrap()
     }
-    fn params(vm: &str, purpose: Option<&str>, port: Option<u64>) -> Value {
-        let mut params = json!({"vmId": vm});
+    fn params(computer: &str, purpose: Option<&str>, port: Option<u64>) -> Value {
+        let mut params = json!({"computerId": computer});
         if let Some(purpose) = purpose {
             params["purpose"] = json!(purpose);
         }
@@ -2738,10 +2763,10 @@ mod port_stream_tests {
             ended
         }
     }
-    fn registered(vm: &str, port: u16) -> usize {
+    fn registered(computer: &str, port: u16) -> usize {
         port_streams()
             .iter()
-            .filter(|s| s.vm == vm && s.port == port)
+            .filter(|s| s.computer == computer && s.port == port)
             .count()
     }
 
@@ -2749,58 +2774,58 @@ mod port_stream_tests {
     fn unpublishing_a_port_ends_only_its_streams_and_releases_permits() {
         let _test_state = crate::test_support::global_state();
         static BUDGET: Budget = Budget::new(8);
-        let vm = "vm-revoke";
-        let published = open(&BUDGET, params(vm, Some("port"), Some(3000)));
-        let mut other_port = open(&BUDGET, params(vm, Some("port"), Some(4000)));
-        let mut other_vm = open(&BUDGET, params("vm-other", Some("port"), Some(3000)));
-        let mut desktop = open(&BUDGET, params(vm, None, None));
+        let computer = "computer-revoke";
+        let published = open(&BUDGET, params(computer, Some("port"), Some(3000)));
+        let mut other_port = open(&BUDGET, params(computer, Some("port"), Some(4000)));
+        let mut other_computer = open(&BUDGET, params("computer-other", Some("port"), Some(3000)));
+        let mut desktop = open(&BUDGET, params(computer, None, None));
         assert_eq!(BUDGET.count.load(Ordering::Acquire), 4);
-        assert_eq!(registered(vm, 3000), 1);
+        assert_eq!(registered(computer, 3000), 1);
 
-        revoke_port_streams(vm, 3000);
+        revoke_port_streams(computer, 3000);
 
         let deadline = Instant::now() + Duration::from_secs(5);
-        while registered(vm, 3000) != 0 && Instant::now() < deadline {
+        while registered(computer, 3000) != 0 && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(20));
         }
         assert!(published.closed());
-        assert_eq!(registered(vm, 3000), 0);
+        assert_eq!(registered(computer, 3000), 0);
         assert_eq!(BUDGET.count.load(Ordering::Acquire), 3);
         assert!(other_port.echoes());
-        assert!(other_vm.echoes());
+        assert!(other_computer.echoes());
         assert!(desktop.echoes());
-        assert_eq!(registered(vm, 4000), 1);
+        assert_eq!(registered(computer, 4000), 1);
 
-        for stream in [other_port, other_vm, desktop] {
+        for stream in [other_port, other_computer, desktop] {
             let Open { client, worker } = stream;
             client.shutdown(std::net::Shutdown::Both).unwrap();
             worker.join().unwrap().unwrap();
         }
         assert_eq!(BUDGET.count.load(Ordering::Acquire), 0);
-        assert_eq!(registered(vm, 4000), 0);
+        assert_eq!(registered(computer, 4000), 0);
     }
 
     #[test]
     fn guest_stream_params_are_validated() {
-        let vm = "vm";
+        let computer = "computer";
         assert_eq!(
-            guest_stream_kind(&params(vm, None, None)),
+            guest_stream_kind(&params(computer, None, None)),
             Ok(GuestStream::Interactive)
         );
         assert_eq!(
-            guest_stream_kind(&params(vm, Some("port"), Some(65535))),
+            guest_stream_kind(&params(computer, Some("port"), Some(65535))),
             Ok(GuestStream::Port(65535))
         );
         for bad in [
-            params(vm, Some("port"), None),
-            params(vm, Some("port"), Some(0)),
-            params(vm, Some("port"), Some(65536)),
-            params(vm, Some("port"), Some(u64::MAX)),
-            params(vm, Some("desktop"), None),
-            params(vm, Some("desktop"), Some(80)),
-            params(vm, None, Some(80)),
-            json!({"vmId": vm, "purpose": 1, "port": 80}),
-            json!({"vmId": vm, "purpose": "port", "port": "80"}),
+            params(computer, Some("port"), None),
+            params(computer, Some("port"), Some(0)),
+            params(computer, Some("port"), Some(65536)),
+            params(computer, Some("port"), Some(u64::MAX)),
+            params(computer, Some("desktop"), None),
+            params(computer, Some("desktop"), Some(80)),
+            params(computer, None, Some(80)),
+            json!({"computerId": computer, "purpose": 1, "port": 80}),
+            json!({"computerId": computer, "purpose": "port", "port": "80"}),
         ] {
             assert!(guest_stream_kind(&bad).is_err(), "{bad}");
         }
@@ -2812,7 +2837,7 @@ mod port_stream_tests {
             &mut server,
             &mut permit,
             &BUDGET,
-            &params(vm, Some("bogus"), None),
+            &params(computer, Some("bogus"), None),
             |_| {
                 spawned.store(true, Ordering::Release);
                 Ok(cat())
@@ -2829,14 +2854,18 @@ mod port_stream_tests {
     fn remote_guest_arguments_mark_port_forwards() {
         let args = |parts: &[&str]| parts.iter().map(|p| p.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            guest_stream_params(&args(&["host", "vm"])).unwrap(),
-            json!({"vmId":"vm"})
+            guest_stream_params(&args(&["host", "computer"])).unwrap(),
+            json!({"computerId":"computer"})
         );
         assert_eq!(
-            guest_stream_params(&args(&["host", "vm", "3000"])).unwrap(),
-            json!({"vmId":"vm","purpose":"port","port":3000})
+            guest_stream_params(&args(&["host", "computer", "3000"])).unwrap(),
+            json!({"computerId":"computer","purpose":"port","port":3000})
         );
-        for bad in [&["host"][..], &["host", "vm", "0"], &["host", "vm", "x"]] {
+        for bad in [
+            &["host"][..],
+            &["host", "computer", "0"],
+            &["host", "computer", "x"],
+        ] {
             assert!(guest_stream_params(&args(bad)).is_err());
         }
     }
@@ -2948,7 +2977,7 @@ fn admit_stream(
     streams: &'static Budget,
 ) -> Result<Permit, String> {
     let stream = streams.acquire().ok_or(
-        "This computer has too many active Silo streams. Close an unused port, desktop, or editor connection and retry.",
+        "This device has too many active Silo streams. Close an unused port, desktop, or editor connection and retry.",
     )?;
     connection.take();
     Ok(stream)
@@ -3276,8 +3305,8 @@ mod connection_failure_tests {
         );
         // Bridge failures exit 1 (or 127 when the link is missing) after authentication succeeded.
         assert!(
-            connection_failure(Some(1), "Silo is not running on this computer.\n")
-                .contains("not running on the other computer")
+            connection_failure(Some(1), "Silo is not running on this device.\n")
+                .contains("not running on the other device")
         );
         assert!(
             connection_failure(Some(127), "sh: /home/u/.local/bin/silo-remote: not found\n")
@@ -3506,39 +3535,39 @@ mod health_tests {
     #[test]
     fn one_failed_poll_closes_nothing_and_repeated_failures_disconnect() {
         let _test_state = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
+        let device = uuid::Uuid::new_v4().to_string();
         let blip =
-            "The SSH connection timed out. Check that the other computer is awake and reachable.";
-        assert_eq!(poll_failed(&host, blip), PollFailure::Transient);
+            "The SSH connection timed out. Check that the other device is awake and reachable.";
+        assert_eq!(poll_failed(&device, blip), PollFailure::Transient);
         assert_eq!(
-            poll_failed(&host, "This computer has too many active Silo connections."),
+            poll_failed(&device, "This device has too many active Silo connections."),
             PollFailure::Transient
         );
-        assert_eq!(offline(&host), None);
-        assert_eq!(poll_failed(&host, blip), PollFailure::Disconnected);
+        assert_eq!(offline(&device), None);
+        assert_eq!(poll_failed(&device, blip), PollFailure::Disconnected);
         // Reads answer from the last error for a short while instead of reconnecting.
-        assert_eq!(offline(&host).as_deref(), Some(blip));
-        assert_eq!(offline_at(&host, Instant::now() + OFFLINE_FOR), None);
-        poll_succeeded(&host);
-        assert_eq!(offline(&host), None);
-        assert_eq!(poll_failed(&host, blip), PollFailure::Transient);
-        poll_succeeded(&host);
+        assert_eq!(offline(&device).as_deref(), Some(blip));
+        assert_eq!(offline_at(&device, Instant::now() + OFFLINE_FOR), None);
+        poll_succeeded(&device);
+        assert_eq!(offline(&device), None);
+        assert_eq!(poll_failed(&device, blip), PollFailure::Transient);
+        poll_succeeded(&device);
     }
 
     #[test]
     fn identity_or_access_changes_close_everything_at_once() {
         let _test_state = crate::test_support::global_state();
         for error in [
-            "This address now belongs to a different Silo computer. Reconnect it explicitly.",
-            "Remote management is disabled on this computer.",
-            "Silo versions are incompatible. Update Silo on both computers.",
-            "This computer is no longer connected.",
+            "This address now belongs to a different Silo device. Reconnect it explicitly.",
+            "Connections are turned off on this device.",
+            "Silo versions are incompatible. Update Silo on both devices.",
+            "This device is no longer connected.",
             AUTHENTICATION_FAILED,
-            "The other computer's SSH host key changed. Verify the computer before trusting its new key (Host key verification failed).",
+            "The other device's SSH host key changed. Verify the device before trusting its new key (Host key verification failed).",
         ] {
-            let host = uuid::Uuid::new_v4().to_string();
-            assert_eq!(poll_failed(&host, error), PollFailure::Revoked, "{error}");
-            poll_succeeded(&host);
+            let device = uuid::Uuid::new_v4().to_string();
+            assert_eq!(poll_failed(&device, error), PollFailure::Revoked, "{error}");
+            poll_succeeded(&device);
         }
     }
 }
@@ -3546,8 +3575,8 @@ mod health_tests {
 #[cfg(test)]
 mod connect_tests {
     use super::*;
-    fn host(id: &str, name: &str, address: &str) -> RemoteHost {
-        RemoteHost {
+    fn device(id: &str, name: &str, address: &str) -> Device {
+        Device {
             id: id.into(),
             name: name.into(),
             address: address.into(),
@@ -3556,29 +3585,29 @@ mod connect_tests {
     fn saved(dir: &Path) -> Vec<(String, String, String)> {
         read_config_in(dir)
             .unwrap()
-            .hosts
+            .devices
             .into_iter()
             .map(|h| (h.id, h.name, h.address))
             .collect()
     }
 
     #[test]
-    fn a_reported_identity_never_silently_takes_over_a_saved_computer() {
+    fn a_reported_identity_never_silently_takes_over_a_saved_device() {
         let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
         let dir = directory_in(home.path()).unwrap();
         let office = uuid::Uuid::new_v4().to_string();
-        save_connected_host(
+        save_connected_device(
             &dir,
-            host(&office, "Office", "office.local"),
+            device(&office, "Office", "office.local"),
             "Laptop",
             false,
         )
         .unwrap();
-        // Same computer, same address: the name is refreshed.
-        save_connected_host(
+        // Same device, same address: the name is refreshed.
+        save_connected_device(
             &dir,
-            host(&office, "Office Mac", "office.local"),
+            device(&office, "Office Mac", "office.local"),
             "Laptop",
             false,
         )
@@ -3588,9 +3617,9 @@ mod connect_tests {
             [(office.clone(), "Office Mac".into(), "office.local".into())]
         );
         // Another address claims the saved identity: refused until the user confirms.
-        let error = save_connected_host(
+        let error = save_connected_device(
             &dir,
-            host(&office, "Office Mac", "10.0.0.9"),
+            device(&office, "Office Mac", "10.0.0.9"),
             "Laptop",
             false,
         )
@@ -3605,9 +3634,9 @@ mod connect_tests {
             saved(&dir),
             [(office.clone(), "Office Mac".into(), "office.local".into())]
         );
-        save_connected_host(
+        save_connected_device(
             &dir,
-            host(&office, "Office Mac", "10.0.0.9"),
+            device(&office, "Office Mac", "10.0.0.9"),
             "Laptop",
             true,
         )
@@ -3619,18 +3648,20 @@ mod connect_tests {
     }
 
     #[test]
-    fn this_computers_identity_is_named_as_itself_or_as_a_copy() {
+    fn this_devices_identity_is_named_as_itself_or_as_a_copy() {
         let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
         let dir = directory_in(home.path()).unwrap();
-        let own = read_config_in(&dir).unwrap().host_id;
-        let error = save_connected_host(&dir, host(&own, "Laptop", "localhost"), "Laptop", true)
-            .unwrap_err();
-        assert!(error.contains("points to this computer"));
-        let error = save_connected_host(&dir, host(&own, "Studio", "studio.local"), "Laptop", true)
-            .unwrap_err();
+        let own = read_config_in(&dir).unwrap().device_id;
+        let error =
+            save_connected_device(&dir, device(&own, "Laptop", "localhost"), "Laptop", true)
+                .unwrap_err();
+        assert!(error.contains("points to this device"));
+        let error =
+            save_connected_device(&dir, device(&own, "Studio", "studio.local"), "Laptop", true)
+                .unwrap_err();
         assert!(
-            error.contains("Studio uses this computer's Silo identity"),
+            error.contains("Studio uses this device's Silo identity"),
             "{error}"
         );
         assert!(saved(&dir).is_empty());
@@ -3754,7 +3785,7 @@ mod bridge_link_tests {
         ]
         .map(String::from);
         let list = |name| {
-            management_addresses("ana", name, &interfaces)
+            connection_addresses("ana", name, &interfaces)
                 .into_iter()
                 .map(|entry| (entry.address, entry.kind))
                 .collect::<Vec<_>>()
@@ -3792,15 +3823,15 @@ mod bridge_link_tests {
     fn a_start_failure_is_reported_in_the_status() {
         let _test_state = crate::test_support::global_state();
         let config = Config {
-            host_id: uuid::Uuid::new_v4().to_string(),
+            device_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
-            hosts: vec![],
+            devices: vec![],
             extra: serde_json::Map::new(),
         };
-        record_start_error(Some("Another Silo instance owns remote management.".into()));
+        record_start_error(Some("Another Silo instance owns Connections.".into()));
         assert_eq!(
             status(&config).error.as_deref(),
-            Some("Another Silo instance owns remote management.")
+            Some("Another Silo instance owns Connections.")
         );
         record_start_error(None);
         assert_eq!(status(&config).error, None);
@@ -3873,7 +3904,7 @@ mod identity_tests {
     fn guest_port_tunnel_uses_pinned_config_in_openssh() {
         let home = tempfile::tempdir().unwrap();
         let config = home.path().join("guest config");
-        fs::write(&config, "Host guest-alias\n  HostName guest-alias\n  User silo\n  IdentityFile /fixture/guest.key\n  IdentitiesOnly yes\n  IdentityAgent none\n  StrictHostKeyChecking yes\n  UserKnownHostsFile /fixture/known_hosts\n  ProxyCommand /fixture/silo --remote-guest owner vm\n").unwrap();
+        fs::write(&config, "Host guest-alias\n  HostName guest-alias\n  User silo\n  IdentityFile /fixture/guest.key\n  IdentitiesOnly yes\n  IdentityAgent none\n  StrictHostKeyChecking yes\n  UserKnownHostsFile /fixture/known_hosts\n  ProxyCommand /fixture/silo --remote-guest owner computer\n").unwrap();
         let (forward, _) = guest_tunnel_commands(
             &config,
             "guest-alias",
@@ -3901,7 +3932,7 @@ mod identity_tests {
             "identityagent none",
             "stricthostkeychecking true",
             "userknownhostsfile /fixture/known_hosts",
-            "proxycommand /fixture/silo --remote-guest owner vm",
+            "proxycommand /fixture/silo --remote-guest owner computer",
             "localforward [127.0.0.1]:43000 [172.16.0.6]:3000",
         ] {
             assert!(
@@ -3964,7 +3995,7 @@ mod identity_tests {
             (Ok(json!(2)), vec![Identity::AnyKey, Identity::SiloOnly])
         );
         assert_eq!(preferred_identity(&address), Identity::SiloOnly);
-        // Other failures and computers without Silo's key are tried once.
+        // Other failures and devices without Silo's key are tried once.
         let mut attempts = 0;
         let lost = with_identity_fallback(&address, true, |_| {
             attempts += 1;
@@ -3992,7 +4023,7 @@ mod reply_tests {
     #[test]
     fn replies_are_found_after_shell_startup_output() {
         let _test_state = crate::test_support::global_state();
-        let value = json!({"result":{"hostId":"office"}});
+        let value = json!({"result":{"deviceId":"office"}});
         for noise in [
             &b""[..],
             b"Welcome to office\n",
@@ -4017,7 +4048,7 @@ mod reply_tests {
 
     #[test]
     fn reply_search_counts_overlapping_prefix_bytes_once() {
-        let value = json!({"result":{"hostId":"office"}});
+        let value = json!({"result":{"deviceId":"office"}});
         for mut noise in [vec![b'x'; REPLY_SEARCH_LIMIT], vec![0; REPLY_SEARCH_LIMIT]] {
             *noise.last_mut().unwrap() = 0;
             let bytes = [noise, reply(&value)].concat();
@@ -4212,10 +4243,10 @@ mod dispatch_tests {
         (home, dir, config)
     }
     fn request(config: &Config, method: &str) -> Value {
-        json!({"version":VERSION,"hostId":config.host_id,"operationId":uuid::Uuid::new_v4().to_string(),"startWithinMs":60_000,"method":method,"params":{"vmId":"vm"}})
+        json!({"version":VERSION,"deviceId":config.device_id,"operationId":uuid::Uuid::new_v4().to_string(),"startWithinMs":60_000,"method":method,"params":{"computerId":"computer"}})
     }
     /// Handles `request` over an open connection; changes are allowed while `dir`'s
-    /// settings keep remote management enabled.
+    /// settings keep Connections turned on.
     fn run(
         dir: &Path,
         request: &Value,
@@ -4250,7 +4281,7 @@ mod dispatch_tests {
             .filter(|text| {
                 text.contains('.')
                     && text.split('.').all(|part| {
-                        !part.is_empty() && part.bytes().all(|b| b.is_ascii_lowercase())
+                        !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphabetic())
                     })
             })
             .map(str::to_owned)
@@ -4268,7 +4299,7 @@ mod dispatch_tests {
                 "runtime.delete",
                 "desktop.action",
                 "chatgpt.retry",
-                "computer.approval",
+                "computerUse.approval",
                 "ssh.access.connection",
                 "ssh.access.save",
                 "guest.prepare",
@@ -4428,10 +4459,10 @@ mod dispatch_tests {
             run(&dir, request, |method, _| panic!("{method} must not run")).unwrap_err()
         };
         let mut other = request(&config, "runtime.action");
-        other["hostId"] = json!(uuid::Uuid::new_v4().to_string());
-        assert!(refuse(&other).contains("different Silo computer"));
+        other["deviceId"] = json!(uuid::Uuid::new_v4().to_string());
+        assert!(refuse(&other).contains("different Silo device"));
         other["method"] = json!("runtime.snapshot");
-        assert!(refuse(&other).contains("different Silo computer"));
+        assert!(refuse(&other).contains("different Silo device"));
         let mut stale = request(&config, "runtime.action");
         stale["version"] = json!(VERSION - 1);
         assert!(refuse(&stale).contains("incompatible"));
@@ -4449,7 +4480,7 @@ mod dispatch_tests {
         let mut disabled = config.clone();
         disabled.enabled = false;
         save_config_in(&dir, &disabled).unwrap();
-        assert!(refuse(&request(&config, "runtime.snapshot")).contains("disabled"));
+        assert!(refuse(&request(&config, "runtime.snapshot")).contains("turned off"));
         assert!(!dir.join("operations").exists());
     }
 
@@ -4463,7 +4494,7 @@ mod dispatch_tests {
             Ok(Value::Null)
         })
         .unwrap();
-        assert_eq!(result["hostId"], json!(config.host_id));
+        assert_eq!(result["deviceId"], json!(config.device_id));
         assert_eq!(result["version"], json!(VERSION));
         assert_eq!(result["capabilities"], json!(capabilities()));
     }
@@ -4472,13 +4503,13 @@ mod dispatch_tests {
     fn a_queued_change_rechecks_access_when_its_turn_comes() {
         let _test_state = crate::test_support::global_state();
         let (_home, dir, config) = owner();
-        let vm = uuid::Uuid::new_v4().to_string();
+        let computer = uuid::Uuid::new_v4().to_string();
         let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
         let busy = {
-            let vm = vm.clone();
+            let computer = computer.clone();
             thread::spawn(move || {
                 let guard = crate::runtime::OPERATIONS
-                    .vm(&vm, "vm", "Long local work")
+                    .computer(&computer, "computer", "Long local work")
                     .unwrap();
                 held.0.send(()).unwrap();
                 release.1.recv().unwrap();
@@ -4487,25 +4518,29 @@ mod dispatch_tests {
         };
         held.1.recv().unwrap();
         let queued = {
-            let (dir, request, vm) = (dir.clone(), request(&config, "runtime.upsert"), vm.clone());
+            let (dir, request, computer) = (
+                dir.clone(),
+                request(&config, "runtime.upsert"),
+                computer.clone(),
+            );
             thread::spawn(move || {
                 run(&dir, &request, |_, _| {
                     let _turn = crate::runtime::OPERATIONS
-                        .vm(&vm, "vm", "Remote change")
+                        .computer(&computer, "computer", "Remote change")
                         .map_err(|e| e.to_string())?;
                     panic!("a revoked change must not run")
                 })
             })
         };
-        let waiting = |vm: &str| {
+        let waiting = |computer: &str| {
             crate::runtime::OPERATIONS
                 .snapshot()
                 .waiting
                 .iter()
-                .any(|entry| entry.vm_id.as_deref() == Some(vm))
+                .any(|entry| entry.computer_id.as_deref() == Some(computer))
         };
         let until = Instant::now() + Duration::from_secs(5);
-        while !waiting(&vm) {
+        while !waiting(&computer) {
             assert!(Instant::now() < until, "the change never queued");
             thread::sleep(Duration::from_millis(5));
         }
@@ -4513,7 +4548,7 @@ mod dispatch_tests {
         disabled.enabled = false;
         save_config_in(&dir, &disabled).unwrap();
         assert_eq!(queued.join().unwrap(), Err(operations::EXPIRED.into()));
-        assert!(!waiting(&vm));
+        assert!(!waiting(&computer));
         release.0.send(()).unwrap();
         busy.join().unwrap();
     }
@@ -4658,7 +4693,7 @@ mod dispatch_tests {
         ));
         assert!(!lost_connection(
             Some(1),
-            "Silo is not running on this computer.\n"
+            "Silo is not running on this device.\n"
         ));
     }
 
@@ -4695,9 +4730,9 @@ mod ssh_authorization_tests {
     fn ssh_settings_require_management_protocol_and_pinned_owner() {
         let _test_state = crate::test_support::global_state();
         let mut config = Config {
-            host_id: uuid::Uuid::new_v4().to_string(),
+            device_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
-            hosts: vec![],
+            devices: vec![],
             extra: serde_json::Map::new(),
         };
         for method in [
@@ -4705,25 +4740,25 @@ mod ssh_authorization_tests {
             "ssh.access.save",
             "ssh.access.connection",
         ] {
-            let request = json!({"version":VERSION,"hostId":config.host_id,"method":method});
+            let request = json!({"version":VERSION,"deviceId":config.device_id,"method":method});
             validate_authorization(&config, &request).unwrap();
             config.enabled = false;
             assert_eq!(
                 validate_authorization(&config, &request).unwrap_err(),
-                "Remote management is disabled on this computer."
+                "Connections are turned off on this device."
             );
             config.enabled = true;
             let mut changed = request.clone();
-            changed["hostId"] = json!(uuid::Uuid::new_v4().to_string());
+            changed["deviceId"] = json!(uuid::Uuid::new_v4().to_string());
             assert_eq!(
                 validate_authorization(&config, &changed).unwrap_err(),
-                "This address now belongs to a different Silo computer. Reconnect it explicitly."
+                "This address now belongs to a different Silo device. Reconnect it explicitly."
             );
             changed = request;
             changed["version"] = json!(VERSION + 1);
             assert_eq!(
                 validate_authorization(&config, &changed).unwrap_err(),
-                "Silo versions are incompatible. Update Silo on both computers."
+                "Silo versions are incompatible. Update Silo on both devices."
             );
         }
     }
@@ -4737,19 +4772,19 @@ mod ssh_connection_admission_tests {
     fn owner() -> (tempfile::TempDir, Value) {
         let directory = tempfile::tempdir().unwrap();
         let config = Config {
-            host_id: uuid::Uuid::new_v4().to_string(),
+            device_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
-            hosts: Vec::new(),
+            devices: Vec::new(),
             extra: serde_json::Map::new(),
         };
         save_config_in(directory.path(), &config).unwrap();
         let request = json!({
             "version": VERSION,
-            "hostId": config.host_id,
+            "deviceId": config.device_id,
             "method": "ssh.access.connection",
             "operationId": uuid::Uuid::new_v4().to_string(),
             "startWithinMs": 60_000,
-            "params": {"vmId":uuid::Uuid::new_v4().to_string(),"publicKey":"ssh-ed25519 AAAA"},
+            "params": {"computerId":uuid::Uuid::new_v4().to_string(),"publicKey":"ssh-ed25519 AAAA"},
         });
         (directory, request)
     }
@@ -4827,7 +4862,7 @@ mod ssh_connection_admission_tests {
 
 pub(crate) fn log_identity() -> Result<(String, String), String> {
     let _guard = config_lock();
-    Ok((read_config()?.host_id, name()))
+    Ok((read_config()?.device_id, name()))
 }
 
 #[cfg(test)]
@@ -4886,7 +4921,7 @@ mod config_io_limit_tests {
             let _guard = config_lock();
             assert_eq!(
                 read_config_in(Path::new(&directory)).err().as_deref(),
-                Some("Remote management settings must be a regular file.")
+                Some("Connections settings must be a regular file.")
             );
             return;
         }
@@ -4935,9 +4970,9 @@ mod config_io_limit_tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.json");
         let saved = serde_json::json!({
-            "hostId": "fixture-owner",
+            "deviceId": "fixture-owner",
             "enabled": false,
-            "hosts": [{"id": "peer", "name": "Peer", "address": "fixture.test"}],
+            "devices": [{"id": "peer", "name": "Peer", "address": "fixture.test"}],
             "futurePreference": {"mode": "newer", "ids": [1, 2]}
         });
         let bytes = serde_json::to_vec(&saved).unwrap();
@@ -4949,8 +4984,8 @@ mod config_io_limit_tests {
         let reloaded: serde_json::Value =
             serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
-        assert_eq!(reloaded["hostId"], saved["hostId"]);
-        assert_eq!(reloaded["hosts"], saved["hosts"]);
+        assert_eq!(reloaded["deviceId"], saved["deviceId"]);
+        assert_eq!(reloaded["devices"], saved["devices"]);
         assert!(read_config_in(directory.path()).unwrap().enabled);
     }
 
@@ -4959,9 +4994,9 @@ mod config_io_limit_tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.json");
         for saved in [
-            serde_json::json!({"enabled": false, "hosts": [], "future": true}),
-            serde_json::json!({"hostId": "fixture-owner", "enabled": "false", "hosts": [], "future": true}),
-            serde_json::json!({"hostId": "fixture-owner", "enabled": false, "hosts": {}, "future": true}),
+            serde_json::json!({"enabled": false, "devices": [], "future": true}),
+            serde_json::json!({"deviceId": "fixture-owner", "enabled": "false", "devices": [], "future": true}),
+            serde_json::json!({"deviceId": "fixture-owner", "enabled": false, "devices": {}, "future": true}),
         ] {
             let bytes = serde_json::to_vec(&saved).unwrap();
             fs::write(&path, &bytes).unwrap();
@@ -4978,16 +5013,16 @@ mod config_io_limit_tests {
             return; // Root bypasses the permission boundary exercised here.
         }
         let config = Config {
-            host_id: "fixture-owner".into(),
+            device_id: "fixture-owner".into(),
             enabled: false,
-            hosts: vec![],
+            devices: vec![],
             extra: serde_json::Map::new(),
         };
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
         let result = save_config_in(directory.path(), &config);
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let published = read_config_in(directory.path()).unwrap();
-        assert_eq!(published.host_id, "fixture-owner");
+        assert_eq!(published.device_id, "fixture-owner");
         assert!(!published.enabled);
         assert!(
             result.is_err(),
@@ -5000,11 +5035,11 @@ mod config_io_limit_tests {
     fn remote_config_accepts_the_limit_and_rejects_one_extra_byte_without_rewriting() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.json");
-        let mut bytes = br#"{"hostId":"fixture-owner","enabled":true,"hosts":[]}"#.to_vec();
+        let mut bytes = br#"{"deviceId":"fixture-owner","enabled":true,"devices":[]}"#.to_vec();
         bytes.resize(LIMIT_BYTES, b' ');
         fs::write(&path, &bytes).unwrap();
         let config = read_config_in(directory.path()).unwrap();
-        assert_eq!(config.host_id, "fixture-owner");
+        assert_eq!(config.device_id, "fixture-owner");
         assert!(config.enabled);
         bytes.push(b' ');
         fs::write(&path, &bytes).unwrap();
@@ -5012,7 +5047,7 @@ mod config_io_limit_tests {
             read_config_in(directory.path())
                 .err()
                 .expect("oversized read must fail"),
-            "Remote management settings exceed the 1 MiB safety limit."
+            "Connections settings exceed the 1 MiB safety limit."
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
@@ -5022,21 +5057,21 @@ mod config_io_limit_tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config.json");
         let mut config = Config {
-            host_id: "fixture-owner".into(),
+            device_id: "fixture-owner".into(),
             enabled: true,
-            hosts: vec![],
+            devices: vec![],
             extra: serde_json::Map::new(),
         };
         save_config_in(directory.path(), &config).unwrap();
         let previous = fs::read(&path).unwrap();
-        config.hosts.push(RemoteHost {
+        config.devices.push(Device {
             id: "fixture-host".into(),
             name: "x".repeat(LIMIT_BYTES),
             address: "example.test".into(),
         });
         assert_eq!(
             save_config_in(directory.path(), &config).unwrap_err(),
-            "Remote management settings exceed the 1 MiB safety limit."
+            "Connections settings exceed the 1 MiB safety limit."
         );
         assert_eq!(fs::read(&path).unwrap(), previous);
     }

@@ -1,12 +1,12 @@
-//! Quit takes the same operation gate as normal VM operations. It never
-//! follows saved SSH connections or sends commands to another computer.
+//! Quit takes the same operation gate as normal computer operations. It never
+//! follows saved SSH connections or sends commands to another device.
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static QUITTING: AtomicBool = AtomicBool::new(false);
 /// Counts shutdowns that began (Quit or update installation), including ones later
 /// cancelled. Work requested before a shutdown compares it to decide not to run
-/// after that shutdown stopped the VMs, even when a failed Quit reopened admission.
+/// after that shutdown stopped the computers, even when a failed Quit reopened admission.
 static QUIT_GENERATION: AtomicU64 = AtomicU64::new(0);
 static MAINTENANCE_DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -47,35 +47,38 @@ pub(super) fn maintenance_budget() -> Duration {
 /// not assert `operation_gate::held()` (D-43).
 pub(crate) fn ensure_accepting_operations() -> Result<(), String> {
     if QUITTING.load(Ordering::SeqCst) {
-        Err("Silo is quitting and stopping its local VMs. Wait for shutdown to finish.".into())
+        Err(
+            "Silo is quitting and stopping its local computers. Wait for shutdown to finish."
+                .into(),
+        )
     } else {
         Ok(())
     }
 }
 
-pub(crate) fn stop_local_vms(app: &AppHandle) -> Result<(), String> {
+pub(crate) fn stop_local_computers(app: &AppHandle) -> Result<(), String> {
     let result = while_quitting(&OPERATIONS, |guard| {
         // Quit has stopped admission and holds the operation gate: the SSH monitor
-        // cannot restore listeners while local VM shutdown is in progress.
+        // cannot restore listeners while local computer shutdown is in progress.
         crate::ssh_access::close_all();
         crate::desktop_viewer::close_all();
-        // With the storage migration unfinished no runtime is in use, so no VM of this
+        // With the storage migration unfinished no runtime is in use, so no computer of this
         // Silo can be running and Quit has nothing to stop.
         let Some(paths) = runtime_paths_if_in_use(app)? else {
             return Ok(());
         };
-        // The quit overlay follows the queue and shows which VM is stopping (D-29).
+        // The quit overlay follows the queue and shows which computer is stopping (D-29).
         let progress = |name: &str, index: usize, total: usize| {
             guard.relabel(&format!("Stopping {name} ({index} of {total})"));
         };
-        stop_local_vms_with(&ProcessRunner, &paths, &progress)
+        stop_local_computers_with(&ProcessRunner, &paths, &progress)
             .map_err(|error| safe_activity_error(&error))
     });
     let _ = app.emit("silo://application-state-changed", ());
     result
 }
 
-/// Run Quit's shutdown `work` holding the computer-wide gate.
+/// Run Quit's shutdown `work` holding the device-wide gate.
 fn while_quitting<T>(
     gate: &'static operation_gate::OperationGate,
     work: impl FnOnce(&operation_gate::OperationGuard<'static>) -> Result<T, String>,
@@ -86,67 +89,72 @@ fn while_quitting<T>(
     gate.cancel_all_waiting();
     let guard = gate
         .kind(operation_gate::OperationKind::Shutdown)
-        .computer("Stopping local sandboxes")
+        .device("Stopping local computers")
         .map_err(|_| {
-            "A sandbox operation failed unexpectedly. Check local VM status before retrying Quit."
+            "A computer operation failed unexpectedly. Check local computer status before retrying Quit."
                 .to_string()
         })?;
     let result = work(&guard);
-    // Work that queued behind Quit was requested before its VMs stopped. If Quit
-    // fails and admission reopens, it must not start a VM Quit just stopped (D-30),
+    // Work that queued behind Quit was requested before its computers stopped. If Quit
+    // fails and admission reopens, it must not start a computer Quit just stopped (D-30),
     // so it leaves the queue before the gate is released.
     gate.cancel_all_waiting();
     drop(guard);
     result
 }
 
-/// Stop every present local VM. `progress` receives each VM that needs a stop with
-/// its one-based position among them, before that VM's stop starts.
-fn stop_local_vms_with(
+/// Stop every present local computer. `progress` receives each computer that needs a stop with
+/// its one-based position among them, before that computer's stop starts.
+fn stop_local_computers_with(
     runner: &(dyn RuntimeRunner + Sync),
     paths: &RuntimePaths,
     progress: &dyn Fn(&str, usize, usize),
 ) -> Result<(), RuntimeError> {
-    let committed = read_metadata(&paths.metadata)?.machines;
-    let mut machines = committed.clone();
-    for pending in configuration_recovery::shutdown_machines(paths)? {
-        if !machines.iter().any(|machine| machine.id() == pending.id()) {
-            machines.push(pending);
+    let committed = read_metadata(&paths.metadata)?.computers;
+    let mut computers = committed.clone();
+    for pending in configuration_recovery::shutdown_computers(paths)? {
+        if !computers
+            .iter()
+            .any(|configuration| configuration.id() == pending.id())
+        {
+            computers.push(pending);
         }
     }
-    if runtime_never_initialized(paths) || (machines.is_empty() && !paths.home.exists()) {
+    if runtime_never_initialized(paths) || (computers.is_empty() && !paths.home.exists()) {
         return Ok(());
     }
     let present: HashSet<_> = list_managed(runner, paths)?
         .into_iter()
-        .map(|vm| vm.name)
+        .map(|computer| computer.name)
         .collect();
     // Stopping does not require host capacity, unlike creating or starting.
-    let host = HostResources {
+    let device = DeviceResources {
         logical_cpus: 0,
         physical_memory_bytes: None,
     };
     let mut failures: Vec<String> = present.iter()
-        .filter(|name| !machines.iter().any(|machine| machine.name() == name.as_str()))
-        .map(|name| format!("{name}: Silo found a managed VM without a matching saved identity. Repair its configuration before quitting."))
+        .filter(|name| !computers.iter().any(|configuration| configuration.name() == name.as_str()))
+        .map(|name| format!("{name}: Silo found a managed computer without a matching saved identity. Repair its configuration before quitting."))
         .collect();
     let mut targets = Vec::new();
-    for machine in machines
+    for configuration in computers
         .iter()
-        .filter(|machine| present.contains(machine.name()))
+        .filter(|configuration| present.contains(configuration.name()))
     {
-        let committed_vm = committed.iter().any(|entry| entry.id() == machine.id());
-        // A replacement may reuse a removed VM's name. Its journal retains both
-        // identities, but only the identity actually present needs to stop.
-        if machines
+        let committed_computer = committed
             .iter()
-            .any(|other| other.name() == machine.name() && other.id() != machine.id())
-            && inspect_workspace(runner, paths, machine.name()).is_ok_and(|observed| {
-                observed.name == machine.name()
+            .any(|entry| entry.id() == configuration.id());
+        // A replacement may reuse a removed computer's name. Its journal retains both
+        // identities, but only the identity actually present needs to stop.
+        if computers
+            .iter()
+            .any(|other| other.name() == configuration.name() && other.id() != configuration.id())
+            && inspect_computer(runner, paths, configuration.name()).is_ok_and(|observed| {
+                observed.name == configuration.name()
                     && ensure_managed(&observed).is_ok()
-                    && machines.iter().any(|other| {
-                        other.name() == machine.name()
-                            && other.id() != machine.id()
+                    && computers.iter().any(|other| {
+                        other.name() == configuration.name()
+                            && other.id() != configuration.id()
                             && observed
                                 .config
                                 .pointer("/labels/silo.machine-id")
@@ -157,21 +165,21 @@ fn stop_local_vms_with(
         {
             continue;
         }
-        // A VM that is already stopped with no saved action needs no stop and
-        // no "Sandbox stopped" activity entry. Anything else goes through
+        // A computer that is already stopped with no saved action needs no stop and
+        // no "Computer stopped" activity entry. Anything else goes through
         // perform, which verifies identity and settles transitions.
-        if committed_vm
-            && !lifecycle_recovery::has_intent(paths, machine.id())
-            && inspect_workspace(runner, paths, machine.name()).is_ok_and(|vm| {
+        if committed_computer
+            && !lifecycle_recovery::has_intent(paths, configuration.id())
+            && inspect_computer(runner, paths, configuration.name()).is_ok_and(|computer| {
                 matches!(
-                    vm.status.to_ascii_lowercase().as_str(),
+                    computer.status.to_ascii_lowercase().as_str(),
                     "stopped" | "created" | "crashed"
                 )
             })
         {
             continue;
         }
-        targets.push((machine, committed_vm));
+        targets.push((configuration, committed_computer));
     }
     if !targets.is_empty() {
         // One cross-process worker flock covers the entire shutdown transaction.
@@ -181,28 +189,30 @@ fn stop_local_vms_with(
             .iter()
             .map(|_| worker_lock.duplicate_for_shutdown())
             .collect::<Result<Vec<_>, _>>()?;
-        let host = &host;
+        let device = &device;
         thread::scope(|scope| {
             let mut workers = Vec::new();
-            for (index, ((machine, committed_vm), lock)) in targets.iter().zip(locks).enumerate() {
-                progress(machine.name(), index + 1, targets.len());
+            for (index, ((configuration, committed_computer), lock)) in
+                targets.iter().zip(locks).enumerate()
+            {
+                progress(configuration.name(), index + 1, targets.len());
                 workers.push((
-                    machine.name(),
+                    configuration.name(),
                     scope.spawn(move || {
                         with_shutdown_worker_lock(lock, || {
                             // Every worker verifies ownership and immutable identity before
-                            // stopping, while the parent retains the computer operation gate.
-                            if *committed_vm {
-                                checkpoints::release_paused_restore(runner, paths, machine);
+                            // stopping, while the parent retains the device operation gate.
+                            if *committed_computer {
+                                checkpoints::release_paused_restore(runner, paths, configuration);
                                 lifecycle_recovery::perform(
                                     runner,
                                     paths,
-                                    host,
+                                    device,
                                     "stop",
-                                    machine.name(),
+                                    configuration.name(),
                                 )
                             } else {
-                                stop_uncommitted_vm(runner, paths, machine)
+                                stop_uncommitted_computer(runner, paths, configuration)
                             }
                         })
                     }),
@@ -224,7 +234,7 @@ fn stop_local_vms_with(
         Ok(())
     } else {
         Err(RuntimeError::Unavailable(format!(
-            "Some local VMs could not stop:\n{}",
+            "Some local computers could not stop:\n{}",
             failures.join("\n")
         )))
     }
@@ -279,25 +289,25 @@ fn runtime_never_initialized(paths: &RuntimePaths) -> bool {
     true
 }
 
-// A failed guest verification can leave a real VM before metadata publication.
-// Stop that exact journal-owned VM, preserving the unfinished configuration.
-fn stop_uncommitted_vm(
+// A failed guest verification can leave a real computer before metadata publication.
+// Stop that exact journal-owned computer, preserving the unfinished configuration.
+fn stop_uncommitted_computer(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
     let inspect = || {
-        let observed = inspect_workspace(runner, paths, machine.name())?;
+        let observed = inspect_computer(runner, paths, configuration.name())?;
         ensure_managed(&observed)?;
-        if observed.name != machine.name()
+        if observed.name != configuration.name()
             || observed
                 .config
                 .pointer("/labels/silo.machine-id")
                 .and_then(Value::as_str)
-                != Some(machine.id())
+                != Some(configuration.id())
         {
             return Err(RuntimeError::Invalid(
-                "The unfinished VM changed identity. No stop was requested.".into(),
+                "The unfinished computer changed identity. No stop was requested.".into(),
             ));
         }
         Ok(observed)
@@ -311,12 +321,12 @@ fn stop_uncommitted_vm(
             "running" if !requested_stop => {
                 let result = runner.run(
                     paths,
-                    &["stop".into(), machine.name().into(), "--quiet".into()],
+                    &["stop".into(), configuration.name().into(), "--quiet".into()],
                     STOP_TIMEOUT,
                 );
                 requested_stop = true;
                 if let Err(error) = result {
-                    // The command may have stopped the VM before its client failed.
+                    // The command may have stopped the computer before its client failed.
                     // Confirm the exact identity and terminal state before accepting it.
                     let observed = inspect()?;
                     if matches!(
@@ -332,13 +342,13 @@ fn stop_uncommitted_vm(
             "starting" | "stopping" | "draining" => {}
             _ => {
                 return Err(RuntimeError::Unavailable(
-                    "The unfinished VM did not stop. Check its status and retry Quit.".into(),
+                    "The unfinished computer did not stop. Check its status and retry Quit.".into(),
                 ))
             }
         }
         if Instant::now() >= until {
             return Err(RuntimeError::TimedOut {
-                operation: "Stopping the unfinished VM".into(),
+                operation: "Stopping the unfinished computer".into(),
             });
         }
         thread::sleep(Duration::from_millis(100));
@@ -393,10 +403,10 @@ mod tests {
     }
     fn setup(directory: &tempfile::TempDir) -> RuntimePaths {
         let paths = super::super::tests::paths(directory);
-        let machines = ["first", "second"].map(|name| json!({"id":id(name),"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":10,"runtimeStorageGiB":10}));
+        let computers = ["first", "second"].map(|name| json!({"id":id(name),"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":10,"runtimeStorageGiB":10}));
         fs::write(
             &paths.metadata,
-            json!({"schemaVersion":1,"machines":machines}).to_string(),
+            json!({"schemaVersion":1,"computers":computers}).to_string(),
         )
         .unwrap();
         paths
@@ -420,7 +430,7 @@ mod tests {
         let mut waiter = None;
         let result: Result<(), String> = while_quitting(gate, |_guard| {
             waiter = Some(std::thread::spawn(move || {
-                gate.vm("id-a", "a", "Starting a").map(drop)
+                gate.computer("id-a", "a", "Starting a").map(drop)
             }));
             let deadline = Instant::now() + Duration::from_secs(5);
             while gate.snapshot().waiting.is_empty() {
@@ -430,7 +440,7 @@ mod tests {
                 );
                 thread::sleep(Duration::from_millis(2));
             }
-            Err("Some local VMs could not stop.".into())
+            Err("Some local computers could not stop.".into())
         });
         assert!(result.is_err());
         assert_eq!(
@@ -441,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn quit_accepts_crashed_vm_and_still_stops_running_vm() {
+    fn quit_accepts_crashed_computer_and_still_stops_running_computer() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
@@ -451,7 +461,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("first".into(), "Crashed".into());
-        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+        stop_local_computers_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert_eq!(runner.states.lock().unwrap()["first"], "Crashed");
         assert_eq!(runner.states.lock().unwrap()["second"], "Stopped");
         let calls = runner.calls.lock().unwrap();
@@ -461,11 +471,11 @@ mod tests {
         assert!(calls
             .iter()
             .any(|args| args[0] == "stop" && args[1] == "second"));
-        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 2);
+        assert_eq!(read_metadata(&paths.metadata).unwrap().computers.len(), 2);
     }
 
     #[test]
-    fn quit_reports_each_vm_it_stops_with_its_position() {
+    fn quit_reports_each_computer_it_stops_with_its_position() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
@@ -476,7 +486,7 @@ mod tests {
             .unwrap()
             .insert("first".into(), "Stopped".into());
         let seen = Mutex::new(Vec::new());
-        stop_local_vms_with(&runner, &paths, &|name, index, total| {
+        stop_local_computers_with(&runner, &paths, &|name, index, total| {
             // Reported before the stop starts.
             assert_eq!(runner.states.lock().unwrap()[name], "Running");
             seen.lock().unwrap().push((name.to_owned(), index, total));
@@ -489,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn quit_skips_already_stopped_vms_without_recording_a_stop() {
+    fn quit_skips_already_stopped_computers_without_recording_a_stop() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
@@ -499,7 +509,7 @@ mod tests {
             .lock()
             .unwrap()
             .insert("first".into(), "Stopped".into());
-        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+        stop_local_computers_with(&runner, &paths, &|_, _, _| {}).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert!(!calls
             .iter()
@@ -508,8 +518,8 @@ mod tests {
             .iter()
             .any(|args| args[0] == "stop" && args[1] == "second"));
         let history = runtime_activity::read(&paths).unwrap();
-        assert!(!history.iter().any(|event| event["workspace"] == "first"));
-        assert!(history.iter().any(|event| event["workspace"] == "second"));
+        assert!(!history.iter().any(|event| event["computer"] == "first"));
+        assert!(history.iter().any(|event| event["computer"] == "second"));
     }
 
     #[test]
@@ -518,14 +528,14 @@ mod tests {
         for malformed in [false, true] {
             let dir = tempfile::tempdir().unwrap();
             let paths = setup(&dir);
-            let history = paths.metadata.with_file_name("sandbox-activity.json");
+            let history = paths.metadata.with_file_name("computer-activity.json");
             if malformed {
                 fs::write(&history, "{broken-json").unwrap();
             } else {
                 fs::create_dir(&history).unwrap();
             }
             let runner = runner(None);
-            stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+            stop_local_computers_with(&runner, &paths, &|_, _, _| {}).unwrap();
             assert!(runner
                 .states
                 .lock()
@@ -543,19 +553,19 @@ mod tests {
     }
 
     #[test]
-    fn quit_stops_and_verifies_each_local_vm_without_removing_it() {
+    fn quit_stops_and_verifies_each_local_computer_without_removing_it() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
-        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+        stop_local_computers_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(runner
             .states
             .lock()
             .unwrap()
             .values()
             .all(|state| state == "Stopped"));
-        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 2);
+        assert_eq!(read_metadata(&paths.metadata).unwrap().computers.len(), 2);
         assert_eq!(
             runner
                 .calls
@@ -576,7 +586,7 @@ mod tests {
         runner.stop_barrier = Some(std::sync::Barrier::new(2));
         let (done, received) = std::sync::mpsc::channel();
         let worker = thread::spawn(move || {
-            let result = stop_local_vms_with(&runner, &paths, &|_, _, _| {});
+            let result = stop_local_computers_with(&runner, &paths, &|_, _, _| {});
             done.send((result, runtime_activity::read(&paths).unwrap()))
                 .unwrap();
         });
@@ -587,11 +597,11 @@ mod tests {
         result.unwrap();
         let first = history
             .iter()
-            .find(|event| event["workspace"] == "first")
+            .find(|event| event["computer"] == "first")
             .expect("first stop activity is retained");
         let second = history
             .iter()
-            .find(|event| event["workspace"] == "second")
+            .find(|event| event["computer"] == "second")
             .expect("second stop activity is retained");
         assert_eq!(first["status"], "completed");
         assert_eq!(second["status"], "completed");
@@ -599,12 +609,12 @@ mod tests {
     }
 
     #[test]
-    fn one_failed_stop_preserves_failure_and_still_stops_other_vms() {
+    fn one_failed_stop_preserves_failure_and_still_stops_other_computers() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(Some("first"));
-        let error = stop_local_vms_with(&runner, &paths, &|_, _, _| {})
+        let error = stop_local_computers_with(&runner, &paths, &|_, _, _| {})
             .unwrap_err()
             .to_string();
         assert!(error.contains("first"));
@@ -612,18 +622,18 @@ mod tests {
         assert_eq!(runner.states.lock().unwrap()["second"], "Stopped");
     }
     #[test]
-    fn replaced_vm_is_not_stopped_and_prevents_successful_quit() {
+    fn replaced_computer_is_not_stopped_and_prevents_successful_quit() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
         let mut metadata = read_metadata(&paths.metadata).unwrap();
         {
-            let MachineConfiguration { id, .. } = &mut metadata.machines[0];
+            let ComputerConfiguration { id, .. } = &mut metadata.computers[0];
             *id = "00000000-0000-4000-8000-000000000004".into();
         }
         write_metadata(&paths.metadata, &metadata).unwrap();
-        assert!(stop_local_vms_with(&runner, &paths, &|_, _, _| {}).is_err());
+        assert!(stop_local_computers_with(&runner, &paths, &|_, _, _| {}).is_err());
         assert_eq!(runner.states.lock().unwrap()["first"], "Running");
         assert_eq!(runner.states.lock().unwrap()["second"], "Stopped");
     }
@@ -651,7 +661,7 @@ mod tests {
                             .insert(args[1].clone(), "Stopped".into());
                     }
                     return Err(RuntimeError::TimedOut {
-                        operation: "Stopping the VM".into(),
+                        operation: "Stopping the computer".into(),
                     });
                 }
                 self.inner.run(paths, args, timeout)
@@ -667,15 +677,18 @@ mod tests {
                 inner: runner(None),
                 stopped,
             };
-            let result = stop_local_vms_with(&runner, &paths, &|_, _, _| {});
+            let result = stop_local_computers_with(&runner, &paths, &|_, _, _| {});
             if stopped {
                 result.unwrap();
             } else {
-                assert!(result.is_err(), "a still-running VM must prevent Quit");
+                assert!(
+                    result.is_err(),
+                    "a still-running computer must prevent Quit"
+                );
             }
             assert_eq!(
-                configuration_recovery::shutdown_machines(&paths).unwrap(),
-                candidate.machines
+                configuration_recovery::shutdown_computers(&paths).unwrap(),
+                candidate.computers
             );
             assert!(runner
                 .inner
@@ -688,7 +701,7 @@ mod tests {
     }
 
     #[test]
-    fn quit_stops_the_present_identity_when_configuration_reuses_a_removed_vms_name() {
+    fn quit_stops_the_present_identity_when_configuration_reuses_a_removed_computers_name() {
         let _test_state = crate::test_support::global_state();
         struct Replacement(Runner, String);
         impl RuntimeRunner for Replacement {
@@ -713,7 +726,7 @@ mod tests {
             let mut replacement = read_metadata(&paths.metadata).unwrap();
             let new_id = uuid::Uuid::new_v4().to_string();
             {
-                let MachineConfiguration { id, .. } = &mut replacement.machines[0];
+                let ComputerConfiguration { id, .. } = &mut replacement.computers[0];
                 *id = new_id.clone();
             }
             configuration_recovery::begin(&paths, &replacement).unwrap();
@@ -721,11 +734,11 @@ mod tests {
                 write_metadata(&paths.metadata, &replacement).unwrap();
             } else {
                 let mut after_removal = replacement.clone();
-                after_removal.machines.remove(0);
+                after_removal.computers.remove(0);
                 write_metadata(&paths.metadata, &after_removal).unwrap();
             }
             let runner = Replacement(runner(None), new_id);
-            stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+            stop_local_computers_with(&runner, &paths, &|_, _, _| {}).unwrap();
             assert!(runner
                 .0
                 .states
@@ -740,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn quit_stops_created_vms_when_guest_verification_failed_before_metadata_commit() {
+    fn quit_stops_created_computers_when_guest_verification_failed_before_metadata_commit() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
@@ -748,17 +761,17 @@ mod tests {
         fs::remove_file(&paths.metadata).unwrap();
         configuration_recovery::begin(&paths, &candidate).unwrap();
         let runner = runner(None);
-        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+        stop_local_computers_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(runner
             .states
             .lock()
             .unwrap()
             .values()
             .all(|state| state == "Stopped"));
-        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
         assert_eq!(
-            configuration_recovery::shutdown_machines(&paths).unwrap(),
-            candidate.machines
+            configuration_recovery::shutdown_computers(&paths).unwrap(),
+            candidate.computers
         );
         assert!(!runner
             .calls
@@ -769,15 +782,15 @@ mod tests {
     }
 
     #[test]
-    fn quit_does_not_silently_leave_an_unidentified_managed_vm_running() {
+    fn quit_does_not_silently_leave_an_unidentified_managed_computer_running() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let mut metadata = read_metadata(&paths.metadata).unwrap();
-        metadata.machines.truncate(1);
+        metadata.computers.truncate(1);
         write_metadata(&paths.metadata, &metadata).unwrap();
         let runner = runner(None);
-        let error = stop_local_vms_with(&runner, &paths, &|_, _, _| {})
+        let error = stop_local_computers_with(&runner, &paths, &|_, _, _| {})
             .unwrap_err()
             .to_string();
         assert!(error.contains("second"));
@@ -786,13 +799,13 @@ mod tests {
     }
 
     #[test]
-    fn missing_metadata_does_not_hide_managed_vms_in_an_existing_runtime() {
+    fn missing_metadata_does_not_hide_managed_computers_in_an_existing_runtime() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         fs::create_dir_all(&paths.home).unwrap();
         let runner = runner(None);
-        let error = stop_local_vms_with(&runner, &paths, &|_, _, _| {})
+        let error = stop_local_computers_with(&runner, &paths, &|_, _, _| {})
             .unwrap_err()
             .to_string();
         assert!(error.contains("matching saved identity"));
@@ -816,11 +829,11 @@ mod tests {
         fs::create_dir(&paths.home).unwrap();
         fs::write(paths.home.join(".silo-configuration-worker.lock"), b"").unwrap();
         let runner = runner(None);
-        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+        stop_local_computers_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(runner.calls.lock().unwrap().is_empty());
         assert_eq!(
-            configuration_recovery::shutdown_machines(&paths).unwrap(),
-            pending.machines
+            configuration_recovery::shutdown_computers(&paths).unwrap(),
+            pending.computers
         );
     }
 
@@ -873,7 +886,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let runner = runner(None);
-        stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+        stop_local_computers_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(runner.calls.lock().unwrap().is_empty());
     }
 }

@@ -20,10 +20,10 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
         return serde_json::to_value(read_metadata(&paths.metadata).map_err(BridgeError::from)?)
             .map_err(|e| BridgeError::from(e.to_string()));
     }
-    // A remote lifecycle action changes only one VM's runtime, so it shares that VM's
+    // A remote lifecycle action changes only one computer's runtime, so it shares that computer's
     // lane (keyed by stable id, with the same dedupe key as the local lifecycle command)
     // and, for the idempotent start/stop/restart, auto-retries transient failures exactly
-    // like the local `workspace_action` command.
+    // like the local `computer_action` command.
     if method == "runtime.action" {
         return remote_action(app, &paths, &params);
     }
@@ -31,10 +31,10 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     if !matches!(method, "runtime.upsert" | "runtime.delete") {
         return Err(BridgeError::unsupported());
     }
-    // Inventory changes (upsert/delete) stay computer-scoped: they rewrite the shared
+    // Inventory changes (upsert/delete) stay device-scoped: they rewrite the shared
     // metadata file. They run once, holding the gate for the whole operation.
     let removed: Vec<String> = (method == "runtime.delete")
-        .then(|| params["vmId"].as_str().map(str::to_owned))
+        .then(|| params["computerId"].as_str().map(str::to_owned))
         .flatten()
         .into_iter()
         .collect();
@@ -43,18 +43,18 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
         .map_err(BridgeError::from)?;
     shutdown::ensure_accepting_operations()?;
     let mut request = read_metadata(&paths.metadata).map_err(BridgeError::from)?;
-    let resources = host_resources().map_err(BridgeError::from)?;
+    let resources = device_resources().map_err(BridgeError::from)?;
     let _ = app.emit("silo://application-state-changed", ());
     let result = (|| {
         match method {
             "runtime.upsert" | "runtime.delete" => {
-                let expected: Option<MachineConfiguration> =
+                let expected: Option<ComputerConfiguration> =
                     serde_json::from_value(params["expected"].clone())
-                        .map_err(|_| "Invalid expected VM configuration.")?;
-                let replacement: Option<MachineConfiguration> = if method == "runtime.upsert" {
+                        .map_err(|_| "Invalid expected computer configuration.")?;
+                let replacement: Option<ComputerConfiguration> = if method == "runtime.upsert" {
                     Some(
-                        serde_json::from_value(params["machine"].clone())
-                            .map_err(|_| "Invalid VM configuration.")?,
+                        serde_json::from_value(params["configuration"].clone())
+                            .map_err(|_| "Invalid computer configuration.")?,
                     )
                 } else {
                     None
@@ -62,29 +62,30 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
                 let id = replacement
                     .as_ref()
                     .map(|m| m.id())
-                    .or_else(|| params["vmId"].as_str())
-                    .ok_or("Missing VM identity.")?;
-                change_machine(
-                    &mut request.machines,
+                    .or_else(|| params["computerId"].as_str())
+                    .ok_or("Missing computer identity.")?;
+                change_computer(
+                    &mut request.computers,
                     id,
                     expected.as_ref(),
                     replacement.as_ref(),
                 )
                 .map_err(|rejection| match rejection {
-                    ChangeRejection::Missing => "This VM no longer exists.".to_string(),
+                    ChangeRejection::Missing => "This computer no longer exists.".to_string(),
                     ChangeRejection::Stale | ChangeRejection::WrongTarget => {
-                        "This VM changed on its computer. Refresh before trying again.".to_string()
+                        "This computer changed on its device. Refresh before trying again."
+                            .to_string()
                     }
                 })?;
                 validate_request(&request).map_err(BridgeError::from)?;
                 validate_requested_resources(&request, &resources).map_err(BridgeError::from)?;
                 // A remote change must not silently replace a local change
-                // that is waiting for Retry on this computer.
+                // that is waiting for Retry on this device.
                 if configuration_recovery::pending_request(&paths)
                     .map_err(BridgeError::from)?
                     .is_some()
                 {
-                    return Err("A sandbox change on this computer is waiting to be retried. Retry or correct it there first.".into());
+                    return Err("A computer change on this device is waiting to be retried. Retry or correct it there first.".into());
                 }
                 configuration_recovery::prepare_retry(&ProcessRunner, &paths, Some(&request))
                     .map_err(BridgeError::from)?;
@@ -110,9 +111,9 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     result
 }
 
-/// A remote start/stop/restart/dismiss-error against one local VM. Start/stop/restart are
+/// A remote start/stop/restart/dismiss-error against one local computer. Start/stop/restart are
 /// idempotent, so transient runtime failures retry through `gated_auto_retry`, which
-/// re-acquires this VM's gate per attempt (released between attempts) with the same lane,
+/// re-acquires this computer's gate per attempt (released between attempts) with the same lane,
 /// dedupe key, labels, cancellability, and expected durations as the local command;
 /// dismiss-error runs once. `silo://application-state-changed` is emitted after the work.
 fn remote_action(
@@ -128,7 +129,7 @@ fn remote_action(
         paths,
         params,
         &AUTO_RETRY_DELAYS,
-        &host_resources,
+        &device_resources,
         &changed,
     )?;
     serde_json::to_value(application_state_response(app, paths).map_err(BridgeError::from)?)
@@ -143,16 +144,16 @@ fn run_remote_action(
     paths: &RuntimePaths,
     params: &Value,
     delays: &[Duration],
-    resources: &dyn Fn() -> Result<HostResources, RuntimeError>,
+    resources: &dyn Fn() -> Result<DeviceResources, RuntimeError>,
     changed: &dyn Fn(),
 ) -> Result<(), BridgeError> {
-    let vm_id = params["vmId"]
+    let computer_id = params["computerId"]
         .as_str()
-        .ok_or("Missing VM identity.")?
+        .ok_or("Missing computer identity.")?
         .to_owned();
     let action = params["action"]
         .as_str()
-        .ok_or("Missing VM action.")?
+        .ok_or("Missing computer action.")?
         .to_owned();
     if !matches!(
         action.as_str(),
@@ -161,16 +162,16 @@ fn run_remote_action(
         return Err("Unsupported remote lifecycle action.".into());
     }
     // Resolve the display name from fresh metadata before acquiring; the work re-reads and
-    // re-checks the VM still exists once each attempt's turn arrives.
+    // re-checks the computer still exists once each attempt's turn arrives.
     let name = read_metadata(&paths.metadata)
         .map_err(BridgeError::from)?
-        .machines
+        .computers
         .into_iter()
-        .find(|m| m.id() == vm_id)
+        .find(|m| m.id() == computer_id)
         .map(|m| m.name().to_owned())
-        .ok_or("This VM no longer exists on this computer.")?;
+        .ok_or("This computer no longer exists on this device.")?;
     let base_label = lifecycle_label(&action, &name);
-    let key = format!("vm:{vm_id}:{action}");
+    let key = format!("computer:{computer_id}:{action}");
     // Start/restart may be cancelled while running; stop may not. Expected durations flag
     // slow operations in the UI (no auto-kill), matching the local command.
     let expected = match action.as_str() {
@@ -185,7 +186,9 @@ fn run_remote_action(
             .kind(operation_gate::OperationKind::Lifecycle)
             .retry_after(last_request.get())
             .acquire(
-                operation_gate::Scope::Vm { id: vm_id.clone() },
+                operation_gate::Scope::Computer {
+                    id: computer_id.clone(),
+                },
                 Some(name.clone()),
                 label,
                 Some(key.clone()),
@@ -205,14 +208,14 @@ fn run_remote_action(
         let request = read_metadata(&paths.metadata)?;
         let resources = resources()?;
         // The queue event shows the action; state is announced once the gate is released.
-        let machine = request
-            .machines
+        let configuration = request
+            .computers
             .iter()
-            .find(|m| m.id() == vm_id)
+            .find(|m| m.id() == computer_id)
             .ok_or_else(|| {
-                RuntimeError::Invalid("This VM no longer exists on this computer.".into())
+                RuntimeError::Invalid("This computer no longer exists on this device.".into())
             })?;
-        explicit_workspace_action_with(runner, paths, &resources, &action, machine.name())
+        explicit_computer_action_with(runner, paths, &resources, &action, configuration.name())
     };
     let result = if matches!(action.as_str(), "start" | "stop" | "restart") {
         gated_auto_retry_with(delays, &base_label, acquire, prepare, work)
@@ -234,8 +237,8 @@ fn run_remote_action(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn vm(id: &str) -> MachineConfiguration {
-        MachineConfiguration {
+    fn computer(id: &str) -> ComputerConfiguration {
+        ComputerConfiguration {
             id: id.into(),
             name: id.into(),
             cpus: 2,
@@ -249,7 +252,7 @@ mod tests {
     }
     const ID: &str = "00000000-0000-4000-8000-0000000000d4";
 
-    /// A local runtime for one VM named "dev": starts may time out a set number of
+    /// A local runtime for one computer named "dev": starts may time out a set number of
     /// times, or block until the running operation is cancelled.
     #[derive(Default)]
     struct Runtime {
@@ -314,30 +317,30 @@ mod tests {
     fn configured() -> (tempfile::TempDir, RuntimePaths) {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
-        let mut machine = vm(ID);
+        let mut configuration = computer(ID);
         {
-            let MachineConfiguration {
+            let ComputerConfiguration {
                 name,
                 cpus,
                 max_cpus,
                 memory_gib,
                 max_memory_gib,
                 ..
-            } = &mut machine;
+            } = &mut configuration;
             (*name, *cpus, *max_cpus, *memory_gib, *max_memory_gib) = ("dev".into(), 1, 1, 1, 1);
         }
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine],
+                computers: vec![configuration],
             },
         )
         .unwrap();
         (dir, paths)
     }
-    fn generous() -> Result<HostResources, RuntimeError> {
-        Ok(HostResources {
+    fn generous() -> Result<DeviceResources, RuntimeError> {
+        Ok(DeviceResources {
             logical_cpus: 64,
             physical_memory_bytes: Some(256 * 1024 * 1024 * 1024),
         })
@@ -345,7 +348,7 @@ mod tests {
     const QUICK: [Duration; 2] = [Duration::from_millis(1), Duration::from_millis(1)];
 
     #[test]
-    fn remote_start_retries_a_transient_failure_in_the_vm_lane() {
+    fn remote_start_retries_a_transient_failure_in_the_computer_lane() {
         let _test_state = crate::test_support::global_state();
         let (_dir, paths) = configured();
         let runtime = Runtime::stopped();
@@ -359,7 +362,7 @@ mod tests {
         run_remote_action(
             &runtime,
             &paths,
-            &json!({"vmId": ID, "action": "start"}),
+            &json!({"computerId": ID, "action": "start"}),
             &QUICK,
             &generous,
             &count,
@@ -368,7 +371,7 @@ mod tests {
         assert_eq!(runtime.mutations(), vec!["start", "start"]);
         assert_eq!(*runtime.state.lock().unwrap(), "Running");
         assert!(!lifecycle_recovery::has_intent(&paths, ID));
-        assert!(OPERATIONS.is_vm_idle(ID));
+        assert!(OPERATIONS.is_computer_idle(ID));
         assert_eq!(
             changed.load(std::sync::atomic::Ordering::SeqCst),
             1,
@@ -381,14 +384,16 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let (_dir, paths) = configured();
         let runtime = std::sync::Arc::new(Runtime::stopped());
-        let blocker = OPERATIONS.vm(ID, "dev", "Creating checkpoint").unwrap();
+        let blocker = OPERATIONS
+            .computer(ID, "dev", "Creating checkpoint")
+            .unwrap();
         let first = {
             let (runtime, paths) = (runtime.clone(), paths.clone());
             thread::spawn(move || {
                 run_remote_action(
                     &*runtime,
                     &paths,
-                    &json!({"vmId": ID, "action": "start"}),
+                    &json!({"computerId": ID, "action": "start"}),
                     &QUICK,
                     &generous,
                     &|| {},
@@ -400,7 +405,7 @@ mod tests {
             .snapshot()
             .waiting
             .iter()
-            .all(|entry| entry.vm_id.as_deref() != Some(ID))
+            .all(|entry| entry.computer_id.as_deref() != Some(ID))
         {
             assert!(Instant::now() < deadline, "the first request never queued");
             thread::sleep(Duration::from_millis(2));
@@ -411,7 +416,7 @@ mod tests {
                 run_remote_action(
                     &*runtime,
                     &paths,
-                    &json!({"vmId": ID, "action": "start"}),
+                    &json!({"computerId": ID, "action": "start"}),
                     &QUICK,
                     &generous,
                     &|| {},
@@ -442,7 +447,7 @@ mod tests {
                 run_remote_action(
                     &*runtime,
                     &paths,
-                    &json!({"vmId": ID, "action": "start"}),
+                    &json!({"computerId": ID, "action": "start"}),
                     &QUICK,
                     &generous,
                     &|| {},
@@ -454,7 +459,7 @@ mod tests {
             .snapshot()
             .running
             .into_iter()
-            .find(|entry| entry.vm_id.as_deref() == Some(ID))
+            .find(|entry| entry.computer_id.as_deref() == Some(ID))
             .unwrap();
         assert!(entry.cancellable);
         OPERATIONS.cancel(entry.id).unwrap();
@@ -465,17 +470,17 @@ mod tests {
             !lifecycle_recovery::has_intent(&paths, ID),
             "launch will not resume it"
         );
-        assert!(OPERATIONS.is_vm_idle(ID));
+        assert!(OPERATIONS.is_computer_idle(ID));
     }
 
     #[test]
-    fn remote_actions_reject_unknown_actions_and_vms_before_queueing() {
+    fn remote_actions_reject_unknown_actions_and_computers_before_queueing() {
         let _test_state = crate::test_support::global_state();
         let (_dir, paths) = configured();
         let runtime = Runtime::stopped();
         for params in [
-            json!({"vmId": ID, "action": "remove"}),
-            json!({"vmId": "missing", "action": "start"}),
+            json!({"computerId": ID, "action": "remove"}),
+            json!({"computerId": "missing", "action": "start"}),
             json!({"action": "start"}),
         ] {
             assert!(
@@ -486,68 +491,74 @@ mod tests {
     }
 
     #[test]
-    fn targeted_change_preserves_other_vms_and_rejects_stale_configuration() {
+    fn targeted_change_preserves_other_computers_and_rejects_stale_configuration() {
         let _test_state = crate::test_support::global_state();
-        let a = vm("a");
-        let b = vm("b");
-        let mut machines = vec![a.clone(), b.clone()];
-        assert!(change_machine(&mut machines, "a", None, Some(&a)).is_err());
-        assert_eq!(machines, vec![a.clone(), b.clone()]);
-        change_machine(&mut machines, "a", Some(&a), None).unwrap();
-        assert_eq!(machines, vec![b]);
-        assert!(change_machine(&mut machines, "a", Some(&a), None).is_err());
+        let a = computer("a");
+        let b = computer("b");
+        let mut computers = vec![a.clone(), b.clone()];
+        assert!(change_computer(&mut computers, "a", None, Some(&a)).is_err());
+        assert_eq!(computers, vec![a.clone(), b.clone()]);
+        change_computer(&mut computers, "a", Some(&a), None).unwrap();
+        assert_eq!(computers, vec![b]);
+        assert!(change_computer(&mut computers, "a", Some(&a), None).is_err());
     }
 
-    fn with_desktop(mut machine: MachineConfiguration, built_in: bool) -> MachineConfiguration {
+    fn with_desktop(
+        mut configuration: ComputerConfiguration,
+        built_in: bool,
+    ) -> ComputerConfiguration {
         {
-            let MachineConfiguration { desktop, .. } = &mut machine;
+            let ComputerConfiguration { desktop, .. } = &mut configuration;
             *desktop = Some(crate::desktop::DesktopConfiguration {
-                start_with_sandbox: true,
+                start_with_computer: true,
                 built_in,
             });
         }
-        machine
+        configuration
     }
 
     #[test]
     fn an_older_controllers_edit_that_cannot_see_built_in_still_applies() {
         let _test_state = crate::test_support::global_state();
-        let owned = with_desktop(vm("a"), true);
+        let owned = with_desktop(computer("a"), true);
         // The older controller parsed the snapshot and lost `builtIn`.
-        let expected = with_desktop(vm("a"), false);
-        let mut edited = with_desktop(vm("a"), false);
+        let expected = with_desktop(computer("a"), false);
+        let mut edited = with_desktop(computer("a"), false);
         {
-            let MachineConfiguration { cpus, .. } = &mut edited;
+            let ComputerConfiguration { cpus, .. } = &mut edited;
             *cpus = 3;
         }
-        let mut machines = vec![owned.clone()];
-        change_machine(&mut machines, "a", Some(&expected), Some(&edited)).unwrap();
-        assert!(crate::computer_use::is_built_in(&machines[0]));
-        assert!(matches!(&machines[0], MachineConfiguration { cpus: 3, .. }));
+        let mut computers = vec![owned.clone()];
+        change_computer(&mut computers, "a", Some(&expected), Some(&edited)).unwrap();
+        assert!(crate::computer_use::is_built_in(&computers[0]));
+        assert!(matches!(
+            &computers[0],
+            ComputerConfiguration { cpus: 3, .. }
+        ));
         // A real difference is still stale.
         let mut other = expected.clone();
         {
-            let MachineConfiguration { cpus, .. } = &mut other;
+            let ComputerConfiguration { cpus, .. } = &mut other;
             *cpus = 1;
         }
-        assert!(change_machine(&mut machines, "a", Some(&other), None).is_err());
+        assert!(change_computer(&mut computers, "a", Some(&other), None).is_err());
         // Deleting works from the older controller too.
         let expected = with_desktop(edited, false);
-        change_machine(&mut machines, "a", Some(&expected), None).unwrap();
-        assert!(machines.is_empty());
+        change_computer(&mut computers, "a", Some(&expected), None).unwrap();
+        assert!(computers.is_empty());
     }
 }
 
-pub(crate) fn local_vm_name(app: &AppHandle, id: &str) -> Result<String, String> {
-    local_vm_name_in(&runtime_paths(app)?, id)
+pub(crate) fn local_computer_name(app: &AppHandle, id: &str) -> Result<String, String> {
+    local_computer_name_in(&runtime_paths(app)?, id)
 }
 
-pub(crate) fn local_vm_name_in(paths: &RuntimePaths, id: &str) -> Result<String, String> {
+pub(crate) fn local_computer_name_in(paths: &RuntimePaths, id: &str) -> Result<String, String> {
     read_metadata(&paths.metadata)
         .map_err(|e| e.to_string())?
-        .machines
+        .computers
         .into_iter()
         .find(|m| m.id() == id)
         .map(|m| m.name().to_owned())
-        .ok_or("This VM no longer exists on this computer.".into())
+        .ok_or("This computer no longer exists on this device.".into())
 }

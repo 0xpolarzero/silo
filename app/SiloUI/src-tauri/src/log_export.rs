@@ -78,14 +78,14 @@ pub(crate) fn cancel_log_export(window: WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) async fn export_workspace_logs(
+pub(crate) async fn export_computer_logs(
     app: AppHandle,
     window: WebviewWindow,
     requests: Vec<Query>,
 ) -> Result<bool, String> {
     require_main(&window)?;
     if requests.is_empty() || requests.len() > 100 {
-        return Err("Select between one and 100 sandboxes to export logs.".into());
+        return Err("Select between one and 100 computers to export logs.".into());
     }
     let cancelled = cancellation_check();
     tauri::async_runtime::spawn_blocking(move || {
@@ -148,7 +148,7 @@ pub(crate) fn write_requests(
         output,
         &serde_json::json!({
             "type": "silo-log-export", "version": 1,
-            "note": "Each sandbox is a separate snapshot. Timestamps and identities are retained. Silo hides known secret values, but logs can still contain sensitive output; review it before sharing."
+            "note": "Each computer is a separate snapshot. Timestamps and identities are retained. Silo hides known secret values, but logs can still contain sensitive output; review it before sharing."
         }),
     )?;
     for mut request in requests {
@@ -165,7 +165,7 @@ pub(crate) fn write_requests(
             }
             let page = page?;
             if page.unsupported {
-                return Err("Update Silo on the remote computer before exporting its logs.".into());
+                return Err("Update Silo on the remote device before exporting its logs.".into());
             }
             if request.cursor.is_none() {
                 let mut coverage_request = request.clone();
@@ -324,10 +324,10 @@ mod tests {
                     id: index.to_string(),
                     line: format!("échec\nrecord {index}"),
                     occurred_at: "2026-09-18T10:00:00Z".into(),
-                    sandbox_id: "vm-id".into(),
-                    sandbox_name: "dev".into(),
-                    computer_id: "host-id".into(),
-                    computer_name: "Build computer".into(),
+                    computer_id: "computer-id".into(),
+                    computer_name: "dev".into(),
+                    device_id: "host-id".into(),
+                    device_name: "Build device".into(),
                     source: "stderr".into(),
                     session: Some("42".into()),
                     guest_timestamp: false,
@@ -349,7 +349,7 @@ mod tests {
         let mut output = Vec::new();
         let mut calls = 0;
         let query = Query {
-            sandbox_id: "vm-id".into(),
+            computer_id: "computer-id".into(),
             cursor: Some("400".into()),
             ..Query::default()
         };
@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(records.len(), 1003); // Header, coverage, then all records.
         assert_eq!(records[2]["id"], "0");
         assert_eq!(records.last().unwrap()["id"], "1000");
-        assert_eq!(records.last().unwrap()["computerName"], "Build computer");
+        assert_eq!(records.last().unwrap()["deviceName"], "Build device");
         assert_eq!(records.last().unwrap()["session"], "42");
         assert_eq!(records.last().unwrap()["line"], "échec\nrecord 1000");
     }
@@ -387,7 +387,7 @@ mod tests {
             "private customer lookup",
         ] {
             let request = Query {
-                sandbox_id: "vm-id".into(),
+                computer_id: "computer-id".into(),
                 query: Some(text.into()),
                 source: Some("stderr".into()),
                 ..Query::default()
@@ -410,7 +410,7 @@ mod tests {
             );
             let coverage: serde_json::Value =
                 serde_json::from_str(output.lines().nth(1).unwrap()).unwrap();
-            assert_eq!(coverage["request"]["sandboxId"], "vm-id");
+            assert_eq!(coverage["request"]["computerId"], "computer-id");
             assert_eq!(coverage["request"]["source"], "stderr");
             assert_eq!(coverage["request"]["query"], "[Search text hidden]");
             assert_eq!(coverage["totalMatches"], 0);
@@ -448,14 +448,14 @@ mod tests {
                 vec![Query::default()],
                 |_| {
                     cancelled.set(cancel);
-                    Err("Remote computer disconnected.".into())
+                    Err("Remote device disconnected.".into())
                 },
                 || cancelled.get(),
             );
             if cancel {
                 assert!(!result.unwrap());
             } else {
-                assert_eq!(result.unwrap_err(), "Remote computer disconnected.");
+                assert_eq!(result.unwrap_err(), "Remote device disconnected.");
             }
             assert_eq!(String::from_utf8(output).unwrap().lines().count(), 1);
         }
@@ -490,7 +490,7 @@ mod tests {
         let requests = vec![
             Query::default(),
             Query {
-                computer_id: Some("older-computer".into()),
+                device_id: Some("older-device".into()),
                 ..Query::default()
             },
         ];
@@ -501,8 +501,8 @@ mod tests {
                     output,
                     requests,
                     |request| {
-                        let mut response = page(0, usize::from(request.computer_id.is_none()));
-                        response.unsupported = request.computer_id.is_some();
+                        let mut response = page(0, usize::from(request.device_id.is_none()));
+                        response.unsupported = request.device_id.is_some();
                         Ok(response)
                     },
                     || false,
@@ -527,7 +527,7 @@ mod tests {
             &destination,
             |output| {
                 output.write_all(b"partial page").unwrap();
-                Err("Remote computer disconnected.".into())
+                Err("Remote device disconnected.".into())
             },
             || false,
         );
@@ -578,7 +578,7 @@ mod tests {
         let destination = directory.path().join("logs.jsonl");
         assert!(save_atomically(&destination, |output| {
             for index in 0..1001 {
-                write_json_line(output, &serde_json::json!({"id": index, "line": "échec\nsecond line", "sandboxId": "vm-id", "computerId": "host-id", "occurredAt": "2026-09-18T10:00:00Z"}))?;
+                write_json_line(output, &serde_json::json!({"id": index, "line": "échec\nsecond line", "computerId": "computer-id", "deviceId": "host-id", "occurredAt": "2026-09-18T10:00:00Z"}))?;
             }
             Ok(true)
         }, || false).unwrap());
@@ -587,6 +587,6 @@ mod tests {
         let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
         assert_eq!(last["id"], 1000);
         assert_eq!(last["line"], "échec\nsecond line");
-        assert_eq!(last["computerId"], "host-id");
+        assert_eq!(last["deviceId"], "host-id");
     }
 }

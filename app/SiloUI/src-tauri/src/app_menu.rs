@@ -14,7 +14,7 @@ pub(crate) struct MenuState {
     busy: bool,
     can_go_back: bool,
     can_go_forward: bool,
-    can_create_sandbox: bool,
+    can_create_computer: bool,
     can_import: bool,
     can_check_updates: bool,
     sidebar_collapsed: bool,
@@ -44,12 +44,12 @@ fn enabled(command: &str, state: &MenuState) -> bool {
         return false;
     }
     match command {
-        "new-sandbox" => state.can_create_sandbox,
-        "import-sandbox" => state.can_import,
+        "new-computer" => state.can_create_computer,
+        "import-computer" => state.can_import,
         "check-updates" => state.can_check_updates,
         "go-back" => state.can_go_back,
         "go-forward" => state.can_go_forward,
-        "settings" | "search" | "toggle-sidebar" | "go-sandboxes" | "go-github" | "go-secrets"
+        "settings" | "search" | "toggle-sidebar" | "go-computers" | "go-github" | "go-secrets"
         | "go-files" | "go-logs" | "go-network" | "go-activity" => true,
         _ => false,
     }
@@ -210,8 +210,8 @@ mod native {
             "File",
             true,
             &[
-                &item("new-sandbox", "New Sandbox…", Some("CmdOrCtrl+N"))?,
-                &item("import-sandbox", "Import Sandbox…", None)?,
+                &item("new-computer", "New Computer…", Some("CmdOrCtrl+N"))?,
+                &item("import-computer", "Import Computer…", None)?,
                 &Standard::separator(app)?,
                 #[cfg(target_os = "macos")]
                 &Standard::close_window(app, None)?,
@@ -261,7 +261,7 @@ mod native {
             "Go",
             true,
             &[
-                &item("go-sandboxes", "Sandboxes", Some("CmdOrCtrl+1"))?,
+                &item("go-computers", "Computers", Some("CmdOrCtrl+1"))?,
                 &item("go-files", "Files", Some("CmdOrCtrl+2"))?,
                 &item("go-logs", "Logs", Some("CmdOrCtrl+3"))?,
                 &item("go-network", "Network", Some("CmdOrCtrl+4"))?,
@@ -640,7 +640,7 @@ mod tests {
         let busy = MenuState {
             ready: true,
             busy: true,
-            can_create_sandbox: true,
+            can_create_computer: true,
             can_import: true,
             can_check_updates: true,
             can_go_back: true,
@@ -650,8 +650,8 @@ mod tests {
         for state in [unready, busy] {
             for command in [
                 "settings",
-                "new-sandbox",
-                "import-sandbox",
+                "new-computer",
+                "import-computer",
                 "check-updates",
                 "search",
                 "go-back",
@@ -669,14 +669,14 @@ mod tests {
             ready: true,
             ..Default::default()
         };
-        assert!(!enabled("new-sandbox", &state));
-        assert!(!enabled("import-sandbox", &state));
+        assert!(!enabled("new-computer", &state));
+        assert!(!enabled("import-computer", &state));
         assert!(!enabled("check-updates", &state));
         assert!(enabled("settings", &state));
-        assert!(enabled("go-sandboxes", &state));
+        assert!(enabled("go-computers", &state));
         state.can_import = true;
         state.can_go_back = true;
-        assert!(enabled("import-sandbox", &state));
+        assert!(enabled("import-computer", &state));
         assert!(enabled("go-back", &state));
         assert!(!enabled("go-forward", &state));
         assert!(!enabled("unknown-command", &state));

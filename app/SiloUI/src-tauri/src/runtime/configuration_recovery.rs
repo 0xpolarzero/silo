@@ -10,7 +10,7 @@ static LIVE_ATTEMPTS: std::sync::atomic::AtomicUsize = std::sync::atomic::Atomic
 /// Marks a configuration attempt as live for as long as it is held. A saved
 /// journal blocks snapshots only while an attempt is live (or before startup
 /// recovery has run), so an attempt that fails in-session no longer freezes
-/// the sandbox list until relaunch.
+/// the computer list until relaunch.
 #[must_use]
 pub(super) struct Attempt(());
 impl Drop for Attempt {
@@ -27,8 +27,8 @@ pub(super) fn attempt() -> Attempt {
 #[serde(deny_unknown_fields)]
 pub(super) struct Journal {
     version: u32,
-    pub(super) previous: MachineConfigurationRequest,
-    pub(super) request: MachineConfigurationRequest,
+    pub(super) previous: ComputerConfigurationRequest,
+    pub(super) request: ComputerConfigurationRequest,
 }
 
 fn path(paths: &RuntimePaths) -> PathBuf {
@@ -37,7 +37,7 @@ fn path(paths: &RuntimePaths) -> PathBuf {
         .with_file_name("configuration-operation.json")
 }
 fn failure(error: impl std::fmt::Display) -> RuntimeError {
-    RuntimeError::Unavailable(format!("Could not recover sandbox configuration: {error}"))
+    RuntimeError::Unavailable(format!("Could not recover computer configuration: {error}"))
 }
 pub(super) fn load(paths: &RuntimePaths) -> Result<Option<Journal>, RuntimeError> {
     let file = match File::open(path(paths)) {
@@ -50,27 +50,27 @@ pub(super) fn load(paths: &RuntimePaths) -> Result<Option<Journal>, RuntimeError
         return Err(failure("Unsupported saved operation; it was preserved."));
     }
     // First-run metadata is legitimately empty; submitted configurations are not.
-    if !journal.previous.machines.is_empty() || journal.previous.schema_version != 1 {
+    if !journal.previous.computers.is_empty() || journal.previous.schema_version != 1 {
         validate_request(&journal.previous)?;
     }
     validate_request(&journal.request)?;
     Ok(Some(journal))
 }
 
-/// Include VMs created before their metadata commit without replaying setup on Quit.
-pub(super) fn shutdown_machines(
+/// Include computers created before their metadata commit without replaying setup on Quit.
+pub(super) fn shutdown_computers(
     paths: &RuntimePaths,
-) -> Result<Vec<MachineConfiguration>, RuntimeError> {
+) -> Result<Vec<ComputerConfiguration>, RuntimeError> {
     let Some(journal) = load(paths)? else {
         return Ok(Vec::new());
     };
-    let mut machines = journal.previous.machines;
-    for machine in journal.request.machines {
-        if !machines.iter().any(|old| old.id() == machine.id()) {
-            machines.push(machine);
+    let mut computers = journal.previous.computers;
+    for configuration in journal.request.computers {
+        if !computers.iter().any(|old| old.id() == configuration.id()) {
+            computers.push(configuration);
         }
     }
-    Ok(machines)
+    Ok(computers)
 }
 
 /// The target configuration of an interrupted attempt, if one is pending. Used by the
@@ -78,13 +78,13 @@ pub(super) fn shutdown_machines(
 /// the whole list.
 pub(super) fn pending_request(
     paths: &RuntimePaths,
-) -> Result<Option<MachineConfigurationRequest>, RuntimeError> {
+) -> Result<Option<ComputerConfigurationRequest>, RuntimeError> {
     Ok(load(paths)?.map(|journal| journal.request))
 }
 
 pub(super) fn begin(
     paths: &RuntimePaths,
-    request: &MachineConfigurationRequest,
+    request: &ComputerConfigurationRequest,
 ) -> Result<(), RuntimeError> {
     if let Some(saved) = load(paths)? {
         if saved.request == *request {
@@ -116,10 +116,10 @@ fn write(paths: &RuntimePaths, journal: &Journal) -> Result<(), RuntimeError> {
 }
 
 // Reserve new storage before formatting. The marker permits cleanup only of
-// files created for this exact, not-yet-committed sandbox ID.
+// files created for this exact, not-yet-committed computer ID.
 pub(super) fn claim(
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
     use std::os::unix::fs::PermissionsExt;
     let Some(journal) = load(paths)? else {
@@ -127,18 +127,18 @@ pub(super) fn claim(
     };
     if journal
         .previous
-        .machines
+        .computers
         .iter()
-        .any(|old| old.id() == machine.id())
+        .any(|old| old.id() == configuration.id())
     {
         return Ok(());
     }
-    let folder = paths.volumes.join(machine.name());
+    let folder = paths.volumes.join(configuration.name());
     fs::create_dir_all(&paths.volumes).map_err(failure)?;
     if folder.exists() {
         // Reuse only an empty directory, including leftovers from older builds.
         fs::remove_dir(&folder).map_err(|_| {
-            failure("New sandbox storage is already occupied. No existing files were changed.")
+            failure("New computer storage is already occupied. No existing files were changed.")
         })?;
     }
     let stage = tempfile::Builder::new()
@@ -152,7 +152,7 @@ pub(super) fn claim(
         .open(stage.path().join(OWNER))
         .map_err(failure)?;
     marker
-        .write_all(machine.id().as_bytes())
+        .write_all(configuration.id().as_bytes())
         .and_then(|_| marker.sync_all())
         .map_err(failure)?;
     File::open(stage.path())
@@ -166,9 +166,9 @@ pub(super) fn claim(
 
 pub(super) fn finish(paths: &RuntimePaths) -> Result<(), RuntimeError> {
     if let Some(journal) = load(paths)? {
-        for machine in &journal.request.machines {
-            let marker = paths.volumes.join(machine.name()).join(OWNER);
-            if fs::read_to_string(&marker).ok().as_deref() == Some(machine.id()) {
+        for configuration in &journal.request.computers {
+            let marker = paths.volumes.join(configuration.name()).join(OWNER);
+            if fs::read_to_string(&marker).ok().as_deref() == Some(configuration.id()) {
                 fs::remove_file(&marker).map_err(failure)?;
                 File::open(marker.parent().unwrap())
                     .and_then(|file| file.sync_all())
@@ -261,7 +261,7 @@ pub(crate) fn command_lock(
         }
         if started.elapsed() >= timeout {
             return Err(failure(
-                "The previous sandbox command is still finishing. Retry after it exits.",
+                "The previous computer command is still finishing. Retry after it exits.",
             ));
         }
         thread::sleep(Duration::from_millis(100));
@@ -274,68 +274,79 @@ fn reconcile(
     journal: &Journal,
 ) -> Result<(), RuntimeError> {
     let mut current = read_metadata(&paths.metadata)?;
-    for machine in &current.machines {
-        if !journal.previous.machines.contains(machine)
-            && !journal.request.machines.contains(machine)
+    for configuration in &current.computers {
+        if !journal.previous.computers.contains(configuration)
+            && !journal.request.computers.contains(configuration)
         {
             return Err(failure(
-                "Sandbox settings changed since the interruption. Saved data was preserved.",
+                "Computer settings changed since the interruption. Saved data was preserved.",
             ));
         }
     }
     let listed = list_managed(runner, paths)?;
-    for machine in journal.request.machines.iter().filter(|machine| {
+    for configuration in journal.request.computers.iter().filter(|configuration| {
         !journal
             .previous
-            .machines
+            .computers
             .iter()
-            .any(|old| old.id() == machine.id())
+            .any(|old| old.id() == configuration.id())
     }) {
-        if listed.iter().any(|entry| entry.name == machine.name()) {
-            let inspected = inspect_workspace(runner, paths, machine.name())?;
+        if listed
+            .iter()
+            .any(|entry| entry.name == configuration.name())
+        {
+            let inspected = inspect_computer(runner, paths, configuration.name())?;
             ensure_managed(&inspected)?;
             if inspected
                 .config
                 .pointer("/labels/silo.machine-id")
                 .and_then(Value::as_str)
-                != Some(machine.id())
+                != Some(configuration.id())
             {
                 return Err(failure(
-                    "A different sandbox now owns the requested name. Its data was preserved.",
+                    "A different computer now owns the requested name. Its data was preserved.",
                 ));
             }
-            verify_machine_configuration(runner, paths, machine)?;
+            verify_computer_configuration(runner, paths, configuration)?;
             if !current
-                .machines
+                .computers
                 .iter()
-                .any(|entry| entry.id() == machine.id())
+                .any(|entry| entry.id() == configuration.id())
             {
-                verify_guest_tools(runner, paths, machine.name())?;
-                if let Some(desktop) = crate::desktop::configuration(machine) {
-                    crate::desktop::configure_with(runner, paths, machine.name(), None, desktop)?;
-                    let restored = inspect_workspace(runner, paths, machine.name())?;
+                verify_guest_tools(runner, paths, configuration.name())?;
+                if let Some(desktop) = crate::desktop::configuration(configuration) {
+                    crate::desktop::configure_with(
+                        runner,
+                        paths,
+                        configuration.name(),
+                        None,
+                        desktop,
+                    )?;
+                    let restored = inspect_computer(runner, paths, configuration.name())?;
                     ensure_managed(&restored)?;
                     if !matches!(restored.status.as_str(), "Created" | "Stopped") {
                         return Err(failure(
-                            "Desktop installation did not restore the new sandbox's stopped state.",
+                            "Desktop installation did not restore the new computer's stopped state.",
                         ));
                     }
                 }
-                current.machines.push(machine.clone());
+                current.computers.push(configuration.clone());
             }
         } else {
             if current
-                .machines
+                .computers
                 .iter()
-                .any(|entry| entry.id() == machine.id())
+                .any(|entry| entry.id() == configuration.id())
             {
                 return Err(failure(
-                    "A saved sandbox is missing from the runtime. Its disk files were preserved.",
+                    "A saved computer is missing from the runtime. Its disk files were preserved.",
                 ));
             }
-            let folder = paths.volumes.join(machine.name());
+            let folder = paths.volumes.join(configuration.name());
             if folder.exists() {
-                if fs::read_to_string(folder.join(OWNER)).ok().as_deref() != Some(machine.id()) {
+                if fs::read_to_string(folder.join(OWNER)).ok().as_deref()
+                    != Some(configuration.id())
+                {
                     if fs::remove_dir(&folder).is_ok() {
                         continue;
                     }
@@ -345,51 +356,61 @@ fn reconcile(
             }
         }
     }
-    for machine in journal.previous.machines.iter().filter(|machine| {
+    for configuration in journal.previous.computers.iter().filter(|configuration| {
         !journal
             .request
-            .machines
+            .computers
             .iter()
-            .any(|next| next.id() == machine.id())
+            .any(|next| next.id() == configuration.id())
     }) {
-        if !listed.iter().any(|entry| entry.name == machine.name()) {
-            crate::network::workspace_removed(paths, machine.name()).map_err(failure)?;
-            crate::secrets::workspace_removed(machine.name()).map_err(failure)?;
-            remove_machine_volumes(paths, machine)?;
-            lifecycle_recovery::forget_removed(paths, machine)?;
-            current.machines.retain(|entry| entry.id() != machine.id());
+        if !listed
+            .iter()
+            .any(|entry| entry.name == configuration.name())
+        {
+            crate::network::computer_removed(paths, configuration.name()).map_err(failure)?;
+            crate::secrets::computer_removed(configuration.name()).map_err(failure)?;
+            remove_computer_volumes(paths, configuration)?;
+            lifecycle_recovery::forget_removed(paths, configuration)?;
+            current
+                .computers
+                .retain(|entry| entry.id() != configuration.id());
         } else {
-            let inspected = inspect_workspace(runner, paths, machine.name())?;
+            let inspected = inspect_computer(runner, paths, configuration.name())?;
             if inspected
                 .config
                 .pointer("/labels/silo.machine-id")
                 .and_then(Value::as_str)
-                != Some(machine.id())
+                != Some(configuration.id())
             {
                 return Err(failure(
-                    "The sandbox selected for deletion changed ownership. It was preserved.",
+                    "The computer selected for deletion changed ownership. It was preserved.",
                 ));
             }
         }
     }
-    if !current.machines.is_empty() || paths.metadata.exists() {
+    if !current.computers.is_empty() || paths.metadata.exists() {
         write_metadata(&paths.metadata, &current)?;
     }
     // An interrupted removal keeps its checkpoint history until exact native members
     // have entered the cleanup journal. The updated inventory releases its own pins.
-    for machine in journal.previous.machines.iter().filter(|machine| {
+    for configuration in journal.previous.computers.iter().filter(|configuration| {
         !journal
             .request
-            .machines
+            .computers
             .iter()
-            .any(|next| next.id() == machine.id())
+            .any(|next| next.id() == configuration.id())
             && !current
-                .machines
+                .computers
                 .iter()
-                .any(|next| next.id() == machine.id())
+                .any(|next| next.id() == configuration.id())
     }) {
-        checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name())?;
-        checkpoints::forget_removed(paths, machine.id())?;
+        checkpoints::remove_deleted_snapshots(
+            runner,
+            paths,
+            configuration.id(),
+            configuration.name(),
+        )?;
+        checkpoints::forget_removed(paths, configuration.id())?;
     }
     Ok(())
 }
@@ -398,33 +419,33 @@ fn verify_committed_edits(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     journal: &Journal,
-    requested: &MachineConfigurationRequest,
+    requested: &ComputerConfigurationRequest,
 ) -> Result<(), RuntimeError> {
-    // Metadata is committed before the final verification. An existing VM whose
+    // Metadata is committed before the final verification. An existing computer whose
     // edit reached that checkpoint still needs verification after relaunch.
     let current = read_metadata(&paths.metadata)?;
-    for machine in journal.request.machines.iter().filter(|machine| {
+    for configuration in journal.request.computers.iter().filter(|configuration| {
         journal
             .previous
-            .machines
+            .computers
             .iter()
-            .any(|old| old.id() == machine.id() && old != *machine)
-            && current.machines.contains(machine)
-            && requested.machines.contains(machine)
+            .any(|old| old.id() == configuration.id() && old != *configuration)
+            && current.computers.contains(configuration)
+            && requested.computers.contains(configuration)
     }) {
-        let inspected = inspect_workspace(runner, paths, machine.name())?;
+        let inspected = inspect_computer(runner, paths, configuration.name())?;
         ensure_managed(&inspected)?;
         if inspected
             .config
             .pointer("/labels/silo.machine-id")
             .and_then(Value::as_str)
-            != Some(machine.id())
+            != Some(configuration.id())
         {
             return Err(failure(
-                "The updated sandbox changed ownership. Its data was preserved.",
+                "The updated computer changed ownership. Its data was preserved.",
             ));
         }
-        verify_machine_configuration(runner, paths, machine)?;
+        verify_computer_configuration(runner, paths, configuration)?;
     }
     Ok(())
 }
@@ -432,20 +453,20 @@ fn verify_committed_edits(
 pub(super) fn recover_at_paths(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    resources: &HostResources,
+    resources: &DeviceResources,
     progress: &dyn Fn(&str, &str, u8),
 ) -> Result<(), RuntimeError> {
     debug_assert!(
         operation_gate::held(),
-        "configuration recovery requires the computer operation gate"
+        "configuration recovery requires the device operation gate"
     );
     let Some(journal) = load(paths)? else {
         return Ok(());
     };
     // Drain a surviving child before inspecting state. The caller holds the
-    // operation gate (computer scope), which serializes the application-level
-    // recovery transaction against all other VM-changing work. This comes first: the
-    // normalization below asks the runtime which sandboxes already exist, and a creation
+    // operation gate (device scope), which serializes the application-level
+    // recovery transaction against all other computer-changing work. This comes first: the
+    // normalization below asks the runtime which computers already exist, and a creation
     // that is still running would make that answer wrong.
     drop(command_lock(paths, MUTATION_TIMEOUT)?);
     let journal = normalize_desktop_intent(runner, paths, journal)?;
@@ -466,10 +487,10 @@ pub(super) fn recover_at_paths(
 /// retry would, and re-save the intent atomically, so replay (which defaults the same way
 /// before `begin` compares with the journal) matches what is saved.
 ///
-/// The defaults describe a sandbox that is still to be created from the current image. A
-/// creation that got as far as the runtime before the interruption made its sandbox from
+/// The defaults describe a computer that is still to be created from the current image. A
+/// creation that got as far as the runtime before the interruption made its computer from
 /// the image of its time (a 0.x journal means the v3 image, with no built-in desktop and no
-/// computer-use mount), and recovery adopts that sandbox as it is: its journaled settings
+/// computer-use mount), and recovery adopts that computer as it is: its journaled settings
 /// are kept, so it is never promoted to built-in. The runtime is asked only when a default
 /// would change something.
 pub(super) fn normalize_desktop_intent(
@@ -477,11 +498,15 @@ pub(super) fn normalize_desktop_intent(
     paths: &RuntimePaths,
     mut journal: Journal,
 ) -> Result<Journal, RuntimeError> {
-    // Machines already committed count as existing: their desktop settings are kept.
+    // Computers already committed count as existing: their desktop settings are kept.
     let mut known = journal.previous.clone();
-    for machine in read_metadata(&paths.metadata)?.machines {
-        if !known.machines.iter().any(|old| old.id() == machine.id()) {
-            known.machines.push(machine);
+    for configuration in read_metadata(&paths.metadata)?.computers {
+        if !known
+            .computers
+            .iter()
+            .any(|old| old.id() == configuration.id())
+        {
+            known.computers.push(configuration);
         }
     }
     let mut request = journal.request.clone();
@@ -493,7 +518,7 @@ pub(super) fn normalize_desktop_intent(
         .into_iter()
         .map(|entry| entry.name)
         .collect();
-    for (defaulted, original) in request.machines.iter_mut().zip(&journal.request.machines) {
+    for (defaulted, original) in request.computers.iter_mut().zip(&journal.request.computers) {
         if defaulted != original && created.iter().any(|name| name == original.name()) {
             *defaulted = original.clone();
         }
@@ -508,7 +533,7 @@ pub(super) fn normalize_desktop_intent(
 pub(super) fn prepare_retry(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    request: Option<&MachineConfigurationRequest>,
+    request: Option<&ComputerConfigurationRequest>,
 ) -> Result<(), RuntimeError> {
     let _attempt = attempt();
     if let Some(journal) = load(paths)? {
@@ -518,18 +543,18 @@ pub(super) fn prepare_retry(
         if let Some(request) = request.filter(|request| **request != journal.request) {
             validate_request(request)?;
             let previous = read_metadata(&paths.metadata)?;
-            for machine in &request.machines {
+            for configuration in &request.computers {
                 if let Some(old) = previous
-                    .machines
+                    .computers
                     .iter()
-                    .find(|old| old.id() == machine.id())
+                    .find(|old| old.id() == configuration.id())
                 {
-                    validate_machine_update(old, machine)?;
+                    validate_computer_update(old, configuration)?;
                 }
             }
-            for machine in &previous.machines {
-                let marker = paths.volumes.join(machine.name()).join(OWNER);
-                if fs::read_to_string(&marker).ok().as_deref() == Some(machine.id()) {
+            for configuration in &previous.computers {
+                let marker = paths.volumes.join(configuration.name()).join(OWNER);
+                if fs::read_to_string(&marker).ok().as_deref() == Some(configuration.id()) {
                     fs::remove_file(&marker).map_err(failure)?;
                     File::open(marker.parent().unwrap())
                         .and_then(|file| file.sync_all())
@@ -538,7 +563,7 @@ pub(super) fn prepare_retry(
             }
             // Reconciliation has either adopted completed additions or removed
             // owned partial files. Atomically replace intent without losing the
-            // committed machines that the revised request may now edit/remove.
+            // committed computers that the revised request may now edit/remove.
             write(
                 paths,
                 &Journal {
@@ -586,19 +611,19 @@ fn recover_inner(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
     let _guard = OPERATIONS
-        .computer("Recovering sandbox configuration")
-        .map_err(|_| "Sandbox configuration lock is unavailable.")?;
+        .device("Recovering computer configuration")
+        .map_err(|_| "Computer configuration lock is unavailable.")?;
     let request_id = uuid::Uuid::new_v4().to_string();
     let activity = Mutex::new(ActivityJournal::start(&paths, &request_id)?);
     let progress = |step: &str, name: &str, fraction: u8| {
         let event = activity
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .append(machine_progress(&request_id, step, name, fraction));
-        let _ = app.emit_to("main", "silo://machine-configuration-progress", event);
+            .append(computer_progress(&request_id, step, name, fraction));
+        let _ = app.emit_to("main", "silo://computer-configuration-progress", event);
     };
     progress("setup-started", "", 0);
-    let result = host_resources()
+    let result = device_resources()
         .and_then(|resources| recover_at_paths(&ProcessRunner, &paths, &resources, &progress));
     progress(
         if result.is_ok() {
@@ -622,7 +647,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&directory);
-        let vm = MachineConfiguration {
+        let computer = ComputerConfiguration {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
             cpus: 1,
@@ -633,21 +658,21 @@ mod tests {
             runtime_storage_gib: 10,
             desktop: None,
         };
-        let previous = MachineConfigurationRequest {
+        let previous = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![vm],
+            computers: vec![computer],
         };
         write_metadata(&paths.metadata, &previous).unwrap();
-        let request = MachineConfigurationRequest {
+        let request = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![],
+            computers: vec![],
         };
         begin(&paths, &request).unwrap();
         let network = paths.metadata.with_file_name("network.json");
         fs::write(
             &network,
             json!({"mappings":[
-                {"workspace":"dev","port":3000,"hostPort":null,"scheme":"http","enabled":true}
+                {"computer":"dev","port":3000,"hostPort":null,"scheme":"http","enabled":true}
             ]})
             .to_string(),
         )
@@ -660,29 +685,29 @@ mod tests {
         ]);
         prepare_retry(&runner, &paths, None).unwrap();
         runner.assert_finished();
-        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
         let saved: Value = serde_json::from_slice(&fs::read(network).unwrap()).unwrap();
         assert!(saved["mappings"].as_array().unwrap().is_empty());
     }
 
     #[test]
-    fn claimed_workspace_directory_is_private() {
+    fn claimed_computer_directory_is_private() {
         let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&directory);
-        let machine = super::super::tests::vm();
-        let request = super::super::tests::request(vec![machine.clone()]);
+        let configuration = super::super::tests::computer();
+        let request = super::super::tests::request(vec![configuration.clone()]);
         begin(&paths, &request).unwrap();
-        claim(&paths, &machine).unwrap();
-        let folder = paths.volumes.join(machine.name());
+        claim(&paths, &configuration).unwrap();
+        let folder = paths.volumes.join(configuration.name());
         assert_eq!(
             fs::metadata(&folder).unwrap().permissions().mode() & 0o777,
             0o700
         );
         assert_eq!(
             fs::read_to_string(folder.join(OWNER)).unwrap(),
-            machine.id()
+            configuration.id()
         );
     }
 
@@ -809,10 +834,10 @@ mod tests {
             home: root.join("home"),
             storage_home: None,
             guest_image: root.join("image"),
-            metadata: root.join("machines.json"),
+            metadata: root.join("computers.json"),
             volumes: root.join("volumes"),
         };
-        let machine = MachineConfiguration {
+        let configuration = ComputerConfiguration {
             id: uuid::Uuid::new_v4().to_string(),
             name: "dev".into(),
             cpus: 1,
@@ -823,16 +848,16 @@ mod tests {
             runtime_storage_gib: 10,
             desktop: None,
         };
-        let request = MachineConfigurationRequest {
+        let request = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![machine.clone()],
+            computers: vec![configuration.clone()],
         };
         begin(&paths, &request).unwrap();
-        claim(&paths, &machine).unwrap();
+        claim(&paths, &configuration).unwrap();
         let inspected = json!({"name":"dev","status":"Stopped","config":{
             "image":{"Oci":{"root_disk":{"kind":"managed","size_mib":10240}}},
             "resources":{"cpus":1,"max_cpus":2,"memory_mib":4096,"max_memory_mib":8192},
-            "labels":{"silo.managed":"true","silo.machine-id":machine.id()},
+            "labels":{"silo.managed":"true","silo.machine-id":configuration.id()},
             "mounts":[{"type":"Owned","guest":"/workspace","storage":{"kind":"disk","capacity_mib":10240}}]
         }});
         let runner = InterruptedRuntime {
@@ -888,15 +913,15 @@ mod tests {
             home: root.join("home"),
             storage_home: None,
             guest_image: root.join("image"),
-            metadata: root.join("machines.json"),
+            metadata: root.join("computers.json"),
             volumes: root.join("volumes"),
         };
-        let current = MachineConfigurationRequest {
+        let current = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: Vec::new(),
+            computers: Vec::new(),
         };
         write_metadata(&paths.metadata, &current).unwrap();
-        let new = MachineConfiguration {
+        let new = ComputerConfiguration {
             id: uuid::Uuid::new_v4().to_string(),
             name: "dev".into(),
             cpus: 1,
@@ -907,21 +932,21 @@ mod tests {
             runtime_storage_gib: 10,
             desktop: None,
         };
-        let request = MachineConfigurationRequest {
+        let request = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![new],
+            computers: vec![new],
         };
         begin(&paths, &request).unwrap();
         assert!(blocks_snapshot(&paths, false).unwrap());
         assert!(!blocks_snapshot(&paths, true).unwrap());
         // The existing verifier still checks real runtime state, rather than
-        // presenting the pending requested VM as successfully created.
+        // presenting the pending requested computer as successfully created.
         let source = read_application_state_with(&EmptyRuntime, &paths).unwrap();
-        assert_eq!(source.workspaces.len(), 0);
+        assert_eq!(source.computers.len(), 0);
         assert_eq!(read_metadata(&paths.metadata).unwrap(), current);
         assert!(path(&paths).is_file());
         let mut revised = request;
-        revised.machines[0].memory_gib = 2;
+        revised.computers[0].memory_gib = 2;
         prepare_retry(&EmptyRuntime, &paths, Some(&revised)).unwrap();
         assert!(load(&paths)
             .unwrap()
@@ -933,7 +958,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&directory);
-        let new = MachineConfiguration {
+        let new = ComputerConfiguration {
             id: uuid::Uuid::new_v4().to_string(),
             name: "dev".into(),
             cpus: 1,
@@ -944,9 +969,9 @@ mod tests {
             runtime_storage_gib: 10,
             desktop: None,
         };
-        let request = MachineConfigurationRequest {
+        let request = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![new],
+            computers: vec![new],
         };
         let settled = STARTUP_SETTLED.swap(true, Ordering::SeqCst);
         let blocked_while_live = {
@@ -991,10 +1016,10 @@ mod tests {
             home: root.join("home"),
             storage_home: None,
             guest_image: root.join("image"),
-            metadata: root.join("machines.json"),
+            metadata: root.join("computers.json"),
             volumes: root.join("volumes"),
         };
-        let entry = |name: &str| MachineConfiguration {
+        let entry = |name: &str| ComputerConfiguration {
             id: uuid::Uuid::new_v4().to_string(),
             name: name.into(),
             cpus: 1,
@@ -1007,14 +1032,14 @@ mod tests {
         };
         let (a, b, c) = (entry("a"), entry("b"), entry("c"));
         // The interrupted attempt was adding "b" to an inventory that held "a".
-        let previous = MachineConfigurationRequest {
+        let previous = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![a.clone()],
+            computers: vec![a.clone()],
         };
         write_metadata(&paths.metadata, &previous).unwrap();
-        let request = MachineConfigurationRequest {
+        let request = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![a.clone(), b],
+            computers: vec![a.clone(), b],
         };
         begin(&paths, &request).unwrap();
         // The retry command reads exactly this recorded target to resume.
@@ -1023,9 +1048,9 @@ mod tests {
         // pre-attempt state and the recorded target, so resuming is rejected.
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![a, c],
+                computers: vec![a, c],
             },
         )
         .unwrap();

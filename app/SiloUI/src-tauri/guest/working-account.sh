@@ -1,5 +1,5 @@
 #!/bin/sh
-# Silo runs this as root after a boot when the VM has no silo account record.
+# Silo runs this as root after a boot when the computer has no silo account record.
 # Usage: sh -c "$(cat working-account.sh)" sh "$(cat working-account.py)" "$(cat desktop-service.py)"
 set -eu
 # Images from older Silo versions may lack these; Silo's own image has them.

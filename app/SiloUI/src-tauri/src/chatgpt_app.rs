@@ -1,10 +1,10 @@
-//! The pinned ChatGPT Linux app, kept once per computer for LCU.
+//! The pinned ChatGPT Linux app, kept once per device for LCU.
 //!
-//! Silo never publishes OpenAI files. Every computer that runs Silo downloads, by
+//! Silo never publishes OpenAI files. Every device that runs Silo downloads, by
 //! itself and in the background (see `auto`), the exact `.deb` pinned in `guest/chatgpt-app-lock.json` from OpenAI, verifies its
 //! size and SHA-256, extracts only `usr/lib/chatgpt` (never running maintainer
 //! scripts) into one immutable folder per version, and publishes it atomically.
-//! VMs later mount that folder read-only. See `docs/SiloUI-CHATGPT-APP.md`.
+//! Computers later mount that folder read-only. See `docs/SiloUI-CHATGPT-APP.md`.
 //!
 //! Layout under the channel's application data directory:
 //!
@@ -12,7 +12,7 @@
 //! chatgpt/.lock                      cross-process lock (flock)
 //! chatgpt/downloads/*.deb[.part]     resumable download, deleted after success
 //! chatgpt/.staging-*/                extraction in progress, never mounted
-//! chatgpt/published/                 mounted read-only into VMs; only verified trees
+//! chatgpt/published/                 mounted read-only into computers; only verified trees
 //! chatgpt/published/<version>-<debarch>/
 //!                                    published, immutable app tree
 //! chatgpt/<version>-<debarch>.published.json
@@ -20,7 +20,7 @@
 //! ```
 //!
 //! Records, staging, downloads stay outside `published/`: that folder
-//! is what every VM mounts, so it holds nothing but verified trees (which also keeps
+//! is what every computer mounts, so it holds nothing but verified trees (which also keeps
 //! MicroSandbox's first walk of the mount small).
 //!
 //! A folder is only "ready" when its publication record matches the lock and
@@ -72,7 +72,7 @@ const MAX_COMPONENT_BYTES: usize = 255;
 /// Total size of the PAX extended header records of one entry.
 const MAX_PAX_BYTES: usize = 64 * 1024;
 const RECORD_SUFFIX: &str = ".published.json";
-/// The folder VMs mount, directly under the storage root.
+/// The folder computers mount, directly under the storage root.
 const PUBLISHED_DIR: &str = "published";
 const RECORD_SCHEMA: u32 = 1;
 const MAX_RECORD_BYTES: u64 = 4096;
@@ -99,7 +99,7 @@ pub(crate) struct Asset {
     pub(crate) bytes: u64,
 }
 
-/// Debian architecture names, which equal the guest architecture on this computer.
+/// Debian architecture names, which equal the guest architecture on this device.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DebArch {
     Arm64,
@@ -112,7 +112,7 @@ impl DebArch {
             "aarch64" => Ok(Self::Arm64),
             "x86_64" => Ok(Self::Amd64),
             _ => Err(Error::fatal(
-                "The ChatGPT app is only available for 64-bit Intel and Arm computers.",
+                "The ChatGPT app is only available for 64-bit Intel and Arm devices.",
             )),
         }
     }
@@ -1726,7 +1726,7 @@ fn ensure_inner(
     ready(target)
 }
 
-/// `<root>/published`: the folder VMs mount.
+/// `<root>/published`: the folder computers mount.
 pub(crate) fn published_path(root: &Path) -> PathBuf {
     root.join(PUBLISHED_DIR)
 }
@@ -1777,7 +1777,7 @@ fn is_version_dir(name: &str) -> bool {
 }
 
 /// Creates the storage root and `published/` (empty is fine), migrates trees from
-/// the old layout and returns the canonical folder to mount into VMs.
+/// the old layout and returns the canonical folder to mount into computers.
 pub(crate) fn ensure_published_dir(root: &Path) -> Result<PathBuf, Error> {
     let failed = || Error::retry("Silo could not prepare its ChatGPT app folder.");
     Dir::open_root(root, true).map_err(|_| failed())?;
@@ -1828,7 +1828,7 @@ fn free_space_check(root: &Path, download_bytes: u64) -> Result<(), Error> {
     Ok(())
 }
 
-/// The status for a computer where no operation is running.
+/// The status for a device where no operation is running.
 pub(crate) fn current_status(root: &Path, lock: &Lock, arch: DebArch) -> Status {
     match verify_published(root, lock, arch) {
         Some(path) => Status::Ready {
@@ -1965,18 +1965,15 @@ pub(crate) fn cached_status() -> Option<Status> {
     CACHE.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
-/// The `chatgpt-app-status` payload: the status plus the `computer` it describes, `null`
-/// for this computer or the owning computer's host id. Listeners that predate the field
+/// The `chatgpt-app-status` payload: the status plus the `device` it describes, `null`
+/// for this device or the owning device's id. Listeners that predate the field
 /// ignore it.
-pub(crate) fn event_payload(
-    status: serde_json::Value,
-    computer: Option<&str>,
-) -> serde_json::Value {
+pub(crate) fn event_payload(status: serde_json::Value, device: Option<&str>) -> serde_json::Value {
     let mut payload = status;
     if let Some(object) = payload.as_object_mut() {
         object.insert(
-            "computer".into(),
-            computer.map_or(serde_json::Value::Null, Into::into),
+            "device".into(),
+            device.map_or(serde_json::Value::Null, Into::into),
         );
     }
     payload
@@ -2028,19 +2025,19 @@ pub(crate) fn refresh_status_blocking(app: &tauri::AppHandle) -> Status {
     status
 }
 
-/// Removes published versions other than the pinned one, unless a VM runs (a running
+/// Removes published versions other than the pinned one, unless a computer runs (a running
 /// guest may still use the previous version until it next syncs).
 ///
-/// The check and the removal happen under the computer-wide operation gate that every
-/// VM start, restore and resume also takes, so no VM can begin booting from a version
+/// The check and the removal happen under the device-wide operation gate that every
+/// Computer start, restore and resume also takes, so no computer can begin booting from a version
 /// between the inventory and the deletion. Collection is skipped, not queued, while
 /// any operation runs; the next start or prepare tries again.
 ///
 /// Collection never waits for the storage lock either: a download or extraction can hold
-/// it for minutes, and waiting while holding the computer-wide gate would stall every
+/// it for minutes, and waiting while holding the device-wide gate would stall every
 /// lifecycle operation and Quit behind it.
 ///
-/// A skipped collection (an operation or VM running, or the storage busy) stays
+/// A skipped collection (an operation or computer running, or the storage busy) stays
 /// pending and is retried every `COLLECTION_RETRY` until it ran.
 pub(crate) fn collect_unused(app: &tauri::AppHandle) {
     if COLLECTION.note(collect_unused_once(app)) {
@@ -2071,7 +2068,7 @@ fn collect_unused_once(app: &tauri::AppHandle) -> bool {
 const COLLECTION_RETRY: Duration = Duration::from_secs(120);
 static COLLECTION: Maintenance = Maintenance::new();
 
-/// Work that was skipped because the computer was busy and must run later.
+/// Work that was skipped because the device was busy and must run later.
 struct Maintenance {
     pending: AtomicBool,
     retrying: AtomicBool,
@@ -2119,7 +2116,7 @@ fn collect_unused_gated(
     arch: DebArch,
     none_running: impl FnOnce() -> bool,
 ) -> bool {
-    let Ok(_gate) = gate.try_computer_hidden("Removing unused ChatGPT app versions") else {
+    let Ok(_gate) = gate.try_device_hidden("Removing unused ChatGPT app versions") else {
         return false;
     };
     if !none_running() {
@@ -2139,7 +2136,7 @@ fn run_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
     let root = storage_root(app)?;
     let lock = Lock::bundled().map_err(|e| e.message)?;
     let arch = DebArch::host().map_err(|e| e.message)?;
-    // The folder VMs mount: prepared again here in case the start-up attempt failed.
+    // The folder computers mount: prepared again here in case the start-up attempt failed.
     // Preparation itself reports a real storage problem.
     let _ = crate::computer_use::register_published(&root);
     if PREPARING
@@ -2175,7 +2172,7 @@ fn run_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
 
 /// Makes sure the pinned app gets published, in the background and without blocking
 /// anything: starts the worker, or wakes it when it waits to retry. Returns whether a
-/// worker was started. Never needs the user: the app is downloaded on every computer
+/// worker was started. Never needs the user: the app is downloaded on every device
 /// that runs Silo.
 pub(crate) fn ensure_in_background(app: &tauri::AppHandle) -> bool {
     let Some(claim) = auto::WORKER.claim(&auto::RETRY) else {
@@ -2197,7 +2194,7 @@ pub(crate) fn ensure_in_background(app: &tauri::AppHandle) -> bool {
                     },
                     |delay| auto::RETRY.wait(delay),
                     || {
-                        // Running built-in VMs set computer use up now instead of at their next boot.
+                        // Running built-in computers set computer use up now instead of at their next boot.
                         crate::computer_use::app_ready(&ready_app);
                         collect_unused(&ready_app);
                     },
@@ -2229,7 +2226,7 @@ pub(crate) fn start_automatic(app: &tauri::AppHandle) {
     let status = refresh_status_blocking(app);
     collect_unused(app);
     if matches!(status, Status::Ready { .. }) {
-        // Nobody else syncs the running VMs now (the worker that does it when the app
+        // Nobody else syncs the running computers now (the worker that does it when the app
         // becomes ready has nothing to wait for): finish approval changes that were
         // saved but never launched before the last quit.
         crate::computer_use::reconcile(app);
@@ -2240,29 +2237,29 @@ pub(crate) fn start_automatic(app: &tauri::AppHandle) {
     ensure_in_background(app);
 }
 
-/// The remote computer a command addresses: `None` for this computer, else its host id.
-fn remote_host(computer: Option<&str>) -> Result<Option<String>, String> {
-    match computer {
+/// The remote device a command addresses: `None` for this device, else its device id.
+fn remote_device(device: Option<&str>) -> Result<Option<String>, String> {
+    match device {
         None | Some("") => Ok(None),
-        Some(host) if uuid::Uuid::parse_str(host).is_ok() => Ok(Some(host.to_owned())),
-        Some(_) => Err("Invalid computer.".into()),
+        Some(device) if uuid::Uuid::parse_str(device).is_ok() => Ok(Some(device.to_owned())),
+        Some(_) => Err("Invalid device.".into()),
     }
 }
 
-/// Calls the computer that owns the VM. An older Silo there does not serve these
+/// Calls the device that owns the computer. An older Silo there does not serve these
 /// methods: say so instead of the generic remote error.
 pub(crate) fn call_owner(
     app: &tauri::AppHandle,
-    host: &str,
+    device: &str,
     method: &str,
     params: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    crate::remote::call_remote_typed(app, host, method, params).map_err(owner_error)
+    crate::remote::call_remote_typed(app, device, method, params).map_err(owner_error)
 }
 
-const UPDATE_OWNER: &str = "Update Silo on that computer to use computer use.";
+const UPDATE_OWNER: &str = "Update Silo on that device to use computer use.";
 
-/// The message for a failed call to the owning computer.
+/// The message for a failed call to the owning device.
 fn owner_error(error: crate::bridge_error::BridgeError) -> String {
     if error.code == crate::bridge_error::ErrorCode::UnsupportedRemoteOperation {
         UPDATE_OWNER.to_owned()
@@ -2305,7 +2302,7 @@ fn owner_status(
     remote_status(status())
 }
 
-/// A remote computer's status as the UI shows it: one running a Silo without computer use
+/// A remote device's status as the UI shows it: one running a Silo without computer use
 /// has no status to report, which is `unknown`, not an error. Real failures (offline,
 /// disconnected) stay errors.
 fn remote_status(result: Result<serde_json::Value, String>) -> Result<serde_json::Value, String> {
@@ -2315,32 +2312,32 @@ fn remote_status(result: Result<serde_json::Value, String>) -> Result<serde_json
     }
 }
 
-/// The ChatGPT app status of this computer, or of the remote computer `computer` (its
-/// host id). A remote computer running a Silo without computer use answers `unknown`.
+/// The ChatGPT app status of this device, or of the remote device `device` (its
+/// device id). A remote device running a Silo without computer use answers `unknown`.
 #[tauri::command]
 pub(crate) async fn chatgpt_app_status(
     app: tauri::AppHandle,
-    computer: Option<String>,
+    device: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    blocking(move || match remote_host(computer.as_deref())? {
-        Some(host) => owner_status(
-            crate::remote::host_capabilities(&app, &host).map_err(owner_error),
-            || call_owner(&app, &host, "chatgpt.status", serde_json::json!({})),
+    blocking(move || match remote_device(device.as_deref())? {
+        Some(device) => owner_status(
+            crate::remote::device_capabilities(&app, &device).map_err(owner_error),
+            || call_owner(&app, &device, "chatgpt.status", serde_json::json!({})),
         ),
         None => to_value(local_status(&app)?),
     })
     .await
 }
 
-/// Asks a computer to try the download again now. It prepares its own copy; this only
+/// Asks a device to try the download again now. It prepares its own copy; this only
 /// wakes it. Resolves with its status at once, progress follows from the status reads.
 #[tauri::command]
 pub(crate) async fn chatgpt_app_retry(
     app: tauri::AppHandle,
-    computer: Option<String>,
+    device: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    blocking(move || match remote_host(computer.as_deref())? {
-        Some(host) => call_owner(&app, &host, "chatgpt.retry", serde_json::json!({})),
+    blocking(move || match remote_device(device.as_deref())? {
+        Some(device) => call_owner(&app, &device, "chatgpt.retry", serde_json::json!({})),
         None => to_value(retry_now(&app)?),
     })
     .await

@@ -1,4 +1,4 @@
-//! What creating a sandbox waits for before it takes the computer-wide operation gate:
+//! What creating a computer waits for before it takes the device-wide operation gate:
 //! the VM image import and the ChatGPT for Linux download, both of which run in the
 //! background. Waiting here, not under the gate, keeps lifecycle operations and Quit
 //! from queueing behind a download that can take minutes.
@@ -14,15 +14,15 @@ const POLL: Duration = Duration::from_millis(250);
 /// What a creation needs before it can finish everything.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Needs {
-    /// Ids of the new VMs.
-    pub(crate) machines: Vec<String>,
-    /// Ids of the new VMs that get built-in computer use, so need the ChatGPT app.
+    /// Ids of the new computers.
+    pub(crate) computers: Vec<String>,
+    /// Ids of the new computers that get built-in computer use, so need the ChatGPT app.
     pub(crate) computer_use: Vec<String>,
 }
 
 impl Needs {
     pub(crate) fn is_empty(&self) -> bool {
-        self.machines.is_empty()
+        self.computers.is_empty()
     }
 }
 
@@ -77,7 +77,7 @@ pub(crate) trait Inputs: Send + Sync {
     fn skipped(&self) -> bool;
 }
 
-/// What the wait decided about computer use for the new VMs.
+/// What the wait decided about computer use for the new computers.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Outcome {
     Ready,
@@ -85,7 +85,8 @@ pub(crate) enum Outcome {
     WithoutComputerUse,
 }
 
-const QUITTING: &str = "Silo is quitting and stopping its local VMs. Wait for shutdown to finish.";
+const QUITTING: &str =
+    "Silo is quitting and stopping its local computers. Wait for shutdown to finish.";
 
 /// Waits for the image, then the ChatGPT app. Holds no operation gate and checks
 /// `quitting` at every poll, so Quit ends it within a poll interval.
@@ -172,16 +173,16 @@ pub(crate) fn skip(request_id: &str) {
     });
 }
 
-/// Records that these new VMs finish creation without the computer-use setup.
-pub(crate) fn exclude_computer_use(machine_ids: &[String]) {
+/// Records that these new computers finish creation without the computer-use setup.
+pub(crate) fn exclude_computer_use(computer_ids: &[String]) {
     with_set(&WITHOUT_COMPUTER_USE, |set| {
-        set.extend(machine_ids.iter().cloned());
+        set.extend(computer_ids.iter().cloned());
     });
 }
 
-/// Whether creation of `machine_id` skips the computer-use setup; consumed by the creation.
-pub(crate) fn take_without_computer_use(machine_id: &str) -> bool {
-    with_set(&WITHOUT_COMPUTER_USE, |set| set.remove(machine_id))
+/// Whether creation of `computer_id` skips the computer-use setup; consumed by the creation.
+pub(crate) fn take_without_computer_use(computer_id: &str) -> bool {
+    with_set(&WITHOUT_COMPUTER_USE, |set| set.remove(computer_id))
 }
 
 struct Live {
@@ -222,7 +223,7 @@ impl Inputs for Live {
 }
 
 /// Waits for everything `needs` before the creation takes its operation gate. When the user
-/// finishes without computer use, the new VMs are recorded so their creation skips it.
+/// finishes without computer use, the new computers are recorded so their creation skips it.
 pub(crate) fn wait_before_gate(
     app: &tauri::AppHandle,
     paths: &RuntimePaths,
@@ -310,7 +311,7 @@ mod tests {
 
     fn needs() -> Needs {
         Needs {
-            machines: vec!["a".into()],
+            computers: vec!["a".into()],
             computer_use: vec!["a".into()],
         }
     }
@@ -358,7 +359,7 @@ mod tests {
         let fake = Fake::new(0, vec![ChatGpt::Pending]);
         let inputs: Arc<dyn Inputs> = fake.clone();
         let needs = Needs {
-            machines: vec!["a".into()],
+            computers: vec!["a".into()],
             computer_use: Vec::new(),
         };
         assert_eq!(wait_polling(&inputs, &needs, FAST), Ok(Outcome::Ready));
@@ -429,8 +430,8 @@ mod tests {
 
     #[test]
     fn exclusion_is_consumed_once() {
-        exclude_computer_use(&["unit-test-machine".into()]);
-        assert!(take_without_computer_use("unit-test-machine"));
-        assert!(!take_without_computer_use("unit-test-machine"));
+        exclude_computer_use(&["unit-test-computer".into()]);
+        assert!(take_without_computer_use("unit-test-computer"));
+        assert!(!take_without_computer_use("unit-test-computer"));
     }
 }

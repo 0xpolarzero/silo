@@ -7,8 +7,8 @@ use std::os::unix::fs::MetadataExt;
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Query {
-    pub sandbox_id: String,
-    pub computer_id: Option<String>,
+    pub computer_id: String,
+    pub device_id: Option<String>,
     pub query: Option<String>,
     pub source: Option<String>,
     pub since: Option<String>,
@@ -27,10 +27,10 @@ pub(crate) struct Entry {
     pub id: String,
     pub line: String,
     pub occurred_at: String,
-    pub sandbox_id: String,
-    pub sandbox_name: String,
     pub computer_id: String,
     pub computer_name: String,
+    pub device_id: String,
+    pub device_name: String,
     pub source: String,
     pub session: Option<String>,
     /// The timestamp was parsed from console text the guest wrote, so the guest chose it.
@@ -46,7 +46,7 @@ pub(crate) struct Page {
     pub newest_available_timestamp: Option<String>,
     pub total_matches: usize,
     pub timestamp_estimated: bool,
-    /// The owning computer runs a Silo that cannot serve logs. Older hosts never send this.
+    /// The owning device runs a Silo that cannot serve logs. Older hosts never send this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unsupported: bool,
     /// Some records were malformed or over the size limit and are shown as placeholders
@@ -165,7 +165,7 @@ fn boot_record(raw: &str) -> Result<(String, String), String> {
 }
 
 /// Longest record read as written. Longer records are truncated or replaced by a
-/// placeholder instead of failing every query for the sandbox.
+/// placeholder instead of failing every query for the computer.
 const RECORD_LIMIT: u64 = 1024 * 1024;
 /// Text kept from a console record over the limit.
 const TRUNCATED_TEXT: usize = 64 * 1024;
@@ -379,9 +379,9 @@ fn cached_page(
     token: &str,
     binding: &str,
     request: &Query,
-    sandbox_name: &str,
-    computer_id: &str,
     computer_name: &str,
+    device_id: &str,
+    device_name: &str,
 ) -> Result<Page, String> {
     let (id, index) = token.split_once(':').ok_or("Invalid log cursor.")?;
     let start: usize = index.parse().map_err(|_| "Invalid log cursor.")?;
@@ -446,10 +446,10 @@ fn cached_page(
             id: location.id.clone(),
             line: runtime_activity::log_text_with_pem(&decoded.body, &mut in_pem),
             occurred_at: location.time.clone(),
-            sandbox_id: request.sandbox_id.clone(),
-            sandbox_name: sandbox_name.into(),
-            computer_id: computer_id.into(),
+            computer_id: request.computer_id.clone(),
             computer_name: computer_name.into(),
+            device_id: device_id.into(),
+            device_name: device_name.into(),
             source: decoded.source,
             session: decoded.session,
             guest_timestamp: decoded.guest_time,
@@ -584,11 +584,11 @@ pub(super) fn is_stopped(status: &str) -> bool {
     status.eq_ignore_ascii_case("stopped") || status.eq_ignore_ascii_case("created")
 }
 pub(crate) fn query(app: &AppHandle, request: Query) -> Result<Page, BridgeError> {
-    let (computer_id, computer_name) = crate::remote::log_identity()?;
+    let (device_id, device_name) = crate::remote::log_identity()?;
     if let Some(owner) = request
-        .computer_id
+        .device_id
         .as_deref()
-        .filter(|id| *id != computer_id && *id != "local")
+        .filter(|id| *id != device_id && *id != "local")
     {
         let outcome = crate::remote::call_remote_typed(
             app,
@@ -599,14 +599,14 @@ pub(crate) fn query(app: &AppHandle, request: Query) -> Result<Page, BridgeError
         return remote_page(outcome);
     }
     let paths = runtime_paths(app)?;
-    query_local(&paths, request, &computer_id, &computer_name).map_err(BridgeError::from)
+    query_local(&paths, request, &device_id, &device_name).map_err(BridgeError::from)
 }
-/// A computer running an older Silo rejects `runtime.logs` as an unknown request. That is
+/// A device running an older Silo rejects `runtime.logs` as an unknown request. That is
 /// an expected, structured outcome (an empty page marked unsupported), not a failure.
 fn remote_page(outcome: Result<Value, BridgeError>) -> Result<Page, BridgeError> {
     match outcome {
         Ok(value) => serde_json::from_value(value).map_err(|_| {
-            "The remote computer returned invalid logs. Update Silo on both computers.".into()
+            "The remote device returned invalid logs. Update Silo on both devices.".into()
         }),
         Err(error) if error.code == ErrorCode::UnsupportedRemoteOperation => Ok(Page {
             entries: Vec::new(),
@@ -623,9 +623,9 @@ fn remote_page(outcome: Result<Value, BridgeError>) -> Result<Page, BridgeError>
     }
 }
 /// Retention truncates and unlinks segments, which is safe only while no runtime
-/// writer can start. Hold this VM's gate across the stopped check and the cleanup
+/// writer can start. Hold this computer's gate across the stopped check and the cleanup
 /// so a Start cannot be admitted in between. Reading logs observes only: when the
-/// VM is busy, skip the opportunistic cleanup rather than wait.
+/// Computer is busy, skip the opportunistic cleanup rather than wait.
 fn clean_up_if_stopped(
     gate: &operation_gate::OperationGate,
     id: &str,
@@ -633,7 +633,7 @@ fn clean_up_if_stopped(
     stopped: impl FnOnce() -> bool,
     enforce: impl FnOnce() -> std::io::Result<()>,
 ) -> Result<(), String> {
-    let Ok(_guard) = gate.try_vm_hidden(id, name, "Cleaning up expired logs") else {
+    let Ok(_guard) = gate.try_computer_hidden(id, name, "Cleaning up expired logs") else {
         return Ok(());
     };
     if stopped() {
@@ -644,30 +644,30 @@ fn clean_up_if_stopped(
 pub(super) fn query_local(
     paths: &RuntimePaths,
     request: Query,
-    computer_id: &str,
-    computer_name: &str,
+    device_id: &str,
+    device_name: &str,
 ) -> Result<Page, String> {
     let configuration = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
-    let machine = configuration
-        .machines
+    let configuration = configuration
+        .computers
         .iter()
-        .find(|machine| machine.id() == request.sandbox_id)
-        .ok_or("This sandbox no longer exists on this computer.")?;
-    validate_name(machine.name()).map_err(|e| e.to_string())?;
+        .find(|configuration| configuration.id() == request.computer_id)
+        .ok_or("This computer no longer exists on this device.")?;
+    validate_name(configuration.name()).map_err(|e| e.to_string())?;
     let directory = paths
         .home
         .join("sandboxes")
-        .join(machine.name())
+        .join(configuration.name())
         .join("logs");
     // Follow refreshes run every few seconds; opportunistic cleanup can wait for a search.
     if request.cursor.is_none() && request.follow.is_none() {
         clean_up_if_stopped(
             &OPERATIONS,
-            machine.id(),
-            machine.name(),
+            configuration.id(),
+            configuration.name(),
             || {
-                inspect_workspace(&ProcessRunner, paths, machine.name())
-                    .is_ok_and(|sandbox| is_stopped(&sandbox.status))
+                inspect_computer(&ProcessRunner, paths, configuration.name())
+                    .is_ok_and(|computer| is_stopped(&computer.status))
             },
             || crate::log_retention::enforce(&directory),
         )?;
@@ -675,13 +675,13 @@ pub(super) fn query_local(
     read(
         &directory,
         request,
-        machine.name(),
-        computer_id,
-        computer_name,
+        configuration.name(),
+        device_id,
+        device_name,
     )
 }
 #[tauri::command]
-pub(crate) async fn query_sandbox_logs(
+pub(crate) async fn query_computer_logs(
     app: AppHandle,
     request: Query,
 ) -> Result<Page, BridgeError> {
@@ -692,9 +692,9 @@ pub(crate) async fn query_sandbox_logs(
 fn read(
     directory: &Path,
     request: Query,
-    sandbox_name: &str,
-    computer_id: &str,
     computer_name: &str,
+    device_id: &str,
+    device_name: &str,
 ) -> Result<Page, String> {
     if request.query.as_ref().is_some_and(|q| q.len() > 4096) {
         return Err("Search text is too long.".into());
@@ -717,8 +717,8 @@ fn read(
         return Err("The log time range is reversed.".into());
     }
     let binding = serde_json::to_string(&(
-        &request.sandbox_id,
-        computer_id,
+        &request.computer_id,
+        device_id,
         &request.query,
         &request.source,
         &since,
@@ -732,9 +732,9 @@ fn read(
             cursor,
             &binding,
             &request,
-            sandbox_name,
-            computer_id,
             computer_name,
+            device_id,
+            device_name,
         );
     }
     let filter = Filter {
@@ -748,9 +748,9 @@ fn read(
             &available,
             around,
             &request,
-            sandbox_name,
-            computer_id,
             computer_name,
+            device_id,
+            device_name,
         );
     }
     // Follow continues its previous snapshot; anything unexpected rebuilds it.
@@ -807,9 +807,9 @@ fn read(
         &format!("{id}:0"),
         &binding,
         &request,
-        sandbox_name,
-        computer_id,
         computer_name,
+        device_id,
+        device_name,
     )
 }
 /// Search filters of one request.
@@ -1083,9 +1083,9 @@ fn context(
     available: &[(PathBuf, Segment)],
     around: &str,
     request: &Query,
-    sandbox_name: &str,
-    computer_id: &str,
     computer_name: &str,
+    device_id: &str,
+    device_name: &str,
 ) -> Result<Page, String> {
     let mut anchor = None;
     let mut redaction = Redaction::default();
@@ -1111,10 +1111,10 @@ fn context(
                 id,
                 line: decoded.body,
                 occurred_at: decoded.occurred_at,
-                sandbox_id: request.sandbox_id.clone(),
-                sandbox_name: sandbox_name.into(),
-                computer_id: computer_id.into(),
+                computer_id: request.computer_id.clone(),
                 computer_name: computer_name.into(),
+                device_id: device_id.into(),
+                device_name: device_name.into(),
                 source: decoded.source,
                 session: decoded.session,
                 guest_timestamp: decoded.guest_time,
@@ -1153,31 +1153,36 @@ fn context(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn retention_runs_only_while_holding_the_vm_gate() {
+    fn retention_runs_only_while_holding_the_computer_gate() {
         let gate = super::operation_gate::OperationGate::new();
         // Admission from another thread: this thread's own guard would be a nesting error.
         let start_admitted = || {
             std::thread::scope(|scope| {
                 scope
-                    .spawn(|| gate.try_vm("vm-1", "dev", "Starting dev").is_ok())
+                    .spawn(|| {
+                        gate.try_computer("computer-1", "dev", "Starting dev")
+                            .is_ok()
+                    })
                     .join()
                     .unwrap()
             })
         };
-        let busy = gate.try_vm("vm-1", "dev", "Starting dev").unwrap();
+        let busy = gate
+            .try_computer("computer-1", "dev", "Starting dev")
+            .unwrap();
         super::clean_up_if_stopped(
             &gate,
-            "vm-1",
+            "computer-1",
             "dev",
-            || panic!("a busy VM is not inspected"),
-            || panic!("a busy VM's logs are not cleaned"),
+            || panic!("a busy computer is not inspected"),
+            || panic!("a busy computer's logs are not cleaned"),
         )
         .unwrap();
         drop(busy);
         let mut cleaned = false;
         super::clean_up_if_stopped(
             &gate,
-            "vm-1",
+            "computer-1",
             "dev",
             || !start_admitted(),
             || {
@@ -1192,10 +1197,10 @@ mod tests {
         assert!(start_admitted(), "the gate is released after cleanup");
         super::clean_up_if_stopped(
             &gate,
-            "vm-1",
+            "computer-1",
             "dev",
             || false,
-            || panic!("a running VM's logs are not cleaned"),
+            || panic!("a running computer's logs are not cleaned"),
         )
         .unwrap();
     }
@@ -1224,13 +1229,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::write(
             directory.path().join("runtime.log"),
-            "2026-09-22T09:19:32.455Z entering VM\n",
+            "2026-09-22T09:19:32.455Z entering computer\n",
         )
         .unwrap();
         fs::write(
             directory.path().join("boot-error.json"),
             serde_json::to_string_pretty(&json!({
-                "t": "2026-09-22T09:19:32.467Z", "stage": "build_vm", "errno": null,
+                "t": "2026-09-22T09:19:32.467Z", "stage": "build_computer", "errno": null,
                 "message": "libkrunfw could not load: different Team IDs\nTOKEN=private-value",
             }))
             .unwrap(),
@@ -1248,7 +1253,7 @@ mod tests {
             page.entries[0].occurred_at,
             "2026-09-22T09:19:32.467000000Z"
         );
-        assert!(page.entries[0].line.contains("build_vm"));
+        assert!(page.entries[0].line.contains("build_computer"));
         assert!(!page.entries[0].line.contains("private-value"));
         assert!(!page.timestamp_estimated);
         let mut context = request();
@@ -1267,7 +1272,7 @@ mod tests {
         query.cursor = first.next_cursor;
         let second = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
         assert_eq!(second.entries.len(), 1);
-        assert!(second.entries[0].line.contains("entering VM"));
+        assert!(second.entries[0].line.contains("entering computer"));
     }
 
     #[test]
@@ -1275,12 +1280,12 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         fs::write(
             directory.path().join("runtime.log"),
-            "2026-09-22T09:19:30Z entering VM\n",
+            "2026-09-22T09:19:30Z entering computer\n",
         )
         .unwrap();
         let boot = |message| {
             serde_json::to_vec(
-                &json!({ "t": "2026-09-22T09:19:32Z", "stage": "build_vm", "message": message }),
+                &json!({ "t": "2026-09-22T09:19:32Z", "stage": "build_computer", "message": message }),
             )
             .unwrap()
         };
@@ -1311,7 +1316,7 @@ mod tests {
 
     fn request() -> Query {
         Query {
-            sandbox_id: "vm-1".into(),
+            computer_id: "computer-1".into(),
             ..Query::default()
         }
     }
@@ -1548,24 +1553,17 @@ mod tests {
         fs::write(directory.path().join("exec.log"), line(100_002, "latest")).unwrap();
         let mut query = request();
         query.query = Some("historic failure".into());
-        let page = read(directory.path(), query, "dev", "computer", "Desktop").unwrap();
+        let page = read(directory.path(), query, "dev", "device", "Desktop").unwrap();
         assert_eq!(page.total_matches, 1);
         assert_eq!(page.entries[0].line, "historic failure");
         assert_eq!(page.entries[0].session.as_deref(), Some("42"));
-        assert_eq!(page.entries[0].computer_name, "Desktop");
+        assert_eq!(page.entries[0].device_name, "Desktop");
         assert!(page.next_cursor.is_none());
         let started = Instant::now();
         let mut query = request();
         let mut count = 0;
         loop {
-            let page = read(
-                directory.path(),
-                query.clone(),
-                "dev",
-                "computer",
-                "Desktop",
-            )
-            .unwrap();
+            let page = read(directory.path(), query.clone(), "dev", "device", "Desktop").unwrap();
             count += page.entries.len();
             query.cursor = page.next_cursor;
             if query.cursor.is_none() {

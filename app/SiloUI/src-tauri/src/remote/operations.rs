@@ -1,9 +1,9 @@
-//! Owner-side record of changes requested by other computers.
+//! Owner-side record of changes requested by other devices.
 //!
 //! A controller names each change with an `operationId` that stays the same when it
 //! retries after losing the connection. Acceptance is recorded under a short lock; the
 //! change then waits for its turn in the operation gate like local work, so changes to
-//! different VMs run concurrently. A change that has not started before its deadline, or
+//! different computers run concurrently. A change that has not started before its deadline, or
 //! whose controller disconnected, never starts. A retry of a known change attaches to it
 //! and receives its result instead of running it again. Results stay in memory for an
 //! hour; a small marker per change on disk keeps a restart from replaying it.
@@ -30,13 +30,13 @@ const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 /// Allows older records containing full request and result frames.
 const MAX_MARKER_BYTES: u64 = 16 * 1024 * 1024;
 
-pub(super) const EXPIRED: &str = "This change did not start on the other computer before the request expired, so nothing changed. Try again.";
+pub(super) const EXPIRED: &str = "This change did not start on the other device before the request expired, so nothing changed. Try again.";
 pub(super) const REUSED: &str = "Remote request identity was reused for a different operation.";
-const UNCERTAIN: &str = "This operation was already accepted. Its result is uncertain; refresh the VM state before making another change.";
+const UNCERTAIN: &str = "This operation was already accepted. Its result is uncertain; refresh the computer state before making another change.";
 const ALREADY_FINISHED: &str =
-    "This change already finished on the other computer. Refresh to see its result.";
+    "This change already finished on the other device. Refresh to see its result.";
 const STILL_RUNNING: &str =
-    "This change is still running on the other computer. Refresh to see its result.";
+    "This change is still running on the other device. Refresh to see its result.";
 
 /// Whether something is still true right now, such as a connection being open.
 pub(super) type Probe = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -83,7 +83,7 @@ pub(super) struct Submission<'a> {
     pub start_within: Duration,
     /// True while this request's connection is open.
     pub connection: Probe,
-    /// True while this computer still accepts remote changes.
+    /// True while this device still accepts remote changes.
     pub allowed: Probe,
     /// How long a retry waits for a change that is already running.
     pub wait: Duration,
@@ -470,8 +470,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
 
-    // Registry tests own their admission state: a process-wide computer operation
-    // must not split the two-VM barrier or cancel an unrelated queued change.
+    // Registry tests own their admission state: a process-wide device operation
+    // must not split the two-computer barrier or cancel an unrelated queued change.
     fn gate() -> &'static OperationGate {
         Box::leak(Box::new(OperationGate::new()))
     }
@@ -497,11 +497,11 @@ mod tests {
             Self {
                 journal: tempfile::tempdir().unwrap(),
                 id: uuid::Uuid::new_v4().to_string(),
-                params: json!({"vmId": uuid::Uuid::new_v4().to_string()}),
+                params: json!({"computerId": uuid::Uuid::new_v4().to_string()}),
             }
         }
-        fn vm(&self) -> String {
-            self.params["vmId"].as_str().unwrap().to_owned()
+        fn computer(&self) -> String {
+            self.params["computerId"].as_str().unwrap().to_owned()
         }
         fn submission(&self, connection: Probe, allowed: Probe) -> Submission<'_> {
             Submission {
@@ -524,24 +524,24 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    fn waiting_for(gate: &OperationGate, vm: &str) -> bool {
+    fn waiting_for(gate: &OperationGate, computer: &str) -> bool {
         gate.snapshot()
             .waiting
             .iter()
-            .any(|entry| entry.vm_id.as_deref() == Some(vm))
+            .any(|entry| entry.computer_id.as_deref() == Some(computer))
     }
-    /// Runs like a remote change: takes the VM's gate on this thread, then works.
+    /// Runs like a remote change: takes the computer's gate on this thread, then works.
     fn change_on(
         gate: &'static OperationGate,
-        vm: String,
+        computer: String,
         runs: &'static AtomicUsize,
     ) -> impl FnOnce() -> Result<Value, BridgeError> {
         move || {
             let _guard = gate
-                .vm(&vm, "vm", "Remote change")
+                .computer(&computer, "computer", "Remote change")
                 .map_err(|e| e.to_string())?;
             runs.fetch_add(1, Ordering::SeqCst);
-            Ok(json!({"vm": vm}))
+            Ok(json!({"computer": computer}))
         }
     }
     fn counter() -> &'static AtomicUsize {
@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn changes_to_two_vms_run_concurrently() {
+    fn changes_to_two_computers_run_concurrently() {
         let gate = gate();
         let registry = registry();
         let (a, b) = (Fixture::new(), Fixture::new());
@@ -560,21 +560,21 @@ mod tests {
                 scope.spawn(move || {
                     registry.submit(fixture.submission(always(), always()), || {
                         let _guard = gate
-                            .vm(&fixture.vm(), "vm", "Remote change")
+                            .computer(&fixture.computer(), "computer", "Remote change")
                             .map_err(|e| e.to_string())?;
-                        // Both changes hold their VM's turn at once, or this never returns.
+                        // Both changes hold their computer's turn at once, or this never returns.
                         entered.wait();
-                        Ok(json!(fixture.vm()))
+                        Ok(json!(fixture.computer()))
                     })
                 })
             });
             runs.map(|run| run.join().unwrap())
         });
-        assert_eq!(result, [Ok(json!(a.vm())), Ok(json!(b.vm()))]);
+        assert_eq!(result, [Ok(json!(a.computer())), Ok(json!(b.computer()))]);
     }
 
     #[test]
-    fn changes_to_the_same_vm_run_in_turn() {
+    fn changes_to_the_same_computer_run_in_turn() {
         let gate = gate();
         let registry = registry();
         let first = Fixture::new();
@@ -582,13 +582,15 @@ mod tests {
         second.params = first.params.clone();
         let (release, hold) = std::sync::mpsc::channel::<()>();
         let order = Arc::new(Mutex::new(Vec::new()));
-        let vm = first.vm();
+        let computer = first.computer();
         thread::scope(|scope| {
-            let (first, second, vm) = (&first, &second, &vm);
+            let (first, second, computer) = (&first, &second, &computer);
             let order_first = order.clone();
             let running = scope.spawn(move || {
                 registry.submit(first.submission(always(), always()), move || {
-                    let _guard = gate.vm(vm, "vm", "First").map_err(|e| e.to_string())?;
+                    let _guard = gate
+                        .computer(computer, "computer", "First")
+                        .map_err(|e| e.to_string())?;
                     order_first.lock().unwrap().push("first started");
                     hold.recv().unwrap();
                     order_first.lock().unwrap().push("first finished");
@@ -599,12 +601,14 @@ mod tests {
             let order_second = order.clone();
             let queued = scope.spawn(move || {
                 registry.submit(second.submission(always(), always()), move || {
-                    let _guard = gate.vm(vm, "vm", "Second").map_err(|e| e.to_string())?;
+                    let _guard = gate
+                        .computer(computer, "computer", "Second")
+                        .map_err(|e| e.to_string())?;
                     order_second.lock().unwrap().push("second started");
                     Ok(Value::Null)
                 })
             });
-            wait_for(|| waiting_for(gate, vm));
+            wait_for(|| waiting_for(gate, computer));
             release.send(()).unwrap();
             running.join().unwrap().unwrap();
             queued.join().unwrap().unwrap();
@@ -632,7 +636,7 @@ mod tests {
 
         let result = registry.submit(
             fixture.submission(connection, allowed),
-            change_on(gate, fixture.vm(), runs),
+            change_on(gate, fixture.computer(), runs),
         );
 
         assert_eq!(result, Err(EXPIRED.into()));
@@ -675,7 +679,7 @@ mod tests {
         deadline.set(cutoff).unwrap();
         let runs = counter();
 
-        let result = registry.run(&submission, change_on(gate, fixture.vm(), runs));
+        let result = registry.run(&submission, change_on(gate, fixture.computer(), runs));
 
         assert_eq!(result, Err(EXPIRED.into()));
         assert_eq!(runs.load(Ordering::SeqCst), 0);
@@ -687,10 +691,12 @@ mod tests {
         let registry = registry();
         let fixture = Fixture::new();
         let busy = {
-            let vm = fixture.vm();
+            let computer = fixture.computer();
             let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
             let thread = thread::spawn(move || {
-                let guard = gate.vm(&vm, "vm", "Long local work").unwrap();
+                let guard = gate
+                    .computer(&computer, "computer", "Long local work")
+                    .unwrap();
                 held.0.send(()).unwrap();
                 release.1.recv().unwrap();
                 drop(guard);
@@ -701,9 +707,9 @@ mod tests {
         let runs = counter();
         let mut submission = fixture.submission(always(), always());
         submission.start_within = Duration::from_millis(300);
-        let result = registry.submit(submission, change_on(gate, fixture.vm(), runs));
+        let result = registry.submit(submission, change_on(gate, fixture.computer(), runs));
         assert_eq!(result, Err(EXPIRED.into()));
-        assert!(!waiting_for(gate, &fixture.vm()));
+        assert!(!waiting_for(gate, &fixture.computer()));
         busy.1.send(()).unwrap();
         busy.0.join().unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 0);
@@ -711,7 +717,7 @@ mod tests {
         assert_eq!(
             registry.submit(
                 fixture.submission(always(), always()),
-                change_on(gate, fixture.vm(), runs)
+                change_on(gate, fixture.computer(), runs)
             ),
             Err(EXPIRED.into())
         );
@@ -726,9 +732,11 @@ mod tests {
             let fixture = Fixture::new();
             let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
             let busy = {
-                let vm = fixture.vm();
+                let computer = fixture.computer();
                 thread::spawn(move || {
-                    let guard = gate.vm(&vm, "vm", "Long local work").unwrap();
+                    let guard = gate
+                        .computer(&computer, "computer", "Long local work")
+                        .unwrap();
                     held.0.send(()).unwrap();
                     release.1.recv().unwrap();
                     drop(guard);
@@ -743,10 +751,10 @@ mod tests {
                 let queued = scope.spawn(|| {
                     registry.submit(
                         fixture.submission(connection, allowed),
-                        change_on(gate, fixture.vm(), runs),
+                        change_on(gate, fixture.computer(), runs),
                     )
                 });
-                wait_for(|| waiting_for(gate, &fixture.vm()));
+                wait_for(|| waiting_for(gate, &fixture.computer()));
                 if revoke_access {
                     enabled.store(false, Ordering::SeqCst)
                 } else {
@@ -779,9 +787,11 @@ mod tests {
         let fixture = Fixture::new();
         let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
         let busy = {
-            let vm = fixture.vm();
+            let computer = fixture.computer();
             thread::spawn(move || {
-                let guard = gate.vm(&vm, "vm", "Long local work").unwrap();
+                let guard = gate
+                    .computer(&computer, "computer", "Long local work")
+                    .unwrap();
                 held.0.send(()).unwrap();
                 release.1.recv().unwrap();
                 drop(guard);
@@ -794,10 +804,10 @@ mod tests {
             let first = scope.spawn(|| {
                 registry.submit(
                     fixture.submission(first_connection, always()),
-                    change_on(gate, fixture.vm(), runs),
+                    change_on(gate, fixture.computer(), runs),
                 )
             });
-            wait_for(|| waiting_for(gate, &fixture.vm()));
+            wait_for(|| waiting_for(gate, &fixture.computer()));
             // The first connection is lost; the controller retries with the same identity.
             first_open.store(false, Ordering::SeqCst);
             let retry = scope.spawn(|| {
@@ -811,7 +821,7 @@ mod tests {
         });
         busy.join().unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 1);
-        assert_eq!(first, Ok(json!({"vm": fixture.vm()})));
+        assert_eq!(first, Ok(json!({"computer": fixture.computer()})));
         assert_eq!(retry, first);
         // A later retry is answered from the kept result.
         assert_eq!(
@@ -830,7 +840,7 @@ mod tests {
             .submit(fixture.submission(always(), always()), || Ok(json!(1)))
             .unwrap();
         let mut other = fixture.submission(always(), always());
-        let changed = json!({"vmId": "other"});
+        let changed = json!({"computerId": "other"});
         other.params = &changed;
         assert_eq!(
             registry.submit(other, || panic!("must not run")),

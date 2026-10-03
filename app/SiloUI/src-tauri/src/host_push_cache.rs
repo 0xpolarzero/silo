@@ -409,15 +409,15 @@ mod tests {
         }
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("cache");
-        let cache = acquire(&root, "computer/sandbox/repository").unwrap();
+        let cache = acquire(&root, "device/computer/repository").unwrap();
         fs::write(cache.directory.join("retained-object"), b"payload").unwrap();
-        assert!(acquire(&root, "computer/sandbox/repository")
+        assert!(acquire(&root, "device/computer/repository")
             .err()
             .unwrap()
             .contains("Another push of this repository"));
         let directory = cache.directory.clone();
         drop(cache);
-        let second = acquire(&root, "computer/sandbox/repository").unwrap();
+        let second = acquire(&root, "device/computer/repository").unwrap();
         assert_eq!(second.directory, directory);
         assert_eq!(
             fs::read(second.directory.join("retained-object")).unwrap(),
@@ -439,7 +439,7 @@ mod tests {
         let root = temporary.path().join("cache");
         let first = acquire_with_budget(&root, "first", 100).unwrap();
         fs::write(first.directory.join("objects"), [0; 60]).unwrap();
-        // Another sandbox's push does not wait for, or fail because of, the first one.
+        // Another computer's push does not wait for, or fail because of, the first one.
         let second = acquire_with_budget(&root, "second", 100).unwrap();
         fs::write(second.directory.join("objects"), [0; 60]).unwrap();
         let second_path = second.directory.clone();

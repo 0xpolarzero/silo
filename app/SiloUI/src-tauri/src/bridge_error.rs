@@ -30,7 +30,7 @@ impl BridgeError {
     pub fn updating() -> Self {
         Self::new(
             ErrorCode::UpdateInProgress,
-            "Sandbox configuration is being updated.",
+            "Computer configuration is being updated.",
         )
     }
 
@@ -41,7 +41,7 @@ impl BridgeError {
         )
     }
 
-    /// Compatibility is confined to the wire decoder for computers predating codes.
+    /// Compatibility is confined to the wire decoder for devices predating codes.
     /// Exact legacy values only: unrelated text must never change classification.
     pub fn from_remote_reply(reply: &serde_json::Value) -> Option<Self> {
         let legacy = reply.get("error")?.as_str()?;

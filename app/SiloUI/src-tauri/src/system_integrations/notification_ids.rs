@@ -84,7 +84,7 @@ mod tests {
         let first_server = server.clone();
         let first = std::thread::spawn(move || {
             first_ids
-                .deliver(":1.1", "sandbox", |replaces| {
+                .deliver(":1.1", "computer", |replaces| {
                     entered.send(()).unwrap();
                     wait_release.recv().unwrap();
                     Ok(first_server.lock().unwrap().notify(replaces))
@@ -99,7 +99,7 @@ mod tests {
         let second = std::thread::spawn(move || {
             started.send(()).unwrap();
             second_ids
-                .deliver(":1.1", "sandbox", |replaces| {
+                .deliver(":1.1", "computer", |replaces| {
                     let id = second_server.lock().unwrap().notify(replaces);
                     sent.send(()).unwrap();
                     Ok(id)
@@ -116,7 +116,7 @@ mod tests {
             1,
             "same key must replace"
         );
-        ids.clear(":1.1", &["sandbox".into()], |id| {
+        ids.clear(":1.1", &["computer".into()], |id| {
             server.lock().unwrap().active.remove(&id);
         });
         assert!(server.lock().unwrap().active.is_empty());
@@ -145,12 +145,16 @@ mod tests {
     fn replacing_after_restart_allocates_an_id_in_the_new_server() {
         let ids = NotificationIds::new();
         let mut old = Server::default();
-        ids.deliver(":1.1", "sandbox", |replaces| Ok(old.notify(replaces)))
+        ids.deliver(":1.1", "computer", |replaces| Ok(old.notify(replaces)))
             .unwrap();
         let mut restarted = Server::default();
         restarted.notify(0);
-        ids.deliver(":1.2", "sandbox", |replaces| Ok(restarted.notify(replaces)))
-            .unwrap();
+        ids.deliver(
+            ":1.2",
+            "computer",
+            |replaces| Ok(restarted.notify(replaces)),
+        )
+        .unwrap();
         assert_eq!(
             restarted.active.len(),
             2,
@@ -162,7 +166,7 @@ mod tests {
     fn clear_waits_for_an_in_flight_replacement_before_withdrawing_it() {
         let ids = Arc::new(NotificationIds::new());
         let server = Arc::new(Mutex::new(Server::default()));
-        ids.deliver(":1.1", "sandbox", |replaces| {
+        ids.deliver(":1.1", "computer", |replaces| {
             Ok(server.lock().unwrap().notify(replaces))
         })
         .unwrap();
@@ -172,7 +176,7 @@ mod tests {
         let delivery_server = server.clone();
         let delivery = std::thread::spawn(move || {
             delivery_ids
-                .deliver(":1.1", "sandbox", |replaces| {
+                .deliver(":1.1", "computer", |replaces| {
                     entered.send(()).unwrap();
                     wait_release.recv().unwrap();
                     Ok(delivery_server.lock().unwrap().notify(replaces))
@@ -186,7 +190,7 @@ mod tests {
         let clearing_server = server.clone();
         let clearing = std::thread::spawn(move || {
             started.send(()).unwrap();
-            clearing_ids.clear(":1.1", &["sandbox".into()], |id| {
+            clearing_ids.clear(":1.1", &["computer".into()], |id| {
                 clearing_server.lock().unwrap().active.remove(&id);
             });
             cleared.send(()).unwrap();

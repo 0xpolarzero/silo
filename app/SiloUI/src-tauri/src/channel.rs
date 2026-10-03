@@ -3,7 +3,7 @@
 //! Only two builds exist: PRODUCTION (`org.silo.preview`, "Silo", what users
 //! install) and DEVELOPMENT (`org.silo.dev`, "Silo Dev", what `npm run desktop`
 //! and the debug bundle produce). They never share state, so every host-visible
-//! name (home directory, keychain services, remote-management bridge, editor
+//! name (home directory, keychain services, remote bridge, editor
 //! profile, desktop entry, tray identity) is derived here from the bundle
 //! identifier. Production values are exactly the names released builds have
 //! always used; changing one would orphan existing users' data.
@@ -71,7 +71,7 @@ impl Channel {
     }
 
     /// `~/<this>`: Silo's private account directory (runtime aliases, editor
-    /// workspaces, remote-management state, desktop sockets).
+    /// computer files, connections state, desktop sockets).
     pub(crate) fn state_dir_name(self) -> &'static str {
         self.pick(".silo", ".silo-dev")
     }
@@ -89,12 +89,12 @@ impl Channel {
         }
     }
 
-    /// The link under `~/.local/bin` that SSH sessions of a controlling computer run.
+    /// The link under `~/.local/bin` that SSH sessions of a controlling device run.
     pub(crate) fn remote_bridge_name(self) -> &'static str {
         self.pick("silo-remote", "silo-remote-dev")
     }
 
-    /// The forced command of an installed remote-management key.
+    /// The forced command of an installed connections key.
     pub(crate) fn remote_bridge_command(self) -> String {
         format!(
             "exec ~/.local/bin/{} --remote-bridge",
@@ -106,7 +106,7 @@ impl Channel {
         self.pick("Silo remote management", "Silo Dev remote management")
     }
 
-    /// Prefix of the SSH host aliases for other computers' sandboxes.
+    /// Prefix of the SSH host aliases for other devices' computers.
     pub(crate) fn remote_alias_prefix(self) -> &'static str {
         self.pick("silo-remote", "silo-dev-remote")
     }

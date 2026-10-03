@@ -109,7 +109,7 @@ fn prune(jobs: &mut Journal, now: u64) {
     for (id, job) in jobs.iter() {
         let key = format!(
             "{}\0{}",
-            job.operation["workspace"], job.operation["repositoryPath"]
+            job.operation["computer"], job.operation["repositoryPath"]
         );
         if latest
             .get(&key)
@@ -128,13 +128,13 @@ fn prune(jobs: &mut Journal, now: u64) {
 fn claim(
     jobs: &mut Journal,
     id: &str,
-    workspace: &str,
+    computer: &str,
     path: &str,
     target: &PushTarget,
 ) -> Result<(Value, bool), String> {
     uuid::Uuid::parse_str(id).map_err(|_| "Invalid push operation identifier.")?;
     if let Some(job) = jobs.get(id) {
-        if job.operation["workspace"] != workspace || job.operation["repositoryPath"] != path {
+        if job.operation["computer"] != computer || job.operation["repositoryPath"] != path {
             return Err("Push operation identifier belongs to another repository.".into());
         }
         return Ok((operation(job), false));
@@ -145,7 +145,7 @@ fn claim(
                 job.operation["status"].as_str(),
                 Some("pushing" | "unknown")
             )
-            && job.operation["workspace"] == workspace
+            && job.operation["computer"] == computer
             && job.operation["repositoryPath"] == path
     }) {
         return Ok((operation(job), false));
@@ -154,7 +154,7 @@ fn claim(
     if jobs.len() >= MAX_JOBS {
         return Err("Saved push history reached its 10,000-operation safety limit. No new push was started. Contact Silo support to archive the history without replaying previous requests.".into());
     }
-    let value = json!({"operationId":id,"workspace":workspace,"repositoryPath":path,"status":"pushing","commitCount":0,"target":target});
+    let value = json!({"operationId":id,"computer":computer,"repositoryPath":path,"status":"pushing","commitCount":0,"target":target});
     jobs.insert(
         id.into(),
         Job {
@@ -188,7 +188,7 @@ fn persist_claim(
 }
 pub(crate) fn start(
     app: &AppHandle,
-    workspace: String,
+    computer: String,
     path: String,
     id: String,
     target: PushTarget,
@@ -199,11 +199,11 @@ pub(crate) fn start(
         .join("repository-push-operations.json");
     let _guard = LOCK.lock().map_err(|_| "Push state unavailable.")?;
     let mut jobs = read(&journal)?;
-    let (mut value, created) = claim(&mut jobs, &id, &workspace, &path, &target)?;
+    let (mut value, created) = claim(&mut jobs, &id, &computer, &path, &target)?;
     if !created {
         return Ok(value);
     }
-    let planned = host_push::planned_count(app, &workspace, &path);
+    let planned = host_push::planned_count(app, &computer, &path);
     value["commitCount"] = json!(planned);
     if let Some(job) = jobs.get_mut(&id) {
         job.operation["commitCount"] = json!(planned);
@@ -212,14 +212,10 @@ pub(crate) fn start(
     persist_claim(&journal, &jobs, &id, write)?;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let result = host_push::push_repository(
-            app.clone(),
-            workspace.clone(),
-            path.clone(),
-            target.clone(),
-        )
-        .await;
-        let mut value = result.unwrap_or_else(|message| json!({"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":message,"target":target}));
+        let result =
+            host_push::push_repository(app.clone(), computer.clone(), path.clone(), target.clone())
+                .await;
+        let mut value = result.unwrap_or_else(|message| json!({"computer":computer,"repositoryPath":path,"status":"failed","commitCount":0,"message":message,"target":target}));
         value["operationId"] = json!(id);
         // The std lock and fsync'd journal write block; keep them off the async workers.
         let _ =
@@ -260,7 +256,7 @@ fn record_completion_locked(
 }
 pub(crate) fn status(
     app: &AppHandle,
-    workspace: &str,
+    computer: &str,
     path: &str,
     id: &str,
 ) -> Result<Value, String> {
@@ -273,7 +269,7 @@ pub(crate) fn status(
     let Some(job) = jobs.get(id) else {
         return Ok(Value::Null);
     };
-    if job.operation["workspace"] != workspace || job.operation["repositoryPath"] != path {
+    if job.operation["computer"] != computer || job.operation["repositoryPath"] != path {
         return Err("Push operation identifier belongs to another repository.".into());
     }
     Ok(operation(job))
@@ -302,7 +298,7 @@ fn merge_journal(journal: &Path, legacy: Vec<Value>) -> Vec<Value> {
     for job in jobs.values() {
         let key = format!(
             "{}\0{}",
-            job.operation["workspace"], job.operation["repositoryPath"]
+            job.operation["computer"], job.operation["repositoryPath"]
         );
         if latest
             .get(&key)
@@ -314,7 +310,7 @@ fn merge_journal(journal: &Path, legacy: Vec<Value>) -> Vec<Value> {
     // Older clients still use the synchronous endpoint. Its active work must
     // remain visible even when this repository has an older durable result.
     for value in &legacy {
-        let key = format!("{}\0{}", value["workspace"], value["repositoryPath"]);
+        let key = format!("{}\0{}", value["computer"], value["repositoryPath"]);
         if value["status"] == "pushing"
             && latest
                 .get(&key)
@@ -328,7 +324,7 @@ fn merge_journal(journal: &Path, legacy: Vec<Value>) -> Vec<Value> {
         .filter(|value| {
             !latest.contains_key(&format!(
                 "{}\0{}",
-                value["workspace"], value["repositoryPath"]
+                value["computer"], value["repositoryPath"]
             ))
         })
         .collect();
@@ -344,14 +340,14 @@ fn merge_journal(journal: &Path, legacy: Vec<Value>) -> Vec<Value> {
     );
     values
 }
-pub(crate) fn dismiss(app: &AppHandle, workspace: &str, path: &str) -> Result<(), String> {
+pub(crate) fn dismiss(app: &AppHandle, computer: &str, path: &str) -> Result<(), String> {
     let _guard = LOCK.lock().map_err(|_| "Push state unavailable.")?;
     let journal = runtime::runtime_paths(app)?
         .home
         .join("repository-push-operations.json");
     let mut jobs = read(&journal)?;
     for job in jobs.values_mut().filter(|job| {
-        job.operation["workspace"] == workspace && job.operation["repositoryPath"] == path
+        job.operation["computer"] == computer && job.operation["repositoryPath"] == path
     }) {
         if operation(job)["status"] != "pushing" {
             job.dismissed = true;
@@ -363,17 +359,16 @@ pub(crate) fn dismiss(app: &AppHandle, workspace: &str, path: &str) -> Result<()
 // Return them as results so a caller can distinguish them from a lost SSH reply.
 pub(crate) fn start_result(
     app: &AppHandle,
-    workspace: String,
+    computer: String,
     path: String,
     id: String,
     target: PushTarget,
 ) -> Value {
-    start(app, workspace.clone(), path.clone(), id.clone(), target).unwrap_or_else(|message| json!({"operationId":id,"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":message}))
+    start(app, computer.clone(), path.clone(), id.clone(), target).unwrap_or_else(|message| json!({"operationId":id,"computer":computer,"repositoryPath":path,"status":"failed","commitCount":0,"message":message}))
 }
-const UPDATE_CONTROLLER: &str =
-    "Update Silo on the computer you are pushing from, then push again.";
+const UPDATE_CONTROLLER: &str = "Update Silo on the device you are pushing from, then push again.";
 /// A controller that sends no confirmed target predates bound pushes; this
-/// computer never pushes on its behalf.
+/// device never pushes on its behalf.
 fn remote_request(params: &Value) -> Result<(String, String, Option<PushTarget>), String> {
     let text = |key: &str| {
         params
@@ -393,41 +388,41 @@ fn remote_request(params: &Value) -> Result<(String, String, Option<PushTarget>)
 }
 pub(crate) fn start_remote(
     app: &AppHandle,
-    workspace: String,
+    computer: String,
     params: &Value,
 ) -> Result<Value, String> {
     let (path, id, target) = remote_request(params)?;
     Ok(match target {
-        Some(target) => start_result(app, workspace, path, id, target),
+        Some(target) => start_result(app, computer, path, id, target),
         None => {
-            json!({"operationId":id,"workspace":workspace,"repositoryPath":path,"status":"failed","commitCount":0,"message":UPDATE_CONTROLLER})
+            json!({"operationId":id,"computer":computer,"repositoryPath":path,"status":"failed","commitCount":0,"message":UPDATE_CONTROLLER})
         }
     })
 }
 #[tauri::command]
 pub async fn start_repository_push(
     app: AppHandle,
-    workspace: String,
+    computer: String,
     repository_path: String,
     operation_id: String,
     target: PushTarget,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         target.validate()?;
-        if let Some((host, vm)) = remote_access::target(&workspace)? {
+        if let Some((device, computer)) = remote_access::target(&computer)? {
             match remote::call_remote(
                 &app,
-                &host,
+                &device,
                 "repository.push.start",
-                json!({"vmId":vm,"path":repository_path,"operationId":operation_id,"target":target}),
+                json!({"computerId":computer,"path":repository_path,"operationId":operation_id,"target":target}),
             ) {
-                Err(message) if message == "This Silo version does not support that remote operation." => Ok(json!({"operationId":operation_id,"workspace":workspace,"repositoryPath":repository_path,"status":"failed","commitCount":0,"message":"Update Silo on the remote computer before pushing."})),
+                Err(message) if message == "This Silo version does not support that remote operation." => Ok(json!({"operationId":operation_id,"computer":computer,"repositoryPath":repository_path,"status":"failed","commitCount":0,"message":"Update Silo on the remote device before pushing."})),
                 result => result,
             }
         } else {
             Ok(start_result(
                 &app,
-                workspace,
+                computer,
                 repository_path,
                 operation_id,
                 target,
@@ -440,20 +435,20 @@ pub async fn start_repository_push(
 #[tauri::command]
 pub async fn repository_push_status(
     app: AppHandle,
-    workspace: String,
+    computer: String,
     repository_path: String,
     operation_id: String,
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if let Some((host, vm)) = remote_access::target(&workspace)? {
+        if let Some((device, computer)) = remote_access::target(&computer)? {
             remote::call_remote(
                 &app,
-                &host,
+                &device,
                 "repository.push.status",
-                json!({"vmId":vm,"path":repository_path,"operationId":operation_id}),
+                json!({"computerId":computer,"path":repository_path,"operationId":operation_id}),
             )
         } else {
-            status(&app, &workspace, &repository_path, &operation_id)
+            status(&app, &computer, &repository_path, &operation_id)
         }
     })
     .await
@@ -471,7 +466,7 @@ mod tests {
     }
     #[test]
     fn remote_requests_without_a_confirmed_target_never_push() {
-        let params = json!({"vmId":"vm","path":"/workspace/repo","operationId":"id"});
+        let params = json!({"computerId":"computer","path":"/workspace/repo","operationId":"id"});
         let (path, id, requested) = remote_request(&params).unwrap();
         assert_eq!((path.as_str(), id.as_str()), ("/workspace/repo", "id"));
         assert!(requested.is_none());
@@ -542,7 +537,7 @@ mod tests {
             session: "old".into(),
             updated,
             dismissed,
-            operation: json!({"workspace":"dev","repositoryPath":path,"status":status}),
+            operation: json!({"computer":"dev","repositoryPath":path,"status":status}),
         };
         jobs.insert(
             "old-dismissed".into(),
@@ -569,7 +564,7 @@ mod tests {
         let path = temporary.path().join("jobs.json");
         fs::write(&path, b"{not json").unwrap();
         let legacy = vec![
-            serde_json::json!({"workspace":"dev","repositoryPath":"/workspace/repo","status":"pushing"}),
+            serde_json::json!({"computer":"dev","repositoryPath":"/workspace/repo","status":"pushing"}),
         ];
         assert_eq!(merge_journal(&path, legacy.clone()), legacy);
     }

@@ -46,10 +46,10 @@ const MUTATION_TIMEOUT: Duration = Duration::from_secs(180);
 const STOP_TIMEOUT: Duration = Duration::from_secs(45);
 const MAX_OUTPUT_BYTES: u64 = 1024 * 1024;
 pub(crate) const WORKSPACE_MOUNT: &str = "/workspace";
-const MAX_MACHINE_COUNT: usize = 64;
+const MAX_COMPUTER_COUNT: usize = 64;
 const MANAGED_LABEL: &str = "silo.managed=true";
 
-/// Ordered admission for VM-changing operations on this computer. See `operation_gate`.
+/// Ordered admission for computer-changing operations on this device. See `operation_gate`.
 pub(crate) static OPERATIONS: operation_gate::OperationGate = operation_gate::OperationGate::new();
 
 #[tauri::command]
@@ -67,36 +67,36 @@ const DISABLED_GITHUB_PROFILE: &str = r#"{"version":1,"owners":[]}"#;
 static GITHUB_PROFILES: OnceLock<Mutex<HashMap<(PathBuf, String), String>>> = OnceLock::new();
 const GITHUB_UPDATE_REPLACED: &str = "A newer GitHub access choice has replaced this update.";
 
-/// Per-VM coordination of the GitHub profile and secret material a VM boots with.
+/// Per-computer coordination of the GitHub profile and secret material a computer boots with.
 #[derive(Default)]
-struct VmAccessState {
+struct ComputerAccessState {
     /// Highest accepted GitHub access revision. Held only to compare or record it
     /// (together with the cached profile), never while a runtime command runs.
     revision: Mutex<u64>,
     /// Excludes a boot (start, restart or exec's temporary boot) from a secret or
-    /// GitHub update of the same VM, so a VM never boots with material an update is
+    /// GitHub update of the same computer, so a computer never boots with material an update is
     /// replacing. Held across one runtime step and always acquired with a bound
-    /// (`lock_vm_runtime`); the operation gate already orders these steps, so it is
+    /// (`lock_computer_runtime`); the operation gate already orders these steps, so it is
     /// normally uncontended.
     runtime: Mutex<()>,
 }
-type VmAccessStates = HashMap<(PathBuf, String), Arc<VmAccessState>>;
-static VM_ACCESS_STATES: OnceLock<Mutex<VmAccessStates>> = OnceLock::new();
+type ComputerAccessStates = HashMap<(PathBuf, String), Arc<ComputerAccessState>>;
+static COMPUTER_ACCESS_STATES: OnceLock<Mutex<ComputerAccessStates>> = OnceLock::new();
 
-fn vm_access_state(home: &Path, workspace: &str) -> Result<Arc<VmAccessState>, String> {
-    Ok(VM_ACCESS_STATES
+fn computer_access_state(home: &Path, computer: &str) -> Result<Arc<ComputerAccessState>, String> {
+    Ok(COMPUTER_ACCESS_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|_| "GitHub runtime state is unavailable.")?
-        .entry((home.to_owned(), workspace.into()))
+        .entry((home.to_owned(), computer.into()))
         .or_default()
         .clone())
 }
 
-/// Wait at most `timeout` for exclusive runtime access to one VM's secret and GitHub
+/// Wait at most `timeout` for exclusive runtime access to one computer's secret and GitHub
 /// material. A cancel of the current operation ends the wait.
-fn lock_vm_runtime<'a>(
-    state: &'a VmAccessState,
+fn lock_computer_runtime<'a>(
+    state: &'a ComputerAccessState,
     timeout: Duration,
     operation: &str,
 ) -> Result<std::sync::MutexGuard<'a, ()>, RuntimeError> {
@@ -120,17 +120,17 @@ fn lock_vm_runtime<'a>(
     }
 }
 
-/// Forget cached GitHub state for a removed sandbox so a new sandbox reusing its
+/// Forget cached GitHub state for a removed computer so a new computer reusing its
 /// name never starts with the old one's access profile.
-fn forget_github_state(home: &Path, workspace: &str) {
-    let key = (home.to_owned(), workspace.to_owned());
+fn forget_github_state(home: &Path, computer: &str) {
+    let key = (home.to_owned(), computer.to_owned());
     if let Ok(mut profiles) = GITHUB_PROFILES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
     {
         profiles.remove(&key);
     }
-    if let Ok(mut states) = VM_ACCESS_STATES
+    if let Ok(mut states) = COMPUTER_ACCESS_STATES
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
     {
@@ -146,7 +146,7 @@ fn accept_github_revision(current: &mut u64, revision: u64) -> Result<(), String
     Ok(())
 }
 
-fn github_command_workspace(args: &[String]) -> Option<&str> {
+fn github_command_computer(args: &[String]) -> Option<&str> {
     match args.first().map(String::as_str) {
         Some("start" | "modify" | "restart") => args
             .get(1)
@@ -162,9 +162,9 @@ fn github_command_workspace(args: &[String]) -> Option<&str> {
 }
 
 pub(crate) fn github_environment(paths: &RuntimePaths, args: &[String]) -> String {
-    // Restore uses the profile keyed to the new target workspace. Historical
+    // Restore uses the profile keyed to the new target computer. Historical
     // checkpoint state never supplies host-side GitHub authority.
-    let Some(workspace) = github_command_workspace(args) else {
+    let Some(computer) = github_command_computer(args) else {
         return DISABLED_GITHUB_PROFILE.into();
     };
     let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
@@ -172,7 +172,7 @@ pub(crate) fn github_environment(paths: &RuntimePaths, args: &[String]) -> Strin
         return DISABLED_GITHUB_PROFILE.into();
     };
     profiles
-        .get(&(paths.home.clone(), workspace.into()))
+        .get(&(paths.home.clone(), computer.into()))
         .cloned()
         .unwrap_or_else(|| DISABLED_GITHUB_PROFILE.into())
 }
@@ -229,15 +229,15 @@ impl std::fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Admission(error) => write!(formatter, "{error}"),
-            Self::Busy => formatter.write_str("Another sandbox operation is still running."),
+            Self::Busy => formatter.write_str("Another computer operation is still running."),
             Self::Invalid(message)
             | Self::Unavailable(message)
             | Self::Malformed(message) => formatter.write_str(message),
-            Self::Launch(_) => formatter.write_str("Silo could not start the sandbox runtime. Retry; if it keeps happening, quit and reopen Silo."),
+            Self::Launch(_) => formatter.write_str("Silo could not start the computer runtime. Retry; if it keeps happening, quit and reopen Silo."),
             Self::TimedOut { operation } => {
                 write!(
                     formatter,
-                    "{operation} timed out. Check the sandbox state, then retry."
+                    "{operation} timed out. Check the computer state, then retry."
                 )
             }
             Self::Cancelled { operation } => {
@@ -252,7 +252,7 @@ impl std::fmt::Display for RuntimeError {
 }
 
 const PARTIAL_CHANGES_KEPT: &str =
-    "Completed changes were kept; reload the sandbox list before retrying.";
+    "Completed changes were kept; reload the computer list before retrying.";
 
 impl From<operation_gate::GateError> for RuntimeError {
     fn from(error: operation_gate::GateError) -> Self {
@@ -294,14 +294,14 @@ impl RuntimeRunner for ProcessRunner {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MachineConfigurationRequest {
+pub struct ComputerConfigurationRequest {
     pub(crate) schema_version: u8,
-    pub(crate) machines: Vec<MachineConfiguration>,
+    pub(crate) computers: Vec<ComputerConfiguration>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct MachineConfiguration {
+pub struct ComputerConfiguration {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) cpus: u8,
@@ -319,7 +319,7 @@ pub struct MachineConfiguration {
     pub(crate) desktop: Option<crate::desktop::DesktopConfiguration>,
 }
 
-impl MachineConfiguration {
+impl ComputerConfiguration {
     pub(crate) fn id(&self) -> &str {
         &self.id
     }
@@ -332,35 +332,35 @@ impl MachineConfiguration {
 /// Why a targeted configuration change could not be applied to the current inventory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ChangeRejection {
-    /// The targeted VM's current configuration differs from the one the caller expected.
+    /// The targeted computer's current configuration differs from the one the caller expected.
     Stale,
-    /// The VM the caller wanted to remove is no longer present.
+    /// The computer the caller wanted to remove is no longer present.
     Missing,
-    /// A replacement's identity does not match the targeted VM.
+    /// A replacement's identity does not match the targeted computer.
     WrongTarget,
 }
 
-/// Apply one targeted change to `machines` using optimistic concurrency: the machine
+/// Apply one targeted change to `computers` using optimistic concurrency: the computer
 /// identified by `id` must currently equal `expected` (both absent for a create), then
 /// it is replaced in place by `replacement`, or removed when `replacement` is `None`.
-/// Every other machine and the overall order are preserved. Shared by the local and
+/// Every other computer and the overall order are preserved. Shared by the local and
 /// remote change paths so both apply against fresh state instead of a stale snapshot.
-fn without_built_in(machine: &MachineConfiguration) -> MachineConfiguration {
-    let mut machine = machine.clone();
-    if let Some(desktop) = &mut machine.desktop {
+fn without_built_in(configuration: &ComputerConfiguration) -> ComputerConfiguration {
+    let mut configuration = configuration.clone();
+    if let Some(desktop) = &mut configuration.desktop {
         desktop.built_in = false;
     }
-    machine
+    configuration
 }
 
-pub(crate) fn change_machine(
-    machines: &mut Vec<MachineConfiguration>,
+pub(crate) fn change_computer(
+    computers: &mut Vec<ComputerConfiguration>,
     id: &str,
-    expected: Option<&MachineConfiguration>,
-    replacement: Option<&MachineConfiguration>,
+    expected: Option<&ComputerConfiguration>,
+    replacement: Option<&ComputerConfiguration>,
 ) -> Result<(), ChangeRejection> {
-    let position = machines.iter().position(|m| m.id() == id);
-    let current = position.map(|index| &machines[index]);
+    let position = computers.iter().position(|m| m.id() == id);
+    let current = position.map(|index| &computers[index]);
     // `desktop.builtIn` is the owner's decision: a controller from before it existed
     // never sees it, so it takes no part in the comparison.
     if current.map(without_built_in).as_ref() != expected.map(without_built_in).as_ref() {
@@ -373,48 +373,48 @@ pub(crate) fn change_machine(
         return Err(ChangeRejection::Missing);
     }
     match (position, replacement) {
-        (Some(index), Some(machine)) => {
+        (Some(index), Some(configuration)) => {
             // ...and the owner's value survives the replacement.
-            let mut machine = machine.clone();
+            let mut configuration = configuration.clone();
             if let (
-                MachineConfiguration {
+                ComputerConfiguration {
                     desktop: Some(next),
                     ..
                 },
                 Some(was),
             ) = (
-                &mut machine,
-                crate::desktop::configuration(&machines[index]),
+                &mut configuration,
+                crate::desktop::configuration(&computers[index]),
             ) {
                 next.built_in = was.built_in;
-                // A built-in desktop always starts with its VM: computer use needs the
+                // A built-in desktop always starts with its computer: computer use needs the
                 // session. A controller from before `builtIn` existed (the compatibility
-                // path) may still send `startWithSandbox: false`; only legacy VMs keep a
+                // path) may still send `startWithComputer: false`; only legacy computers keep a
                 // manual choice.
                 if was.built_in {
-                    next.start_with_sandbox = true;
+                    next.start_with_computer = true;
                 }
             }
-            machines[index] = machine;
+            computers[index] = configuration;
         }
         (Some(index), None) => {
-            machines.remove(index);
+            computers.remove(index);
         }
-        (None, Some(machine)) => machines.push(machine.clone()),
+        (None, Some(configuration)) => computers.push(configuration.clone()),
         (None, None) => {}
     }
     Ok(())
 }
 
-/// Reorder `machines` to match `order` (a permutation of the current identities), but
+/// Reorder `computers` to match `order` (a permutation of the current identities), but
 /// only when the current order still equals `expected_order`. Optimistic concurrency
 /// for the local reorder flow.
-pub(crate) fn reorder_machines(
-    machines: &mut [MachineConfiguration],
+pub(crate) fn reorder_computers(
+    computers: &mut [ComputerConfiguration],
     order: &[String],
     expected_order: &[String],
 ) -> Result<(), ChangeRejection> {
-    let current: Vec<&str> = machines.iter().map(MachineConfiguration::id).collect();
+    let current: Vec<&str> = computers.iter().map(ComputerConfiguration::id).collect();
     if current
         != expected_order
             .iter()
@@ -435,28 +435,28 @@ pub(crate) fn reorder_machines(
         .enumerate()
         .map(|(index, id)| (id.as_str(), index))
         .collect();
-    machines.sort_by_key(|machine| position[machine.id()]);
+    computers.sort_by_key(|configuration| position[configuration.id()]);
     Ok(())
 }
 
-/// One targeted change to the local VM inventory, sent by the UI with the configuration
+/// One targeted change to the local computer inventory, sent by the UI with the configuration
 /// it started editing from so a queued edit applies to fresh state or is rejected.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-pub enum MachineConfigurationChange {
-    /// Create or edit a single machine. `expected` is `None` for a create.
+pub enum ComputerConfigurationChange {
+    /// Create or edit a single computer. `expected` is `None` for a create.
     Upsert {
-        machine: MachineConfiguration,
+        configuration: ComputerConfiguration,
         #[serde(default)]
-        expected: Option<MachineConfiguration>,
+        expected: Option<ComputerConfiguration>,
     },
-    /// Remove a single machine that currently equals `expected`.
+    /// Remove a single computer that currently equals `expected`.
     Delete {
-        #[serde(rename = "vmId")]
-        vm_id: String,
-        expected: MachineConfiguration,
+        #[serde(rename = "computerId")]
+        computer_id: String,
+        expected: ComputerConfiguration,
     },
-    /// Reorder the whole inventory. `order`/`expectedOrder` are machine identities.
+    /// Reorder the whole inventory. `order`/`expectedOrder` are computer identities.
     Reorder {
         order: Vec<String>,
         #[serde(rename = "expectedOrder")]
@@ -467,75 +467,83 @@ pub enum MachineConfigurationChange {
     /// partial save. Nesting is rejected. Used for onboarding's initial set of creates
     /// and any multi-change submission, replacing the old whole-list save.
     Batch {
-        changes: Vec<MachineConfigurationChange>,
+        changes: Vec<ComputerConfigurationChange>,
     },
 }
 
-impl MachineConfigurationChange {
+impl ComputerConfigurationChange {
     fn label(&self) -> String {
         match self {
-            Self::Upsert { .. } => "Saving sandbox settings".into(),
+            Self::Upsert { .. } => "Saving computer settings".into(),
             Self::Delete { expected, .. } => format!("Deleting {}", expected.name()),
-            Self::Reorder { .. } => "Reordering sandboxes".into(),
-            Self::Batch { .. } => "Saving sandbox settings".into(),
+            Self::Reorder { .. } => "Reordering computers".into(),
+            Self::Batch { .. } => "Saving computer settings".into(),
         }
     }
 
-    /// Ids of the sandboxes this change removes.
+    /// Ids of the computers this change removes.
     fn deleted_ids(&self) -> Vec<String> {
         match self {
-            Self::Delete { vm_id, .. } => vec![vm_id.clone()],
+            Self::Delete { computer_id, .. } => vec![computer_id.clone()],
             Self::Batch { changes } => changes.iter().flat_map(Self::deleted_ids).collect(),
             _ => Vec::new(),
         }
     }
 
-    /// Notification title naming the sandbox this change is about, when there is one.
+    /// Notification title naming the computer this change is about, when there is one.
     fn failure_title(&self) -> String {
         match self {
-            Self::Upsert { machine, .. } => {
-                format!("Couldn\u{2019}t save changes to {}", machine.name())
+            Self::Upsert { configuration, .. } => {
+                format!("Couldn\u{2019}t save changes to {}", configuration.name())
             }
             Self::Delete { expected, .. } => format!("Couldn\u{2019}t delete {}", expected.name()),
             Self::Batch { changes } if changes.len() == 1 => changes[0].failure_title(),
-            _ => "Couldn\u{2019}t save sandbox settings".into(),
+            _ => "Couldn\u{2019}t save computer settings".into(),
         }
     }
 
-    fn apply(&self, machines: &mut Vec<MachineConfiguration>) -> Result<(), String> {
+    fn apply(&self, computers: &mut Vec<ComputerConfiguration>) -> Result<(), String> {
         if let Self::Batch { changes } = self {
             // Apply to a draft so a later rejection leaves the inventory untouched.
-            let mut draft = machines.clone();
+            let mut draft = computers.clone();
             for change in changes {
                 if matches!(change, Self::Batch { .. }) {
-                    return Err("Nested sandbox configuration batches are not supported.".into());
+                    return Err("Nested computer configuration batches are not supported.".into());
                 }
                 change.apply(&mut draft)?;
             }
-            *machines = draft;
+            *computers = draft;
             return Ok(());
         }
         let outcome = match self {
-            Self::Upsert { machine, expected } => {
-                change_machine(machines, machine.id(), expected.as_ref(), Some(machine))
-            }
-            Self::Delete { vm_id, expected } => {
-                change_machine(machines, vm_id, Some(expected), None)
-            }
+            Self::Upsert {
+                configuration,
+                expected,
+            } => change_computer(
+                computers,
+                configuration.id(),
+                expected.as_ref(),
+                Some(configuration),
+            ),
+            Self::Delete {
+                computer_id,
+                expected,
+            } => change_computer(computers, computer_id, Some(expected), None),
             Self::Reorder {
                 order,
                 expected_order,
-            } => reorder_machines(machines, order, expected_order),
+            } => reorder_computers(computers, order, expected_order),
             Self::Batch { .. } => unreachable!("batch handled above"),
         };
         outcome.map_err(|rejection| match (self, rejection) {
             (Self::Reorder { .. }, _) => {
-                "These sandboxes changed while your edit was waiting. Review them and try again."
+                "These computers changed while your edit was waiting. Review them and try again."
                     .to_string()
             }
-            (_, ChangeRejection::Missing) => "This VM no longer exists.".to_string(),
+            (_, ChangeRejection::Missing) => "This computer no longer exists.".to_string(),
             (_, ChangeRejection::Stale | ChangeRejection::WrongTarget) => {
-                "This VM changed while your edit was waiting. Review it and try again.".to_string()
+                "This computer changed while your edit was waiting. Review it and try again."
+                    .to_string()
             }
         })
     }
@@ -545,35 +553,35 @@ impl MachineConfigurationChange {
 #[serde(rename_all = "camelCase")]
 pub struct ApplicationSource {
     runtime_repair: Option<Value>,
-    workspaces: Vec<ApplicationWorkspace>,
+    computers: Vec<ApplicationComputer>,
     activities: Vec<Value>,
-    sandbox_configuration_operation: Option<Value>,
+    computer_configuration_operation: Option<Value>,
     repository_push_operations: Vec<Value>,
     github: Value,
     secrets: Vec<Value>,
-    /// This computer's limits for VM resource ceilings. Absent when the host could not
-    /// be measured (every VM change is then rejected by `validate_host_ceiling`).
+    /// This device's limits for computer resource ceilings. Absent when the host could not
+    /// be measured (every computer change is then rejected by `validate_device_ceiling`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    host_capacity: Option<HostCapacity>,
+    device_capacity: Option<DeviceCapacity>,
 }
 
-/// The host limits `validate_host_ceiling` enforces, so editors can clamp defaults and
+/// The host limits `validate_device_ceiling` enforces, so editors can clamp defaults and
 /// presets instead of offering ceilings Silo will reject.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct HostCapacity {
-    /// Logical CPUs; a VM's CPU ceiling may not exceed this.
+struct DeviceCapacity {
+    /// Logical CPUs; a computer's CPU ceiling may not exceed this.
     logical_cpus: usize,
     physical_memory_bytes: u64,
     /// The largest whole-GiB memory ceiling Silo accepts on this host.
     max_memory_gib: u64,
 }
 
-impl HostCapacity {
-    fn of(host: &HostResources) -> Option<Self> {
-        let physical_memory_bytes = host.physical_memory_bytes.filter(|bytes| *bytes > 0)?;
-        (host.logical_cpus > 0).then_some(Self {
-            logical_cpus: host.logical_cpus,
+impl DeviceCapacity {
+    fn of(device: &DeviceResources) -> Option<Self> {
+        let physical_memory_bytes = device.physical_memory_bytes.filter(|bytes| *bytes > 0)?;
+        (device.logical_cpus > 0).then_some(Self {
+            logical_cpus: device.logical_cpus,
             physical_memory_bytes,
             max_memory_gib: physical_memory_bytes / (1024 * 1024 * 1024),
         })
@@ -582,10 +590,10 @@ impl HostCapacity {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct ApplicationWorkspace {
-    machine: MachineConfiguration,
+struct ApplicationComputer {
+    configuration: ComputerConfiguration,
     purpose: String,
-    state: WorkspaceState,
+    state: ComputerState,
     state_detail: String,
     can_dismiss_error: bool,
     /// Serialized as `lifecycleFailure` (one line) and `lifecycleFailureDiagnostic`
@@ -593,11 +601,11 @@ struct ApplicationWorkspace {
     #[serde(flatten)]
     lifecycle_failure: Option<runtime_activity::LifecycleFailureView>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    attention: Option<WorkspaceAttention>,
+    attention: Option<ComputerAttention>,
     freshness: Freshness,
-    /// True when an operation on this VM overlapped the read. The runtime fields
+    /// True when an operation on this computer overlapped the read. The runtime fields
     /// (`state`, `stateDetail`, `attention`, `canDismissError`, `repositories`) are then
-    /// the last value read while the VM was idle (or this read's, when there is none);
+    /// the last value read while the computer was idle (or this read's, when there is none);
     /// Silo's own records (checkpoints, failures, secrets) stay current. Omitted when false.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     settling: bool,
@@ -621,7 +629,7 @@ struct ApplicationWorkspace {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum WorkspaceState {
+enum ComputerState {
     Running,
     Starting,
     Stopped,
@@ -629,7 +637,7 @@ enum WorkspaceState {
 }
 
 #[derive(Clone, Debug, Serialize)]
-struct WorkspaceAttention {
+struct ComputerAttention {
     level: AttentionLevel,
     message: String,
 }
@@ -645,7 +653,7 @@ enum AttentionLevel {
 #[serde(rename_all = "lowercase")]
 enum Freshness {
     Fresh,
-    /// This VM's own reading failed while nothing was changing it; the runtime fields
+    /// This computer's own reading failed while nothing was changing it; the runtime fields
     /// are its last known values and `attention` says why.
     Stale,
 }
@@ -704,7 +712,7 @@ impl From<RawInspectedSandbox> for InspectedSandbox {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct HostResources {
+struct DeviceResources {
     logical_cpus: usize,
     physical_memory_bytes: Option<u64>,
 }
@@ -720,9 +728,9 @@ pub(crate) fn runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
 }
 
 /// `None` while the storage migration holds the runtime back. For callers that only
-/// look for running sandboxes to report or stop (Quit, updates, health checks): no
+/// look for running computers to report or stop (Quit, updates, health checks): no
 /// runtime is in use then, so nothing runs, and the migration must not make Quit or an
-/// update fail. Anything that acts on a sandbox uses `runtime_paths` and is refused.
+/// update fail. Anything that acts on a computer uses `runtime_paths` and is refused.
 pub(crate) fn runtime_paths_if_in_use(app: &AppHandle) -> Result<Option<RuntimePaths>, String> {
     if crate::runtime_migration::blocks_operations(app) {
         return Ok(None);
@@ -795,7 +803,7 @@ fn paths_in_storage(
         home,
         storage_home: Some(storage_home),
         library,
-        metadata: storage.join("machines.json"),
+        metadata: storage.join("computers.json"),
         volumes: storage.join("volumes"),
     }
 }
@@ -941,7 +949,7 @@ pub(crate) fn prepare_runtime_home(
 
 struct SetupRunner<'a> {
     request_id: &'a str,
-    publish: &'a dyn Fn(MachineConfigurationProgress),
+    publish: &'a dyn Fn(ComputerConfigurationProgress),
 }
 
 impl RuntimeRunner for SetupRunner<'_> {
@@ -951,17 +959,17 @@ impl RuntimeRunner for SetupRunner<'_> {
         args: &[String],
         timeout: Duration,
     ) -> Result<CommandOutput, RuntimeError> {
-        let workspace = args
+        let computer = args
             .windows(2)
             .find(|pair| pair[0] == "--name")
             .map(|pair| pair[1].as_str())
             .unwrap_or("");
-        // The first sandbox on a computer imports the bundled image, one blocking runtime
+        // The first computer on a device imports the bundled image, one blocking runtime
         // call with no progress output of its own.
         if matches!(args, [first, second, ..] if first == "image" && second == "load") {
-            (self.publish)(machine_progress(
+            (self.publish)(computer_progress(
                 self.request_id,
-                "workspace-image-import",
+                "computer-image-import",
                 "",
                 0,
             ));
@@ -982,15 +990,15 @@ impl RuntimeRunner for SetupRunner<'_> {
                 "image-ready" => {
                     "VM image ready; preparing the system disk and runtime configuration…"
                 }
-                "runtime-waiting" => "Waiting for the runtime to finish preparing the VM…",
+                "runtime-waiting" => "Waiting for the runtime to finish preparing the computer…",
                 _ => return,
             };
-            let mut event = machine_progress(self.request_id, phase, workspace, 0);
+            let mut event = computer_progress(self.request_id, phase, computer, 0);
             event.fraction = None;
-            event.message = if workspace.is_empty() {
+            event.message = if computer.is_empty() {
                 message.into()
             } else {
-                format!("{workspace}: {message}")
+                format!("{computer}: {message}")
             };
             if phase == "image-resolved" {
                 *total.lock().unwrap() = value.get("totalBytes").and_then(Value::as_u64);
@@ -1024,16 +1032,16 @@ pub(crate) fn run_msb(
         Some("start" | "restart" | "exec")
     ) {
         if let Some(name) = args.get(1) {
-            if let Some(machine) = read_metadata(&paths.metadata)?
-                .machines
+            if let Some(configuration) = read_metadata(&paths.metadata)?
+                .computers
                 .into_iter()
-                .find(|machine| machine.name() == name)
+                .find(|configuration| configuration.name() == name)
             {
-                if checkpoints::needs_explicit_start(paths, machine.id())? {
+                if checkpoints::needs_explicit_start(paths, configuration.id())? {
                     return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(
                         paths,
-                        machine.id(),
-                        machine.name(),
+                        configuration.id(),
+                        configuration.name(),
                     )));
                 }
             }
@@ -1048,14 +1056,14 @@ fn run_msb_with_progress(
     timeout: Duration,
     report: &dyn Fn(Value),
 ) -> Result<CommandOutput, RuntimeError> {
-    if let Some(workspace) = args.get(1).filter(|workspace| {
-        validate_name(workspace).is_ok()
+    if let Some(computer) = args.get(1).filter(|computer| {
+        validate_name(computer).is_ok()
             && matches!(
                 args.first().map(String::as_str),
                 Some("start" | "restart" | "exec")
             )
     }) {
-        // `--no-start` never boots the VM, so it must not wait behind a live access
+        // `--no-start` never boots the computer, so it must not wait behind a live access
         // change (read paths such as repository discovery).
         if args[0] == "exec"
             && args
@@ -1065,42 +1073,43 @@ fn run_msb_with_progress(
         {
             return run_msb_process(paths, args, timeout, report);
         }
-        let access = vm_access_state(&paths.home, workspace).map_err(RuntimeError::Unavailable)?;
+        let access =
+            computer_access_state(&paths.home, computer).map_err(RuntimeError::Unavailable)?;
         let boot_wait = if args[0] == "exec" {
             MUTATION_TIMEOUT
         } else {
             timeout
         };
-        let guard = lock_vm_runtime(&access, boot_wait, &operation_name(args))?;
+        let guard = lock_computer_runtime(&access, boot_wait, &operation_name(args))?;
         if args[0] != "exec" {
             lifecycle_step(LifecycleStep::Boot);
             let result = run_msb_process(paths, args, timeout, report);
             drop(guard);
             if result.is_ok() {
                 lifecycle_step(LifecycleStep::Network);
-                crate::network::reconcile_started(paths, workspace);
+                crate::network::reconcile_started(paths, computer);
                 crate::ssh_access::reconcile(paths);
                 lifecycle_step(LifecycleStep::Account);
             }
-            return result.and_then(|output| prepare_booted(paths, workspace).map(|()| output));
+            return result.and_then(|output| prepare_booted(paths, computer).map(|()| output));
         }
         // Finish a possible boot under the same lock as live access changes,
         // then release it before running arbitrary, possibly long guest commands.
-        let state = inspect_workspace(&ProcessRunner, paths, workspace)?;
+        let state = inspect_computer(&ProcessRunner, paths, computer)?;
         let temporary_boot = matches!(state.status.as_str(), "Created" | "Stopped" | "Crashed");
         if temporary_boot {
             if let Err(error) = run_msb_process(
                 paths,
-                &["start".into(), workspace.clone()],
+                &["start".into(), computer.clone()],
                 MUTATION_TIMEOUT,
                 report,
             ) {
-                // A cancelled or failed start may already have booted the VM. The
-                // cleanup stop is not cancellable, so the VM is not left running.
+                // A cancelled or failed start may already have booted the computer. The
+                // cleanup stop is not cancellable, so the computer is not left running.
                 let _ = without_cancellation(|| {
                     run_msb_process(
                         paths,
-                        &["stop".into(), workspace.clone()],
+                        &["stop".into(), computer.clone()],
                         STOP_TIMEOUT,
                         &|_| {},
                     )
@@ -1112,11 +1121,11 @@ fn run_msb_with_progress(
         }
         drop(guard);
         if temporary_boot {
-            crate::network::reconcile_started(paths, workspace);
+            crate::network::reconcile_started(paths, computer);
             crate::ssh_access::reconcile(paths);
         }
         let result = if temporary_boot {
-            crate::working_account::prepare(&Booted, paths, workspace)
+            crate::working_account::prepare(&Booted, paths, computer)
         } else {
             Ok(())
         }
@@ -1125,10 +1134,11 @@ fn run_msb_with_progress(
             // Preserve msb exec's temporary-boot behavior even on guest failure. The
             // stop runs even if a concurrent access update keeps the lock busy.
             let stopped = without_cancellation(|| {
-                let _guard = lock_vm_runtime(&access, STOP_TIMEOUT, "Stopping the sandbox").ok();
+                let _guard =
+                    lock_computer_runtime(&access, STOP_TIMEOUT, "Stopping the computer").ok();
                 run_msb_process(
                     paths,
-                    &["stop".into(), workspace.clone()],
+                    &["stop".into(), computer.clone()],
                     STOP_TIMEOUT,
                     &|_| {},
                 )
@@ -1139,7 +1149,7 @@ fn run_msb_with_progress(
                 (Err(error), Ok(_)) => Err(error),
                 (Ok(_), Err(error)) => Err(error),
                 (Err(error), Err(cleanup)) => Err(RuntimeError::Unavailable(format!(
-                    "{error} Stopping the temporary sandbox also failed: {cleanup}"
+                    "{error} Stopping the temporary computer also failed: {cleanup}"
                 ))),
             };
         }
@@ -1152,7 +1162,7 @@ fn run_msb_with_progress(
     {
         crate::ssh_access::reconcile(paths);
     }
-    // A restore boots the restored VM under its new name.
+    // A restore boots the restored computer under its new name.
     let restored = args
         .windows(2)
         .find(|pair| args[0] == "restore" && pair[0] == "--name")
@@ -1163,7 +1173,7 @@ fn run_msb_with_progress(
     }
 }
 
-/// Runs the account setup of a VM being booted. Unlike `ProcessRunner`, it does not
+/// Runs the account setup of a computer being booted. Unlike `ProcessRunner`, it does not
 /// wait for a pending checkpoint's explicit Start: the boot is that Start.
 struct Booted;
 
@@ -1178,19 +1188,19 @@ impl RuntimeRunner for Booted {
     }
 }
 
-/// Make a VM Silo just booted ready for the silo account, or stop it again, so a running
-/// VM always has its account. The stop is not cancellable.
-fn prepare_booted(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeError> {
-    let prepared = crate::working_account::prepare(&Booted, paths, workspace);
+/// Make a computer Silo just booted ready for the silo account, or stop it again, so a running
+/// Computer always has its account. The stop is not cancellable.
+fn prepare_booted(paths: &RuntimePaths, computer: &str) -> Result<(), RuntimeError> {
+    let prepared = crate::working_account::prepare(&Booted, paths, computer);
     if prepared.is_err() {
         let _ = without_cancellation(|| {
-            let access = vm_access_state(&paths.home, workspace).ok();
+            let access = computer_access_state(&paths.home, computer).ok();
             let _guard = access.as_deref().and_then(|access| {
-                lock_vm_runtime(access, STOP_TIMEOUT, "Stopping the sandbox").ok()
+                lock_computer_runtime(access, STOP_TIMEOUT, "Stopping the computer").ok()
             });
             run_msb_process(
                 paths,
-                &["stop".into(), workspace.into()],
+                &["stop".into(), computer.into()],
                 STOP_TIMEOUT,
                 &|_| {},
             )
@@ -1198,7 +1208,7 @@ fn prepare_booted(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeEr
         crate::ssh_access::reconcile(paths);
     } else {
         // Built-in computer use installs itself in the background; it never fails a boot.
-        let _ = crate::computer_use::after_boot(std::sync::Arc::new(Booted), paths, workspace);
+        let _ = crate::computer_use::after_boot(std::sync::Arc::new(Booted), paths, computer);
     }
     prepared
 }
@@ -1206,11 +1216,11 @@ fn prepare_booted(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeEr
 /// Where a start is, reported while the operation gate is held so the UI can follow it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LifecycleStep {
-    /// The VM is booting.
+    /// The computer is booting.
     Boot,
-    /// The VM is up; published ports and SSH access are being connected.
+    /// The computer is up; published ports and SSH access are being connected.
     Network,
-    /// The VM's working account is being checked.
+    /// The computer's working account is being checked.
     Account,
 }
 
@@ -1272,29 +1282,29 @@ fn run_msb_process(
     report: &dyn Fn(Value),
 ) -> Result<CommandOutput, RuntimeError> {
     // Tear down client sessions before any runtime command can end or replace
-    // their VM. This also covers exec's temporary boot and stop cleanup path.
+    // their computer. This also covers exec's temporary boot and stop cleanup path.
     if args
         .first()
         .is_some_and(|command| matches!(command.as_str(), "stop" | "remove" | "restart"))
     {
-        if let Some(workspace) = args
+        if let Some(computer) = args
             .iter()
             .skip(1)
             .find(|argument| !argument.starts_with('-'))
         {
-            crate::ssh_access::close_workspace(workspace);
+            crate::ssh_access::close_computer(computer);
         }
     }
     ensure_runtime_files(paths)?;
     let mut secret_revision = None;
-    let general_secrets = if let Some(workspace) = github_command_workspace(args) {
+    let general_secrets = if let Some(computer) = github_command_computer(args) {
         secret_revision =
-            Some(crate::secrets::workspace_revision(workspace).map_err(RuntimeError::Unavailable)?);
+            Some(crate::secrets::computer_revision(computer).map_err(RuntimeError::Unavailable)?);
         let material =
-            crate::secrets::runtime_material(workspace).map_err(RuntimeError::Unavailable)?;
+            crate::secrets::runtime_material(computer).map_err(RuntimeError::Unavailable)?;
         secrets_runtime::validate_material(&material).map_err(RuntimeError::Invalid)?;
         if matches!(args[0].as_str(), "start" | "restart") {
-            secrets_runtime::apply(paths, workspace, &material, true).map_err(|attempt| {
+            secrets_runtime::apply(paths, computer, &material, true).map_err(|attempt| {
                 // A cancel during the boot-time secret application must surface as a
                 // cancellation, not an unavailable-runtime failure, so callers and the
                 // retry boundary treat it as the user's stop rather than a fault.
@@ -1321,19 +1331,19 @@ fn run_msb_process(
             report,
         },
     )?;
-    if let Some(workspace) =
-        github_command_workspace(args).filter(|_| matches!(args[0].as_str(), "start" | "restart"))
+    if let Some(computer) =
+        github_command_computer(args).filter(|_| matches!(args[0].as_str(), "start" | "restart"))
     {
-        record_start_refresh(paths, workspace, || {
-            let inspected = inspect_workspace(&ProcessRunner, paths, workspace)?;
+        record_start_refresh(paths, computer, || {
+            let inspected = inspect_computer(&ProcessRunner, paths, computer)?;
             if inspected.status == "Running" {
-                crate::secrets::workspace_started(
-                    workspace,
+                crate::secrets::computer_started(
+                    computer,
                     secret_revision.as_deref().unwrap_or_default(),
                 )
                 .map_err(|_| {
                     RuntimeError::Unavailable(
-                        "Silo could not record the sandbox's applied secret revision.".into(),
+                        "Silo could not record the computer's applied secret revision.".into(),
                     )
                 })?;
             }
@@ -1350,7 +1360,7 @@ static START_REFRESH_WARNINGS: OnceLock<Mutex<StartRefreshWarnings>> = OnceLock:
 
 fn record_start_refresh(
     paths: &RuntimePaths,
-    workspace: &str,
+    computer: &str,
     refresh: impl FnOnce() -> Result<(), RuntimeError>,
 ) {
     let result = refresh();
@@ -1358,25 +1368,25 @@ fn record_start_refresh(
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let key = (paths.home.clone(), workspace.to_owned());
+    let key = (paths.home.clone(), computer.to_owned());
     match result {
         Ok(()) => {
             warnings.remove(&key);
         }
         Err(error) => {
-            warnings.insert(key, format!("The sandbox started, but Silo could not refresh its state or secret status. {}", safe_activity_error(&error)));
+            warnings.insert(key, format!("The computer started, but Silo could not refresh its state or secret status. {}", safe_activity_error(&error)));
         }
     }
 }
 
-fn start_refresh_attention(paths: &RuntimePaths, workspace: &str) -> Option<WorkspaceAttention> {
+fn start_refresh_attention(paths: &RuntimePaths, computer: &str) -> Option<ComputerAttention> {
     START_REFRESH_WARNINGS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(&(paths.home.clone(), workspace.to_owned()))
+        .get(&(paths.home.clone(), computer.to_owned()))
         .cloned()
-        .map(|message| WorkspaceAttention {
+        .map(|message| ComputerAttention {
             level: AttentionLevel::Warning,
             message,
         })
@@ -1434,12 +1444,12 @@ fn secret_values_document(
             .is_some()
         {
             return Err(RuntimeError::Invalid(
-                "Sandbox secret source names conflict. Rename one secret and retry.".into(),
+                "Computer secret source names conflict. Rename one secret and retry.".into(),
             ));
         }
     }
     serde_json::to_vec(&Value::Object(values))
-        .map_err(|_| RuntimeError::Invalid("Silo could not prepare the sandbox's secrets.".into()))
+        .map_err(|_| RuntimeError::Invalid("Silo could not prepare the computer's secrets.".into()))
 }
 
 /// Commands that change runtime state hold the worker lock for the child's lifetime,
@@ -1477,7 +1487,7 @@ fn runtime_arguments(args: &[String]) -> Vec<String> {
 }
 
 thread_local! {
-    // Quit already owns the computer gate and a parent worker flock. Its scoped
+    // Quit already owns the device gate and a parent worker flock. Its scoped
     // workers may share that flock only for independent stop commands.
     static SHUTDOWN_WORKER_LOCK: std::cell::RefCell<Option<configuration_recovery::CommandLock>> = const { std::cell::RefCell::new(None) };
 }
@@ -1794,14 +1804,14 @@ fn read_capture(mut file: File) -> Result<String, RuntimeError> {
 
 fn operation_name(args: &[String]) -> String {
     match args.first().map(String::as_str) {
-        Some("create") => "Creating the sandbox".into(),
-        Some("start") => "Starting the sandbox".into(),
-        Some("stop") => "Stopping the sandbox".into(),
-        Some("restart") => "Restarting the sandbox".into(),
-        Some("modify") => "Updating the sandbox".into(),
-        Some("remove") => "Removing the sandbox".into(),
-        Some("inspect") | Some("list") => "Reading sandbox state".into(),
-        _ => "The sandbox operation".into(),
+        Some("create") => "Creating the computer".into(),
+        Some("start") => "Starting the computer".into(),
+        Some("stop") => "Stopping the computer".into(),
+        Some("restart") => "Restarting the computer".into(),
+        Some("modify") => "Updating the computer".into(),
+        Some("remove") => "Removing the computer".into(),
+        Some("inspect") | Some("list") => "Reading computer state".into(),
+        _ => "The computer operation".into(),
     }
 }
 
@@ -1813,13 +1823,13 @@ fn clean_detail(detail: &str, home: &Path) -> String {
     detail.replace(home.to_string_lossy().as_ref(), "Silo managed storage")
 }
 
-fn host_resources() -> Result<HostResources, RuntimeError> {
+fn device_resources() -> Result<DeviceResources, RuntimeError> {
     let logical_cpus = thread::available_parallelism()
         .map_err(|error| {
             RuntimeError::Unavailable(format!("Silo could not inspect host CPUs: {error}"))
         })?
         .get();
-    Ok(HostResources {
+    Ok(DeviceResources {
         logical_cpus,
         physical_memory_bytes: physical_memory_bytes()?,
     })
@@ -1845,7 +1855,7 @@ fn physical_memory_bytes() -> Result<Option<u64>, RuntimeError> {
         Ok(Some(value))
     } else {
         Err(RuntimeError::Unavailable(
-            "Silo could not measure physical memory for this sandbox operation.".into(),
+            "Silo could not measure physical memory for this computer operation.".into(),
         ))
     }
 }
@@ -1861,7 +1871,7 @@ fn physical_memory_bytes() -> Result<Option<u64>, RuntimeError> {
         Ok(bytes)
     } else {
         Err(RuntimeError::Unavailable(
-            "Silo could not measure physical memory for this sandbox operation.".into(),
+            "Silo could not measure physical memory for this computer operation.".into(),
         ))
     }
 }
@@ -1869,22 +1879,22 @@ fn physical_memory_bytes() -> Result<Option<u64>, RuntimeError> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn physical_memory_bytes() -> Result<Option<u64>, RuntimeError> {
     Err(RuntimeError::Unavailable(
-        "Local MicroSandbox VMs are unavailable on this operating system.".into(),
+        "Local MicroSandbox computers are unavailable on this operating system.".into(),
     ))
 }
 
 fn validate_requested_resources(
-    request: &MachineConfigurationRequest,
-    host: &HostResources,
+    request: &ComputerConfigurationRequest,
+    device: &DeviceResources,
 ) -> Result<(), RuntimeError> {
-    for machine in &request.machines {
-        let MachineConfiguration {
+    for configuration in &request.computers {
+        let ComputerConfiguration {
             name,
             max_cpus,
             max_memory_gib,
             ..
-        } = machine;
-        validate_host_ceiling(name, *max_cpus, *max_memory_gib, host)?;
+        } = configuration;
+        validate_device_ceiling(name, *max_cpus, *max_memory_gib, device)?;
     }
     Ok(())
 }
@@ -1892,7 +1902,7 @@ fn validate_requested_resources(
 fn validate_inspected_resources(
     name: &str,
     config: &Value,
-    host: &HostResources,
+    device: &DeviceResources,
 ) -> Result<(), RuntimeError> {
     let max_cpus = config
         .pointer("/resources/max_cpus")
@@ -1900,7 +1910,7 @@ fn validate_inspected_resources(
         .and_then(|value| u8::try_from(value).ok())
         .ok_or_else(|| {
             RuntimeError::Malformed(format!(
-                "Sandbox '{name}' does not report a valid CPU ceiling. It was not started."
+                "Computer '{name}' does not report a valid CPU ceiling. It was not started."
             ))
         })?;
     let max_memory_mib = config
@@ -1908,50 +1918,50 @@ fn validate_inspected_resources(
         .and_then(Value::as_u64)
         .ok_or_else(|| {
             RuntimeError::Malformed(format!(
-                "Sandbox '{name}' does not report a valid memory ceiling. It was not started."
+                "Computer '{name}' does not report a valid memory ceiling. It was not started."
             ))
         })?;
     let max_memory_gib = u32::try_from(max_memory_mib.div_ceil(1024)).map_err(|_| {
         RuntimeError::Malformed(format!(
-            "Sandbox '{name}' reports an invalid memory ceiling. It was not started."
+            "Computer '{name}' reports an invalid memory ceiling. It was not started."
         ))
     })?;
-    validate_host_ceiling(name, max_cpus, max_memory_gib, host)
+    validate_device_ceiling(name, max_cpus, max_memory_gib, device)
 }
 
-fn validate_host_ceiling(
+fn validate_device_ceiling(
     name: &str,
     max_cpus: u8,
     max_memory_gib: u32,
-    host: &HostResources,
+    device: &DeviceResources,
 ) -> Result<(), RuntimeError> {
-    if max_cpus == 0 || max_memory_gib == 0 || host.logical_cpus == 0 {
+    if max_cpus == 0 || max_memory_gib == 0 || device.logical_cpus == 0 {
         return Err(RuntimeError::Unavailable(
-            "Silo could not verify valid host and sandbox resource limits.".into(),
+            "Silo could not verify valid host and computer resource limits.".into(),
         ));
     }
-    let physical = host
+    let physical = device
         .physical_memory_bytes
         .filter(|value| *value > 0)
         .ok_or_else(|| {
             RuntimeError::Unavailable(
-                "Silo could not verify physical memory for this sandbox operation.".into(),
+                "Silo could not verify physical memory for this computer operation.".into(),
             )
         })?;
-    if usize::from(max_cpus) > host.logical_cpus {
+    if usize::from(max_cpus) > device.logical_cpus {
         return Err(RuntimeError::Invalid(format!(
-            "Sandbox '{name}' has a {max_cpus} CPU ceiling, but this host reports {} logical CPUs. No sandbox was started or changed.",
-            host.logical_cpus
+            "Computer '{name}' has a {max_cpus} CPU ceiling, but this host reports {} logical CPUs. No computer was started or changed.",
+            device.logical_cpus
         )));
     }
     let requested_memory = u64::from(max_memory_gib)
         .checked_mul(1024 * 1024 * 1024)
         .ok_or_else(|| {
-            RuntimeError::Invalid(format!("Sandbox '{name}' requests too much memory."))
+            RuntimeError::Invalid(format!("Computer '{name}' requests too much memory."))
         })?;
     if requested_memory > physical {
         return Err(RuntimeError::Invalid(format!(
-            "Sandbox '{name}' has a {max_memory_gib} GiB memory ceiling, but this host reports {} GiB of physical memory. No sandbox was started or changed.",
+            "Computer '{name}' has a {max_memory_gib} GiB memory ceiling, but this host reports {} GiB of physical memory. No computer was started or changed.",
             physical / (1024 * 1024 * 1024)
         )));
     }
@@ -1960,105 +1970,105 @@ fn validate_host_ceiling(
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct WorkspaceIdentity {
-    workspace: String,
+pub struct ComputerIdentity {
+    computer: String,
     name: String,
     email: String,
     apply: bool,
 }
 
 #[tauri::command]
-pub async fn verify_workspace_identities(
+pub async fn verify_computer_identities(
     app: AppHandle,
-    identities: Vec<WorkspaceIdentity>,
+    identities: Vec<ComputerIdentity>,
 ) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         shutdown::ensure_accepting_operations()?;
-        // Each VM is checked in its own lane, one at a time, so other sandboxes keep working.
-        verify_workspace_identities_in(&ProcessRunner, &paths, &identities, &identity_lane)
+        // Each computer is checked in its own lane, one at a time, so other computers keep working.
+        verify_computer_identities_in(&ProcessRunner, &paths, &identities, &identity_lane)
             .map_err(|error| error.to_string())
     })
     .await
     .map_err(|_| internal_failure("checking Git identities"))?
 }
 
-/// Holds one VM's lane while its Git identity is checked or written. Returns `None` when
+/// Holds one computer's lane while its Git identity is checked or written. Returns `None` when
 /// the caller already holds the gate (and in tests).
 type IdentityLane<'a> =
     &'a dyn Fn(
-        &MachineConfiguration,
+        &ComputerConfiguration,
         &str,
     ) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError>;
 
-/// Identity work on one VM: its own, cancellable queue entry naming the sandbox.
+/// Identity work on one computer: its own, cancellable queue entry naming the computer.
 fn identity_lane(
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     label: &str,
 ) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError> {
-    let guard = OPERATIONS.vm(machine.id(), machine.name(), label)?;
+    let guard = OPERATIONS.computer(configuration.id(), configuration.name(), label)?;
     guard.allow_cancel();
     guard.expect_within(Duration::from_secs(600));
     Ok(Some(guard))
 }
 
 fn no_identity_lane(
-    _machine: &MachineConfiguration,
+    _computer: &ComputerConfiguration,
     _label: &str,
 ) -> Result<Option<operation_gate::OperationGuard<'static>>, RuntimeError> {
     Ok(None)
 }
 
 #[cfg(test)]
-fn verify_workspace_identities_with(
+fn verify_computer_identities_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    identities: &[WorkspaceIdentity],
+    identities: &[ComputerIdentity],
 ) -> Result<bool, RuntimeError> {
-    verify_workspace_identities_in(runner, paths, identities, &no_identity_lane)
+    verify_computer_identities_in(runner, paths, identities, &no_identity_lane)
 }
 
 /// Whether every requested identity is already applied. Verification only decides a
-/// status, so it never boots a VM: a stopped VM's identity is unknown (`false`), and a
-/// running VM is checked in place with `exec --no-start`.
-fn verify_workspace_identities_in(
+/// status, so it never boots a computer: a stopped computer's identity is unknown (`false`), and a
+/// running computer is checked in place with `exec --no-start`.
+fn verify_computer_identities_in(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    identities: &[WorkspaceIdentity],
+    identities: &[ComputerIdentity],
     lane: IdentityLane<'_>,
 ) -> Result<bool, RuntimeError> {
-    if identities.len() > MAX_MACHINE_COUNT {
+    if identities.len() > MAX_COMPUTER_COUNT {
         return Ok(false);
     }
     let metadata = read_metadata(&paths.metadata)?;
     if identities.is_empty() {
-        return Ok(metadata.machines.is_empty());
+        return Ok(metadata.computers.is_empty());
     }
     let mut names = HashSet::new();
     for identity in identities {
-        validate_name(&identity.workspace)?;
-        if !names.insert(&identity.workspace)
+        validate_name(&identity.computer)?;
+        if !names.insert(&identity.computer)
             || !metadata
-                .machines
+                .computers
                 .iter()
-                .any(|machine| machine.name() == identity.workspace)
+                .any(|configuration| configuration.name() == identity.computer)
         {
             return Ok(false);
         }
-        let Some(machine) = metadata
-            .machines
+        let Some(configuration) = metadata
+            .computers
             .iter()
-            .find(|machine| machine.name() == identity.workspace)
+            .find(|configuration| configuration.name() == identity.computer)
         else {
             return Ok(false);
         };
         let _lane = lane(
-            machine,
-            &format!("Checking Git identity for {}", machine.name()),
+            configuration,
+            &format!("Checking Git identity for {}", configuration.name()),
         )?;
-        ensure_current_machine(paths, machine)?;
-        let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
-        ensure_machine_identity(machine, &inspected)?;
+        ensure_current_computer(paths, configuration)?;
+        let inspected = inspect_computer(runner, paths, &identity.computer)?;
+        ensure_computer_identity(configuration, &inspected)?;
         if !identity.apply {
             continue;
         }
@@ -2078,22 +2088,22 @@ fn verify_workspace_identities_in(
 }
 
 #[tauri::command]
-pub async fn configure_workspace_identities(
+pub async fn configure_computer_identities(
     app: AppHandle,
-    identities: Vec<WorkspaceIdentity>,
+    identities: Vec<ComputerIdentity>,
 ) -> Result<(), String> {
     let notify_app = app.clone();
     let names: Vec<String> = identities
         .iter()
-        .map(|identity| identity.workspace.clone())
+        .map(|identity| identity.computer.clone())
         .collect();
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         shutdown::ensure_accepting_operations()?;
-        // Every request is validated first; then each VM is written in its own lane, one
+        // Every request is validated first; then each computer is written in its own lane, one
         // at a time, cancellable, and named in the queue.
         let result =
-            configure_workspace_identities_in(&ProcessRunner, &paths, &identities, &identity_lane);
+            configure_computer_identities_in(&ProcessRunner, &paths, &identities, &identity_lane);
         result.map_err(|error| error.to_string())
     })
     .await
@@ -2113,69 +2123,71 @@ fn git_identity_notice(names: &[String], message: &str) -> crate::notifications:
     crate::notifications::failure("git-identity", &title, message, None)
 }
 
-fn configure_workspace_identities_with(
+fn configure_computer_identities_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    identities: &[WorkspaceIdentity],
+    identities: &[ComputerIdentity],
 ) -> Result<(), RuntimeError> {
-    configure_workspace_identities_in(runner, paths, identities, &no_identity_lane)
+    configure_computer_identities_in(runner, paths, identities, &no_identity_lane)
 }
 
-fn configure_workspace_identities_in(
+fn configure_computer_identities_in(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    identities: &[WorkspaceIdentity],
+    identities: &[ComputerIdentity],
     lane: IdentityLane<'_>,
 ) -> Result<(), RuntimeError> {
-    if identities.len() > MAX_MACHINE_COUNT {
-        return Err(RuntimeError::Invalid("Too many sandbox identities.".into()));
+    if identities.len() > MAX_COMPUTER_COUNT {
+        return Err(RuntimeError::Invalid(
+            "Too many computer identities.".into(),
+        ));
     }
     let metadata = read_metadata(&paths.metadata)?;
     let mut names = HashSet::new();
     let mut changed = Vec::new();
     for identity in identities.iter().filter(|identity| identity.apply) {
-        validate_name(&identity.workspace)?;
-        if !names.insert(&identity.workspace)
+        validate_name(&identity.computer)?;
+        if !names.insert(&identity.computer)
             || [&identity.name, &identity.email].iter().any(|value| {
                 value.trim().is_empty() || value.len() > 1024 || value.chars().any(char::is_control)
             })
         {
             return Err(RuntimeError::Invalid(
-                "Each sandbox needs one valid Git name and email address.".into(),
+                "Each computer needs one valid Git name and email address.".into(),
             ));
         }
-        let Some(machine) = metadata
-            .machines
+        let Some(configuration) = metadata
+            .computers
             .iter()
-            .find(|machine| machine.name() == identity.workspace)
+            .find(|configuration| configuration.name() == identity.computer)
         else {
             return Err(RuntimeError::Invalid(format!(
-                "Sandbox '{}' is not a configured local VM. Its Git identity was not changed.",
-                identity.workspace
+                "Computer '{}' is not a configured local computer. Its Git identity was not changed.",
+                identity.computer
             )));
         };
-        let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
-        ensure_machine_identity(machine, &inspected)?;
-        changed.push((identity, machine));
+        let inspected = inspect_computer(runner, paths, &identity.computer)?;
+        ensure_computer_identity(configuration, &inspected)?;
+        changed.push((identity, configuration));
     }
-    for (identity, machine) in changed {
+    for (identity, configuration) in changed {
         let _lane = lane(
-            machine,
-            &format!("Saving Git identity for {}", machine.name()),
+            configuration,
+            &format!("Saving Git identity for {}", configuration.name()),
         )?;
-        ensure_current_machine(paths, machine)?;
-        ensure_machine_identity(
-            machine,
-            &inspect_workspace(runner, paths, &identity.workspace)?,
+        ensure_current_computer(paths, configuration)?;
+        ensure_computer_identity(
+            configuration,
+            &inspect_computer(runner, paths, &identity.computer)?,
         )?;
         // Remove old boot overrides: normal Git/jj configuration must own defaults.
-        let mut args = vec!["modify".into(), identity.workspace.clone()];
+        let mut args = vec!["modify".into(), identity.computer.clone()];
         for key in checkpoints::IDENTITY_ENVIRONMENT {
             args.extend(["--env-rm".into(), key.into()]);
         }
         args.extend(["--format".into(), "json".into()]);
         runner.run(paths, &args, MUTATION_TIMEOUT)?;
-        checkpoints::forget_identity_environment(paths, machine.id())?;
+        checkpoints::forget_identity_environment(paths, configuration.id())?;
         let script = r#"set -eu
  git config --global -- user.name "$1"
  git config --global -- user.email "$2"
@@ -2187,35 +2199,35 @@ fn configure_workspace_identities_in(
         if !verify_guest_identity(runner, paths, identity, GuestBoot::Temporary)? {
             return Err(RuntimeError::Malformed(format!(
                 "Silo could not verify the saved Git identity for '{}'. Setup is not complete.",
-                identity.workspace
+                identity.computer
             )));
         }
     }
     Ok(())
 }
 
-/// Whether a guest identity command may boot a stopped VM for its duration.
+/// Whether a guest identity command may boot a stopped computer for its duration.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum GuestBoot {
-    /// `exec` starts a stopped sandbox temporarily and stops it again.
+    /// `exec` starts a stopped computer temporarily and stops it again.
     Temporary,
-    /// Only a running sandbox is used (`exec --no-start`).
+    /// Only a running computer is used (`exec --no-start`).
     Never,
 }
 
 fn run_identity_script(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    identity: &WorkspaceIdentity,
+    identity: &ComputerIdentity,
     script: &str,
     boot: GuestBoot,
 ) -> Result<CommandOutput, RuntimeError> {
-    // exec starts stopped sandboxes temporarily (unless `--no-start`) and preserves
-    // already-running VMs. Values are positional arguments, never interpolated shell source.
+    // exec starts stopped computers temporarily (unless `--no-start`) and preserves
+    // already-running computers. Values are positional arguments, never interpolated shell source.
     let user = crate::working_account::USER;
     let mut args: Vec<String> = vec![
         "exec".into(),
-        identity.workspace.clone(),
+        identity.computer.clone(),
         "--user".into(),
         user.into(),
         "--env".into(),
@@ -2251,7 +2263,7 @@ fn run_identity_script(
 fn verify_guest_identity(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    identity: &WorkspaceIdentity,
+    identity: &ComputerIdentity,
     boot: GuestBoot,
 ) -> Result<bool, RuntimeError> {
     let script = r#"set -eu
@@ -2268,7 +2280,7 @@ fn verify_guest_identity(
         == "silo-identity-verified")
 }
 
-/// GitHub tokens a VM's cached access profile still uses. Host-only retirement
+/// GitHub tokens a computer's cached access profile still uses. Host-only retirement
 /// material: the type is deliberately not `Serialize`, and `Debug` never prints a
 /// token, so it cannot reach the frontend, a log or an error message by accident.
 #[derive(Default)]
@@ -2326,14 +2338,14 @@ fn scoped_tokens_of(raw: &str) -> Result<ScopedTokens, String> {
 /// Host-only retirement material; see `ScopedTokens`.
 pub(crate) fn scoped_cached_tokens(
     app: &AppHandle,
-    workspace: &str,
+    computer: &str,
 ) -> Result<ScopedTokens, String> {
     let paths = runtime_paths(app)?;
     let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
     let profiles = cache
         .lock()
         .map_err(|_| "GitHub runtime state is unavailable.")?;
-    match profiles.get(&(paths.home, workspace.into())) {
+    match profiles.get(&(paths.home, computer.into())) {
         Some(raw) => scoped_tokens_of(raw),
         None => Ok(ScopedTokens::default()),
     }
@@ -2342,7 +2354,7 @@ pub(crate) fn scoped_cached_tokens(
 /// Check the attachment cache as well as the grant cache. Failed updates clear this cache.
 pub(crate) fn github_policy_is_cached(
     app: &AppHandle,
-    workspace: &str,
+    computer: &str,
     profile: &Value,
 ) -> Result<bool, String> {
     let paths = runtime_paths(app)?;
@@ -2351,40 +2363,40 @@ pub(crate) fn github_policy_is_cached(
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|_| "GitHub runtime state is unavailable.")?
-        .get(&(paths.home, workspace.into()))
+        .get(&(paths.home, computer.into()))
         == Some(&serialized))
 }
 
-/// A managed VM receives credentials through a host-only secret source reference.
+/// A managed computer receives credentials through a host-only secret source reference.
 /// The JSON profile reaches the runtime on standard input only: never as a command
 /// argument, an environment variable, a config value or captured log.
 pub(crate) fn apply_github_policy(
     app: &AppHandle,
-    workspace: &str,
+    computer: &str,
     revision: u64,
     profiles: &Value,
 ) -> Result<(), String> {
     let paths = runtime_paths(app)?;
-    apply_github_policy_with(&paths, workspace, revision, profiles, MUTATION_TIMEOUT)
+    apply_github_policy_with(&paths, computer, revision, profiles, MUTATION_TIMEOUT)
 }
 
-/// Apply one VM's GitHub access profile with `msb modify`.
+/// Apply one computer's GitHub access profile with `msb modify`.
 ///
 /// The revision is accepted (or rejected as older) and the cached boot profile is
 /// discarded at once, without waiting for any runtime command, so a failed or
 /// superseded update never leaves a stale credential for the next start. The update
-/// then waits its turn on the VM's operation gate, like every other change to that VM,
+/// then waits its turn on the computer's operation gate, like every other change to that computer,
 /// and runs through the shared runtime launcher (worker lock, runtime-home checks,
 /// bounded wait). A newer accepted revision abandons an older update that is still
 /// waiting, and the applied profile is cached only if no newer revision arrived.
 fn apply_github_policy_with(
     paths: &RuntimePaths,
-    workspace: &str,
+    computer: &str,
     revision: u64,
     profiles: &Value,
     timeout: Duration,
 ) -> Result<(), String> {
-    validate_name(workspace).map_err(|error| error.to_string())?;
+    validate_name(computer).map_err(|error| error.to_string())?;
     if !matches!(profiles["version"].as_u64(), Some(1 | 2)) || !profiles["owners"].is_array() {
         return Err("Invalid GitHub access profile.".into());
     }
@@ -2394,9 +2406,9 @@ fn apply_github_policy_with(
     if profile.len() > 128 * 1024 {
         return Err("GitHub access profile is too large.".into());
     }
-    let vm_id = resolve_vm_id(paths, workspace).map_err(|error| error.to_string())?;
-    let access = vm_access_state(&paths.home, workspace)?;
-    let profile_key = (paths.home.clone(), workspace.to_owned());
+    let computer_id = resolve_computer_id(paths, computer).map_err(|error| error.to_string())?;
+    let access = computer_access_state(&paths.home, computer)?;
+    let profile_key = (paths.home.clone(), computer.to_owned());
     let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
     {
         let mut current = access
@@ -2419,9 +2431,9 @@ fn apply_github_policy_with(
     let _guard = match OPERATIONS
         .kind(operation_gate::OperationKind::GithubApply)
         .acquire_while(
-            operation_gate::Scope::Vm { id: vm_id.clone() },
-            Some(workspace.to_owned()),
-            &format!("Applying GitHub access to {workspace}"),
+            operation_gate::Scope::Computer { id: computer_id.clone() },
+            Some(computer.to_owned()),
+            &format!("Applying GitHub access to {computer}"),
             &|| !superseded() && Instant::now() < deadline,
         ) {
         Ok(guard) => {
@@ -2435,7 +2447,7 @@ fn apply_github_policy_with(
         }
         Err(operation_gate::GateError::Abandoned) => {
             return Err(format!(
-                "Another operation on {workspace} is still running. Silo applies its GitHub access again shortly."
+                "Another operation on {computer} is still running. Silo applies its GitHub access again shortly."
             ))
         }
         Err(operation_gate::GateError::Cancelled) => {
@@ -2446,12 +2458,12 @@ fn apply_github_policy_with(
     if superseded() {
         return Err(GITHUB_UPDATE_REPLACED.into());
     }
-    let machine = read_metadata(&paths.metadata)
+    let configuration = read_metadata(&paths.metadata)
         .map_err(|error| error.to_string())?
-        .machines
+        .computers
         .into_iter()
-        .find(|machine| machine.id() == vm_id && machine.name() == workspace)
-        .ok_or("The sandbox identity changed. No GitHub access was applied.")?;
+        .find(|configuration| configuration.id() == computer_id && configuration.name() == computer)
+        .ok_or("The computer identity changed. No GitHub access was applied.")?;
     let capability = run_msb(
         paths,
         &[if token_protocol {
@@ -2468,8 +2480,8 @@ fn apply_github_policy_with(
         return Err("This runtime does not support Silo GitHub permissions.".into());
     }
     let inspected =
-        inspect_workspace(&ProcessRunner, paths, workspace).map_err(|error| error.to_string())?;
-    ensure_machine_identity(&machine, &inspected).map_err(|error| error.to_string())?;
+        inspect_computer(&ProcessRunner, paths, computer).map_err(|error| error.to_string())?;
+    ensure_computer_identity(&configuration, &inspected).map_err(|error| error.to_string())?;
     if inspected
         .config
         .pointer("/labels/silo.github-protocol")
@@ -2477,14 +2489,14 @@ fn apply_github_policy_with(
         != Some("1")
     {
         return Err(
-            "Recreate this development sandbox to enable the new GitHub integration.".into(),
+            "Recreate this development computer to enable the new GitHub integration.".into(),
         );
     }
-    let general_secrets = crate::secrets::runtime_material(workspace)?;
+    let general_secrets = crate::secrets::runtime_material(computer)?;
     secrets_runtime::validate_material(&general_secrets)?;
     let args: Vec<String> = [
         "modify",
-        workspace,
+        computer,
         "--secret",
         secrets_runtime::SILO_GITHUB_SECRET_SPEC,
         "--format",
@@ -2493,7 +2505,7 @@ fn apply_github_policy_with(
     .map(String::from)
     .into();
     let applied = {
-        let _runtime = lock_vm_runtime(&access, timeout, "Applying GitHub access")
+        let _runtime = lock_computer_runtime(&access, timeout, "Applying GitHub access")
             .map_err(|error| github_update_error(error, token_protocol))?;
         if superseded() {
             return Err(GITHUB_UPDATE_REPLACED.into());
@@ -2534,32 +2546,32 @@ fn github_update_error(error: RuntimeError, token_protocol: bool) -> String {
             "Applying GitHub access timed out; it was not marked complete.".into()
         }
         RuntimeError::Busy => {
-            "Another change to this sandbox is still running. Silo applies its GitHub access again shortly.".into()
+            "Another change to this computer is still running. Silo applies its GitHub access again shortly.".into()
         }
-        RuntimeError::Failed { .. } if token_protocol => "The sandbox rejected the token update. If Silo was updated while this VM was running, restart the VM and retry.".into(),
+        RuntimeError::Failed { .. } if token_protocol => "The computer rejected the token update. If Silo was updated while this computer was running, restart the computer and retry.".into(),
         RuntimeError::Failed { .. } => {
-            "The sandbox rejected the GitHub access update. Retry after checking its state.".into()
+            "The computer rejected the GitHub access update. Retry after checking its state.".into()
         }
-        _ => "Could not apply GitHub access to the sandbox.".into(),
+        _ => "Could not apply GitHub access to the computer.".into(),
     }
 }
 
 pub(crate) fn apply_github_identity(
     app: &AppHandle,
-    workspace: &str,
+    computer: &str,
     identity: &Value,
 ) -> Result<(), String> {
-    // Applies GitHub identity inside one VM's guest only.
+    // Applies GitHub identity inside one computer's guest only.
     let paths = runtime_paths(app)?;
-    let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
-    let parsed: WorkspaceIdentity = serde_json::from_value(serde_json::json!({
-        "workspace": workspace, "name": identity["name"], "email": identity["email"], "apply": identity["apply"]
+    let computer_id = resolve_computer_id(&paths, computer).map_err(|error| error.to_string())?;
+    let parsed: ComputerIdentity = serde_json::from_value(serde_json::json!({
+        "computer": computer, "name": identity["name"], "email": identity["email"], "apply": identity["apply"]
     })).map_err(|_| "Invalid Git author configuration.".to_string())?;
-    let base_label = format!("Applying GitHub access to {workspace}");
+    let base_label = format!("Applying GitHub access to {computer}");
     let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
         OPERATIONS
             .kind(operation_gate::OperationKind::GithubApply)
-            .vm(&vm_id, workspace, label)
+            .computer(&computer_id, computer, label)
             .map_err(RuntimeError::from)
     };
     // Applying identity to a running guest can be cancelled; its child polling loops
@@ -2570,7 +2582,7 @@ pub(crate) fn apply_github_identity(
     };
     let work = || -> Result<(), RuntimeError> {
         shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
-        configure_workspace_identities_with(&ProcessRunner, &paths, std::slice::from_ref(&parsed))
+        configure_computer_identities_with(&ProcessRunner, &paths, std::slice::from_ref(&parsed))
     };
     // Writing Git identity re-runs the same guest command, so a timed-out or momentarily
     // unavailable runtime is retried; validation and verification failures are final.
@@ -2578,12 +2590,12 @@ pub(crate) fn apply_github_identity(
 }
 
 #[tauri::command]
-pub async fn read_machine_configuration(
+pub async fn read_computer_configuration(
     app: AppHandle,
-) -> Result<MachineConfigurationRequest, String> {
+) -> Result<ComputerConfigurationRequest, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        // Saved names and resources can render before live VM inspection finishes.
+        // Saved names and resources can render before live computer inspection finishes.
         // This command does not infer or return a running/stopped state.
         read_metadata(&paths.metadata).map_err(|error| error.to_string())
     })
@@ -2600,13 +2612,13 @@ pub async fn read_application_state(
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         crate::secrets::schedule_revocations(&app);
-        // Only visible computer-wide work (sandbox configuration) can add or remove
-        // sandboxes; work on one VM settles only that VM's row, and hidden housekeeping
+        // Only visible device-wide work (computer configuration) can add or remove
+        // computers; work on one computer settles only that computer's row, and hidden housekeeping
         // never affects the read.
         let mut source = read_application_snapshot(&ProcessRunner, &paths, &OPERATIONS)?;
-        // Expired-log cleanup runs in the background, at most hourly per stopped VM, so a
-        // state read never waits for it or re-inspects every stopped VM.
-        let due = plan_log_cleanup(&paths, &mut source.workspaces, Instant::now());
+        // Expired-log cleanup runs in the background, at most hourly per stopped computer, so a
+        // state read never waits for it or re-inspects every stopped computer.
+        let due = plan_log_cleanup(&paths, &mut source.computers, Instant::now());
         if !due.is_empty() {
             let cleanup_paths = paths.clone();
             thread::spawn(move || {
@@ -2621,14 +2633,14 @@ pub async fn read_application_state(
                 refresh: refresh_repositories.unwrap_or(false),
             },
         );
-        remember_settled(&paths, &source.workspaces);
+        remember_settled(&paths, &source.computers);
         Ok(source)
     })
     .await
-    .map_err(|_| BridgeError::from(internal_failure("reading sandbox state")))?
+    .map_err(|_| BridgeError::from(internal_failure("reading computer state")))?
 }
 
-/// Expired logs of a stopped VM are cleaned at most this often, off the state-read path.
+/// Expired logs of a stopped computer are cleaned at most this often, off the state-read path.
 const LOG_CLEANUP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Default)]
@@ -2651,26 +2663,26 @@ fn log_cleanup() -> std::sync::MutexGuard<'static, LogCleanup> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn vm_logs(paths: &RuntimePaths, name: &str) -> PathBuf {
+fn computer_logs(paths: &RuntimePaths, name: &str) -> PathBuf {
     paths.home.join("sandboxes").join(name).join("logs")
 }
 
-/// Flag rows whose last log cleanup failed, and return the fresh, stopped VMs whose
+/// Flag rows whose last log cleanup failed, and return the fresh, stopped computers whose
 /// logs are due for cleanup (at most hourly each). Returning names starts a pass, so
 /// only one runs at a time; `clean_expired_logs` ends it.
 fn plan_log_cleanup(
     paths: &RuntimePaths,
-    workspaces: &mut [ApplicationWorkspace],
+    computers: &mut [ApplicationComputer],
     now: Instant,
 ) -> Vec<String> {
     let mut state = log_cleanup();
-    for workspace in workspaces.iter_mut() {
-        if workspace.attention.is_none()
+    for computer in computers.iter_mut() {
+        if computer.attention.is_none()
             && state
                 .failed
-                .contains(&vm_logs(paths, workspace.machine.name()))
+                .contains(&computer_logs(paths, computer.configuration.name()))
         {
-            workspace.attention = Some(WorkspaceAttention {
+            computer.attention = Some(ComputerAttention {
                 level: AttentionLevel::Warning,
                 message: "Expired logs could not be cleaned up.".into(),
             });
@@ -2679,25 +2691,25 @@ fn plan_log_cleanup(
     if state.running {
         return Vec::new();
     }
-    let due: Vec<String> = workspaces
+    let due: Vec<String> = computers
         .iter()
-        .filter(|workspace| {
-            matches!(workspace.state, WorkspaceState::Stopped)
-                && !workspace.settling
-                && workspace.freshness == Freshness::Fresh
+        .filter(|computer| {
+            matches!(computer.state, ComputerState::Stopped)
+                && !computer.settling
+                && computer.freshness == Freshness::Fresh
                 && state
                     .cleaned
-                    .get(&vm_logs(paths, workspace.machine.name()))
+                    .get(&computer_logs(paths, computer.configuration.name()))
                     .is_none_or(|at| now.saturating_duration_since(*at) >= LOG_CLEANUP_INTERVAL)
         })
-        .map(|workspace| workspace.machine.name().to_owned())
+        .map(|computer| computer.configuration.name().to_owned())
         .collect();
     state.running = !due.is_empty();
     due
 }
 
 /// One background cleanup pass. It runs only while nothing else holds the gate (hidden,
-/// so it never shows in the queue), re-checks that each VM is still stopped, and records
+/// so it never shows in the queue), re-checks that each computer is still stopped, and records
 /// the outcome; a busy gate postpones the pass to a later read.
 fn clean_expired_logs(
     runner: &dyn RuntimeRunner,
@@ -2705,14 +2717,14 @@ fn clean_expired_logs(
     gate: &operation_gate::OperationGate,
     names: &[String],
 ) {
-    if let Ok(_guard) = gate.try_computer_hidden("Cleaning up expired logs") {
+    if let Ok(_guard) = gate.try_device_hidden("Cleaning up expired logs") {
         for name in names {
-            if !inspect_workspace(runner, paths, name)
-                .is_ok_and(|sandbox| runtime_logs::is_stopped(&sandbox.status))
+            if !inspect_computer(runner, paths, name)
+                .is_ok_and(|computer| runtime_logs::is_stopped(&computer.status))
             {
                 continue;
             }
-            let logs = vm_logs(paths, name);
+            let logs = computer_logs(paths, name);
             let result = crate::log_retention::enforce(&logs);
             let mut state = log_cleanup();
             state.cleaned.insert(logs.clone(), Instant::now());
@@ -2742,16 +2754,16 @@ fn single_flight<T>(key: String, work: impl FnOnce() -> T) -> T {
     work()
 }
 
-/// How enrichment fills running VMs' repositories.
+/// How enrichment fills running computers' repositories.
 #[derive(Clone, Copy)]
 enum Repositories {
     /// Scan each fresh running guest (cached briefly unless `refresh`).
     Discover { refresh: bool },
-    /// Keep each VM's last settled list; used by change responses.
+    /// Keep each computer's last settled list; used by change responses.
     LastKnown,
 }
 
-/// Add what the runtime read does not carry: push operations, each fresh running VM's
+/// Add what the runtime read does not carry: push operations, each fresh running computer's
 /// repositories, and GitHub state. A settling or stale row keeps the repositories of its
 /// last known reading instead of scanning a guest that is changing or unreadable.
 fn enrich_application_state(
@@ -2764,22 +2776,27 @@ fn enrich_application_state(
         crate::host_push_operations::merge(app, crate::host_push::operations())
             .unwrap_or_else(|_| crate::host_push::operations());
     match repositories {
-        Repositories::LastKnown => keep_last_known_repositories(paths, &mut source.workspaces),
+        Repositories::LastKnown => keep_last_known_repositories(paths, &mut source.computers),
         Repositories::Discover { refresh } => {
-            for workspace in &mut source.workspaces {
-                if matches!(workspace.state, WorkspaceState::Running)
-                    && !workspace.settling
-                    && workspace.freshness == Freshness::Fresh
+            for computer in &mut source.computers {
+                if matches!(computer.state, ComputerState::Running)
+                    && !computer.settling
+                    && computer.freshness == Freshness::Fresh
                 {
-                    let name = workspace.machine.name();
-                    let key = format!("{}:{}", paths.home.display(), workspace.machine.id());
+                    let name = computer.configuration.name();
+                    let key = format!("{}:{}", paths.home.display(), computer.configuration.id());
                     match single_flight(key, || {
-                        crate::host_push::discover(paths, name, workspace.machine.id(), refresh)
+                        crate::host_push::discover(
+                            paths,
+                            name,
+                            computer.configuration.id(),
+                            refresh,
+                        )
                     }) {
-                        Ok(repositories) => workspace.repositories = repositories,
+                        Ok(repositories) => computer.repositories = repositories,
                         Err(message) => {
-                            if workspace.attention.is_none() {
-                                workspace.attention = Some(WorkspaceAttention {
+                            if computer.attention.is_none() {
+                                computer.attention = Some(ComputerAttention {
                                     level: AttentionLevel::Warning,
                                     message,
                                 });
@@ -2793,12 +2810,12 @@ fn enrich_application_state(
     source.github = crate::github::snapshot(app).unwrap_or_else(|message| serde_json::json!({
         "state": "disconnected", "accessEnabled": false, "repositoryCatalog": [],
         "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
-        "workspaceOperations": [], "hostIdentity": crate::host_identity::cached(|| {}),
+        "computerOperations": [], "deviceIdentity": crate::device_identity::cached(|| {}),
     }));
 }
 
-/// The controller UI can remain usable when local VM inspection fails. This is
-/// never used for a remote owner's snapshot and never invents local VM states.
+/// The controller UI can remain usable when local computer inspection fails. This is
+/// never used for a remote owner's snapshot and never invents local computer states.
 #[tauri::command]
 pub async fn read_application_shell(
     app: AppHandle,
@@ -2810,7 +2827,7 @@ pub async fn read_application_shell(
         source.github = crate::github::snapshot(&app).unwrap_or_else(|message| serde_json::json!({
             "state": "disconnected", "accessEnabled": false, "repositoryCatalog": [],
             "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
-            "workspaceOperations": [], "hostIdentity": crate::host_identity::cached(|| {}),
+            "computerOperations": [], "deviceIdentity": crate::device_identity::cached(|| {}),
         }));
         Ok(source)
     }).await.map_err(|error| error.to_string())?
@@ -2818,17 +2835,17 @@ pub async fn read_application_shell(
 
 fn application_shell(paths: &RuntimePaths, error: &str) -> Result<ApplicationSource, String> {
     let mut source =
-        application_source_for_workspaces(paths, Vec::new()).map_err(|error| error.to_string())?;
+        application_source_for_computers(paths, Vec::new()).map_err(|error| error.to_string())?;
     source.runtime_repair = Some(serde_json::json!({
         "status": "unavailable", "reason": error.chars().take(1024).collect::<String>(),
-        "recovery": "Check this computer’s runtime and retry. Connected computers remain available."
+        "recovery": "Check this device’s runtime and retry. Connected devices remain available."
     }));
     Ok(source)
 }
 
-/// The user-facing state read. Visible computer-wide work (it can add or remove
-/// sandboxes) defers the whole read with `update_in_progress`; work on one VM only
-/// settles that VM's row (`settle_rows`), and hidden housekeeping never affects it.
+/// The user-facing state read. Visible device-wide work (it can add or remove
+/// computers) defers the whole read with `update_in_progress`; work on one computer only
+/// settles that computer's row (`settle_rows`), and hidden housekeeping never affects it.
 fn read_application_snapshot(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
@@ -2871,7 +2888,7 @@ fn read_application_snapshot_once(
         return Err(BridgeError::updating());
     }
     let check_idle = || -> Result<(), BridgeError> {
-        if gate.is_computer_idle() {
+        if gate.is_device_idle() {
             Ok(())
         } else {
             Err(BridgeError::updating())
@@ -2885,10 +2902,10 @@ fn read_application_snapshot_once(
     if before != fs::read(&paths.metadata).ok() {
         return Err(BridgeError::updating());
     }
-    // Decided after the read: a VM is settled only if nothing touched it meanwhile.
-    let settled = |id: &str| gate.is_vm_quiet(id) && gate.generation(id) == started.of(id);
+    // Decided after the read: a computer is settled only if nothing touched it meanwhile.
+    let settled = |id: &str| gate.is_computer_quiet(id) && gate.generation(id) == started.of(id);
     rows.and_then(|rows| settle_rows(paths, rows, &settled))
-        .and_then(|workspaces| application_source_for_workspaces(paths, workspaces))
+        .and_then(|computers| application_source_for_computers(paths, computers))
         .map_err(BridgeError::from)
 }
 
@@ -2896,8 +2913,8 @@ fn read_application_snapshot_once(
 const HEALTH_CALL_BUDGET: Duration = Duration::from_secs(5);
 
 /// Runs health-check runtime calls with a budget per call rather than one budget shared
-/// by the list and every inspection: with many VMs a shared budget ran out before the
-/// last VMs were inspected. A slow VM now fails only its own (stale, skipped) row.
+/// by the list and every inspection: with many computers a shared budget ran out before the
+/// last computers were inspected. A slow computer now fails only its own (stale, skipped) row.
 struct HealthRunner<'a> {
     inner: &'a dyn RuntimeRunner,
     budget: Duration,
@@ -2926,12 +2943,12 @@ impl RuntimeRunner for HealthRunner<'_> {
 
 /// A background health observation uses the same real inspection as the UI, without
 /// host identity discovery. Never hold the mutation lock while inspecting: user
-/// actions take priority. Each VM reports whether it stayed idle and untouched by any
-/// operation during the read, so the caller skips busy VMs without discarding the
-/// rest; a metadata change during the read discards the whole reading. No sandbox is
+/// actions take priority. Each computer reports whether it stayed idle and untouched by any
+/// operation during the read, so the caller skips busy computers without discarding the
+/// rest; a metadata change during the read discards the whole reading. No computer is
 /// created, started, or changed here.
 pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Reading {
-    use crate::health_watch::{Reading, VmReading};
+    use crate::health_watch::{ComputerReading, Reading};
     // An unfinished storage migration holds the runtime back: there is nothing to
     // observe, and that is not a health problem to report.
     if crate::runtime_migration::blocks_operations(app) {
@@ -2942,8 +2959,8 @@ pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Readi
         .as_ref()
         .ok()
         .and_then(|paths| fs::read(&paths.metadata).ok());
-    // Generations at the start: an unchanged generation and an idle VM afterwards mean
-    // no operation touched the VM during the read.
+    // Generations at the start: an unchanged generation and an idle computer afterwards mean
+    // no operation touched the computer during the read.
     let started = OPERATIONS.generations();
     let source = paths.as_ref().map_err(Clone::clone).and_then(|paths| {
         read_application_state_with(
@@ -2965,30 +2982,30 @@ pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Readi
     let Ok(source) = source else {
         return Reading::Unavailable;
     };
-    Reading::Vms(
+    Reading::Computers(
         source
-            .workspaces
+            .computers
             .into_iter()
-            .map(|workspace| {
-                let id = workspace.machine.id().to_owned();
-                let state = if workspace.attention.is_some() {
+            .map(|computer| {
+                let id = computer.configuration.id().to_owned();
+                let state = if computer.attention.is_some() {
                     "Health or configuration check failed"
                 } else {
-                    match workspace.state {
-                        WorkspaceState::Running => "Running",
-                        WorkspaceState::Stopped => "Stopped",
-                        WorkspaceState::Starting => "Starting",
-                        WorkspaceState::Failed => "Failed",
+                    match computer.state {
+                        ComputerState::Running => "Running",
+                        ComputerState::Stopped => "Stopped",
+                        ComputerState::Starting => "Starting",
+                        ComputerState::Failed => "Failed",
                     }
                 };
                 let generation = started.of(&id);
-                VmReading {
-                    // A VM whose own inspection failed says nothing about its health.
-                    settled: workspace.freshness == Freshness::Fresh
-                        && OPERATIONS.is_vm_idle(&id)
+                ComputerReading {
+                    // A computer whose own inspection failed says nothing about its health.
+                    settled: computer.freshness == Freshness::Fresh
+                        && OPERATIONS.is_computer_idle(&id)
                         && OPERATIONS.generation(&id) == generation,
                     generation,
-                    name: workspace.machine.name().into(),
+                    name: computer.configuration.name().into(),
                     state,
                     id,
                 }
@@ -2997,7 +3014,7 @@ pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Readi
     )
 }
 
-/// User-facing label for a lifecycle action on one VM.
+/// User-facing label for a lifecycle action on one computer.
 fn lifecycle_label(action: &str, name: &str) -> String {
     match action {
         "start" => format!("Starting {name}"),
@@ -3092,7 +3109,7 @@ fn gated_auto_retry_classified<T, E>(
     // The first attempt's start time, so every attempt reports one continuous
     // operation in the queue and slow-operation flagging can fire (D-27).
     let mut first_since = None;
-    // A Quit or update that began after this request stopped the VMs; even if it failed
+    // A Quit or update that began after this request stopped the computers; even if it failed
     // and admission reopened, a later attempt must not undo that (D-30).
     let quit = shutdown::generation();
     let mut attempt = 0usize;
@@ -3154,7 +3171,7 @@ fn gated_auto_retry_classified<T, E>(
 }
 
 #[tauri::command]
-pub async fn workspace_action(
+pub async fn computer_action(
     app: AppHandle,
     action: String,
     name: String,
@@ -3185,13 +3202,13 @@ pub async fn workspace_action(
         let app = worker_app;
         // Setup failures before the operation runs are genuine faults worth notifying about.
         let paths = runtime_paths(&app).map_err(|error| (None, LifecycleFailure::Failed, error.into()))?;
-        // Start/stop/restart change only this VM's runtime; resource admission is
-        // against host totals, not other VMs, so per-VM ordering is sufficient. The
+        // Start/stop/restart change only this computer's runtime; resource admission is
+        // against host totals, not other computers, so per-computer ordering is sufficient. The
         // key collapses double-clicked lifecycle requests into one queued action.
         // Resolve the stable id before acquiring so ordering survives a rename.
-        let vm_id = resolve_vm_id(&paths, &name).map_err(|error| (None, LifecycleFailure::Failed, error.into()))?;
+        let computer_id = resolve_computer_id(&paths, &name).map_err(|error| (None, LifecycleFailure::Failed, error.into()))?;
         let base_label = lifecycle_label(&action, &name);
-        let key = format!("vm:{vm_id}:{action}");
+        let key = format!("computer:{computer_id}:{action}");
         // Start/restart may be cancelled while running; stop may not. Expected durations
         // flag slow operations in the UI (no auto-kill).
         let expected = match action.as_str() {
@@ -3206,7 +3223,7 @@ pub async fn workspace_action(
                 .kind(operation_gate::OperationKind::Lifecycle)
                 .retry_after(last_request.get())
                 .acquire(
-                    operation_gate::Scope::Vm { id: vm_id.clone() },
+                    operation_gate::Scope::Computer { id: computer_id.clone() },
                     Some(name.clone()),
                     label,
                     Some(key.clone()),
@@ -3226,24 +3243,24 @@ pub async fn workspace_action(
             // Re-read metadata once this attempt's turn arrives and re-derive the display
             // name by its stable id: a rename or removal may have landed while waiting.
             let metadata = read_metadata(&paths.metadata)?;
-            let machine = metadata
-                .machines
+            let configuration = metadata
+                .computers
                 .iter()
-                .find(|machine| machine.id() == vm_id)
-                .ok_or_else(|| RuntimeError::Invalid("This VM no longer exists.".into()))?;
+                .find(|configuration| configuration.id() == computer_id)
+                .ok_or_else(|| RuntimeError::Invalid("This computer no longer exists.".into()))?;
             // No state event while the gate is held: the queue event already shows the
-            // action, and this VM's row keeps its last state until the post-release event
+            // action, and this computer's row keeps its last state until the post-release event
             // below (D-18), so an in-gate refresh in every window would be wasted.
-            let resources = host_resources()?;
+            let resources = device_resources()?;
             // The gate is held, so no state event follows until it is released. Progress goes
             // out as its own event, and the first step after the boot refreshes the state so
-            // the row leaves "stopped" as soon as the VM is up.
+            // the row leaves "stopped" as soon as the computer is up.
             let sink: LifecycleSink = {
-                let (app, vm_id, action) = (app.clone(), vm_id.clone(), action.clone());
+                let (app, computer_id, action) = (app.clone(), computer_id.clone(), action.clone());
                 std::rc::Rc::new(move |step| {
                     let _ = app.emit(
                         "silo://lifecycle-progress",
-                        json!({"vmId": vm_id, "action": action, "step": step.id()}),
+                        json!({"computerId": computer_id, "action": action, "step": step.id()}),
                     );
                     if step == LifecycleStep::Network {
                         let _ = app.emit("silo://application-state-changed", ());
@@ -3251,7 +3268,7 @@ pub async fn workspace_action(
                 })
             };
             with_lifecycle_sink(sink, || {
-                explicit_workspace_action_with(&ProcessRunner, &paths, &resources, &action, machine.name())
+                explicit_computer_action_with(&ProcessRunner, &paths, &resources, &action, configuration.name())
             })
         };
         // Start/stop/restart are idempotent, so transient failures retry automatically.
@@ -3275,24 +3292,24 @@ pub async fn workspace_action(
         // Classify before the typed error is flattened to a message: a cancellation or a
         // deduplicated request is an expected outcome, not a failure to notify about.
         match result {
-            Ok(state) => Ok((vm_id, state, handed_off)),
+            Ok(state) => Ok((computer_id, state, handed_off)),
             Err(error) => Err((
-                Some(vm_id),
+                Some(computer_id),
                 lifecycle_failure(&error),
                 BridgeError::from(error),
             )),
         }
-    }).await.map_err(|_| BridgeError::from(internal_failure("running the sandbox action")))?;
+    }).await.map_err(|_| BridgeError::from(internal_failure("running the computer action")))?;
     let elapsed = started.elapsed();
-    let notify = |vm_id: Option<String>, outcome: crate::notifications::Outcome<'_>| {
-        let sandbox = vm_id.map(|id| crate::notifications::NoticeSandbox {
+    let notify = |computer_id: Option<String>, outcome: crate::notifications::Outcome<'_>| {
+        let computer = computer_id.map(|id| crate::notifications::NoticeComputer {
             id,
             name: notice_name.clone(),
         });
         if let Some(notice) = crate::notifications::lifecycle_notice(
             &notice_action,
             &notice_name,
-            sandbox,
+            computer,
             elapsed,
             outcome,
         ) {
@@ -3300,9 +3317,9 @@ pub async fn workspace_action(
         }
     };
     match result {
-        Ok((vm_id, state, handed_off)) => {
+        Ok((computer_id, state, handed_off)) => {
             notify(
-                Some(vm_id),
+                Some(computer_id),
                 if handed_off {
                     crate::notifications::Outcome::AlreadyQueued
                 } else {
@@ -3311,8 +3328,8 @@ pub async fn workspace_action(
             );
             Ok(state)
         }
-        Err((vm_id, failure, message)) => {
-            notify(vm_id, failure.outcome(&message.message));
+        Err((computer_id, failure, message)) => {
+            notify(computer_id, failure.outcome(&message.message));
             Err(message)
         }
     }
@@ -3362,14 +3379,14 @@ fn lifecycle_failure(error: &RuntimeError) -> LifecycleFailure {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MachineConfigurationProgress {
+pub struct ComputerConfigurationProgress {
     schema_version: u8,
     #[serde(rename = "type")]
     event_type: String,
     request_id: String,
     phase: String,
     step: String,
-    workspace: String,
+    computer: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     fraction: Option<u8>,
     message: String,
@@ -3394,56 +3411,56 @@ pub struct MachineConfigurationProgress {
     partial: bool,
 }
 
-fn machine_progress(
+fn computer_progress(
     request_id: &str,
     step: &str,
-    workspace: &str,
+    computer: &str,
     fraction: u8,
-) -> MachineConfigurationProgress {
+) -> ComputerConfigurationProgress {
     let message = match (step, fraction) {
-        ("workspace-configuration", 0) => format!("Configuring {workspace}…"),
+        ("computer-configuration", 0) => format!("Configuring {computer}…"),
         ("desktop-installation", _) => "Installing the Linux desktop.".into(),
         ("computer-use-setup", _) => "Setting up the desktop and computer use.".into(),
         ("computer-use-pending", _) => "Computer use will finish setting up at first start.".into(),
-        ("workspace-image-wait", _) => "Waiting for the VM image…".into(),
+        ("computer-image-wait", _) => "Waiting for the VM image…".into(),
         ("chatgpt-app-wait", _) => "Waiting for ChatGPT for Linux…".into(),
         ("chatgpt-app-download", _) => "Downloading ChatGPT for Linux…".into(),
-        ("workspace-configuration", _) => format!("{workspace} configured."),
-        ("workspace-verification", 0) => format!("Verifying {workspace}…"),
-        ("workspace-verification", _) => format!("{workspace} verified."),
-        ("workspace-image-preparation", _) => "Preparing the bundled VM image…".into(),
-        ("workspace-image-import", _) => {
+        ("computer-configuration", _) => format!("{computer} configured."),
+        ("computer-verification", 0) => format!("Verifying {computer}…"),
+        ("computer-verification", _) => format!("{computer} verified."),
+        ("computer-image-preparation", _) => "Preparing the bundled VM image…".into(),
+        ("computer-image-import", _) => {
             "Importing the VM image (first time only, about a minute)…".into()
         }
-        ("workspace-disk-preparation", _) => format!("Preparing {workspace}'s workspace disk…"),
-        ("workspace-runtime-preparation", _) => {
-            format!("Preparing {workspace}'s VM image and system disk…")
+        ("computer-disk-preparation", _) => format!("Preparing {computer}'s workspace disk…"),
+        ("computer-runtime-preparation", _) => {
+            format!("Preparing {computer}'s VM image and system disk…")
         }
-        ("workspace-settings", _) => format!("Saving {workspace}'s configuration…"),
-        ("setup-started", _) => "Sandbox setup started.".into(),
-        ("setup-completed", _) => "Sandbox setup completed.".into(),
-        ("setup-failed", _) => "Sandbox setup failed.".into(),
+        ("computer-settings", _) => format!("Saving {computer}'s configuration…"),
+        ("setup-started", _) => "Computer setup started.".into(),
+        ("setup-completed", _) => "Computer setup completed.".into(),
+        ("setup-failed", _) => "Computer setup failed.".into(),
         ("setup-interrupted", _) => {
-            "Sandbox setup was interrupted when Silo closed. Check the sandbox state, then retry."
+            "Computer setup was interrupted when Silo closed. Check the computer state, then retry."
                 .into()
         }
-        ("workspace-removal", 0) => format!("Removing {workspace}…"),
-        _ => format!("{workspace} removed."),
+        ("computer-removal", 0) => format!("Removing {computer}…"),
+        _ => format!("{computer} removed."),
     };
-    MachineConfigurationProgress {
+    ComputerConfigurationProgress {
         schema_version: 1,
         event_type: "progress".into(),
         request_id: request_id.into(),
-        phase: "workspaces".into(),
+        phase: "computers".into(),
         step: step.into(),
-        workspace: workspace.into(),
+        computer: computer.into(),
         fraction: (!step.starts_with("setup-")
             && matches!(
                 step,
                 "desktop-installation"
-                    | "workspace-configuration"
-                    | "workspace-verification"
-                    | "workspace-removal"
+                    | "computer-configuration"
+                    | "computer-verification"
+                    | "computer-removal"
             ))
         .then_some(fraction),
         message,
@@ -3469,41 +3486,45 @@ pub(crate) fn publish_creation_wait(
 ) {
     use crate::creation_inputs::{ChatGpt, Step};
     let event = match step {
-        Step::Image => machine_progress(request_id, "workspace-image-wait", "", 0),
+        Step::Image => computer_progress(request_id, "computer-image-wait", "", 0),
         Step::ChatGpt(ChatGpt::Downloading { received, total }) => {
-            let mut event = machine_progress(request_id, "chatgpt-app-download", "", 0);
+            let mut event = computer_progress(request_id, "chatgpt-app-download", "", 0);
             event.downloaded_bytes = Some(*received);
             event.total_bytes = Some(*total).filter(|total| *total > 0);
             event
         }
         Step::ChatGpt(ChatGpt::Failed { reason }) => {
-            let mut event = machine_progress(request_id, "chatgpt-app-failed", "", 0);
+            let mut event = computer_progress(request_id, "chatgpt-app-failed", "", 0);
             event.level = "warning".into();
             event.message = reason.chars().take(300).collect();
             event
         }
-        Step::ChatGpt(_) => machine_progress(request_id, "chatgpt-app-wait", "", 0),
+        Step::ChatGpt(_) => computer_progress(request_id, "chatgpt-app-wait", "", 0),
     };
-    let _ = app.emit_to("main", "silo://machine-configuration-progress", &event);
+    let _ = app.emit_to("main", "silo://computer-configuration-progress", &event);
 }
 
-/// The VMs a change would create, for what creation has to wait for before the gate.
+/// The computers a change would create, for what creation has to wait for before the gate.
 fn creation_needs(
     paths: &RuntimePaths,
-    mut request: MachineConfigurationRequest,
+    mut request: ComputerConfigurationRequest,
 ) -> crate::creation_inputs::Needs {
     let Ok(previous) = read_metadata(&paths.metadata) else {
         return Default::default();
     };
     apply_desktop_defaults(paths, &previous, &mut request);
     let mut needs = crate::creation_inputs::Needs::default();
-    for machine in request.machines.iter() {
-        if previous.machines.iter().any(|old| old.id() == machine.id()) {
+    for configuration in request.computers.iter() {
+        if previous
+            .computers
+            .iter()
+            .any(|old| old.id() == configuration.id())
+        {
             continue;
         }
-        needs.machines.push(machine.id().to_owned());
-        if crate::computer_use::is_built_in(machine) {
-            needs.computer_use.push(machine.id().to_owned());
+        needs.computers.push(configuration.id().to_owned());
+        if crate::computer_use::is_built_in(configuration) {
+            needs.computer_use.push(configuration.id().to_owned());
         }
     }
     needs
@@ -3577,12 +3598,12 @@ fn failure_reason(code: &str) -> &'static str {
         "disk" => "Not enough free disk space. Free some space and retry.",
         "permission" => "Permission was denied. Check access to Silo's storage and retry.",
         "network" => "The image registry could not be reached. Check your internet connection and retry.",
-        "timeout" => "The operation timed out. Check the sandbox state and retry.",
+        "timeout" => "The operation timed out. Check the computer state and retry.",
         "integrity" => "The downloaded image failed its integrity check. Retry the download.",
-        "resources" => "Sandbox CPU, memory, or storage limits could not be validated. Review the sandbox resources against this computer's limits and retry.",
-        "configuration" => "The sandbox configuration could not be applied or verified. Review its settings and current state before retrying.",
+        "resources" => "Computer CPU, memory, or storage limits could not be validated. Review the computer resources against this device's limits and retry.",
+        "configuration" => "The computer configuration could not be applied or verified. Review its settings and current state before retrying.",
         "unavailable" => "A required runtime or host resource is unavailable. Quit and reopen Silo to check it again, then retry.",
-        _ => "The runtime did not complete the operation. Check the sandbox state and retry.",
+        _ => "The runtime did not complete the operation. Check the computer state and retry.",
     }
 }
 
@@ -3603,7 +3624,7 @@ fn setup_failure_message(code: &str) -> Option<String> {
             | "unavailable"
             | "runtime"
     )
-    .then(|| format!("Sandbox setup failed: {}", failure_reason(code)))
+    .then(|| format!("Computer setup failed: {}", failure_reason(code)))
 }
 
 /// Longest diagnostic kept for one failure, in characters.
@@ -3803,7 +3824,7 @@ fn internal_failure(activity: &str) -> String {
 
 struct ActivityJournal {
     path: PathBuf,
-    events: std::collections::VecDeque<MachineConfigurationProgress>,
+    events: std::collections::VecDeque<ComputerConfigurationProgress>,
     started: Instant,
     /// When the history was last written, and whether events arrived since.
     persisted_at: Option<Instant>,
@@ -3833,7 +3854,7 @@ impl ActivityJournal {
         persist_activity(&self.path, &self.events)
     }
 
-    fn push(&mut self, event: MachineConfigurationProgress) {
+    fn push(&mut self, event: ComputerConfigurationProgress) {
         // Keep the first event (the attempt's start) and drop the oldest progress after it.
         if self.events.len() >= MAX_ACTIVITY_EVENTS {
             self.events.remove(1);
@@ -3841,12 +3862,15 @@ impl ActivityJournal {
         self.events.push_back(event);
     }
 
-    fn append(&mut self, mut event: MachineConfigurationProgress) -> MachineConfigurationProgress {
+    fn append(
+        &mut self,
+        mut event: ComputerConfigurationProgress,
+    ) -> ComputerConfigurationProgress {
         event.elapsed_seconds = self.started.elapsed().as_secs();
         // Progress updates replace the previous update for the same stage, retaining boundaries.
         let repeated = self.events.back().is_some_and(|last| {
             last.step == event.step
-                && last.workspace == event.workspace
+                && last.computer == event.computer
                 && last.fraction.is_none()
                 && !event.step.starts_with("setup-")
         });
@@ -3888,7 +3912,7 @@ impl Drop for ActivityJournal {
 fn read_activity(
     paths: &RuntimePaths,
     recover_interrupted: bool,
-) -> Result<Vec<MachineConfigurationProgress>, String> {
+) -> Result<Vec<ComputerConfigurationProgress>, String> {
     let path = activity_path(paths);
     if !path.exists() {
         return Ok(Vec::new());
@@ -3902,19 +3926,19 @@ fn read_activity(
     if bytes.len() > 1024 * 1024 {
         return Err("Silo's setup activity history is too large to read.".into());
     }
-    let mut events: Vec<MachineConfigurationProgress> =
+    let mut events: Vec<ComputerConfigurationProgress> =
         serde_json::from_slice(&bytes).map_err(|_| "Silo's setup activity history is damaged.")?;
     if events.len() > 512
         || events.iter().any(|event| {
             event.schema_version != 1
                 || event.event_type != "progress"
-                || event.phase != "workspaces"
+                || event.phase != "computers"
                 || !event.safe_for_display
                 || event.request_id.is_empty()
                 || event.request_id.len() > 256
-                || event.workspace.len() > 128
+                || event.computer.len() > 128
                 || !event
-                    .workspace
+                    .computer
                     .chars()
                     .all(|ch| ch.is_ascii_alphanumeric() || "-_".contains(ch))
                 || !matches!(event.level.as_str(), "info" | "warning" | "error")
@@ -3925,15 +3949,15 @@ fn read_activity(
     }
     for event in &mut events {
         event.message = match event.step.as_str() {
-            "desktop-installation" | "computer-use-setup" | "computer-use-pending" | "workspace-configuration" | "workspace-verification" | "workspace-removal" | "workspace-disk-preparation" | "workspace-image-preparation" | "workspace-image-import" | "workspace-runtime-preparation" | "workspace-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => machine_progress(&event.request_id, &event.step, &event.workspace, event.fraction.unwrap_or(0)).message,
-            "image-resolving" => format!("{}: Resolving the VM image…", event.workspace),
-            "image-resolved" => format!("{}: VM image resolved; preparing the download…", event.workspace),
-            "image-download" => format!("{}: Downloading the VM image…", event.workspace),
-            "image-downloaded" => format!("{}: VM image layer downloaded.", event.workspace),
-            "image-verifying" => format!("{}: Checking the downloaded image…", event.workspace),
-            "image-preparing" => format!("{}: Preparing the VM image on disk…", event.workspace),
-            "image-ready" => format!("{}: VM image ready; preparing the system disk and runtime configuration…", event.workspace),
-            "runtime-waiting" => format!("{}: Waiting for the runtime to finish preparing the VM…", event.workspace),
+            "desktop-installation" | "computer-use-setup" | "computer-use-pending" | "computer-configuration" | "computer-verification" | "computer-removal" | "computer-disk-preparation" | "computer-image-preparation" | "computer-image-import" | "computer-runtime-preparation" | "computer-settings" | "setup-started" | "setup-completed" | "setup-interrupted" => computer_progress(&event.request_id, &event.step, &event.computer, event.fraction.unwrap_or(0)).message,
+            "image-resolving" => format!("{}: Resolving the VM image…", event.computer),
+            "image-resolved" => format!("{}: VM image resolved; preparing the download…", event.computer),
+            "image-download" => format!("{}: Downloading the VM image…", event.computer),
+            "image-downloaded" => format!("{}: VM image layer downloaded.", event.computer),
+            "image-verifying" => format!("{}: Checking the downloaded image…", event.computer),
+            "image-preparing" => format!("{}: Preparing the VM image on disk…", event.computer),
+            "image-ready" => format!("{}: VM image ready; preparing the system disk and runtime configuration…", event.computer),
+            "runtime-waiting" => format!("{}: Waiting for the runtime to finish preparing the computer…", event.computer),
             "host-memory-warning" => "Silo could not measure host memory. Setup can continue, but available memory could not be checked.".into(),
             "activity-storage-warning" => "Silo could not retain its activity history. Copy the activity before closing Silo.".into(),
             "setup-failed" => setup_failure_message(event.failure_code.as_deref().unwrap_or("runtime")).ok_or("Silo's setup activity history contains an unknown failure.")?,
@@ -3965,7 +3989,7 @@ fn read_activity(
     {
         let last = events.last().unwrap();
         let mut interrupted =
-            machine_progress(&last.request_id, "setup-interrupted", &last.workspace, 0);
+            computer_progress(&last.request_id, "setup-interrupted", &last.computer, 0);
         interrupted.level = "warning".into();
         interrupted.elapsed_seconds = last.elapsed_seconds;
         if events.len() >= 512 {
@@ -3977,7 +4001,7 @@ fn read_activity(
     Ok(events)
 }
 
-fn pending_verification_workspace(events: &[MachineConfigurationProgress]) -> Option<String> {
+fn pending_verification_computer(events: &[ComputerConfigurationProgress]) -> Option<String> {
     let last = events
         .iter()
         .rev()
@@ -3988,16 +4012,16 @@ fn pending_verification_workspace(events: &[MachineConfigurationProgress]) -> Op
     events
         .iter()
         .rev()
-        .find(|event| event.step == "workspace-verification" && event.request_id == last.request_id)
+        .find(|event| event.step == "computer-verification" && event.request_id == last.request_id)
         .filter(|event| event.fraction == Some(0))
-        .map(|event| event.workspace.clone())
+        .map(|event| event.computer.clone())
 }
 
 /// Reading may rewrite (and fsync) the journal, so it runs off the main thread.
 #[tauri::command]
 pub async fn read_setup_activity(
     app: AppHandle,
-) -> Result<Vec<MachineConfigurationProgress>, String> {
+) -> Result<Vec<ComputerConfigurationProgress>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         read_setup_activity_at(&paths)
@@ -4008,10 +4032,10 @@ pub async fn read_setup_activity(
 
 /// An unfinished last attempt was interrupted only when no setup journal is being
 /// written in this process. Unrelated work (launch auto-start, hidden housekeeping, other
-/// sandboxes) does not make an interrupted setup look in progress.
+/// computers) does not make an interrupted setup look in progress.
 fn read_setup_activity_at(
     paths: &RuntimePaths,
-) -> Result<Vec<MachineConfigurationProgress>, String> {
+) -> Result<Vec<ComputerConfigurationProgress>, String> {
     let _file = setup_activity_file();
     read_activity(paths, LIVE_SETUP_JOURNALS.load(Ordering::SeqCst) == 0)
 }
@@ -4019,7 +4043,7 @@ fn read_setup_activity_at(
 fn normalize_request_id(request_id: Option<String>) -> Result<String, String> {
     let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     if request_id.trim().is_empty() || request_id.len() > 256 {
-        return Err("Invalid sandbox configuration request ID.".into());
+        return Err("Invalid computer configuration request ID.".into());
     }
     Ok(request_id)
 }
@@ -4028,19 +4052,19 @@ fn normalize_request_id(request_id: Option<String>) -> Result<String, String> {
 /// progress events and completion outcome. The caller holds the operation gate and
 /// supplies the exact `request` to persist (a whole-list save or a targeted change
 /// already applied to fresh metadata). Preserves `request_id`, progress events,
-/// `retry_workspace` semantics and pending-verification resumption.
+/// `retry_computer` semantics and pending-verification resumption.
 fn apply_configuration_with_progress(
     app: &AppHandle,
     paths: &RuntimePaths,
-    request: MachineConfigurationRequest,
+    request: ComputerConfigurationRequest,
     request_id: &str,
-    retry_workspace: Option<String>,
+    retry_computer: Option<String>,
 ) -> Result<ApplicationSource, String> {
     debug_assert!(
         operation_gate::held(),
         "configuration changes require the operation gate"
     );
-    let resources = host_resources().map_err(|e| e.to_string())?;
+    let resources = device_resources().map_err(|e| e.to_string())?;
     let mut request = request;
     validate_request(&request).map_err(|e| e.to_string())?;
     validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
@@ -4048,23 +4072,23 @@ fn apply_configuration_with_progress(
     apply_desktop_defaults(paths, &previous, &mut request);
     configuration_recovery::prepare_retry(&ProcessRunner, paths, Some(&request))
         .map_err(|e| e.to_string())?;
-    let retry_workspace = retry_workspace.or_else(|| {
+    let retry_computer = retry_computer.or_else(|| {
         // A no-change retry after relaunch resumes the failed verification only.
-        // A fresh add, edit or removal must not replay another sandbox's work.
+        // A fresh add, edit or removal must not replay another computer's work.
         if read_metadata(&paths.metadata).ok().as_ref() != Some(&request) {
             return None;
         }
-        pending_verification_workspace(&read_activity(paths, false).unwrap_or_default()).filter(
+        pending_verification_computer(&read_activity(paths, false).unwrap_or_default()).filter(
             |name| {
                 request
-                    .machines
+                    .computers
                     .iter()
-                    .any(|machine| machine.name() == name)
+                    .any(|configuration| configuration.name() == name)
             },
         )
     });
     let journal = Mutex::new(ActivityJournal::start(paths, request_id)?);
-    let publish = |event: MachineConfigurationProgress| {
+    let publish = |event: ComputerConfigurationProgress| {
         let mut journal = journal.lock().unwrap_or_else(|error| error.into_inner());
         let event = journal.append(event);
         if let Some(warning) = journal
@@ -4072,18 +4096,18 @@ fn apply_configuration_with_progress(
             .back()
             .filter(|entry| entry.step == "activity-storage-warning")
         {
-            let _ = app.emit_to("main", "silo://machine-configuration-progress", warning);
+            let _ = app.emit_to("main", "silo://computer-configuration-progress", warning);
         }
-        let _ = app.emit_to("main", "silo://machine-configuration-progress", &event);
+        let _ = app.emit_to("main", "silo://computer-configuration-progress", &event);
     };
-    publish(machine_progress(request_id, "setup-started", "", 0));
-    let progress = |step: &str, workspace: &str, fraction: u8| {
-        publish(machine_progress(request_id, step, workspace, fraction));
+    publish(computer_progress(request_id, "setup-started", "", 0));
+    let progress = |step: &str, computer: &str, fraction: u8| {
+        publish(computer_progress(request_id, step, computer, fraction));
     };
     let result = Ok(resources)
         .and_then(|resources| {
             if resources.physical_memory_bytes.is_none() {
-                let mut warning = machine_progress(request_id, "host-memory-warning", "", 0);
+                let mut warning = computer_progress(request_id, "host-memory-warning", "", 0);
                 warning.level = "warning".into();
                 warning.message = "Silo could not measure host memory. Setup can continue, but available memory could not be checked.".into();
                 publish(warning);
@@ -4098,11 +4122,11 @@ fn apply_configuration_with_progress(
                 paths,
                 &resources,
                 request,
-                retry_workspace.as_deref(),
+                retry_computer.as_deref(),
                 &progress,
             )
         });
-    let mut outcome = machine_progress(
+    let mut outcome = computer_progress(
         request_id,
         if result.is_ok() {
             "setup-completed"
@@ -4126,9 +4150,9 @@ fn apply_configuration_with_progress(
             .back()
             .cloned();
         if let Some(last) = last {
-            outcome.workspace = last.workspace;
+            outcome.computer = last.computer;
         }
-        outcome.message = format!("Sandbox setup failed: {}", report.summary);
+        outcome.message = format!("Computer setup failed: {}", report.summary);
     }
     publish(outcome);
     result.map_err(|error| safe_activity_error(&error))?;
@@ -4136,29 +4160,29 @@ fn apply_configuration_with_progress(
     application_state_response(app, paths).map_err(|error| safe_activity_error(&error))
 }
 
-/// Resume a failed sandbox setup or verification without the UI resending a whole list.
+/// Resume a failed computer setup or verification without the UI resending a whole list.
 /// The interrupted attempt's target configuration is recorded in the configuration
-/// recovery journal; this re-applies it against current state (idempotent for machines
+/// recovery journal; this re-applies it against current state (idempotent for computers
 /// already completed) and resumes the pending verification. When no attempt is pending,
 /// it re-verifies the committed inventory. Concurrent changes made since the attempt are
-/// rejected by the recovery reconciliation ("Sandbox settings changed since the
+/// rejected by the recovery reconciliation ("Computer settings changed since the
 /// interruption."), so a resume never overwrites work done meanwhile.
 #[tauri::command]
-pub async fn retry_machine_configuration(
+pub async fn retry_computer_configuration(
     app: AppHandle,
     request_id: Option<String>,
-    retry_workspace: Option<String>,
+    retry_computer: Option<String>,
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
-    let failure_title = retry_workspace.as_deref().map_or_else(
-        || "Couldn\u{2019}t finish sandbox setup".to_string(),
+    let failure_title = retry_computer.as_deref().map_or_else(
+        || "Couldn\u{2019}t finish computer setup".to_string(),
         |name| format!("Couldn\u{2019}t finish setting up {name}"),
     );
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        // Waited for before the gate, as in `change_machine_configuration`.
+        // Waited for before the gate, as in `change_computer_configuration`.
         let needs = configuration_recovery::pending_request(&paths)
             .ok()
             .flatten()
@@ -4166,10 +4190,10 @@ pub async fn retry_machine_configuration(
             .map(|request| creation_needs(&paths, request))
             .unwrap_or_default();
         crate::creation_inputs::wait_before_gate(&app, &paths, &request_id, &needs)?;
-        // Changes the shared VM inventory/metadata; computer-wide.
+        // Changes the shared computer inventory/metadata; device-wide.
         let _guard = OPERATIONS
-            .kind(operation_gate::OperationKind::MachineConfiguration)
-            .computer("Retrying sandbox settings")
+            .kind(operation_gate::OperationKind::ComputerConfiguration)
+            .device("Retrying computer settings")
             .map_err(|e| e.to_string())?;
         shutdown::ensure_accepting_operations()?;
         // Resume the configuration the interrupted attempt recorded. With no pending
@@ -4179,10 +4203,10 @@ pub async fn retry_machine_configuration(
                 Some(request) => request,
                 None => read_metadata(&paths.metadata).map_err(|e| e.to_string())?,
             };
-        apply_configuration_with_progress(&app, &paths, request, &request_id, retry_workspace)
+        apply_configuration_with_progress(&app, &paths, request, &request_id, retry_computer)
     })
     .await
-    .map_err(|_| internal_failure("changing sandbox settings"))
+    .map_err(|_| internal_failure("changing computer settings"))
     .and_then(|result| result);
     if let Err(message) = &result {
         notify_configuration_failure(&notify_app, &failure_title, message);
@@ -4198,20 +4222,20 @@ fn notify_configuration_failure(app: &AppHandle, title: &str, message: &str) {
     }
     crate::notifications::notify_native(
         app,
-        crate::notifications::failure("sandbox-setup", title, message, None),
+        crate::notifications::failure("computer-setup", title, message, None),
     );
 }
 
 /// Apply one targeted change (create, edit, delete or reorder) against the current
 /// inventory. Because the request may wait its turn on the operation gate, the change
-/// is applied to fresh metadata read under the gate and rejected if the targeted VM
+/// is applied to fresh metadata read under the gate and rejected if the targeted computer
 /// changed while the edit was waiting, rather than overwriting with a stale list.
 #[tauri::command]
-pub async fn change_machine_configuration(
+pub async fn change_computer_configuration(
     app: AppHandle,
-    change: MachineConfigurationChange,
+    change: ComputerConfigurationChange,
     request_id: Option<String>,
-    retry_workspace: Option<String>,
+    retry_computer: Option<String>,
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
@@ -4221,16 +4245,16 @@ pub async fn change_machine_configuration(
     let result = tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         // The image import and the ChatGPT download are waited for before the gate: holding
-        // the computer-wide gate for minutes would stall every lifecycle operation and Quit.
+        // the device-wide gate for minutes would stall every lifecycle operation and Quit.
         let needs = read_metadata(&paths.metadata)
             .ok()
             .and_then(|mut request| {
-                change.apply(&mut request.machines).ok()?;
+                change.apply(&mut request.computers).ok()?;
                 Some(creation_needs(&paths, request))
             })
             .unwrap_or_default();
         crate::creation_inputs::wait_before_gate(&app, &paths, &request_id, &needs)?;
-        // Changes the shared VM inventory/metadata; computer-wide.
+        // Changes the shared computer inventory/metadata; device-wide.
         let _guard = OPERATIONS
             .removing(&change.deleted_ids(), &change.label())
             .map_err(|e| e.to_string())?;
@@ -4238,100 +4262,100 @@ pub async fn change_machine_configuration(
         // Read fresh, then apply the specific change so a queued edit lands on the
         // latest inventory instead of overwriting concurrent work.
         let mut request = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
-        change.apply(&mut request.machines)?;
-        apply_configuration_with_progress(&app, &paths, request, &request_id, retry_workspace)
+        change.apply(&mut request.computers)?;
+        apply_configuration_with_progress(&app, &paths, request, &request_id, retry_computer)
     })
     .await
-    .map_err(|_| internal_failure("changing sandbox settings"))
+    .map_err(|_| internal_failure("changing computer settings"))
     .and_then(|result| result);
     match &result {
         Err(message) => notify_configuration_failure(&notify_app, &failure_title, message),
-        // A deleted sandbox has nothing left to open: withdraw its delivered notices.
+        // A deleted computer has nothing left to open: withdraw its delivered notices.
         Ok(_) => deleted
             .iter()
-            .for_each(|id| crate::notifications::clear_sandbox(&notify_app, id)),
+            .for_each(|id| crate::notifications::clear_computer(&notify_app, id)),
     }
     result
 }
 
-/// Read every sandbox with no operation-overlap policy: each VM's reading is taken as
-/// settled. A VM whose own inspection fails is returned stale (its last known state with
-/// the reason) instead of failing every sandbox. Health checks and tests use this.
+/// Read every computer with no operation-overlap policy: each computer's reading is taken as
+/// settled. A computer whose own inspection fails is returned stale (its last known state with
+/// the reason) instead of failing every computer. Health checks and tests use this.
 fn read_application_state_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
 ) -> Result<ApplicationSource, RuntimeError> {
-    let workspaces = settle_rows(paths, read_rows(runner, paths)?, &|_| true)?;
-    application_source_for_workspaces(paths, workspaces)
+    let computers = settle_rows(paths, read_rows(runner, paths)?, &|_| true)?;
+    application_source_for_computers(paths, computers)
 }
 
-/// One configured sandbox as read from the runtime, before settling.
+/// One configured computer as read from the runtime, before settling.
 struct Row {
     /// The fresh reading, or a placeholder when `unread` is set.
-    workspace: ApplicationWorkspace,
+    computer: ApplicationComputer,
     unread: Option<Unread>,
 }
 
-/// Why a configured VM has no fresh reading.
+/// Why a configured computer has no fresh reading.
 enum Unread {
-    /// The runtime list disagrees with Silo's records for this VM (absent although
+    /// The runtime list disagrees with Silo's records for this computer (absent although
     /// expected, or present while a pending restore expects none).
     Mismatch,
     /// Its own inspection failed.
     Failed(RuntimeError),
 }
 
-const INVENTORY_MISMATCH: &str = "Silo's saved sandbox configuration does not match its managed runtime state. No sandbox operation was performed.";
+const INVENTORY_MISMATCH: &str = "Silo's saved computer configuration does not match its managed runtime state. No computer operation was performed.";
 
-/// List and inspect every configured sandbox. Only a failure that no single sandbox
-/// explains (metadata, the runtime list, or a managed runtime VM Silo does not know)
-/// fails the whole read; a VM's own failure is carried in its row for `settle_rows`.
+/// List and inspect every configured computer. Only a failure that no single computer
+/// explains (metadata, the runtime list, or a managed runtime computer Silo does not know)
+/// fails the whole read; a computer's own failure is carried in its row for `settle_rows`.
 fn read_rows(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Vec<Row>, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
-    let listed = if metadata.machines.is_empty() {
+    let listed = if metadata.computers.is_empty() {
         Vec::new()
     } else {
         list_managed(runner, paths)?
     };
     let listed_names: HashSet<&str> = listed.iter().map(|entry| entry.name.as_str()).collect();
     let configured: HashSet<&str> = metadata
-        .machines
+        .computers
         .iter()
-        .map(MachineConfiguration::name)
+        .map(ComputerConfiguration::name)
         .collect();
     if listed_names.iter().any(|name| !configured.contains(name)) {
         return Err(RuntimeError::Malformed(INVENTORY_MISMATCH.into()));
     }
-    // Whether each VM is read from Silo's pending-restore record rather than the runtime.
+    // Whether each computer is read from Silo's pending-restore record rather than the runtime.
     // An unreadable record (damaged, or written by a newer Silo) degrades only its own
-    // sandbox: the runtime decides, and its row is flagged when checkpoints are loaded.
-    let from_record = |machine: &MachineConfiguration| {
-        let listed = listed_names.contains(machine.name());
-        checkpoints::pending_view(paths, machine.id(), listed).unwrap_or(!listed)
+    // computer: the runtime decides, and its row is flagged when checkpoints are loaded.
+    let from_record = |configuration: &ComputerConfiguration| {
+        let listed = listed_names.contains(configuration.name());
+        checkpoints::pending_view(paths, configuration.id(), listed).unwrap_or(!listed)
     };
-    let mut rows = Vec::with_capacity(metadata.machines.len());
-    for machine in metadata.machines.iter().cloned() {
-        let listed = listed_names.contains(machine.name());
-        let row = match (from_record(&machine), listed) {
+    let mut rows = Vec::with_capacity(metadata.computers.len());
+    for configuration in metadata.computers.iter().cloned() {
+        let listed = listed_names.contains(configuration.name());
+        let row = match (from_record(&configuration), listed) {
             (true, false) => Row {
-                workspace: checkpoints::pending_workspace(machine)?,
+                computer: checkpoints::pending_computer(configuration)?,
                 unread: None,
             },
             (true, true) | (false, false) => Row {
-                workspace: unread_workspace(machine),
+                computer: unread_computer(configuration),
                 unread: Some(Unread::Mismatch),
             },
             (false, true) => {
-                match inspect_workspace(runner, paths, machine.name()).and_then(|inspected| {
+                match inspect_computer(runner, paths, configuration.name()).and_then(|inspected| {
                     ensure_managed(&inspected)?;
                     Ok(inspected)
                 }) {
                     Ok(inspected) => Row {
-                        workspace: vm_workspace(paths, machine, &inspected),
+                        computer: application_computer(paths, configuration, &inspected),
                         unread: None,
                     },
                     Err(error) => Row {
-                        workspace: unread_workspace(machine),
+                        computer: unread_computer(configuration),
                         unread: Some(Unread::Failed(error)),
                     },
                 }
@@ -4342,57 +4366,57 @@ fn read_rows(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Vec<Row
     Ok(rows)
 }
 
-/// Publish rows. `settled(id)` is true when no operation touched the VM during the read.
+/// Publish rows. `settled(id)` is true when no operation touched the computer during the read.
 ///
-/// - A touched VM keeps its last settled reading, marked `settling` (per the D-02 owner
+/// - A touched computer keeps its last settled reading, marked `settling` (per the D-02 owner
 ///   answer, the row keeps its last known state next to its operation label); with no
 ///   earlier reading it shows this read's value, or a neutral placeholder.
-/// - An untouched VM whose own inspection failed keeps its last known state, marked
-///   `stale` with the reason, instead of failing every sandbox.
-/// - An inventory mismatch on an untouched VM fails the whole read, as before.
+/// - An untouched computer whose own inspection failed keeps its last known state, marked
+///   `stale` with the reason, instead of failing every computer.
+/// - An inventory mismatch on an untouched computer fails the whole read, as before.
 fn settle_rows(
     paths: &RuntimePaths,
     rows: Vec<Row>,
     settled: &dyn Fn(&str) -> bool,
-) -> Result<Vec<ApplicationWorkspace>, RuntimeError> {
+) -> Result<Vec<ApplicationComputer>, RuntimeError> {
     let last = last_settled(paths);
     rows.into_iter()
         .map(
             |Row {
-                 mut workspace,
+                 mut computer,
                  unread,
              }| {
-                let previous = last.get(workspace.machine.id());
-                if !settled(workspace.machine.id()) {
+                let previous = last.get(computer.configuration.id());
+                if !settled(computer.configuration.id()) {
                     match (previous, &unread) {
-                        (Some(previous), _) => keep_runtime_fields(&mut workspace, previous),
+                        (Some(previous), _) => keep_runtime_fields(&mut computer, previous),
                         (None, Some(_)) => {
-                            workspace.state = WorkspaceState::Starting;
-                            workspace.state_detail = "Updating".into();
+                            computer.state = ComputerState::Starting;
+                            computer.state_detail = "Updating".into();
                         }
                         (None, None) => {}
                     }
-                    workspace.settling = true;
-                    return Ok(workspace);
+                    computer.settling = true;
+                    return Ok(computer);
                 }
                 match unread {
-                    None => Ok(workspace),
+                    None => Ok(computer),
                     Some(Unread::Mismatch) => {
                         Err(RuntimeError::Malformed(INVENTORY_MISMATCH.into()))
                     }
                     Some(Unread::Failed(error)) => {
                         if let Some(previous) = previous {
-                            keep_runtime_fields(&mut workspace, previous);
+                            keep_runtime_fields(&mut computer, previous);
                         }
-                        workspace.freshness = Freshness::Stale;
-                        workspace.attention = Some(WorkspaceAttention {
+                        computer.freshness = Freshness::Stale;
+                        computer.attention = Some(ComputerAttention {
                             level: AttentionLevel::Warning,
                             message: format!(
-                                "Silo could not refresh this sandbox's state. {}",
+                                "Silo could not refresh this computer's state. {}",
                                 safe_activity_error(&error)
                             ),
                         });
-                        Ok(workspace)
+                        Ok(computer)
                     }
                 }
             },
@@ -4401,29 +4425,29 @@ fn settle_rows(
 }
 
 /// Copy the runtime-derived fields of an earlier reading; Silo's records stay current.
-fn keep_runtime_fields(workspace: &mut ApplicationWorkspace, previous: &ApplicationWorkspace) {
-    workspace.state = previous.state;
-    workspace.state_detail = previous.state_detail.clone();
-    workspace.attention = previous.attention.clone();
-    // The cache keeps runtime state while a VM settles. Revocation warnings are
+fn keep_runtime_fields(computer: &mut ApplicationComputer, previous: &ApplicationComputer) {
+    computer.state = previous.state;
+    computer.state_detail = previous.state_detail.clone();
+    computer.attention = previous.attention.clone();
+    // The cache keeps runtime state while a computer settles. Revocation warnings are
     // derived from today's journal, so do not copy yesterday's warning into it.
     if !previous.pending_secret_revocations.is_empty() {
         let warning = secret_revocation_warning(&previous.pending_secret_revocations);
-        if let Some(attention) = &mut workspace.attention {
+        if let Some(attention) = &mut computer.attention {
             if attention.message == warning {
-                workspace.attention = None;
+                computer.attention = None;
             } else if let Some(message) = attention.message.strip_suffix(&format!(" {warning}")) {
                 attention.message = message.into();
             }
         }
     }
-    workspace.can_dismiss_error = previous.can_dismiss_error;
-    workspace.repositories = previous.repositories.clone();
+    computer.can_dismiss_error = previous.can_dismiss_error;
+    computer.repositories = previous.repositories.clone();
 }
 
-/// Each VM's last settled, fresh reading (after enrichment), keyed by the inventory it
-/// belongs to and the VM's stable id. Returned in place of readings that overlap work.
-type SettledReadings = HashMap<(PathBuf, String), ApplicationWorkspace>;
+/// Each computer's last settled, fresh reading (after enrichment), keyed by the inventory it
+/// belongs to and the computer's stable id. Returned in place of readings that overlap work.
+type SettledReadings = HashMap<(PathBuf, String), ApplicationComputer>;
 static LAST_SETTLED: OnceLock<Mutex<SettledReadings>> = OnceLock::new();
 
 fn settled_readings() -> std::sync::MutexGuard<'static, SettledReadings> {
@@ -4434,28 +4458,31 @@ fn settled_readings() -> std::sync::MutexGuard<'static, SettledReadings> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn last_settled(paths: &RuntimePaths) -> HashMap<String, ApplicationWorkspace> {
+fn last_settled(paths: &RuntimePaths) -> HashMap<String, ApplicationComputer> {
     settled_readings()
         .iter()
         .filter(|((metadata, _), _)| *metadata == paths.metadata)
-        .map(|((_, id), workspace)| (id.clone(), workspace.clone()))
+        .map(|((_, id), computer)| (id.clone(), computer.clone()))
         .collect()
 }
 
-/// Remember the fresh, settled VM rows of a published source, and forget removed VMs.
-fn remember_settled(paths: &RuntimePaths, workspaces: &[ApplicationWorkspace]) {
-    let present: HashSet<&str> = workspaces
+/// Remember the fresh, settled computer rows of a published source, and forget removed computers.
+fn remember_settled(paths: &RuntimePaths, computers: &[ApplicationComputer]) {
+    let present: HashSet<&str> = computers
         .iter()
-        .map(|workspace| workspace.machine.id())
+        .map(|computer| computer.configuration.id())
         .collect();
     let mut readings = settled_readings();
     readings
         .retain(|(metadata, id), _| *metadata != paths.metadata || present.contains(id.as_str()));
-    for workspace in workspaces {
-        if !workspace.settling && workspace.freshness == Freshness::Fresh {
+    for computer in computers {
+        if !computer.settling && computer.freshness == Freshness::Fresh {
             readings.insert(
-                (paths.metadata.clone(), workspace.machine.id().to_owned()),
-                workspace.clone(),
+                (
+                    paths.metadata.clone(),
+                    computer.configuration.id().to_owned(),
+                ),
+                computer.clone(),
             );
         }
     }
@@ -4471,14 +4498,14 @@ pub(crate) fn application_state_response(
 ) -> Result<ApplicationSource, RuntimeError> {
     let mut source = state_after_change(&ProcessRunner, paths, &OPERATIONS)?;
     enrich_application_state(app, paths, &mut source, Repositories::LastKnown);
-    remember_settled(paths, &source.workspaces);
+    remember_settled(paths, &source.computers);
     Ok(source)
 }
 
 /// State returned by a change that already succeeded. Its outcome and the refresh are
-/// separate: when the follow-up read fails, every VM keeps its last known state, marked
+/// separate: when the follow-up read fails, every computer keeps its last known state, marked
 /// stale with the reason, instead of the finished change being reported as failed.
-/// Work on other VMs settles their rows as in a normal read; the caller's own operation
+/// Work on other computers settles their rows as in a normal read; the caller's own operation
 /// (if it still holds the gate) does not.
 fn state_after_change(
     runner: &dyn RuntimeRunner,
@@ -4486,61 +4513,61 @@ fn state_after_change(
     gate: &operation_gate::OperationGate,
 ) -> Result<ApplicationSource, RuntimeError> {
     let started = gate.generations();
-    let settled = |id: &str| gate.is_vm_quiet(id) && gate.generation(id) == started.of(id);
-    let workspaces =
+    let settled = |id: &str| gate.is_computer_quiet(id) && gate.generation(id) == started.of(id);
+    let computers =
         match read_rows(runner, paths).and_then(|rows| settle_rows(paths, rows, &settled)) {
-            Ok(workspaces) => workspaces,
-            Err(error) => last_known_workspaces(paths, &error)?,
+            Ok(computers) => computers,
+            Err(error) => last_known_computers(paths, &error)?,
         };
-    application_source_for_workspaces(paths, workspaces)
+    application_source_for_computers(paths, computers)
 }
 
-fn last_known_workspaces(
+fn last_known_computers(
     paths: &RuntimePaths,
     error: &RuntimeError,
-) -> Result<Vec<ApplicationWorkspace>, RuntimeError> {
+) -> Result<Vec<ApplicationComputer>, RuntimeError> {
     let last = last_settled(paths);
     let message = format!(
-        "The change finished, but Silo could not refresh sandbox states. {}",
+        "The change finished, but Silo could not refresh computer states. {}",
         safe_activity_error(error)
     );
     Ok(read_metadata(&paths.metadata)?
-        .machines
+        .computers
         .into_iter()
-        .map(|machine| {
-            let mut workspace = unread_workspace(machine);
-            if let Some(previous) = last.get(workspace.machine.id()) {
-                keep_runtime_fields(&mut workspace, previous);
+        .map(|configuration| {
+            let mut computer = unread_computer(configuration);
+            if let Some(previous) = last.get(computer.configuration.id()) {
+                keep_runtime_fields(&mut computer, previous);
             }
-            workspace.freshness = Freshness::Stale;
-            workspace.attention = Some(WorkspaceAttention {
+            computer.freshness = Freshness::Stale;
+            computer.attention = Some(ComputerAttention {
                 level: AttentionLevel::Warning,
                 message: message.clone(),
             });
-            workspace
+            computer
         })
         .collect())
 }
 
-/// A change's response does not scan guests: each fresh running VM shows the
+/// A change's response does not scan guests: each fresh running computer shows the
 /// repositories of its last settled reading until the next full read refreshes them.
-fn keep_last_known_repositories(paths: &RuntimePaths, workspaces: &mut [ApplicationWorkspace]) {
+fn keep_last_known_repositories(paths: &RuntimePaths, computers: &mut [ApplicationComputer]) {
     let last = last_settled(paths);
-    for workspace in workspaces {
-        if matches!(workspace.state, WorkspaceState::Running) && workspace.repositories.is_empty() {
-            if let Some(previous) = last.get(workspace.machine.id()) {
-                workspace.repositories = previous.repositories.clone();
+    for computer in computers {
+        if matches!(computer.state, ComputerState::Running) && computer.repositories.is_empty() {
+            if let Some(previous) = last.get(computer.configuration.id()) {
+                computer.repositories = previous.repositories.clone();
             }
         }
     }
 }
 
-/// A VM row with no reading yet; its runtime fields are replaced when settled.
-fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
-    ApplicationWorkspace {
-        machine,
+/// A computer row with no reading yet; its runtime fields are replaced when settled.
+fn unread_computer(configuration: ComputerConfiguration) -> ApplicationComputer {
+    ApplicationComputer {
+        configuration,
         purpose: "Local MicroSandbox".into(),
-        state: WorkspaceState::Failed,
+        state: ComputerState::Failed,
         state_detail: "State unavailable".into(),
         can_dismiss_error: false,
         lifecycle_failure: None,
@@ -4562,7 +4589,7 @@ fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
 }
 
 /// A persisted running checkpoint operation is interrupted only when no operation
-/// currently holds its VM; otherwise it is live and keeps its running stage.
+/// currently holds its computer; otherwise it is live and keeps its running stage.
 fn checkpoint_operation_view(
     mut operation: checkpoints::Operation,
     live: bool,
@@ -4584,61 +4611,61 @@ fn secret_revocation_warning(names: &[String]) -> String {
     )
 }
 
-fn application_source_for_workspaces(
+fn application_source_for_computers(
     paths: &RuntimePaths,
-    mut workspaces: Vec<ApplicationWorkspace>,
+    mut computers: Vec<ApplicationComputer>,
 ) -> Result<ApplicationSource, RuntimeError> {
     let secrets = crate::secrets::snapshot().map_err(RuntimeError::Unavailable)?;
     // Journal read failures are reported as an Activity warning by read() below.
     let mut failures = runtime_activity::failures(paths).unwrap_or_default();
-    for workspace in &mut workspaces {
-        workspace.lifecycle_failure = failures.remove(workspace.machine.id());
-        match checkpoints::load(paths, workspace.machine.id()) {
+    for computer in &mut computers {
+        computer.lifecycle_failure = failures.remove(computer.configuration.id());
+        match checkpoints::load(paths, computer.configuration.id()) {
             Ok(checkpoint) => {
-                workspace.pending_checkpoint_restore =
-                    checkpoints::view_pending(&checkpoint, workspace.machine.name());
-                workspace.unfinished_restore = checkpoints::view_unfinished_restore(&checkpoint);
-                workspace.checkpoints = checkpoint.checkpoints;
-                let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
-                workspace.checkpoint_operation = checkpoint
+                computer.pending_checkpoint_restore =
+                    checkpoints::view_pending(&checkpoint, computer.configuration.name());
+                computer.unfinished_restore = checkpoints::view_unfinished_restore(&checkpoint);
+                computer.checkpoints = checkpoint.checkpoints;
+                let live = !OPERATIONS.is_computer_idle(computer.configuration.id());
+                computer.checkpoint_operation = checkpoint
                     .checkpoint_operation
                     .map(|operation| checkpoint_operation_view(operation, live));
             }
-            // One unreadable record must not fail every sandbox: flag only this one.
+            // One unreadable record must not fail every computer: flag only this one.
             Err(error) => {
-                workspace.checkpoints = Vec::new();
-                workspace.pending_checkpoint_restore = None;
-                workspace.checkpoint_operation = None;
-                workspace.unfinished_restore = None;
-                workspace.attention = Some(WorkspaceAttention {
+                computer.checkpoints = Vec::new();
+                computer.pending_checkpoint_restore = None;
+                computer.checkpoint_operation = None;
+                computer.unfinished_restore = None;
+                computer.attention = Some(ComputerAttention {
                         level: AttentionLevel::Error,
-                        message: format!("{error} Checkpoints and actions that need them are unavailable for this sandbox."),
+                        message: format!("{error} Checkpoints and actions that need them are unavailable for this computer."),
                     });
             }
         }
-        workspace.pending_secret_revocations =
-            crate::secrets::pending_names(workspace.machine.name())
+        computer.pending_secret_revocations =
+            crate::secrets::pending_names(computer.configuration.name())
                 .map_err(RuntimeError::Unavailable)?;
-        if !workspace.pending_secret_revocations.is_empty() {
-            let warning = secret_revocation_warning(&workspace.pending_secret_revocations);
-            if let Some(attention) = &mut workspace.attention {
+        if !computer.pending_secret_revocations.is_empty() {
+            let warning = secret_revocation_warning(&computer.pending_secret_revocations);
+            if let Some(attention) = &mut computer.attention {
                 attention.message.push(' ');
                 attention.message.push_str(&warning);
             } else {
-                workspace.attention = Some(WorkspaceAttention {
+                computer.attention = Some(ComputerAttention {
                     level: AttentionLevel::Warning,
                     message: warning,
                 });
             }
         }
-        workspace.secret_names = secrets
+        computer.secret_names = secrets
             .iter()
             .filter(|secret| {
                 secret["removing"] != true
-                    && secret["workspaces"].as_array().is_some_and(|names| {
+                    && secret["computers"].as_array().is_some_and(|names| {
                         names
                             .iter()
-                            .any(|name| name.as_str() == Some(workspace.machine.name()))
+                            .any(|name| name.as_str() == Some(computer.configuration.name()))
                     })
             })
             .filter_map(|secret| secret["name"].as_str().map(str::to_owned))
@@ -4650,13 +4677,16 @@ fn application_source_for_workspaces(
     activities.truncate(200);
     Ok(ApplicationSource {
         runtime_repair: None,
-        workspaces,
+        computers,
         activities,
-        sandbox_configuration_operation: None,
+        computer_configuration_operation: None,
         repository_push_operations: Vec::new(),
         github: serde_json::json!({"state": "disconnected"}),
         secrets,
-        host_capacity: host_resources().ok().as_ref().and_then(HostCapacity::of),
+        device_capacity: device_resources()
+            .ok()
+            .as_ref()
+            .and_then(DeviceCapacity::of),
     })
 }
 
@@ -4676,11 +4706,11 @@ fn list_managed(
         READ_TIMEOUT,
     )?;
     serde_json::from_str(&output.stdout).map_err(|_| {
-        RuntimeError::Malformed("The bundled runtime returned an invalid sandbox list.".into())
+        RuntimeError::Malformed("The bundled runtime returned an invalid computer list.".into())
     })
 }
 
-pub(crate) fn inspect_workspace(
+pub(crate) fn inspect_computer(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
@@ -4698,19 +4728,19 @@ pub(crate) fn inspect_workspace(
     )?;
     serde_json::from_str(&output.stdout).map_err(|_| {
         RuntimeError::Malformed(format!(
-            "The bundled runtime returned invalid state for sandbox '{name}'."
+            "The bundled runtime returned invalid state for computer '{name}'."
         ))
     })
 }
 
-/// Silo's runtime patch makes `inspect` name the instance of a running sandbox. Computer-use
+/// Silo's runtime patch makes `inspect` name the instance of a running computer. Computer-use
 /// setup and storage reclaim trust only that identity, so a runtime without it would silently
 /// disable both. The patch always writes the entry (null while no active run matches), so a
-/// running sandbox whose output has no entry at all comes from a runtime that lacks the
+/// running computer whose output has no entry at all comes from a runtime that lacks the
 /// capability: that is an explicit error here, and one diagnostic line per runtime.
 static INSTANCE_ID_WARNED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
 
-/// The running instance a runtime reports for `inspected`: `None` when the sandbox is not
+/// The running instance a runtime reports for `inspected`: `None` when the computer is not
 /// running or its instance is not established yet.
 pub(crate) fn running_instance_id(
     paths: &RuntimePaths,
@@ -4738,14 +4768,14 @@ pub(crate) fn running_instance_id(
     Err(RuntimeError::Unavailable(message.into()))
 }
 
-/// Live runtime state of a Silo VM that may not exist in the runtime yet.
-pub(crate) enum VmRuntime {
-    /// No runtime sandbox exists (a checkpoint restore is pending). It is stopped.
+/// Live runtime state of a Silo computer that may not exist in the runtime yet.
+pub(crate) enum ComputerRuntime {
+    /// No runtime computer exists (a checkpoint restore is pending). It is stopped.
     Absent,
     Present(InspectedSandbox),
 }
 
-fn is_missing_sandbox(error: &RuntimeError) -> bool {
+fn is_missing_computer(error: &RuntimeError) -> bool {
     match error {
         RuntimeError::Failed { detail, .. } => {
             let detail = detail.to_ascii_lowercase();
@@ -4757,30 +4787,30 @@ fn is_missing_sandbox(error: &RuntimeError) -> bool {
     }
 }
 
-/// A Silo VM that is pending checkpoint restore has no runtime sandbox to configure yet.
+/// A Silo computer that is pending checkpoint restore has no runtime computer to configure yet.
 pub(crate) fn is_pending_restore(paths: &RuntimePaths, name: &str) -> bool {
-    resolve_vm_id(paths, name)
+    resolve_computer_id(paths, name)
         .and_then(|id| checkpoints::is_pending(paths, &id))
         .unwrap_or(false)
 }
 
-/// Inspect a Silo VM without treating "not created yet" as a failure. An unattempted
-/// restore is absent; after an attempt, inspect the VM it may have created. A runtime
-/// that reports the sandbox as missing is likewise `Absent`.
-pub(crate) fn observe_vm(
+/// Inspect a Silo computer without treating "not created yet" as a failure. An unattempted
+/// restore is absent; after an attempt, inspect the computer it may have created. A runtime
+/// that reports the computer as missing is likewise `Absent`.
+pub(crate) fn observe_computer(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
-) -> Result<VmRuntime, RuntimeError> {
+) -> Result<ComputerRuntime, RuntimeError> {
     validate_name(name)?;
-    if let Ok(id) = resolve_vm_id(paths, name) {
+    if let Ok(id) = resolve_computer_id(paths, name) {
         if checkpoints::pending_view(paths, &id, true)? {
-            return Ok(VmRuntime::Absent);
+            return Ok(ComputerRuntime::Absent);
         }
     }
-    match inspect_workspace(runner, paths, name) {
-        Ok(inspected) => Ok(VmRuntime::Present(inspected)),
-        Err(error) if is_missing_sandbox(&error) => Ok(VmRuntime::Absent),
+    match inspect_computer(runner, paths, name) {
+        Ok(inspected) => Ok(ComputerRuntime::Present(inspected)),
+        Err(error) if is_missing_computer(&error) => Ok(ComputerRuntime::Absent),
         Err(error) => Err(error),
     }
 }
@@ -4794,92 +4824,92 @@ pub(crate) fn ensure_managed(inspected: &InspectedSandbox) -> Result<(), Runtime
             != Some("true")
     {
         return Err(RuntimeError::Invalid(format!(
-            "Sandbox '{}' is not owned by Silo. No sandbox operation was performed.",
+            "Computer '{}' is not owned by Silo. No computer operation was performed.",
             inspected.name
         )));
     }
     Ok(())
 }
 
-fn ensure_current_machine(
+fn ensure_current_computer(
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
     if !read_metadata(&paths.metadata)?
-        .machines
+        .computers
         .iter()
-        .any(|current| current.id() == machine.id() && current.name() == machine.name())
+        .any(|current| current.id() == configuration.id() && current.name() == configuration.name())
     {
         return Err(RuntimeError::Invalid(
-            "The sandbox identity changed. Its replacement was preserved.".into(),
+            "The computer identity changed. Its replacement was preserved.".into(),
         ));
     }
     Ok(())
 }
 
-fn ensure_machine_identity(
-    machine: &MachineConfiguration,
+fn ensure_computer_identity(
+    configuration: &ComputerConfiguration,
     inspected: &InspectedSandbox,
 ) -> Result<(), RuntimeError> {
     ensure_managed(inspected)?;
-    if inspected.name != machine.name()
+    if inspected.name != configuration.name()
         || inspected
             .config
             .pointer("/labels/silo.machine-id")
             .and_then(Value::as_str)
-            != Some(machine.id())
+            != Some(configuration.id())
     {
         return Err(RuntimeError::Invalid(
-            "The sandbox identity changed. No settings were changed on the replacement.".into(),
+            "The computer identity changed. No settings were changed on the replacement.".into(),
         ));
     }
     Ok(())
 }
 
-fn vm_workspace(
+fn application_computer(
     paths: &RuntimePaths,
-    machine: MachineConfiguration,
+    configuration: ComputerConfiguration,
     inspected: &InspectedSandbox,
-) -> ApplicationWorkspace {
+) -> ApplicationComputer {
     let (state, state_detail, attention) = match inspected.status.as_str() {
         "Running" => (
-            WorkspaceState::Running,
+            ComputerState::Running,
             "Running".into(),
-            configuration_attention(paths, &machine, inspected)
-                .or_else(|| start_refresh_attention(paths, machine.name())),
+            configuration_attention(paths, &configuration, inspected)
+                .or_else(|| start_refresh_attention(paths, configuration.name())),
         ),
-        "Starting" => (WorkspaceState::Starting, "Starting".into(), None),
-        "Draining" => (WorkspaceState::Starting, "Stopping".into(), None),
+        "Starting" => (ComputerState::Starting, "Starting".into(), None),
+        "Draining" => (ComputerState::Starting, "Stopping".into(), None),
         "Created" | "Stopped" => (
-            WorkspaceState::Stopped,
+            ComputerState::Stopped,
             "Stopped".into(),
-            configuration_attention(paths, &machine, inspected),
+            configuration_attention(paths, &configuration, inspected),
         ),
-        "Paused" => (WorkspaceState::Stopped, "Paused".into(), None),
-        "Crashed" if crash_acknowledgement::is_acknowledged(paths, &machine, inspected) => (
-            WorkspaceState::Stopped,
+        "Paused" => (ComputerState::Stopped, "Paused".into(), None),
+        "Crashed" if crash_acknowledgement::is_acknowledged(paths, &configuration, inspected) => (
+            ComputerState::Stopped,
             "Stopped".into(),
-            configuration_attention(paths, &machine, inspected),
+            configuration_attention(paths, &configuration, inspected),
         ),
         "Crashed" => (
-            WorkspaceState::Failed,
+            ComputerState::Failed,
             "The MicroSandbox runtime reported a crash.".into(),
-            Some(WorkspaceAttention {
+            Some(ComputerAttention {
                 level: AttentionLevel::Error,
-                message: "The sandbox runtime crashed. Restart it to retry.".into(),
+                message: "The computer runtime crashed. Restart it to retry.".into(),
             }),
         ),
         other => (
-            WorkspaceState::Failed,
+            ComputerState::Failed,
             format!("The MicroSandbox runtime reported unknown state '{other}'."),
-            Some(WorkspaceAttention {
+            Some(ComputerAttention {
                 level: AttentionLevel::Error,
-                message: format!("The sandbox runtime returned unknown state '{other}'."),
+                message: format!("The computer runtime returned unknown state '{other}'."),
             }),
         ),
     };
-    ApplicationWorkspace {
-        machine,
+    ApplicationComputer {
+        configuration,
         purpose: "Local MicroSandbox".into(),
         state,
         state_detail,
@@ -4888,7 +4918,7 @@ fn vm_workspace(
                 .updated_at
                 .as_ref()
                 .is_some_and(|value| !value.is_empty())
-            && matches!(state, WorkspaceState::Failed),
+            && matches!(state, ComputerState::Failed),
         lifecycle_failure: None,
         attention,
         freshness: Freshness::Fresh,
@@ -4909,17 +4939,17 @@ fn vm_workspace(
 
 fn configuration_attention(
     _paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     inspected: &InspectedSandbox,
-) -> Option<WorkspaceAttention> {
-    let MachineConfiguration {
+) -> Option<ComputerAttention> {
+    let ComputerConfiguration {
         cpus,
         max_cpus,
         memory_gib,
         max_memory_gib,
         runtime_storage_gib,
         ..
-    } = machine;
+    } = configuration;
     let expected = (
         u64::from(*cpus),
         u64::from(*max_cpus),
@@ -4949,7 +4979,7 @@ fn configuration_attention(
             .pointer("/image/Oci/root_disk/size_mib")
             .and_then(Value::as_u64),
     );
-    let workspace_storage_gib = machine.workspace_storage_gib;
+    let workspace_storage_gib = configuration.workspace_storage_gib;
     let mounts_match = inspected
         .config
         .get("mounts")
@@ -4982,7 +5012,7 @@ fn configuration_attention(
     {
         None
     } else {
-        Some(WorkspaceAttention {
+        Some(ComputerAttention {
             level: AttentionLevel::Warning,
             message: "Saved Silo resource settings differ from the runtime configuration.".into(),
         })
@@ -4991,8 +5021,8 @@ fn configuration_attention(
 
 pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
     let paths = runtime_paths(app)?;
-    // A launch start changes only its VM, so it takes that VM's lane like a user Start:
-    // other sandboxes' actions and state are not held behind each boot.
+    // A launch start changes only its computer, so it takes that computer's lane like a user Start:
+    // other computers' actions and state are not held behind each boot.
     let guard = match launch_start_guard(&OPERATIONS, &paths, id)
         .map_err(|error| safe_activity_error(&error))?
     {
@@ -5004,13 +5034,13 @@ pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
     if crate::startup::is_cancelled(app) {
         return Ok(());
     }
-    let outcome =
-        host_resources().and_then(|host| start_at_launch_with(&ProcessRunner, &paths, &host, id));
+    let outcome = device_resources()
+        .and_then(|device| start_at_launch_with(&ProcessRunner, &paths, &device, id));
     drop(guard);
     match outcome {
         Ok(LaunchStart::Done) => Ok(()),
         Ok(LaunchStart::NeedsExplicitStart(name)) => Err(format!(
-            "{name} starts from a checkpoint and needs an explicit Start from its sandbox view."
+            "{name} starts from a checkpoint and needs an explicit Start from its computer view."
         )),
         // The user cancelled this start from the queue; that is not a launch failure.
         Err(RuntimeError::Cancelled { .. }) => Ok(()),
@@ -5019,15 +5049,15 @@ pub(crate) fn start_at_launch(app: &AppHandle, id: &str) -> Result<(), String> {
 }
 
 enum LaunchAdmission<'a> {
-    /// Run the start holding this VM's lane.
+    /// Run the start holding this computer's lane.
     Admitted(operation_gate::OperationGuard<'a>),
-    /// Not a configured local VM: run unguarded so `start_at_launch_with` reports why.
+    /// Not a configured local computer: run unguarded so `start_at_launch_with` reports why.
     Unguarded,
     /// The user already queued the same Start, or cancelled this one while it waited.
     Skipped,
 }
 
-/// Admit a launch-time start on the selected VM's own lane, with the same label, kind,
+/// Admit a launch-time start on the selected computer's own lane, with the same label, kind,
 /// dedupe key, cancellability and expected duration as a user Start.
 fn launch_start_guard<'a>(
     gate: &'a operation_gate::OperationGate,
@@ -5035,14 +5065,18 @@ fn launch_start_guard<'a>(
     id: &str,
 ) -> Result<LaunchAdmission<'a>, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
-    let Some(machine) = metadata.machines.iter().find(|machine| machine.id() == id) else {
+    let Some(configuration) = metadata
+        .computers
+        .iter()
+        .find(|configuration| configuration.id() == id)
+    else {
         return Ok(LaunchAdmission::Unguarded);
     };
     let guard = gate.kind(operation_gate::OperationKind::Lifecycle).acquire(
-        operation_gate::Scope::Vm { id: id.to_owned() },
-        Some(machine.name().to_owned()),
-        &lifecycle_label("start", machine.name()),
-        Some(format!("vm:{id}:start")),
+        operation_gate::Scope::Computer { id: id.to_owned() },
+        Some(configuration.name().to_owned()),
+        &lifecycle_label("start", configuration.name()),
+        Some(format!("computer:{id}:start")),
     );
     match guard {
         Ok(guard) => {
@@ -5057,7 +5091,7 @@ fn launch_start_guard<'a>(
     }
 }
 
-/// What a launch-time start did for one selected VM.
+/// What a launch-time start did for one selected computer.
 #[derive(Debug, PartialEq, Eq)]
 enum LaunchStart {
     /// Started, or already running.
@@ -5069,22 +5103,22 @@ enum LaunchStart {
 fn start_at_launch_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    host: &HostResources,
+    device: &DeviceResources,
     id: &str,
 ) -> Result<LaunchStart, RuntimeError> {
     let metadata = read_metadata(&paths.metadata)?;
-    let machine = metadata.machines.iter().find(|machine| machine.id() == id)
-        .ok_or_else(|| RuntimeError::Invalid("A sandbox selected for launch no longer exists. Update the startup selection in Settings.".into()))?;
-    let name = machine.name();
-    if checkpoints::needs_explicit_start(paths, machine.id())? {
+    let configuration = metadata.computers.iter().find(|configuration| configuration.id() == id)
+        .ok_or_else(|| RuntimeError::Invalid("A computer selected for launch no longer exists. Update the startup selection in Settings.".into()))?;
+    let name = configuration.name();
+    if checkpoints::needs_explicit_start(paths, configuration.id())? {
         return Ok(LaunchStart::NeedsExplicitStart(name.to_owned()));
     }
     let result = (|| {
-        let inspected = inspect_workspace(runner, paths, name)?;
-        ensure_machine_identity(machine, &inspected)?;
+        let inspected = inspect_computer(runner, paths, name)?;
+        ensure_computer_identity(configuration, &inspected)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
-            "created" | "stopped" => workspace_action_with(runner, paths, host, "start", name),
+            "created" | "stopped" => computer_action_with(runner, paths, device, "start", name),
             _ => Err(RuntimeError::Invalid(format!(
                 "{name} is not stopped or running. Check its status before starting it."
             ))),
@@ -5102,47 +5136,47 @@ fn start_at_launch_with(
 
 // Both local and remote user actions must activate the same selected checkpoint.
 // Background startup and other implicit callers retain the explicit-Start guard.
-fn explicit_workspace_action_with(
+fn explicit_computer_action_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    host: &HostResources,
+    device: &DeviceResources,
     action: &str,
     name: &str,
 ) -> Result<(), RuntimeError> {
     if action == "start" {
-        if let Some(machine) = read_metadata(&paths.metadata)?
-            .machines
+        if let Some(configuration) = read_metadata(&paths.metadata)?
+            .computers
             .into_iter()
-            .find(|machine| machine.name() == name)
+            .find(|configuration| configuration.name() == name)
         {
-            if checkpoints::needs_explicit_start(paths, machine.id())? {
-                checkpoints::start_pending(runner, paths, &machine)?;
-                crate::github::workspace_restored(name);
+            if checkpoints::needs_explicit_start(paths, configuration.id())? {
+                checkpoints::start_pending(runner, paths, &configuration)?;
+                crate::github::computer_restored(name);
                 return Ok(());
             }
         }
     }
-    workspace_action_with(runner, paths, host, action, name)
+    computer_action_with(runner, paths, device, action, name)
 }
 
-fn workspace_action_with(
+fn computer_action_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    host: &HostResources,
+    device: &DeviceResources,
     action: &str,
     name: &str,
 ) -> Result<(), RuntimeError> {
     if matches!(action, "start" | "stop" | "restart") {
-        if let Some(machine) = read_metadata(&paths.metadata)?
-            .machines
+        if let Some(configuration) = read_metadata(&paths.metadata)?
+            .computers
             .into_iter()
-            .find(|machine| machine.name() == name)
+            .find(|configuration| configuration.name() == name)
         {
-            if checkpoints::needs_explicit_start(paths, machine.id())? {
+            if checkpoints::needs_explicit_start(paths, configuration.id())? {
                 return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(
                     paths,
-                    machine.id(),
-                    machine.name(),
+                    configuration.id(),
+                    configuration.name(),
                 )));
             }
         }
@@ -5153,26 +5187,26 @@ fn workspace_action_with(
     if matches!(action, "start" | "stop" | "restart") {
         crash_acknowledgement::clear(paths, name)?;
     }
-    lifecycle_recovery::perform(runner, paths, host, action, name)
+    lifecycle_recovery::perform(runner, paths, device, action, name)
 }
 
 #[cfg(test)]
 fn apply_whole_configuration(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    host: &HostResources,
-    request: MachineConfigurationRequest,
+    device: &DeviceResources,
+    request: ComputerConfigurationRequest,
 ) -> Result<(), RuntimeError> {
-    apply_whole_configuration_with_progress(runner, paths, host, request, None, &|_, _, _| {})
+    apply_whole_configuration_with_progress(runner, paths, device, request, None, &|_, _, _| {})
 }
 
-/// Default the desktop of new v4 sandboxes. This must run before a request is compared
+/// Default the desktop of new v4 computers. This must run before a request is compared
 /// with or recorded in the configuration journal, so a resubmitted failed creation
 /// matches the journaled (already defaulted) request.
 fn apply_desktop_defaults(
     paths: &RuntimePaths,
-    previous: &MachineConfigurationRequest,
-    request: &mut MachineConfigurationRequest,
+    previous: &ComputerConfigurationRequest,
+    request: &mut ComputerConfigurationRequest,
 ) {
     // Tests never depend on which image happens to be bundled in `runtime/`: they
     // run as a v3 image unless they pin another version (`guest_image::pin_test_version`).
@@ -5185,126 +5219,137 @@ fn apply_desktop_defaults(
 
 fn apply_desktop_defaults_for(
     version: Option<&str>,
-    previous: &MachineConfigurationRequest,
-    request: &mut MachineConfigurationRequest,
+    previous: &ComputerConfigurationRequest,
+    request: &mut ComputerConfigurationRequest,
 ) {
     if let Some(version) = version {
-        crate::desktop::default_new_vm_desktops(&mut request.machines, &previous.machines, version);
+        crate::desktop::default_new_computer_desktops(
+            &mut request.computers,
+            &previous.computers,
+            version,
+        );
     }
 }
 
 fn apply_whole_configuration_with_progress(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    host: &HostResources,
-    mut request: MachineConfigurationRequest,
-    retry_workspace: Option<&str>,
+    device: &DeviceResources,
+    mut request: ComputerConfigurationRequest,
+    retry_computer: Option<&str>,
     progress: &dyn Fn(&str, &str, u8),
 ) -> Result<(), RuntimeError> {
     let _attempt = configuration_recovery::attempt();
     validate_request(&request)?;
     let previous = read_metadata(&paths.metadata)?;
     apply_desktop_defaults(paths, &previous, &mut request);
-    if retry_workspace.is_some_and(|name| {
+    if retry_computer.is_some_and(|name| {
         !request
-            .machines
+            .computers
             .iter()
-            .chain(&previous.machines)
-            .any(|machine| machine.name() == name)
+            .chain(&previous.computers)
+            .any(|configuration| configuration.name() == name)
     }) {
         return Err(RuntimeError::Invalid(
-            "The sandbox selected for retry is not in this configuration.".into(),
+            "The computer selected for retry is not in this configuration.".into(),
         ));
     }
-    validate_requested_resources(&request, host)?;
-    let previous_by_id: HashMap<&str, &MachineConfiguration> = previous
-        .machines
+    validate_requested_resources(&request, device)?;
+    let previous_by_id: HashMap<&str, &ComputerConfiguration> = previous
+        .computers
         .iter()
-        .map(|machine| (machine.id(), machine))
+        .map(|configuration| (configuration.id(), configuration))
         .collect();
     let requested_ids: HashSet<&str> = request
-        .machines
+        .computers
         .iter()
-        .map(MachineConfiguration::id)
+        .map(ComputerConfiguration::id)
         .collect();
 
-    for machine in &request.machines {
-        if let Some(old) = previous_by_id.get(machine.id()) {
-            if *old != machine {
-                validate_machine_update(old, machine)?;
-                ensure_machine_identity(
-                    machine,
-                    &inspect_workspace(runner, paths, machine.name())?,
+    for configuration in &request.computers {
+        if let Some(old) = previous_by_id.get(configuration.id()) {
+            if *old != configuration {
+                validate_computer_update(old, configuration)?;
+                ensure_computer_identity(
+                    configuration,
+                    &inspect_computer(runner, paths, configuration.name())?,
                 )?;
             }
         }
     }
-    for machine in previous
-        .machines
+    for configuration in previous
+        .computers
         .iter()
-        .filter(|machine| !requested_ids.contains(machine.id()))
+        .filter(|configuration| !requested_ids.contains(configuration.id()))
     {
-        preflight_removal(runner, paths, machine)?;
+        preflight_removal(runner, paths, configuration)?;
     }
     configuration_recovery::begin(paths, &request)?;
     let mut applied = previous.clone();
     let mut changed = false;
     let result = (|| {
-        // Removals run first, as the frontend sends them: deleting a sandbox and adding
+        // Removals run first, as the frontend sends them: deleting a computer and adding
         // a new one with the same name in one batch must free its name and storage.
-        for machine in previous
-            .machines
+        for configuration in previous
+            .computers
             .iter()
-            .filter(|machine| !requested_ids.contains(machine.id()))
+            .filter(|configuration| !requested_ids.contains(configuration.id()))
         {
-            progress("workspace-removal", machine.name(), 0);
-            remove_machine_runtime(runner, paths, machine)?;
+            progress("computer-removal", configuration.name(), 0);
+            remove_computer_runtime(runner, paths, configuration)?;
             changed = true;
-            crate::network::workspace_removed(paths, machine.name())
+            crate::network::computer_removed(paths, configuration.name())
                 .map_err(RuntimeError::Unavailable)?;
             applied
-                .machines
-                .retain(|existing| existing.id() != machine.id());
+                .computers
+                .retain(|existing| existing.id() != configuration.id());
             write_metadata(&paths.metadata, &applied)?;
-            lifecycle_recovery::forget_removed(paths, machine)?;
-            crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
-            forget_github_state(&paths.home, machine.name());
-            crate::github::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
-            remove_machine_volumes(paths, machine)?;
-            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name())?;
-            checkpoints::forget_removed(paths, machine.id())?;
-            progress("workspace-removal", machine.name(), 1);
+            lifecycle_recovery::forget_removed(paths, configuration)?;
+            crate::secrets::computer_removed(configuration.name())
+                .map_err(RuntimeError::Unavailable)?;
+            forget_github_state(&paths.home, configuration.name());
+            crate::github::computer_removed(configuration.name())
+                .map_err(RuntimeError::Unavailable)?;
+            remove_computer_volumes(paths, configuration)?;
+            checkpoints::remove_deleted_snapshots(
+                runner,
+                paths,
+                configuration.id(),
+                configuration.name(),
+            )?;
+            checkpoints::forget_removed(paths, configuration.id())?;
+            progress("computer-removal", configuration.name(), 1);
         }
-        for machine in &request.machines {
-            match previous_by_id.get(machine.id()) {
+        for configuration in &request.computers {
+            match previous_by_id.get(configuration.id()) {
                 None => {
-                    progress("workspace-configuration", machine.name(), 0);
-                    create_machine_with_progress(runner, paths, machine, progress)?;
+                    progress("computer-configuration", configuration.name(), 0);
+                    create_computer_with_progress(runner, paths, configuration, progress)?;
                 }
-                Some(old) if *old == machine => {
-                    if retry_workspace == Some(machine.name()) {
-                        progress("workspace-verification", machine.name(), 0);
-                        verify_machine_configuration(runner, paths, machine)?;
-                        progress("workspace-verification", machine.name(), 1);
+                Some(old) if *old == configuration => {
+                    if retry_computer == Some(configuration.name()) {
+                        progress("computer-verification", configuration.name(), 0);
+                        verify_computer_configuration(runner, paths, configuration)?;
+                        progress("computer-verification", configuration.name(), 1);
                     }
                     continue;
                 }
                 Some(old) => {
-                    progress("workspace-configuration", machine.name(), 0);
-                    update_machine(runner, paths, old, machine)?;
+                    progress("computer-configuration", configuration.name(), 0);
+                    update_computer(runner, paths, old, configuration)?;
                 }
             }
             changed = true;
             applied
-                .machines
-                .retain(|existing| existing.id() != machine.id());
-            applied.machines.push(machine.clone());
-            progress("workspace-settings", machine.name(), 0);
+                .computers
+                .retain(|existing| existing.id() != configuration.id());
+            applied.computers.push(configuration.clone());
+            progress("computer-settings", configuration.name(), 0);
             write_metadata(&paths.metadata, &applied)?;
-            progress("workspace-configuration", machine.name(), 1);
-            progress("workspace-verification", machine.name(), 0);
-            verify_machine_configuration(runner, paths, machine)?;
-            progress("workspace-verification", machine.name(), 1);
+            progress("computer-configuration", configuration.name(), 1);
+            progress("computer-verification", configuration.name(), 0);
+            verify_computer_configuration(runner, paths, configuration)?;
+            progress("computer-verification", configuration.name(), 1);
         }
         write_metadata(&paths.metadata, &request)?;
         configuration_recovery::finish(paths)
@@ -5319,39 +5364,39 @@ fn apply_whole_configuration_with_progress(
     })
 }
 
-fn verify_machine_configuration(
+fn verify_computer_configuration(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
-    let inspected = inspect_workspace(runner, paths, machine.name())?;
+    let inspected = inspect_computer(runner, paths, configuration.name())?;
     ensure_managed(&inspected)?;
-    if configuration_attention(paths, machine, &inspected).is_some() {
-        return Err(RuntimeError::Malformed(format!("Saved runtime resources for '{}' do not match the requested configuration. Setup is not complete.", machine.name())));
+    if configuration_attention(paths, configuration, &inspected).is_some() {
+        return Err(RuntimeError::Malformed(format!("Saved runtime resources for '{}' do not match the requested configuration. Setup is not complete.", configuration.name())));
     }
     Ok(())
 }
 
-fn validate_machine_update(
-    previous: &MachineConfiguration,
-    machine: &MachineConfiguration,
+fn validate_computer_update(
+    previous: &ComputerConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
     if crate::desktop::configuration(previous).is_some()
-        && crate::desktop::configuration(machine).is_none()
+        && crate::desktop::configuration(configuration).is_none()
     {
         return Err(RuntimeError::Invalid(
             "Desktop removal is not supported. Turn off automatic startup instead.".into(),
         ));
     }
-    if previous.name() != machine.name() {
-        return Err(RuntimeError::Invalid(format!("Bundled MicroSandbox cannot rename sandbox '{}'. Keep its name or create a new sandbox.", previous.name())));
+    if previous.name() != configuration.name() {
+        return Err(RuntimeError::Invalid(format!("Bundled MicroSandbox cannot rename computer '{}'. Keep its name or create a new computer.", previous.name())));
     }
-    if previous.workspace_storage_gib == machine.workspace_storage_gib
-        && previous.runtime_storage_gib == machine.runtime_storage_gib
+    if previous.workspace_storage_gib == configuration.workspace_storage_gib
+        && previous.runtime_storage_gib == configuration.runtime_storage_gib
     {
         Ok(())
     } else {
-        Err(RuntimeError::Invalid("Storage disks cannot be resized in place. Keep both saved sizes or create a new sandbox.".into()))
+        Err(RuntimeError::Invalid("Storage disks cannot be resized in place. Keep both saved sizes or create a new computer.".into()))
     }
 }
 
@@ -5380,11 +5425,11 @@ fn verify_guest_tools(
         ],
         Duration::from_secs(45),
     )?;
-    let inspected = inspect_workspace(runner, paths, name)?;
+    let inspected = inspect_computer(runner, paths, name)?;
     ensure_managed(&inspected)?;
     if !matches!(inspected.status.as_str(), "Created" | "Stopped") {
         return Err(RuntimeError::Malformed(
-            "The sandbox tools were prepared, but the runtime did not restore its stopped state."
+            "The computer tools were prepared, but the runtime did not restore its stopped state."
                 .into(),
         ));
     }
@@ -5392,21 +5437,21 @@ fn verify_guest_tools(
 }
 
 #[cfg(test)]
-fn create_machine(
+fn create_computer(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
-    create_machine_with_progress(runner, paths, machine, &|_, _, _| {})
+    create_computer_with_progress(runner, paths, configuration, &|_, _, _| {})
 }
 
-fn create_machine_with_progress(
+fn create_computer_with_progress(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     progress: &dyn Fn(&str, &str, u8),
 ) -> Result<(), RuntimeError> {
-    let MachineConfiguration {
+    let ComputerConfiguration {
         id,
         name,
         cpus,
@@ -5416,11 +5461,11 @@ fn create_machine_with_progress(
         workspace_storage_gib,
         runtime_storage_gib,
         desktop,
-    } = machine;
-    // Needed before anything is claimed or created: a VM without its mount never gets it.
-    let mounts = crate::computer_use::mount_args(machine)?;
-    configuration_recovery::claim(paths, machine)?;
-    progress("workspace-disk-preparation", name, 0);
+    } = configuration;
+    // Needed before anything is claimed or created: a computer without its mount never gets it.
+    let mounts = crate::computer_use::mount_args(configuration)?;
+    configuration_recovery::claim(paths, configuration)?;
+    progress("computer-disk-preparation", name, 0);
     let preflight = (|| {
         let listed = runner.run(
             paths,
@@ -5429,18 +5474,18 @@ fn create_machine_with_progress(
         )?;
         let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout).map_err(|_| {
             RuntimeError::Malformed(
-                "The runtime returned an invalid sandbox list before creation.".into(),
+                "The runtime returned an invalid computer list before creation.".into(),
             )
         })?;
-        if listed.iter().any(|sandbox| sandbox.name == *name) {
+        if listed.iter().any(|computer| computer.name == *name) {
             return Err(RuntimeError::Invalid(format!(
-                "Sandbox '{name}' already exists in the runtime. No existing sandbox was changed."
+                "Computer '{name}' already exists in the runtime. No existing computer was changed."
             )));
         }
         let protocol = runner.run(paths, &["--silo-github-protocol".into()], READ_TIMEOUT)?;
         if protocol.stdout.trim() != "1" {
             return Err(RuntimeError::Unavailable(
-                "The bundled runtime does not support secure GitHub access. Repair Silo before creating sandboxes.".into(),
+                "The bundled runtime does not support secure GitHub access. Repair Silo before creating computers.".into(),
             ));
         }
         let protocol = runner.run(
@@ -5450,13 +5495,13 @@ fn create_machine_with_progress(
         )?;
         if protocol.stdout.trim() != "1" {
             return Err(RuntimeError::Unavailable(
-                "The bundled runtime does not support normal working accounts. Repair or update Silo before creating sandboxes.".into(),
+                "The bundled runtime does not support normal working accounts. Repair or update Silo before creating computers.".into(),
             ));
         }
         Ok(())
     })();
     preflight?;
-    progress("workspace-image-preparation", name, 0);
+    progress("computer-image-preparation", name, 0);
     let image = runner.prepare_guest_image(paths)?;
     let mut args: Vec<String> = vec![
         "create".into(),
@@ -5487,7 +5532,7 @@ fn create_machine_with_progress(
         format!("silo.runtime-storage-gib={runtime_storage_gib}"),
         "--secret".into(),
         secrets_runtime::SILO_GITHUB_SECRET_SPEC.into(),
-        // Explicit, so a sandbox does not depend on the runtime's default (off in
+        // Explicit, so a computer does not depend on the runtime's default (off in
         // 0.7.2, on since 0.7.4). It matches `guest/github-network-default.json`,
         // which exports compare against; no hostname rule makes it observable.
         "--net-strict=true".into(),
@@ -5499,26 +5544,26 @@ fn create_machine_with_progress(
         "--quiet".into(),
         "--progress-json".into(),
     ];
-    // Built-in computer use: the computer's ChatGPT app folder, read-only. A snapshot
+    // Built-in computer use: the device's ChatGPT app folder, read-only. A snapshot
     // never carries host mounts, so every restore passes this again (see checkpoints).
     let before_start = args
         .iter()
         .position(|arg| arg == "--no-start")
         .unwrap_or(args.len());
     args.splice(before_start..before_start, mounts);
-    progress("workspace-runtime-preparation", name, 0);
+    progress("computer-runtime-preparation", name, 0);
     if let Err(error) = runner.run(paths, &args, MUTATION_TIMEOUT) {
         return Err(with_cleanup_error(
             error,
             cleanup_failed_create(runner, paths, name, id),
         ));
     }
-    let inspected = inspect_workspace(runner, paths, name)?;
+    let inspected = inspect_computer(runner, paths, name)?;
     ensure_managed(&inspected)?;
     if !matches!(inspected.status.as_str(), "Created" | "Stopped") {
         return Err(with_cleanup_error(
             RuntimeError::Malformed(format!(
-                "Sandbox '{name}' did not remain stopped after creation."
+                "Computer '{name}' did not remain stopped after creation."
             )),
             cleanup_failed_create(runner, paths, name, id),
         ));
@@ -5532,17 +5577,17 @@ fn create_machine_with_progress(
     if let Some(desktop) = desktop {
         progress("desktop-installation", name, 0);
         crate::desktop::configure_with(runner, paths, name, None, desktop)?;
-        let inspected = inspect_workspace(runner, paths, name)?;
+        let inspected = inspect_computer(runner, paths, name)?;
         ensure_managed(&inspected)?;
         if !matches!(inspected.status.as_str(), "Created" | "Stopped") {
-            return Err(RuntimeError::Malformed("Desktop installation completed, but the sandbox did not return to its stopped state.".into()));
+            return Err(RuntimeError::Malformed("Desktop installation completed, but the computer did not return to its stopped state.".into()));
         }
         progress("desktop-installation", name, 1);
     }
     crate::computer_use::start_with(paths, id, crate::computer_use::initial_approval());
-    // A skipped setup is consumed even for a VM without computer use.
+    // A skipped setup is consumed even for a computer without computer use.
     let without_computer_use = crate::creation_inputs::take_without_computer_use(id);
-    if crate::computer_use::is_built_in(machine) {
+    if crate::computer_use::is_built_in(configuration) {
         progress("computer-use-setup", name, 0);
         let finished = !without_computer_use
             && crate::computer_use::finish_in_creation(runner, paths, id, name)
@@ -5563,11 +5608,11 @@ pub(crate) fn apply_disposable_test_identity(
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<(), RuntimeError> {
-    configure_workspace_identities_with(
+    configure_computer_identities_with(
         &ProcessRunner,
         paths,
-        &[WorkspaceIdentity {
-            workspace: name.into(),
+        &[ComputerIdentity {
+            computer: name.into(),
             name: "Silo Test".into(),
             email: "silo-test@example.invalid".into(),
             apply: true,
@@ -5576,11 +5621,11 @@ pub(crate) fn apply_disposable_test_identity(
 }
 
 #[cfg(test)]
-pub(crate) fn create_disposable_test_machine(
+pub(crate) fn create_disposable_test_computer(
     paths: &RuntimePaths,
     name: &str,
-) -> Result<MachineConfiguration, RuntimeError> {
-    let machine = MachineConfiguration {
+) -> Result<ComputerConfiguration, RuntimeError> {
+    let configuration = ComputerConfiguration {
         id: uuid::Uuid::new_v4().to_string(),
         name: name.into(),
         cpus: 1,
@@ -5592,19 +5637,19 @@ pub(crate) fn create_disposable_test_machine(
         desktop: None,
     };
     let mut request = read_metadata(&paths.metadata)?;
-    request.machines.push(machine.clone());
-    apply_whole_configuration(&ProcessRunner, paths, &host_resources()?, request)?;
-    Ok(machine)
+    request.computers.push(configuration.clone());
+    apply_whole_configuration(&ProcessRunner, paths, &device_resources()?, request)?;
+    Ok(configuration)
 }
 
-/// Like `create_disposable_test_machine` with sizes a desktop needs. The configuration
-/// is applied as the app does: a v4 image makes the new VM's desktop built in.
+/// Like `create_disposable_test_computer` with sizes a desktop needs. The configuration
+/// is applied as the app does: a v4 image makes the new computer's desktop built in.
 #[cfg(test)]
-pub(crate) fn create_disposable_desktop_machine(
+pub(crate) fn create_disposable_desktop_computer(
     paths: &RuntimePaths,
     name: &str,
-) -> Result<MachineConfiguration, RuntimeError> {
-    let machine = MachineConfiguration {
+) -> Result<ComputerConfiguration, RuntimeError> {
+    let configuration = ComputerConfiguration {
         id: uuid::Uuid::new_v4().to_string(),
         name: name.into(),
         cpus: 2,
@@ -5616,39 +5661,39 @@ pub(crate) fn create_disposable_desktop_machine(
         desktop: None,
     };
     let mut request = read_metadata(&paths.metadata)?;
-    request.machines.push(machine);
+    request.computers.push(configuration);
     // Unit tests default to a v3 image; a live run uses the image it was given, so a
-    // v4 image makes the new VM built in exactly as the app does.
+    // v4 image makes the new computer built in exactly as the app does.
     let _pin = guest_image::bundled_version(&paths.guest_image)
         .map(|version| guest_image::pin_test_version(&version));
-    apply_whole_configuration(&ProcessRunner, paths, &host_resources()?, request)?;
+    apply_whole_configuration(&ProcessRunner, paths, &device_resources()?, request)?;
     read_metadata(&paths.metadata)?
-        .machines
+        .computers
         .into_iter()
-        .find(|machine| machine.name() == name)
-        .ok_or_else(|| RuntimeError::Invalid("The disposable sandbox was not saved.".into()))
+        .find(|configuration| configuration.name() == name)
+        .ok_or_else(|| RuntimeError::Invalid("The disposable computer was not saved.".into()))
 }
 
-/// The app's explicit Start for a disposable sandbox (boot hooks included).
+/// The app's explicit Start for a disposable computer (boot hooks included).
 #[cfg(test)]
-pub(crate) fn start_disposable_test_machine(
+pub(crate) fn start_disposable_test_computer(
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<(), RuntimeError> {
-    workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", name)
+    computer_action_with(&ProcessRunner, paths, &device_resources()?, "start", name)
 }
 
-/// The app's `stop` or `restart` for a disposable sandbox (boot hooks included).
+/// The app's `stop` or `restart` for a disposable computer (boot hooks included).
 #[cfg(test)]
 pub(crate) fn disposable_test_action(
     paths: &RuntimePaths,
     name: &str,
     action: &str,
 ) -> Result<(), RuntimeError> {
-    workspace_action_with(&ProcessRunner, paths, &host_resources()?, action, name)
+    computer_action_with(&ProcessRunner, paths, &device_resources()?, action, name)
 }
 
-/// Exercise the same explicit Start path as the app for an imported sandbox.
+/// Exercise the same explicit Start path as the app for an imported computer.
 /// Live regressions supply disposable runtime paths; no app data is resolved here.
 #[cfg(test)]
 pub(crate) fn start_disposable_test_import(
@@ -5656,24 +5701,24 @@ pub(crate) fn start_disposable_test_import(
     name: &str,
 ) -> Result<(), RuntimeError> {
     let _guard = OPERATIONS
-        .computer("Starting disposable imported sandbox")
+        .device("Starting disposable imported computer")
         .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
-    let machine = read_metadata(&paths.metadata)?
-        .machines
+    let configuration = read_metadata(&paths.metadata)?
+        .computers
         .into_iter()
-        .find(|machine| machine.name() == name)
-        .ok_or_else(|| RuntimeError::Invalid("Imported test sandbox is missing.".into()))?;
-    checkpoints::start_pending(&ProcessRunner, paths, &machine)
+        .find(|configuration| configuration.name() == name)
+        .ok_or_else(|| RuntimeError::Invalid("Imported test computer is missing.".into()))?;
+    checkpoints::start_pending(&ProcessRunner, paths, &configuration)
 }
 
-/// Remove the runtime's sandbox `name` when it is Silo's own with `machine_id`, then the
-/// managed disk of the sandbox's workspace. Used after a failed create, and by recovery
-/// for a sandbox an import created and never saved.
+/// Remove the runtime's computer `name` when it is Silo's own with `computer_id`, then the
+/// managed disk of the computer. Used after a failed create, and by recovery
+/// for a computer an import created and never saved.
 pub(crate) fn cleanup_failed_create(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
-    machine_id: &str,
+    computer_id: &str,
 ) -> Result<(), RuntimeError> {
     let listed = runner.run(
         paths,
@@ -5682,20 +5727,20 @@ pub(crate) fn cleanup_failed_create(
     )?;
     let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout).map_err(|_| {
         RuntimeError::Malformed(
-            "The bundled runtime returned an invalid sandbox list during cleanup.".into(),
+            "The bundled runtime returned an invalid computer list during cleanup.".into(),
         )
     })?;
-    if listed.iter().any(|sandbox| sandbox.name == name) {
-        let inspected = inspect_workspace(runner, paths, name)?;
+    if listed.iter().any(|computer| computer.name == name) {
+        let inspected = inspect_computer(runner, paths, name)?;
         ensure_managed(&inspected)?;
         if inspected
             .config
             .pointer("/labels/silo.machine-id")
             .and_then(Value::as_str)
-            != Some(machine_id)
+            != Some(computer_id)
         {
             return Err(RuntimeError::Invalid(
-                "The runtime sandbox identity changed during creation. Its data was preserved."
+                "The runtime computer identity changed during creation. Its data was preserved."
                     .into(),
             ));
         }
@@ -5714,8 +5759,11 @@ pub(crate) fn cleanup_failed_create(
     Ok(())
 }
 
-pub(crate) fn disk_path(paths: &RuntimePaths, machine_name: &str, role: &str) -> PathBuf {
-    paths.volumes.join(machine_name).join(format!("{role}.raw"))
+pub(crate) fn disk_path(paths: &RuntimePaths, computer_name: &str, role: &str) -> PathBuf {
+    paths
+        .volumes
+        .join(computer_name)
+        .join(format!("{role}.raw"))
 }
 
 fn remove_disk_path(path: &Path) -> Result<(), RuntimeError> {
@@ -5731,11 +5779,11 @@ fn remove_disk_path(path: &Path) -> Result<(), RuntimeError> {
     Ok(())
 }
 
-fn remove_machine_volumes(
+fn remove_computer_volumes(
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
-    let MachineConfiguration { name, .. } = machine;
+    let ComputerConfiguration { name, .. } = configuration;
     let mut failure = None;
     for role in ["workspace"] {
         if let Err(error) = remove_disk_path(&disk_path(paths, name, role)) {
@@ -5750,7 +5798,7 @@ fn remove_machine_volumes(
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(RuntimeError::Unavailable(format!(
-            "Silo could not remove the sandbox's managed disk folder: {error}"
+            "Silo could not remove the computer's managed disk folder: {error}"
         ))),
     }
 }
@@ -5759,36 +5807,39 @@ fn with_cleanup_error(original: RuntimeError, cleanup: Result<(), RuntimeError>)
     match cleanup {
         Ok(()) => original,
         Err(cleanup) => RuntimeError::Failed {
-            operation: "Applying the sandbox configuration".into(),
+            operation: "Applying the computer configuration".into(),
             exit_code: None,
             detail: format!("{original} Cleanup also failed: {cleanup}"),
         },
     }
 }
 
-fn update_machine(
+fn update_computer(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    previous: &MachineConfiguration,
-    machine: &MachineConfiguration,
+    previous: &ComputerConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
     // Renames, storage resizes and desktop removal are rejected here.
-    validate_machine_update(previous, machine)?;
-    if crate::desktop::only_desktop_changed(previous, machine) {
-        ensure_machine_identity(previous, &inspect_workspace(runner, paths, machine.name())?)?;
+    validate_computer_update(previous, configuration)?;
+    if crate::desktop::only_desktop_changed(previous, configuration) {
+        ensure_computer_identity(
+            previous,
+            &inspect_computer(runner, paths, configuration.name())?,
+        )?;
         return crate::desktop::configure_with(
             runner,
             paths,
-            machine.name(),
+            configuration.name(),
             crate::desktop::configuration(previous),
-            crate::desktop::configuration(machine)
+            crate::desktop::configuration(configuration)
                 .ok_or_else(|| RuntimeError::Invalid("Desktop removal is not supported.".into()))?,
         );
     }
     {
         {
-            let MachineConfiguration { name, .. } = previous;
-            let MachineConfiguration {
+            let ComputerConfiguration { name, .. } = previous;
+            let ComputerConfiguration {
                 id,
                 cpus,
                 max_cpus,
@@ -5797,17 +5848,17 @@ fn update_machine(
                 workspace_storage_gib,
                 runtime_storage_gib,
                 ..
-            } = machine;
-            let inspected = inspect_workspace(runner, paths, name)?;
-            ensure_machine_identity(previous, &inspected)?;
+            } = configuration;
+            let inspected = inspect_computer(runner, paths, name)?;
+            ensure_computer_identity(previous, &inspected)?;
             if inspected.status == "Running" {
                 runner.run(
                     paths,
                     &["stop".into(), name.clone(), "--quiet".into()],
                     STOP_TIMEOUT,
                 )?;
-                let stopped = inspect_workspace(runner, paths, name)?;
-                ensure_machine_identity(previous, &stopped)?;
+                let stopped = inspect_computer(runner, paths, name)?;
+                ensure_computer_identity(previous, &stopped)?;
                 if stopped.status != "Stopped" {
                     return Err(RuntimeError::Invalid(format!(
                         "{name} did not stop. Its settings were not changed. Retry after checking its state."
@@ -5843,7 +5894,7 @@ fn update_machine(
                 ],
                 MUTATION_TIMEOUT,
             )?;
-            if let Some(desktop) = crate::desktop::configuration(machine) {
+            if let Some(desktop) = crate::desktop::configuration(configuration) {
                 if crate::desktop::configuration(previous) != Some(desktop) {
                     crate::desktop::configure_with(
                         runner,
@@ -5859,15 +5910,15 @@ fn update_machine(
     }
 }
 
-/// What deleting a VM removes from the runtime.
+/// What deleting a computer removes from the runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RemovalTarget {
-    /// Nothing: a pending checkpoint restore with no runtime VM yet.
+    /// Nothing: a pending checkpoint restore with no runtime computer yet.
     Nothing,
-    /// An ordinary stopped VM.
+    /// An ordinary stopped computer.
     Stopped,
-    /// The runtime VM a pending restore's attempt created (then failed verification or
-    /// timed out). Its sandbox cannot be started or stopped normally, so deletion stops
+    /// The runtime computer a pending restore's attempt created (then failed verification or
+    /// timed out). Its computer cannot be started or stopped normally, so deletion stops
     /// it first when it is still running.
     RestoreAttempt { running: bool },
 }
@@ -5875,15 +5926,15 @@ enum RemovalTarget {
 fn preflight_removal(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<RemovalTarget, RuntimeError> {
-    let MachineConfiguration { name, .. } = machine;
+    let ComputerConfiguration { name, .. } = configuration;
     // An unreadable checkpoint record leaves the pending state unknown; the runtime and
-    // its labels then decide, so a damaged record never blocks deleting its sandbox.
-    let pending = checkpoints::is_pending(paths, machine.id()).ok();
-    let inspected = match inspect_workspace(runner, paths, name) {
+    // its labels then decide, so a damaged record never blocks deleting its computer.
+    let pending = checkpoints::is_pending(paths, configuration.id()).ok();
+    let inspected = match inspect_computer(runner, paths, name) {
         Ok(inspected) => inspected,
-        Err(error) if pending != Some(false) && is_missing_sandbox(&error) => {
+        Err(error) if pending != Some(false) && is_missing_computer(&error) => {
             return Ok(RemovalTarget::Nothing)
         }
         Err(error) => return Err(error),
@@ -5894,10 +5945,10 @@ fn preflight_removal(
             .config
             .pointer("/labels/silo.machine-id")
             .and_then(Value::as_str)
-            != Some(machine.id())
+            != Some(configuration.id())
     {
         return Err(RuntimeError::Invalid(
-            "The sandbox selected for deletion changed identity. It was preserved.".into(),
+            "The computer selected for deletion changed identity. It was preserved.".into(),
         ));
     }
     let stopped = matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed");
@@ -5911,24 +5962,24 @@ fn preflight_removal(
     }
     if pending == Some(true) {
         return Err(RuntimeError::Invalid(format!(
-            "A runtime sandbox named '{name}' was not created by this sandbox's checkpoint restore. It was preserved."
+            "A runtime computer named '{name}' was not created by this computer's checkpoint restore. It was preserved."
         )));
     }
     if !stopped {
         return Err(RuntimeError::Invalid(format!(
-            "Stop sandbox '{name}' before removing it from Silo. This sandbox was not removed."
+            "Stop computer '{name}' before removing it from Silo. This computer was not removed."
         )));
     }
     Ok(RemovalTarget::Stopped)
 }
 
-fn remove_machine_runtime(
+fn remove_computer_runtime(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
-    let name = machine.name();
-    match preflight_removal(runner, paths, machine)? {
+    let name = configuration.name();
+    match preflight_removal(runner, paths, configuration)? {
         RemovalTarget::Nothing => return Ok(()),
         RemovalTarget::Stopped | RemovalTarget::RestoreAttempt { running: false } => {}
         RemovalTarget::RestoreAttempt { running: true } => {
@@ -5948,41 +5999,41 @@ fn remove_machine_runtime(
 }
 
 #[cfg(test)]
-fn remove_machine(
+fn remove_computer(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
-    remove_machine_runtime(runner, paths, machine)?;
-    remove_machine_volumes(paths, machine)
+    remove_computer_runtime(runner, paths, configuration)?;
+    remove_computer_volumes(paths, configuration)
 }
 
-fn validate_request(request: &MachineConfigurationRequest) -> Result<(), RuntimeError> {
+fn validate_request(request: &ComputerConfigurationRequest) -> Result<(), RuntimeError> {
     if request.schema_version != 1 {
         return Err(RuntimeError::Invalid(
-            "The sandbox configuration version is not supported.".into(),
+            "The computer configuration version is not supported.".into(),
         ));
     }
-    if request.machines.len() > MAX_MACHINE_COUNT {
+    if request.computers.len() > MAX_COMPUTER_COUNT {
         return Err(RuntimeError::Invalid(format!(
-            "Configure at most {MAX_MACHINE_COUNT} sandboxes."
+            "Configure at most {MAX_COMPUTER_COUNT} computers."
         )));
     }
     let mut ids = HashSet::new();
     let mut names = HashSet::new();
-    for machine in &request.machines {
-        validate_name(machine.name())?;
-        if uuid::Uuid::try_parse(machine.id()).is_err() || !ids.insert(machine.id()) {
+    for configuration in &request.computers {
+        validate_name(configuration.name())?;
+        if uuid::Uuid::try_parse(configuration.id()).is_err() || !ids.insert(configuration.id()) {
             return Err(RuntimeError::Invalid(
-                "Every sandbox must have a unique valid identifier.".into(),
+                "Every computer must have a unique valid identifier.".into(),
             ));
         }
-        if !names.insert(machine.name().to_ascii_lowercase()) {
+        if !names.insert(configuration.name().to_ascii_lowercase()) {
             return Err(RuntimeError::Invalid(
-                "Sandbox names must be unique.".into(),
+                "Computer names must be unique.".into(),
             ));
         }
-        let MachineConfiguration {
+        let ComputerConfiguration {
             cpus,
             max_cpus,
             memory_gib,
@@ -5990,17 +6041,17 @@ fn validate_request(request: &MachineConfigurationRequest) -> Result<(), Runtime
             workspace_storage_gib,
             runtime_storage_gib,
             ..
-        } = machine;
+        } = configuration;
         if *cpus == 0 || cpus > max_cpus {
             return Err(RuntimeError::Invalid(format!(
-                "Sandbox '{}' has an invalid CPU limit or ceiling.",
-                machine.name()
+                "Computer '{}' has an invalid CPU limit or ceiling.",
+                configuration.name()
             )));
         }
         if *memory_gib == 0 || memory_gib > max_memory_gib {
             return Err(RuntimeError::Invalid(format!(
-                "Sandbox '{}' has an invalid memory limit or ceiling.",
-                machine.name()
+                "Computer '{}' has an invalid memory limit or ceiling.",
+                configuration.name()
             )));
         }
         let total = workspace_storage_gib
@@ -6008,8 +6059,8 @@ fn validate_request(request: &MachineConfigurationRequest) -> Result<(), Runtime
             .and_then(|gib| gib.checked_mul(1024));
         if *workspace_storage_gib == 0 || *runtime_storage_gib == 0 || total.is_none() {
             return Err(RuntimeError::Invalid(format!(
-                "Sandbox '{}' has an invalid storage allocation.",
-                machine.name()
+                "Computer '{}' has an invalid storage allocation.",
+                configuration.name()
             )));
         }
     }
@@ -6029,26 +6080,26 @@ pub(crate) fn validate_name(name: &str) -> Result<(), RuntimeError> {
         Ok(())
     } else {
         Err(RuntimeError::Invalid(format!(
-            "Sandbox name '{name}' must start with a lowercase letter and contain at most 32 lowercase letters, numbers, or hyphens."
+            "Computer name '{name}' must start with a lowercase letter and contain at most 32 lowercase letters, numbers, or hyphens."
         )))
     }
 }
 
-pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, RuntimeError> {
+pub(crate) fn read_metadata(path: &Path) -> Result<ComputerConfigurationRequest, RuntimeError> {
     Ok(
-        read_saved_metadata(path)?.unwrap_or(MachineConfigurationRequest {
+        read_saved_metadata(path)?.unwrap_or(ComputerConfigurationRequest {
             schema_version: 1,
-            machines: Vec::new(),
+            computers: Vec::new(),
         }),
     )
 }
-fn read_saved_metadata(path: &Path) -> Result<Option<MachineConfigurationRequest>, RuntimeError> {
+fn read_saved_metadata(path: &Path) -> Result<Option<ComputerConfigurationRequest>, RuntimeError> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(RuntimeError::Unavailable(format!(
-                "Silo could not read its sandbox configuration: {error}"
+                "Silo could not read its computer configuration: {error}"
             )))
         }
     };
@@ -6057,64 +6108,71 @@ fn read_saved_metadata(path: &Path) -> Result<Option<MachineConfigurationRequest
         .read_to_end(&mut bytes)
         .map_err(|error| {
             RuntimeError::Unavailable(format!(
-                "Silo could not read its sandbox configuration: {error}"
+                "Silo could not read its computer configuration: {error}"
             ))
         })?;
     if bytes.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(RuntimeError::Malformed(
-            "Silo's sandbox configuration is too large.".into(),
+            "Silo's computer configuration is too large.".into(),
         ));
     }
-    let request: MachineConfigurationRequest = serde_json::from_slice(&bytes).map_err(|_| {
-        RuntimeError::Malformed("Silo's saved sandbox configuration is invalid.".into())
+    let request: ComputerConfigurationRequest = serde_json::from_slice(&bytes).map_err(|_| {
+        RuntimeError::Malformed("Silo's saved computer configuration is invalid.".into())
     })?;
     validate_request(&request)?;
     Ok(Some(request))
 }
 
-/// Resolve a local VM's stable id from its current display name in fresh metadata.
-/// Per-VM operation ordering keys on the stable id, so callers that only have a name
+/// Resolve a local computer's stable id from its current display name in fresh metadata.
+/// Per-computer operation ordering keys on the stable id, so callers that only have a name
 /// turn it into an id before acquiring the operation gate. Returns a clear error when
-/// no local VM by that name currently exists.
-pub(crate) fn resolve_vm_id(paths: &RuntimePaths, name: &str) -> Result<String, RuntimeError> {
+/// no local computer by that name currently exists.
+pub(crate) fn resolve_computer_id(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<String, RuntimeError> {
     read_metadata(&paths.metadata)?
-        .machines
+        .computers
         .into_iter()
-        .find(|machine| machine.name() == name)
-        .map(|machine| machine.id().to_owned())
-        .ok_or_else(|| RuntimeError::Invalid("This VM no longer exists.".into()))
+        .find(|configuration| configuration.name() == name)
+        .map(|configuration| configuration.id().to_owned())
+        .ok_or_else(|| RuntimeError::Invalid("This computer no longer exists.".into()))
 }
 
 pub(crate) fn write_metadata(
     path: &Path,
-    request: &MachineConfigurationRequest,
+    request: &ComputerConfigurationRequest,
 ) -> Result<(), RuntimeError> {
     let parent = path.parent().ok_or_else(|| {
-        RuntimeError::Unavailable("Silo's sandbox storage path is invalid.".into())
+        RuntimeError::Unavailable("Silo's computer storage path is invalid.".into())
     })?;
     fs::create_dir_all(parent).map_err(|error| {
         RuntimeError::Unavailable(format!(
-            "Silo could not prepare its sandbox settings: {error}"
+            "Silo could not prepare its computer settings: {error}"
         ))
     })?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
         RuntimeError::Unavailable(format!(
-            "Silo could not stage its sandbox settings: {error}"
+            "Silo could not stage its computer settings: {error}"
         ))
     })?;
     let mut bytes = serde_json::to_vec_pretty(request).map_err(|_| {
-        RuntimeError::Malformed("Silo could not encode its sandbox settings.".into())
+        RuntimeError::Malformed("Silo could not encode its computer settings.".into())
     })?;
     bytes.push(b'\n');
     temporary.write_all(&bytes).map_err(|error| {
-        RuntimeError::Unavailable(format!("Silo could not save its sandbox settings: {error}"))
+        RuntimeError::Unavailable(format!(
+            "Silo could not save its computer settings: {error}"
+        ))
     })?;
     temporary.as_file().sync_all().map_err(|error| {
-        RuntimeError::Unavailable(format!("Silo could not save its sandbox settings: {error}"))
+        RuntimeError::Unavailable(format!(
+            "Silo could not save its computer settings: {error}"
+        ))
     })?;
     temporary.persist(path).map_err(|error| {
         RuntimeError::Unavailable(format!(
-            "Silo could not finalize its sandbox settings: {}",
+            "Silo could not finalize its computer settings: {}",
             error.error
         ))
     })?;
@@ -6122,7 +6180,7 @@ pub(crate) fn write_metadata(
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
             RuntimeError::Unavailable(format!(
-                "Silo could not finalize its sandbox settings: {error}"
+                "Silo could not finalize its computer settings: {error}"
             ))
         })
 }
@@ -6164,7 +6222,7 @@ mod tests {
         }
 
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("sandboxes.json");
+        let path = directory.path().join("computers.json");
         fs::File::create(&path)
             .unwrap()
             .set_len(128 * 1024 * 1024)
@@ -6172,7 +6230,7 @@ mod tests {
         let before = peak_bytes();
         assert!(
             matches!(read_metadata(&path), Err(RuntimeError::Malformed(message))
-            if message == "Silo's sandbox configuration is too large.")
+            if message == "Silo's computer configuration is too large.")
         );
         let extra = peak_bytes().saturating_sub(before);
         eprintln!("large metadata peak RSS increase: {extra} bytes");
@@ -6195,9 +6253,9 @@ mod tests {
             |label| {
                 // Each attempt must find the scope free: the previous guard was released
                 // before the backoff, so the gate is not held across retries.
-                assert!(OPERATIONS.is_vm_idle("retry-transient-id"));
+                assert!(OPERATIONS.is_computer_idle("retry-transient-id"));
                 OPERATIONS
-                    .vm("retry-transient-id", "retry-transient", label)
+                    .computer("retry-transient-id", "retry-transient", label)
                     .map_err(RuntimeError::from)
             },
             |_guard| {},
@@ -6213,7 +6271,7 @@ mod tests {
         );
         assert!(result.is_ok());
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
-        assert!(OPERATIONS.is_vm_idle("retry-transient-id"));
+        assert!(OPERATIONS.is_computer_idle("retry-transient-id"));
     }
 
     #[test]
@@ -6266,7 +6324,7 @@ mod tests {
             &delays,
             "Stopping since-dev",
             |label| {
-                gate.vm("since-dev-id", "since-dev", label)
+                gate.computer("since-dev-id", "since-dev", label)
                     .map_err(RuntimeError::from)
             },
             |_guard| {},
@@ -6310,7 +6368,7 @@ mod tests {
             &delays,
             "Starting quit-dev",
             |label| {
-                gate.vm("quit-dev-id", "quit-dev", label)
+                gate.computer("quit-dev-id", "quit-dev", label)
                     .map_err(RuntimeError::from)
             },
             |_guard| {},
@@ -6350,7 +6408,7 @@ mod tests {
             "Starting retry-nontransient",
             |label| {
                 OPERATIONS
-                    .vm("retry-nontransient-id", "retry-nontransient", label)
+                    .computer("retry-nontransient-id", "retry-nontransient", label)
                     .map_err(RuntimeError::from)
             },
             |_guard| {},
@@ -6387,16 +6445,16 @@ mod tests {
             "Saving secrets for retry-secret",
             |label| {
                 // The previous guard is released before the backoff, so each attempt finds
-                // the VM lane free.
-                assert!(gate.is_vm_idle("retry-secret-id"));
-                gate.vm("retry-secret-id", "retry-secret", label)
+                // the computer lane free.
+                assert!(gate.is_computer_idle("retry-secret-id"));
+                gate.computer("retry-secret-id", "retry-secret", label)
                     .map_err(|error| Attempt::Final(error.to_string()))
             },
             |_guard| {},
             || {
                 if attempts.fetch_add(1, Ordering::SeqCst) < 2 {
                     Err(Attempt::Transient(
-                        "Updating sandbox secrets timed out.".into(),
+                        "Updating computer secrets timed out.".into(),
                     ))
                 } else {
                     Ok(())
@@ -6407,7 +6465,7 @@ mod tests {
         );
         assert!(result.is_ok());
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
-        assert!(gate.is_vm_idle("retry-secret-id"));
+        assert!(gate.is_computer_idle("retry-secret-id"));
     }
 
     #[test]
@@ -6423,14 +6481,14 @@ mod tests {
             &delays,
             "Saving secrets for final-secret",
             |label| {
-                gate.vm("final-secret-id", "final-secret", label)
+                gate.computer("final-secret-id", "final-secret", label)
                     .map_err(|error| Attempt::Final(error.to_string()))
             },
             |_guard| {},
             || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 Err(Attempt::Final(
-                    "The sandbox rejected the secret update.".into(),
+                    "The computer rejected the secret update.".into(),
                 ))
             },
             Attempt::is_transient,
@@ -6438,7 +6496,7 @@ mod tests {
         );
         assert!(result.is_err());
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
-        assert!(gate.is_vm_idle("final-secret-id"));
+        assert!(gate.is_computer_idle("final-secret-id"));
     }
 
     #[test]
@@ -6458,7 +6516,7 @@ mod tests {
                 &delays,
                 "Saving secrets for cancel-secret",
                 |label| {
-                    gate.vm("cancel-secret-id", "cancel-secret", label)
+                    gate.computer("cancel-secret-id", "cancel-secret", label)
                         .map_err(|error| Attempt::Final(error.to_string()))
                 },
                 |guard| guard.allow_cancel(),
@@ -6472,7 +6530,7 @@ mod tests {
                         std::thread::sleep(Duration::from_millis(5));
                     }
                     Err(Attempt::Transient(
-                        "Updating sandbox secrets timed out.".into(),
+                        "Updating computer secrets timed out.".into(),
                     ))
                 },
                 Attempt::is_transient,
@@ -6493,7 +6551,7 @@ mod tests {
         assert!(matches!(result, Err(Attempt::Cancelled(_))));
         // The cancel carried over instead of running all three attempts.
         assert!(attempts.load(Ordering::SeqCst) < 3);
-        assert!(gate.is_vm_idle("cancel-secret-id"));
+        assert!(gate.is_computer_idle("cancel-secret-id"));
     }
 
     struct StubRunner {
@@ -6647,7 +6705,7 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
     }
 
     #[test]
-    fn every_boot_sets_up_the_silo_account_and_a_failed_setup_stops_the_vm() {
+    fn every_boot_sets_up_the_silo_account_and_a_failed_setup_stops_the_computer() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -6663,14 +6721,14 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
                 .count()
         };
         let state = || fs::read_to_string(paths.home.join("state")).unwrap();
-        // An older VM is set up at its first boot; later boots only check.
+        // An older computer is set up at its first boot; later boots only check.
         fs::write(paths.home.join("account"), "missing").unwrap();
         run(&["start", "cleanup"]).unwrap();
         run(&["stop", "cleanup"]).unwrap();
         run(&["start", "cleanup"]).unwrap();
         assert_eq!((set_ups(), state().as_str()), (1, "Running"));
         run(&["stop", "cleanup"]).unwrap();
-        // A failed setup reports the guest's reason and leaves the VM stopped.
+        // A failed setup reports the guest's reason and leaves the computer stopped.
         fs::write(paths.home.join("account"), "missing").unwrap();
         fs::write(paths.home.join("setup-fails"), "").unwrap();
         let error = run(&["start", "cleanup"]).unwrap_err().to_string();
@@ -6690,11 +6748,11 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
         assert_eq!((set_ups(), state().as_str()), (5, "Running"));
     }
 
-    /// Opt-in: a new VM gets the account at creation, an older layout is moved to it by
-    /// the next Start, and a setup that cannot finish leaves the VM stopped.
+    /// Opt-in: a new computer gets the account at creation, an older layout is moved to it by
+    /// the next Start, and a setup that cannot finish leaves the computer stopped.
     #[test]
     #[ignore = "requires the packaged runtime and hardware virtualization"]
-    fn live_start_sets_up_the_silo_account_of_new_and_older_vms() {
+    fn live_start_sets_up_the_silo_account_of_new_and_older_computers() {
         crate::test_support::live::require_confirmation();
         let _test_state = crate::test_support::global_state();
         // The live runtime control socket requires a short root (104 bytes on macOS).
@@ -6710,7 +6768,7 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
             ),
             home: directory.path().join("runtime"),
             storage_home: None,
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         let name = "silo-account-proof";
@@ -6725,9 +6783,9 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
             }
         }
         let _stop = Stop(&paths);
-        let host = host_resources().unwrap();
+        let device = device_resources().unwrap();
         let action =
-            |action: &str| workspace_action_with(&ProcessRunner, &paths, &host, action, name);
+            |action: &str| computer_action_with(&ProcessRunner, &paths, &device, action, name);
         let exec_in = |name: &str, user: &str, script: &str| {
             let args = [
                 "exec",
@@ -6750,7 +6808,7 @@ grep -q 'PATH=/home/silo/.local/bin' /home/silo/.bashrc
 test "$(stat -c %U /workspace/project /home/silo/.codex/auth.json | sort -u)" = silo
 test "$(cat /root/.codex/auth.json)" = secret
 test -f /var/lib/silo/working-account.json"#;
-        create_disposable_test_machine(&paths, name).unwrap();
+        create_disposable_test_computer(&paths, name).unwrap();
         action("start").unwrap();
         assert_eq!(
             exec("silo", "id -un; cat /var/lib/silo/working-account.json").unwrap(),
@@ -6785,7 +6843,7 @@ chown -R root:root /workspace"#,
         run_msb(&paths, &restore.map(String::from), Duration::from_secs(300)).unwrap();
         exec_in(restored, "root", moved).unwrap();
         assert_eq!(exec_in(restored, "silo", "id -un").unwrap(), "silo\n");
-        // A setup that cannot finish names its reason and leaves the VM stopped.
+        // A setup that cannot finish names its reason and leaves the computer stopped.
         exec(
             "root",
             "userdel -rf silo; rm /var/lib/silo/working-account.json; useradd -u 1001 conflict",
@@ -6795,7 +6853,7 @@ chown -R root:root /workspace"#,
         let error = action("start").unwrap_err().to_string();
         assert!(error.contains("reserved account ID 1001"), "{error}");
         assert_eq!(
-            inspect_workspace(&ProcessRunner, &paths, name)
+            inspect_computer(&ProcessRunner, &paths, name)
                 .unwrap()
                 .status,
             "Stopped"
@@ -6810,7 +6868,7 @@ chown -R root:root /workspace"#,
             let paths = paths(&directory);
             fake_lifecycle_msb(&paths, block_on);
             let guard = OPERATIONS
-                .vm("cleanup-id", "cleanup", "Running a guest command")
+                .computer("cleanup-id", "cleanup", "Running a guest command")
                 .unwrap();
             guard.allow_cancel();
             let token = guard.cancel_token();
@@ -6932,7 +6990,7 @@ chown -R root:root /workspace"#,
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_lifecycle_msb(&paths, "never");
-        let access = vm_access_state(&paths.home, "cleanup").unwrap();
+        let access = computer_access_state(&paths.home, "cleanup").unwrap();
         let _held = access.runtime.lock().unwrap();
         let worker_paths = paths.clone();
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -6955,7 +7013,7 @@ chown -R root:root /workspace"#,
     }
 
     #[test]
-    fn desktop_guest_configuration_preserves_vm_lifecycle_even_when_guest_fails() {
+    fn desktop_guest_configuration_preserves_computer_lifecycle_even_when_guest_fails() {
         let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::PermissionsExt;
         for installed in [false, true] {
@@ -6989,11 +7047,11 @@ esac
                     fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700))
                         .unwrap();
                     let old = crate::desktop::DesktopConfiguration {
-                        start_with_sandbox: true,
+                        start_with_computer: true,
                         built_in: false,
                     };
                     let desired = crate::desktop::DesktopConfiguration {
-                        start_with_sandbox: false,
+                        start_with_computer: false,
                         built_in: false,
                     };
                     let result = crate::desktop::configure_with(
@@ -7026,15 +7084,15 @@ esac
     }
 
     #[test]
-    fn desktop_only_configuration_does_not_stop_or_modify_running_vm() {
+    fn desktop_only_configuration_does_not_stop_or_modify_running_computer() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
-        let previous = vm();
+        let previous = computer();
         let mut desired = previous.clone();
         {
-            let MachineConfiguration { desktop, .. } = &mut desired;
+            let ComputerConfiguration { desktop, .. } = &mut desired;
             *desktop = Some(crate::desktop::DesktopConfiguration {
-                start_with_sandbox: true,
+                start_with_computer: true,
                 built_in: false,
             });
         }
@@ -7044,7 +7102,7 @@ esac
             json!(1),
             json!({}),
         ]);
-        update_machine(&runner, &paths(&dir), &previous, &desired).unwrap();
+        update_computer(&runner, &paths(&dir), &previous, &desired).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 4);
         assert_eq!(calls[3][0], "exec");
@@ -7058,17 +7116,17 @@ esac
     fn desktop_configuration_removal_is_rejected_before_guest_mutation() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
-        let desired = vm();
+        let desired = computer();
         let mut previous = desired.clone();
         {
-            let MachineConfiguration { desktop, .. } = &mut previous;
+            let ComputerConfiguration { desktop, .. } = &mut previous;
             *desktop = Some(crate::desktop::DesktopConfiguration {
-                start_with_sandbox: true,
+                start_with_computer: true,
                 built_in: false,
             });
         }
         let runner = StubRunner::successful_json(vec![]);
-        assert!(update_machine(&runner, &paths(&dir), &previous, &desired)
+        assert!(update_computer(&runner, &paths(&dir), &previous, &desired)
             .unwrap_err()
             .to_string()
             .contains("removal"));
@@ -7076,72 +7134,72 @@ esac
     }
 
     #[test]
-    fn legacy_vm_configuration_does_not_enable_desktop() {
+    fn legacy_computer_configuration_does_not_enable_desktop() {
         let _test_state = crate::test_support::global_state();
-        let value = serde_json::to_value(vm()).unwrap();
+        let value = serde_json::to_value(computer()).unwrap();
         assert!(value.get("desktop").is_none());
-        let decoded: MachineConfiguration = serde_json::from_value(value).unwrap();
+        let decoded: ComputerConfiguration = serde_json::from_value(value).unwrap();
         assert!(crate::desktop::configuration(&decoded).is_none());
     }
 
     #[test]
-    fn dismiss_crash_persists_only_that_crash_without_mutating_the_vm() {
+    fn dismiss_crash_persists_only_that_crash_without_mutating_the_computer() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(&dir);
-        let machine = vm();
-        write_metadata(&paths.metadata, &request(vec![machine.clone()])).unwrap();
+        let configuration = computer();
+        write_metadata(&paths.metadata, &request(vec![configuration.clone()])).unwrap();
         let crash = json!({"name":"dev", "status":"Crashed", "updated_at":"2026-09-16T00:00:00.123Z",
-            "config":{"labels":{"silo.managed":"true","silo.machine-id":machine.id()}}});
+            "config":{"labels":{"silo.managed":"true","silo.machine-id":configuration.id()}}});
         let runner = StubRunner::successful_json(vec![crash.clone()]);
         let inspected: InspectedSandbox = serde_json::from_value(crash.clone()).unwrap();
         assert!(matches!(
-            vm_workspace(&paths, machine.clone(), &inspected).state,
-            WorkspaceState::Failed
+            application_computer(&paths, configuration.clone(), &inspected).state,
+            ComputerState::Failed
         ));
-        workspace_action_with(&runner, &paths, &generous_host(), "dismiss-error", "dev").unwrap();
+        computer_action_with(&runner, &paths, &generous_device(), "dismiss-error", "dev").unwrap();
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
         assert_eq!(runner.calls.lock().unwrap()[0][0], "inspect");
-        let view = vm_workspace(&paths, machine.clone(), &inspected);
-        assert!(matches!(view.state, WorkspaceState::Stopped));
+        let view = application_computer(&paths, configuration.clone(), &inspected);
+        assert!(matches!(view.state, ComputerState::Stopped));
         assert!(!view.can_dismiss_error);
         let mut new_crash = crash.clone();
         new_crash["updated_at"] = json!("2026-09-16T00:00:00.456Z");
         let inspected = serde_json::from_value(new_crash).unwrap();
         assert!(matches!(
-            vm_workspace(&paths, machine.clone(), &inspected).state,
-            WorkspaceState::Failed
+            application_computer(&paths, configuration.clone(), &inspected).state,
+            ComputerState::Failed
         ));
         // Clearing before a new lifecycle attempt also prevents masking same-timestamp failures.
         crash_acknowledgement::clear(&paths, "dev").unwrap();
         let inspected = serde_json::from_value(crash).unwrap();
         assert!(matches!(
-            vm_workspace(&paths, machine, &inspected).state,
-            WorkspaceState::Failed
+            application_computer(&paths, configuration, &inspected).state,
+            ComputerState::Failed
         ));
     }
 
     #[test]
-    fn dismiss_crash_rejects_running_unknown_and_replaced_sandboxes() {
+    fn dismiss_crash_rejects_running_unknown_and_replaced_computers() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = paths(&dir);
-        let machine = vm();
-        write_metadata(&paths.metadata, &request(vec![machine.clone()])).unwrap();
+        let configuration = computer();
+        write_metadata(&paths.metadata, &request(vec![configuration.clone()])).unwrap();
         for (status, id, timestamp) in [
-            ("Running", machine.id(), Some("now")),
-            ("Unknown", machine.id(), Some("now")),
+            ("Running", configuration.id(), Some("now")),
+            ("Unknown", configuration.id(), Some("now")),
             ("Crashed", "replacement", Some("now")),
-            ("Crashed", machine.id(), None),
+            ("Crashed", configuration.id(), None),
         ] {
             let runner = StubRunner::successful_json(vec![
                 json!({"name":"dev", "status":status, "updated_at":timestamp,
                 "config":{"labels":{"silo.managed":"true","silo.machine-id":id}}}),
             ]);
-            assert!(workspace_action_with(
+            assert!(computer_action_with(
                 &runner,
                 &paths,
-                &generous_host(),
+                &generous_device(),
                 "dismiss-error",
                 "dev"
             )
@@ -7153,14 +7211,14 @@ esac
     #[test]
     fn bundled_image_preparation_reports_its_actual_stage() {
         let _test_state = crate::test_support::global_state();
-        let event = machine_progress("attempt", "workspace-image-preparation", "dev", 0);
+        let event = computer_progress("attempt", "computer-image-preparation", "dev", 0);
         assert_eq!(event.message, "Preparing the bundled VM image…");
     }
 
     #[test]
     fn first_time_image_import_is_reported_without_a_fraction() {
         let _test_state = crate::test_support::global_state();
-        let event = machine_progress("attempt", "workspace-image-import", "", 0);
+        let event = computer_progress("attempt", "computer-image-import", "", 0);
         assert_eq!(
             event.message,
             "Importing the VM image (first time only, about a minute)…"
@@ -7198,12 +7256,12 @@ esac
     }
 
     #[test]
-    fn vm_access_is_per_vm_and_revisions_never_wait_for_runtime_work() {
+    fn computer_access_is_per_computer_and_revisions_never_wait_for_runtime_work() {
         let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
-        let a = vm_access_state(home.path(), "a").unwrap();
-        let same = vm_access_state(home.path(), "a").unwrap();
-        let b = vm_access_state(home.path(), "b").unwrap();
+        let a = computer_access_state(home.path(), "a").unwrap();
+        let same = computer_access_state(home.path(), "a").unwrap();
+        let b = computer_access_state(home.path(), "b").unwrap();
         // A boot or access update of `a` is running.
         let _running = a.runtime.lock().unwrap();
         // Recording a newer revision does not wait for it.
@@ -7213,7 +7271,7 @@ esac
         // Waiting for runtime access is bounded instead of blocking a thread forever.
         let started = Instant::now();
         assert!(matches!(
-            lock_vm_runtime(&same, Duration::from_millis(60), "Test"),
+            lock_computer_runtime(&same, Duration::from_millis(60), "Test"),
             Err(RuntimeError::Busy)
         ));
         assert!(started.elapsed() < Duration::from_secs(5));
@@ -7238,9 +7296,9 @@ case "$1" in
     while [ -f "$MSB_HOME/modify-block" ]; do sleep 0.05; done
     if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $(cat "$MSB_HOME/modify-values")" >&2; exit 3; fi ;;
 esac
-"#.replace("SILO_TEST_MACHINE_ID", vm().id())).unwrap();
+"#.replace("SILO_TEST_MACHINE_ID", computer().id())).unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
     }
 
     fn github_profile(token: &str) -> Value {
@@ -7304,7 +7362,7 @@ esac
         fake_github_msb(&paths);
         let script = fs::read_to_string(&paths.executable)
             .unwrap()
-            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+            .replace(computer().id(), "22222222-2222-4222-8222-222222222222");
         fs::write(&paths.executable, script).unwrap();
         let store = directory.path().join("secrets.json");
         fs::write(&store, r#"{"secrets":[]}"#).unwrap();
@@ -7330,7 +7388,7 @@ esac
         fake_github_msb(&paths);
         let store = directory.path().join("secrets.json");
         fs::write(&store, r#"{"secrets":[]}"#).unwrap();
-        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let held = OPERATIONS.device("Replacing test computer").unwrap();
         let worker_paths = paths.clone();
         let update = thread::spawn(move || {
             crate::secrets::use_test_store(Some(store));
@@ -7344,11 +7402,11 @@ esac
             queue
                 .waiting
                 .iter()
-                .any(|entry| entry.vm_name.as_deref() == Some("dev"))
+                .any(|entry| entry.computer_name.as_deref() == Some("dev"))
         });
-        let mut replacement = vm();
+        let mut replacement = computer();
         {
-            let MachineConfiguration { id, .. } = &mut replacement;
+            let ComputerConfiguration { id, .. } = &mut replacement;
             *id = "22222222-2222-4222-8222-222222222222".into();
         }
         write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
@@ -7370,7 +7428,7 @@ esac
         fake_github_msb(&paths);
         let script = fs::read_to_string(&paths.executable)
             .unwrap()
-            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+            .replace(computer().id(), "22222222-2222-4222-8222-222222222222");
         fs::write(&paths.executable, script).unwrap();
 
         let error = apply_github_policy_with(
@@ -7395,7 +7453,7 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_github_msb(&paths);
-        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let held = OPERATIONS.device("Replacing test computer").unwrap();
         let worker_paths = paths.clone();
         let update = thread::spawn(move || {
             apply_github_policy_with(
@@ -7409,12 +7467,12 @@ esac
         wait_for_queue(&OPERATIONS, |queue| {
             queue.waiting.iter().any(|entry| {
                 entry.kind == operation_gate::OperationKind::GithubApply
-                    && entry.vm_name.as_deref() == Some("dev")
+                    && entry.computer_name.as_deref() == Some("dev")
             })
         });
-        let mut replacement = vm();
+        let mut replacement = computer();
         {
-            let MachineConfiguration { id, .. } = &mut replacement;
+            let ComputerConfiguration { id, .. } = &mut replacement;
             *id = "22222222-2222-4222-8222-222222222222".into();
         }
         write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
@@ -7436,7 +7494,7 @@ esac
         let paths = paths(&directory);
         fake_github_msb(&paths);
         let store = directory.path().join("secrets.json");
-        fs::write(&store, r#"{"secrets":[{"id":"s1","name":"API_TOKEN","valueId":"v1","workspaces":["dev"],"allowedDomains":["api.example.com"]}]}"#).unwrap();
+        fs::write(&store, r#"{"secrets":[{"id":"s1","name":"API_TOKEN","valueId":"v1","computers":["dev"],"allowedDomains":["api.example.com"]}]}"#).unwrap();
         crate::secrets::use_test_store(Some(store));
         crate::secrets::use_test_vault(Some(
             [("v1".to_string(), "secret-value".to_string())].into(),
@@ -7514,7 +7572,7 @@ esac
             apply_github_policy_with(&worker_paths, "dev", 4, &older, Duration::from_secs(20))
         });
         wait_for(&paths.home.join("modify.pid"));
-        // While the update runs, a boot of this VM can only get the disabled profile.
+        // While the update runs, a boot of this computer can only get the disabled profile.
         assert_eq!(
             github_environment(&paths, &["start".into(), "dev".into()]),
             DISABLED_GITHUB_PROFILE
@@ -7620,7 +7678,7 @@ esac
         // Inside a cancellable operation (for example a caller already holding the gate),
         // a cancel kills the runtime child as well.
         let outer = OPERATIONS
-            .vm("github-cancel-outer", "outer", "Outer operation")
+            .computer("github-cancel-outer", "outer", "Outer operation")
             .unwrap();
         outer.allow_cancel();
         let token = outer.cancel_token();
@@ -7645,7 +7703,7 @@ esac
     }
 
     #[test]
-    fn github_update_waits_for_the_vms_operations_and_the_worker_lock() {
+    fn github_update_waits_for_the_computers_operations_and_the_worker_lock() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -7654,7 +7712,7 @@ esac
         let (held, holding) = std::sync::mpsc::channel();
         let holder = thread::spawn(move || {
             let _guard = OPERATIONS
-                .vm(
+                .computer(
                     "00000000-0000-4000-8000-000000000001",
                     "dev",
                     "Creating checkpoint",
@@ -7677,11 +7735,11 @@ esac
         thread::sleep(Duration::from_millis(300));
         assert!(
             !paths.home.join("modify-args").exists(),
-            "the update ran during another operation on its VM"
+            "the update ran during another operation on its computer"
         );
         assert!(OPERATIONS.snapshot().waiting.iter().any(|entry| entry.kind
             == operation_gate::OperationKind::GithubApply
-            && entry.vm_name.as_deref() == Some("dev")));
+            && entry.computer_name.as_deref() == Some("dev")));
         release.send(()).unwrap();
         holder.join().unwrap();
         update.join().unwrap().unwrap();
@@ -7741,13 +7799,13 @@ esac
     }
 
     #[test]
-    fn production_lifecycle_actions_use_the_target_vms_github_profile() {
+    fn production_lifecycle_actions_use_the_target_computers_github_profile() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let other_directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let other = super::tests::paths(&other_directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let cache = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new()));
         cache.lock().unwrap().insert(
             (paths.home.clone(), "dev".into()),
@@ -7762,7 +7820,7 @@ esac
             "fork-read-only-profile".into(),
         );
         // Restore selects the fork's current host-side policy, never the
-        // source VM's cached profile or a token captured in checkpoint RAM.
+        // source computer's cached profile or a token captured in checkpoint RAM.
         assert_eq!(
             github_environment(
                 &paths,
@@ -7793,10 +7851,10 @@ esac
                 json!(null),
                 inspect(&paths, "Running"),
             ]);
-            workspace_action_with(&runner, &paths, &generous_host(), action, "dev").unwrap();
+            computer_action_with(&runner, &paths, &generous_device(), action, "dev").unwrap();
             let calls = runner.calls.lock().unwrap();
             let command = &calls[1];
-            assert_eq!(github_command_workspace(command), Some("dev"));
+            assert_eq!(github_command_computer(command), Some("dev"));
             assert_eq!(github_environment(&paths, command), "source-write-profile");
             assert_eq!(github_environment(&other, command), DISABLED_GITHUB_PROFILE);
         }
@@ -7812,10 +7870,10 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut journal = ActivityJournal::start(&paths, "attempt-1").unwrap();
-        journal.append(machine_progress("attempt-1", "setup-started", "", 0));
-        journal.append(machine_progress(
+        journal.append(computer_progress("attempt-1", "setup-started", "", 0));
+        journal.append(computer_progress(
             "attempt-1",
-            "workspace-verification",
+            "computer-verification",
             "dev",
             0,
         ));
@@ -7823,12 +7881,12 @@ esac
         let recovered = read_activity(&paths, true).unwrap();
         assert_eq!(recovered.last().unwrap().step, "setup-interrupted");
         assert_eq!(recovered.last().unwrap().level, "warning");
-        assert_eq!(recovered.last().unwrap().workspace, "dev");
+        assert_eq!(recovered.last().unwrap().computer, "dev");
         assert!(recovered.last().unwrap().fraction.is_none());
         assert_eq!(read_activity(&paths, true).unwrap().len(), 3);
         let mut journal = ActivityJournal::start(&paths, "attempt-2").unwrap();
-        journal.append(machine_progress("attempt-2", "setup-started", "", 0));
-        journal.append(machine_progress("attempt-2", "setup-completed", "", 0));
+        journal.append(computer_progress("attempt-2", "setup-started", "", 0));
+        journal.append(computer_progress("attempt-2", "setup-completed", "", 0));
         let completed = read_activity(&paths, true).unwrap();
         assert_eq!(completed.len(), 2);
         assert_eq!(completed.last().unwrap().step, "setup-completed");
@@ -7840,29 +7898,29 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
-        journal.append(machine_progress("attempt", "setup-started", "", 0));
-        journal.append(machine_progress(
+        journal.append(computer_progress("attempt", "setup-started", "", 0));
+        journal.append(computer_progress(
             "attempt",
-            "workspace-configuration",
+            "computer-configuration",
             "dev",
             0,
         ));
         // While the setup runs, its unfinished history is current, not interrupted.
         let running = read_setup_activity_at(&paths).unwrap();
-        assert_eq!(running.last().unwrap().step, "workspace-configuration");
+        assert_eq!(running.last().unwrap().step, "computer-configuration");
         drop(journal);
-        // Unrelated work, such as a launch auto-start on another sandbox, does not make an
+        // Unrelated work, such as a launch auto-start on another computer, does not make an
         // interrupted setup look in progress.
         let _launch = OPERATIONS
-            .vm("setup-activity-other-id", "other", "Starting other")
+            .computer("setup-activity-other-id", "other", "Starting other")
             .unwrap();
         let recovered = read_setup_activity_at(&paths).unwrap();
         assert_eq!(recovered.last().unwrap().step, "setup-interrupted");
         assert_eq!(read_activity(&paths, false).unwrap().len(), 3);
     }
 
-    fn download_progress(bytes: u64) -> MachineConfigurationProgress {
-        let mut event = machine_progress("attempt", "image-download", "dev", 0);
+    fn download_progress(bytes: u64) -> ComputerConfigurationProgress {
+        let mut event = computer_progress("attempt", "image-download", "dev", 0);
         event.step = "image-download".into();
         event.fraction = None;
         event.downloaded_bytes = Some(bytes);
@@ -7883,7 +7941,7 @@ esac
                 .and_then(|event| event.downloaded_bytes)
         };
         let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
-        journal.append(machine_progress("attempt", "setup-started", "", 0));
+        journal.append(computer_progress("attempt", "setup-started", "", 0));
         journal.append(download_progress(1));
         assert_eq!(saved_bytes(), Some(1), "a new stage is saved immediately");
         journal.append(download_progress(2));
@@ -7898,9 +7956,9 @@ esac
             2,
             "repeated progress replaces the previous update"
         );
-        journal.append(machine_progress(
+        journal.append(computer_progress(
             "attempt",
-            "workspace-configuration",
+            "computer-configuration",
             "dev",
             1,
         ));
@@ -7924,29 +7982,29 @@ esac
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut journal = ActivityJournal::start(&paths(&directory), "attempt").unwrap();
-        journal.append(machine_progress("attempt", "setup-started", "", 0));
+        journal.append(computer_progress("attempt", "setup-started", "", 0));
         for index in 0..MAX_ACTIVITY_EVENTS {
-            let name = format!("vm{index}");
-            journal.append(machine_progress(
+            let name = format!("computer{index}");
+            journal.append(computer_progress(
                 "attempt",
-                "workspace-configuration",
+                "computer-configuration",
                 &name,
                 0,
             ));
         }
         assert_eq!(journal.events.len(), MAX_ACTIVITY_EVENTS);
         assert_eq!(journal.events[0].step, "setup-started");
-        assert_eq!(journal.events[1].workspace, "vm1");
+        assert_eq!(journal.events[1].computer, "computer1");
         assert_eq!(
-            journal.events.back().unwrap().workspace,
-            format!("vm{}", MAX_ACTIVITY_EVENTS - 1)
+            journal.events.back().unwrap().computer,
+            format!("computer{}", MAX_ACTIVITY_EVENTS - 1)
         );
     }
 
     #[test]
     fn activity_does_not_publish_private_runtime_error_details() {
         let _test_state = crate::test_support::global_state();
-        let error = RuntimeError::Failed { operation: "Creating the sandbox".into(), exit_code: None, detail: "error sending request https://user:SECRET@registry.test/image?token=SECRET /Users/alice/private".into() };
+        let error = RuntimeError::Failed { operation: "Creating the computer".into(), exit_code: None, detail: "error sending request https://user:SECRET@registry.test/image?token=SECRET /Users/alice/private".into() };
         let safe = safe_activity_error(&error);
         assert!(safe.contains("registry could not be reached"));
         for private in ["SECRET", "alice", "registry.test", "token"] {
@@ -7961,9 +8019,9 @@ esac
         let mut journal = ActivityJournal::start(&paths(&directory), "attempt").unwrap();
         journal.path = directory.path().join("missing-parent/file/activity.json");
         fs::write(directory.path().join("missing-parent"), "blocked").unwrap();
-        let event = journal.append(machine_progress(
+        let event = journal.append(computer_progress(
             "attempt",
-            "workspace-verification",
+            "computer-verification",
             "dev",
             1,
         ));
@@ -8016,7 +8074,7 @@ esac
             ("no space left SECRET", "free disk space"),
         ] {
             let safe = safe_activity_error(&RuntimeError::Failed {
-                operation: "Creating the sandbox".into(),
+                operation: "Creating the computer".into(),
                 exit_code: Some(1),
                 detail: detail.into(),
             });
@@ -8026,14 +8084,14 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
-        let mut event = machine_progress("attempt", "setup-completed", "", 0);
+        let mut event = computer_progress("attempt", "setup-completed", "", 0);
         event.message = "SECRET arbitrary persisted text".into();
         journal.append(event);
         assert_eq!(
             read_activity(&paths, true).unwrap()[0].message,
-            "Sandbox setup completed."
+            "Computer setup completed."
         );
-        journal.events[0].workspace = "https://SECRET".into();
+        journal.events[0].computer = "https://SECRET".into();
         journal.persist().unwrap();
         assert!(read_activity(&paths, true).is_err());
     }
@@ -8044,7 +8102,7 @@ esac
         let cases = [
             (
                 RuntimeError::Failed {
-                    operation: "Creating the sandbox".into(),
+                    operation: "Creating the computer".into(),
                     exit_code: Some(17),
                     detail: "401 unauthorized SECRET".into(),
                 },
@@ -8054,7 +8112,7 @@ esac
             ),
             (
                 RuntimeError::Failed {
-                    operation: "Creating the sandbox".into(),
+                    operation: "Creating the computer".into(),
                     exit_code: Some(13),
                     detail: "Permission denied /private/SECRET".into(),
                 },
@@ -8063,14 +8121,14 @@ esac
                 Some(13),
             ),
             (
-                RuntimeError::Invalid("Sandbox dev has an invalid CPU limit or ceiling.".into()),
+                RuntimeError::Invalid("Computer dev has an invalid CPU limit or ceiling.".into()),
                 "resources",
                 "CPU, memory, or storage",
                 None,
             ),
             (
                 RuntimeError::Failed {
-                    operation: "Creating the sandbox".into(),
+                    operation: "Creating the computer".into(),
                     exit_code: Some(29),
                     detail: "unexpected SECRET".into(),
                 },
@@ -8084,7 +8142,7 @@ esac
             let paths = paths(&directory);
             let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
             let report = failure_report(&error);
-            let mut event = machine_progress("attempt", "setup-failed", "dev", 0);
+            let mut event = computer_progress("attempt", "setup-failed", "dev", 0);
             event.failure_code = Some(report.code.into());
             event.exit_code = report.exit_code;
             event.diagnostic = report.diagnostic;
@@ -8114,10 +8172,10 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
-        let mut started = machine_progress("attempt", "setup-started", "", 0);
+        let mut started = computer_progress("attempt", "setup-started", "", 0);
         started.diagnostic = Some("planted".into());
         journal.append(started);
-        let mut failed = machine_progress("attempt", "setup-failed", "dev", 0);
+        let mut failed = computer_progress("attempt", "setup-failed", "dev", 0);
         failed.failure_code = Some("runtime".into());
         failed.diagnostic = Some("Exit code 1\nTOKEN=planted-secret\nkept line".into());
         journal.append(failed);
@@ -8132,7 +8190,7 @@ esac
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let mut event = machine_progress("attempt", "setup-failed", "dev", 0);
+        let mut event = computer_progress("attempt", "setup-failed", "dev", 0);
         event.failure_code = Some("permission".into());
         event.diagnostic = Some("Exit code 13\nPermission denied".into());
         event.level = "error".into();
@@ -8159,13 +8217,13 @@ esac
     fn partial_configuration_failure_keeps_the_precise_error_and_guidance() {
         let _test_state = crate::test_support::global_state();
         let precise = RuntimeError::Invalid(
-            "Sandbox 'second' is not owned by Silo. No sandbox operation was performed.".into(),
+            "Computer 'second' is not owned by Silo. No computer operation was performed.".into(),
         );
         let report = failure_report(&RuntimeError::Partial(Box::new(precise)));
         assert_eq!(report.code, "configuration");
-        assert_eq!(report.summary, format!("Sandbox 'second' is not owned by Silo. No sandbox operation was performed. {PARTIAL_CHANGES_KEPT}"));
+        assert_eq!(report.summary, format!("Computer 'second' is not owned by Silo. No computer operation was performed. {PARTIAL_CHANGES_KEPT}"));
         let runtime = RuntimeError::Partial(Box::new(RuntimeError::Failed {
-            operation: "Creating the sandbox".into(),
+            operation: "Creating the computer".into(),
             exit_code: Some(7),
             detail: "no space left on device".into(),
         }));
@@ -8190,7 +8248,7 @@ esac
     fn user_facing_failures_never_name_exit_codes_or_workers() {
         let _test_state = crate::test_support::global_state();
         let error = RuntimeError::Failed {
-            operation: "Starting the sandbox".into(),
+            operation: "Starting the computer".into(),
             exit_code: Some(3),
             detail: "boom".into(),
         };
@@ -8198,7 +8256,7 @@ esac
             error.to_string(),
             safe_activity_error(&error),
             setup_failure_message("runtime").unwrap(),
-            internal_failure("reading sandbox state"),
+            internal_failure("reading computer state"),
             safe_activity_error(&RuntimeError::Launch(
                 "could not launch: worker failure (exit code 2)".into(),
             )),
@@ -8218,7 +8276,7 @@ esac
         let paths = paths(&directory);
         let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
         journal.events = (0..512)
-            .map(|_| machine_progress("attempt", "workspace-verification", "dev", 0))
+            .map(|_| computer_progress("attempt", "computer-verification", "dev", 0))
             .collect();
         journal.persist().unwrap();
         assert_eq!(read_activity(&paths, true).unwrap().len(), 512);
@@ -8265,12 +8323,12 @@ esac
     #[test]
     fn activity_contract_matches_frontend_fixture() {
         let _test_state = crate::test_support::global_state();
-        let mut started = machine_progress("attempt-1", "setup-started", "", 0);
+        let mut started = computer_progress("attempt-1", "setup-started", "", 0);
         started.timestamp = 1_700_000_000_000;
-        let mut completed = machine_progress("attempt-1", "setup-completed", "", 0);
+        let mut completed = computer_progress("attempt-1", "setup-completed", "", 0);
         completed.timestamp = 1_700_000_001_000;
         completed.elapsed_seconds = 1;
-        let mut failed = machine_progress("attempt-2", "setup-failed", "dev", 0);
+        let mut failed = computer_progress("attempt-2", "setup-failed", "dev", 0);
         failed.timestamp = 1_700_000_002_000;
         failed.elapsed_seconds = 2;
         failed.level = "error".into();
@@ -8289,8 +8347,8 @@ esac
         crate::test_support::paths(directory.path())
     }
 
-    pub(super) fn vm() -> MachineConfiguration {
-        MachineConfiguration {
+    pub(super) fn computer() -> ComputerConfiguration {
+        ComputerConfiguration {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
             cpus: 4,
@@ -8303,15 +8361,15 @@ esac
         }
     }
 
-    pub(super) fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
-        MachineConfigurationRequest {
+    pub(super) fn request(computers: Vec<ComputerConfiguration>) -> ComputerConfigurationRequest {
+        ComputerConfigurationRequest {
             schema_version: 1,
-            machines,
+            computers,
         }
     }
 
-    fn generous_host() -> HostResources {
-        HostResources {
+    fn generous_device() -> DeviceResources {
+        DeviceResources {
             logical_cpus: 64,
             physical_memory_bytes: Some(256 * 1024 * 1024 * 1024),
         }
@@ -8325,7 +8383,7 @@ esac
                 "name": "dev",
                 "image": {"Oci": {"reference": "ubuntu", "root_disk": {"kind": "managed", "size_mib": 81920}}},
                 "resources": {"cpus": 4, "max_cpus": 6, "memory_mib": 16384, "max_memory_mib": 32768},
-                "labels": {"silo.managed": "true", "silo.machine-id": vm().id()},
+                "labels": {"silo.managed": "true", "silo.machine-id": computer().id()},
                 "mounts": [{
                     "type":"Owned", "guest":WORKSPACE_MOUNT,
                     "storage":{"kind":"disk","capacity_mib":61440}
@@ -8341,17 +8399,17 @@ esac
     }
 
     #[test]
-    fn configuration_recovery_adopts_only_the_created_vm_with_the_saved_id() {
+    fn configuration_recovery_adopts_only_the_created_computer_with_the_saved_id() {
         let _test_state = crate::test_support::global_state();
         let gate = operation_gate::OperationGate::new();
-        let _guard = gate.computer("Recovering test configuration").unwrap();
+        let _guard = gate.device("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let candidate = request(vec![vm()]);
+        let candidate = request(vec![computer()]);
         configuration_recovery::begin(&paths, &candidate).unwrap();
-        configuration_recovery::claim(&paths, &vm()).unwrap();
+        configuration_recovery::claim(&paths, &computer()).unwrap();
         let mut actual = inspect(&paths, "Created");
-        actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
+        actual["config"]["labels"]["silo.machine-id"] = json!(computer().id());
         let runner = StubRunner::successful_json(vec![
             json!([{"name":"dev","status":"Created","image":"ubuntu"}]),
             actual.clone(),
@@ -8359,8 +8417,13 @@ esac
             json!(null),
             actual,
         ]);
-        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {})
-            .unwrap();
+        configuration_recovery::recover_at_paths(
+            &runner,
+            &paths,
+            &generous_device(),
+            &|_, _, _| {},
+        )
+        .unwrap();
         assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
         assert!(!paths
             .metadata
@@ -8382,15 +8445,15 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         // A 0.7.4-era journal: an unfinished creation with no desktop settings.
-        let old = request(vec![vm()]);
+        let old = request(vec![computer()]);
         assert!(configuration_recovery::begin(&paths, &old).is_ok());
         let journal = configuration_recovery::load(&paths).unwrap().unwrap();
-        // No sandbox exists in the runtime yet: the creation is still to be done.
+        // No computer exists in the runtime yet: the creation is still to be done.
         let runner = StubRunner::successful_json(vec![json!([])]);
         let journal =
             configuration_recovery::normalize_desktop_intent(&runner, &paths, journal).unwrap();
         assert!(crate::computer_use::is_built_in(
-            &journal.request.machines[0]
+            &journal.request.computers[0]
         ));
         // Replay defaults the same way and must now match the saved intent.
         let mut replayed = old.clone();
@@ -8403,14 +8466,14 @@ esac
     }
 
     #[test]
-    fn recovery_keeps_the_settings_of_a_partially_created_sandbox_that_already_exists() {
+    fn recovery_keeps_the_settings_of_a_partially_created_computer_that_already_exists() {
         let _test_state = crate::test_support::global_state();
         let _v4 = guest_image::pin_test_version("ubuntu-24.04-v4");
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        // An older Silo started creating `dev` from the v3 image; its sandbox exists in
+        // An older Silo started creating `dev` from the v3 image; its computer exists in
         // the runtime, the metadata commit never happened, and the journal has no desktop.
-        let old = request(vec![vm()]);
+        let old = request(vec![computer()]);
         configuration_recovery::begin(&paths, &old).unwrap();
         let journal = configuration_recovery::load(&paths).unwrap().unwrap();
         let runner = StubRunner::successful_json(vec![json!([
@@ -8421,38 +8484,38 @@ esac
         // The v4 defaults are for creations still to be done: this one is adopted as it is.
         assert_eq!(journal.request, old);
         assert!(!crate::computer_use::is_built_in(
-            &journal.request.machines[0]
+            &journal.request.computers[0]
         ));
         assert_eq!(
             configuration_recovery::pending_request(&paths).unwrap(),
             Some(old.clone())
         );
-        // With no sandbox in the runtime, creation is still necessary and the defaults apply.
+        // With no computer in the runtime, creation is still necessary and the defaults apply.
         let runner = StubRunner::successful_json(vec![json!([])]);
         let journal = configuration_recovery::load(&paths).unwrap().unwrap();
         let journal =
             configuration_recovery::normalize_desktop_intent(&runner, &paths, journal).unwrap();
         assert!(crate::computer_use::is_built_in(
-            &journal.request.machines[0]
+            &journal.request.computers[0]
         ));
     }
 
     #[test]
-    fn recovery_adopts_a_partially_created_v3_sandbox_without_making_it_built_in() {
+    fn recovery_adopts_a_partially_created_v3_computer_without_making_it_built_in() {
         let _test_state = crate::test_support::global_state();
         let _v4 = guest_image::pin_test_version("ubuntu-24.04-v4");
         let gate = operation_gate::OperationGate::new();
-        let _guard = gate.computer("Recovering test configuration").unwrap();
+        let _guard = gate.device("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let candidate = request(vec![vm()]);
+        let candidate = request(vec![computer()]);
         configuration_recovery::begin(&paths, &candidate).unwrap();
-        configuration_recovery::claim(&paths, &vm()).unwrap();
+        configuration_recovery::claim(&paths, &computer()).unwrap();
         let mut actual = inspect(&paths, "Created");
-        actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
+        actual["config"]["labels"]["silo.machine-id"] = json!(computer().id());
         let listed = json!([{"name":"dev","status":"Created","image":"ubuntu"}]);
         let runner = StubRunner::successful_json(vec![
-            // The normalization asks which sandboxes exist, then reconciliation adopts.
+            // The normalization asks which computers exist, then reconciliation adopts.
             listed.clone(),
             listed,
             actual.clone(),
@@ -8460,11 +8523,16 @@ esac
             json!(null),
             actual,
         ]);
-        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {})
-            .unwrap();
+        configuration_recovery::recover_at_paths(
+            &runner,
+            &paths,
+            &generous_device(),
+            &|_, _, _| {},
+        )
+        .unwrap();
         let committed = read_metadata(&paths.metadata).unwrap();
         assert_eq!(committed, candidate);
-        assert!(!crate::computer_use::is_built_in(&committed.machines[0]));
+        assert!(!crate::computer_use::is_built_in(&committed.computers[0]));
         assert!(!runner
             .calls
             .lock()
@@ -8474,62 +8542,63 @@ esac
     }
 
     #[test]
-    fn an_older_controller_cannot_stop_a_built_in_desktop_from_starting_with_its_vm() {
+    fn an_older_controller_cannot_stop_a_built_in_desktop_from_starting_with_its_computer() {
         let built_in = |start| {
-            let mut machine = vm();
+            let mut configuration = computer();
             {
-                let MachineConfiguration { desktop, .. } = &mut machine;
+                let ComputerConfiguration { desktop, .. } = &mut configuration;
                 *desktop = Some(crate::desktop::DesktopConfiguration {
-                    start_with_sandbox: start,
+                    start_with_computer: start,
                     built_in: true,
                 });
             }
-            machine
+            configuration
         };
         let legacy = |start| {
-            let mut machine = vm();
+            let mut configuration = computer();
             {
-                let MachineConfiguration { desktop, .. } = &mut machine;
+                let ComputerConfiguration { desktop, .. } = &mut configuration;
                 *desktop = Some(crate::desktop::DesktopConfiguration {
-                    start_with_sandbox: start,
+                    start_with_computer: start,
                     built_in: false,
                 });
             }
-            machine
+            configuration
         };
-        let started = |machines: &[MachineConfiguration]| {
-            crate::desktop::configuration(&machines[0]).map(|d| (d.start_with_sandbox, d.built_in))
+        let started = |computers: &[ComputerConfiguration]| {
+            crate::desktop::configuration(&computers[0])
+                .map(|d| (d.start_with_computer, d.built_in))
         };
         // The older controller does not know `builtIn`: its expected and replacement carry
-        // `false` and `startWithSandbox: false`.
-        let mut machines = vec![built_in(true)];
-        change_machine(
-            &mut machines,
-            vm().id(),
+        // `false` and `startWithComputer: false`.
+        let mut computers = vec![built_in(true)];
+        change_computer(
+            &mut computers,
+            computer().id(),
             Some(&legacy(true)),
             Some(&legacy(false)),
         )
         .unwrap();
-        assert_eq!(started(&machines), Some((true, true)));
+        assert_eq!(started(&computers), Some((true, true)));
         // A controller that knows the field cannot turn it off either.
-        change_machine(
-            &mut machines,
-            vm().id(),
+        change_computer(
+            &mut computers,
+            computer().id(),
             Some(&built_in(true)),
             Some(&built_in(false)),
         )
         .unwrap();
-        assert_eq!(started(&machines), Some((true, true)));
-        // A legacy VM keeps its manual choice.
-        let mut machines = vec![legacy(true)];
-        change_machine(
-            &mut machines,
-            vm().id(),
+        assert_eq!(started(&computers), Some((true, true)));
+        // A legacy computer keeps its manual choice.
+        let mut computers = vec![legacy(true)];
+        change_computer(
+            &mut computers,
+            computer().id(),
             Some(&legacy(true)),
             Some(&legacy(false)),
         )
         .unwrap();
-        assert_eq!(started(&machines), Some((false, false)));
+        assert_eq!(started(&computers), Some((false, false)));
     }
 
     #[test]
@@ -8537,11 +8606,11 @@ esac
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let defaulted = |paths: &RuntimePaths| {
-            let mut request = request(vec![vm()]);
-            apply_desktop_defaults(paths, &request_without_machines(), &mut request);
-            request.machines[0].clone()
+            let mut request = request(vec![computer()]);
+            apply_desktop_defaults(paths, &request_without_computers(), &mut request);
+            request.computers[0].clone()
         };
-        // Whatever image is bundled in `runtime/`, the default is a plain v3 sandbox.
+        // Whatever image is bundled in `runtime/`, the default is a plain v3 computer.
         let plain = defaulted(&paths);
         assert!(!crate::computer_use::is_built_in(&plain), "{plain:?}");
         {
@@ -8553,7 +8622,7 @@ esac
         assert!(!crate::computer_use::is_built_in(&plain), "{plain:?}");
     }
 
-    fn request_without_machines() -> MachineConfigurationRequest {
+    fn request_without_computers() -> ComputerConfigurationRequest {
         request(vec![])
     }
 
@@ -8564,16 +8633,16 @@ esac
         let paths = paths(&directory);
         let previous = request(vec![]);
         // The first attempt journaled the defaulted request, then failed.
-        let mut first = request(vec![vm()]);
+        let mut first = request(vec![computer()]);
         apply_desktop_defaults_for(Some("ubuntu-24.04-v4"), &previous, &mut first);
         configuration_recovery::begin(&paths, &first).unwrap();
-        configuration_recovery::claim(&paths, &first.machines[0]).unwrap();
+        configuration_recovery::claim(&paths, &first.computers[0]).unwrap();
         // The same creation is resubmitted without a desktop choice.
-        let mut again = request(vec![vm()]);
+        let mut again = request(vec![computer()]);
         apply_desktop_defaults_for(Some("ubuntu-24.04-v4"), &previous, &mut again);
         assert_eq!(again, first);
         // Without the defaulting the journal would reject the resubmission.
-        assert!(configuration_recovery::begin(&paths, &request(vec![vm()])).is_err());
+        assert!(configuration_recovery::begin(&paths, &request(vec![computer()])).is_err());
         let runner = StubRunner::successful_json(vec![json!([]), json!([])]);
         configuration_recovery::prepare_retry(&runner, &paths, Some(&again)).unwrap();
         configuration_recovery::begin(&paths, &again).unwrap();
@@ -8586,22 +8655,22 @@ esac
     fn interrupted_desktop_creation_is_retried_before_metadata_adoption() {
         let _test_state = crate::test_support::global_state();
         let gate = operation_gate::OperationGate::new();
-        let _guard = gate.computer("Recovering test configuration").unwrap();
+        let _guard = gate.device("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let mut machine = vm();
+        let mut configuration = computer();
         {
-            let MachineConfiguration { desktop, .. } = &mut machine;
+            let ComputerConfiguration { desktop, .. } = &mut configuration;
             *desktop = Some(crate::desktop::DesktopConfiguration {
-                start_with_sandbox: false,
+                start_with_computer: false,
                 built_in: false,
             });
         }
-        let candidate = request(vec![machine.clone()]);
+        let candidate = request(vec![configuration.clone()]);
         configuration_recovery::begin(&paths, &candidate).unwrap();
-        configuration_recovery::claim(&paths, &machine).unwrap();
+        configuration_recovery::claim(&paths, &configuration).unwrap();
         let mut actual = inspect(&paths, "Stopped");
-        actual["config"]["labels"]["silo.machine-id"] = json!(machine.id());
+        actual["config"]["labels"]["silo.machine-id"] = json!(configuration.id());
         let outputs = || {
             vec![
                 json!([{"name":"dev","status":"Stopped","image":"ubuntu"}]),
@@ -8629,11 +8698,11 @@ esac
         assert!(configuration_recovery::recover_at_paths(
             &interrupted,
             &paths,
-            &generous_host(),
+            &generous_device(),
             &|_, _, _| {}
         )
         .is_err());
-        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
         assert!(paths
             .metadata
             .with_file_name("configuration-operation.json")
@@ -8642,7 +8711,7 @@ esac
         success.push(json!(null));
         success.push(actual);
         let retry = StubRunner::successful_json(success);
-        configuration_recovery::recover_at_paths(&retry, &paths, &generous_host(), &|_, _, _| {})
+        configuration_recovery::recover_at_paths(&retry, &paths, &generous_device(), &|_, _, _| {})
             .unwrap();
         assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
         assert!(!paths
@@ -8661,14 +8730,14 @@ esac
     fn configuration_recovery_verifies_an_edit_committed_before_interruption() {
         let _test_state = crate::test_support::global_state();
         let gate = operation_gate::OperationGate::new();
-        let _guard = gate.computer("Recovering test configuration").unwrap();
+        let _guard = gate.device("Recovering test configuration").unwrap();
         for (valid, retry) in [(false, false), (true, false), (false, true), (true, true)] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-            let mut edited = vm();
+            write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
+            let mut edited = computer();
             {
-                let MachineConfiguration { cpus, .. } = &mut edited;
+                let ComputerConfiguration { cpus, .. } = &mut edited;
                 *cpus = 5;
             }
             let candidate = request(vec![edited]);
@@ -8676,7 +8745,7 @@ esac
             // Simulate termination between writing metadata and verifying runtime.
             write_metadata(&paths.metadata, &candidate).unwrap();
             let mut actual = inspect(&paths, "Stopped");
-            actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
+            actual["config"]["labels"]["silo.machine-id"] = json!(computer().id());
             if valid {
                 actual["config"]["resources"]["cpus"] = json!(5);
             }
@@ -8691,7 +8760,7 @@ esac
                 configuration_recovery::recover_at_paths(
                     &runner,
                     &paths,
-                    &generous_host(),
+                    &generous_device(),
                     &|_, _, _| {},
                 )
             };
@@ -8718,12 +8787,12 @@ esac
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        configuration_recovery::begin(&paths, &request(vec![vm()])).unwrap();
-        // The VM failed while preparing its disk before its metadata committed.
+        configuration_recovery::begin(&paths, &request(vec![computer()])).unwrap();
+        // The computer failed while preparing its disk before its metadata committed.
         write_metadata(&paths.metadata, &request(Vec::new())).unwrap();
-        configuration_recovery::claim(&paths, &vm()).unwrap();
+        configuration_recovery::claim(&paths, &computer()).unwrap();
         fs::write(disk_path(&paths, "dev", "workspace"), b"incomplete").unwrap();
-        let mut corrected = vm();
+        let mut corrected = computer();
         corrected.memory_gib = 8;
         let revised = request(vec![corrected]);
         let runner = StubRunner::successful_json(vec![json!([])]);
@@ -8752,7 +8821,7 @@ esac
     fn configuration_adoption_releases_worker_lock_before_guest_verification() {
         let _test_state = crate::test_support::global_state();
         let gate = operation_gate::OperationGate::new();
-        let _guard = gate.computer("Recovering test configuration").unwrap();
+        let _guard = gate.device("Recovering test configuration").unwrap();
         struct LockAwareRunner(StubRunner);
         impl RuntimeRunner for LockAwareRunner {
             fn run(
@@ -8772,11 +8841,11 @@ esac
         for retry in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            let candidate = request(vec![vm()]);
+            let candidate = request(vec![computer()]);
             configuration_recovery::begin(&paths, &candidate).unwrap();
-            configuration_recovery::claim(&paths, &vm()).unwrap();
+            configuration_recovery::claim(&paths, &computer()).unwrap();
             let mut actual = inspect(&paths, "Created");
-            actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
+            actual["config"]["labels"]["silo.machine-id"] = json!(computer().id());
             let runner = LockAwareRunner(StubRunner::successful_json(vec![
                 json!([{"name":"dev","status":"Created","image":"ubuntu"}]),
                 actual.clone(),
@@ -8790,7 +8859,7 @@ esac
                 configuration_recovery::recover_at_paths(
                     &runner,
                     &paths,
-                    &generous_host(),
+                    &generous_device(),
                     &|_, _, _| {},
                 )
                 .unwrap();
@@ -8839,13 +8908,13 @@ esac
         let commands = fs::read_to_string(paths.home.join("commands")).unwrap();
         assert!(commands.ends_with("start\ninspect\n"), "{commands}");
         assert!(!commands.lines().any(|command| command == "stop"));
-        let row = vm_workspace(
+        let row = application_computer(
             &paths,
-            vm(),
+            computer(),
             &serde_json::from_value(inspect(&paths, "Running")).unwrap(),
         );
-        assert!(matches!(row.state, WorkspaceState::Running));
-        assert!(row.attention.unwrap().message.contains("sandbox started"));
+        assert!(matches!(row.state, ComputerState::Running));
+        assert!(row.attention.unwrap().message.contains("computer started"));
     }
 
     #[test]
@@ -8893,14 +8962,14 @@ exit 9
         thread::scope(|scope| {
             let workers: Vec<_> = ["first", "second"]
                 .into_iter()
-                .map(|workspace| {
+                .map(|computer| {
                     let shared = parent.duplicate_for_shutdown().unwrap();
                     let paths = &paths;
                     scope.spawn(move || {
                         with_shutdown_worker_lock(shared, || {
                             run_msb_process(
                                 paths,
-                                &["stop".into(), workspace.into()],
+                                &["stop".into(), computer.into()],
                                 Duration::from_secs(5),
                                 &|_| {},
                             )
@@ -8972,13 +9041,13 @@ exit 9
     }
 
     #[test]
-    fn configuration_recovery_preserves_a_replacement_vm() {
+    fn configuration_recovery_preserves_a_replacement_computer() {
         let _test_state = crate::test_support::global_state();
         let gate = operation_gate::OperationGate::new();
-        let _guard = gate.computer("Recovering test configuration").unwrap();
+        let _guard = gate.device("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        configuration_recovery::begin(&paths, &request(vec![vm()])).unwrap();
+        configuration_recovery::begin(&paths, &request(vec![computer()])).unwrap();
         let mut actual = inspect(&paths, "Created");
         actual["config"]["labels"]["silo.machine-id"] = json!("someone-else");
         let runner = StubRunner::successful_json(vec![
@@ -8988,16 +9057,16 @@ exit 9
         let error = configuration_recovery::recover_at_paths(
             &runner,
             &paths,
-            &generous_host(),
+            &generous_device(),
             &|_, _, _| {},
         )
         .unwrap_err();
-        assert!(error.to_string().contains("different sandbox"));
+        assert!(error.to_string().contains("different computer"));
         assert!(paths
             .metadata
             .with_file_name("configuration-operation.json")
             .exists());
-        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
         assert!(!runner
             .calls
             .lock()
@@ -9011,14 +9080,14 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let candidate = request(vec![vm()]);
+        let candidate = request(vec![computer()]);
         configuration_recovery::begin(&paths, &candidate).unwrap();
-        configuration_recovery::claim(&paths, &vm()).unwrap();
+        configuration_recovery::claim(&paths, &computer()).unwrap();
         fs::write(disk_path(&paths, "dev", "workspace"), b"incomplete").unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
         configuration_recovery::prepare_retry(&runner, &paths, None).unwrap();
         assert!(!paths.volumes.join("dev").exists());
-        configuration_recovery::claim(&paths, &vm()).unwrap();
+        configuration_recovery::claim(&paths, &computer()).unwrap();
         assert!(paths.volumes.join("dev/.silo-configuration-owner").exists());
         assert!(paths
             .metadata
@@ -9031,9 +9100,9 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let candidate = request(vec![vm()]);
+        let candidate = request(vec![computer()]);
         configuration_recovery::begin(&paths, &candidate).unwrap();
-        configuration_recovery::claim(&paths, &vm()).unwrap();
+        configuration_recovery::claim(&paths, &computer()).unwrap();
         fs::write(disk_path(&paths, "dev", "workspace"), b"saved-data").unwrap();
         write_metadata(&paths.metadata, &candidate).unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
@@ -9051,16 +9120,25 @@ exit 9
     fn configuration_recovery_finishes_interrupted_deletion() {
         let _test_state = crate::test_support::global_state();
         let gate = operation_gate::OperationGate::new();
-        let _guard = gate.computer("Recovering test configuration").unwrap();
+        let _guard = gate.device("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         fs::create_dir_all(paths.volumes.join("dev")).unwrap();
-        fs::write(disk_path(&paths, "dev", "workspace"), b"deleted-vm-disk").unwrap();
+        fs::write(
+            disk_path(&paths, "dev", "workspace"),
+            b"deleted-computer-disk",
+        )
+        .unwrap();
         configuration_recovery::begin(&paths, &request(Vec::new())).unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
-        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {})
-            .unwrap();
+        configuration_recovery::recover_at_paths(
+            &runner,
+            &paths,
+            &generous_device(),
+            &|_, _, _| {},
+        )
+        .unwrap();
         assert_eq!(read_metadata(&paths.metadata).unwrap(), request(Vec::new()));
         assert!(!paths.volumes.join("dev").exists());
     }
@@ -9073,17 +9151,17 @@ exit 9
         let folder = paths.volumes.join("dev");
         fs::create_dir_all(&folder).unwrap();
         fs::write(disk_path(&paths, "dev", "workspace"), b"disk").unwrap();
-        remove_machine_volumes(&paths, &vm()).unwrap();
+        remove_computer_volumes(&paths, &computer()).unwrap();
         assert!(!folder.exists());
-        remove_machine_volumes(&paths, &vm()).unwrap();
+        remove_computer_volumes(&paths, &computer()).unwrap();
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join("unknown.raw"), b"keep").unwrap();
-        assert!(remove_machine_volumes(&paths, &vm()).is_err());
+        assert!(remove_computer_volumes(&paths, &computer()).is_err());
         assert_eq!(fs::read(folder.join("unknown.raw")).unwrap(), b"keep");
     }
 
     #[test]
-    fn removed_sandbox_github_profile_is_not_inherited_by_a_new_one() {
+    fn removed_computer_github_profile_is_not_inherited_by_a_new_one() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -9102,26 +9180,27 @@ exit 9
     }
 
     #[test]
-    fn deleting_a_sandbox_removes_its_github_assignment() {
+    fn deleting_a_computer_removes_its_github_assignment() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let document = directory.path().join("github.json");
         std::fs::write(&document, serde_json::to_vec(&json!({"revision":3,"accessEnabled":true,"account":null,
-            "workspaces":[{"workspace":"dev","repositoryMode":"all","allRepositoriesAllowChanges":true,"repositories":[],
+            "computers":[{"computer":"dev","repositoryMode":"all","allRepositoriesAllowChanges":true,"repositories":[],
                 "identity":{"name":"","email":"","apply":false}}],"accessPending":["dev"]})).unwrap()).unwrap();
         crate::github::use_test_document(Some(document.clone()));
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let inspected = inspect(&paths, "Stopped");
         let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
-        let result = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]));
+        let result =
+            apply_whole_configuration(&runner, &paths, &generous_device(), request(vec![]));
         crate::github::use_test_document(None);
         result.unwrap();
         let saved: Value = serde_json::from_slice(&std::fs::read(&document).unwrap()).unwrap();
         assert_eq!(
-            saved["workspaces"],
+            saved["computers"],
             json!([]),
-            "a new sandbox named dev would inherit write access"
+            "a new computer named dev would inherit write access"
         );
         assert_eq!(saved["accessPending"], json!([]));
     }
@@ -9140,7 +9219,7 @@ exit 9
     }
 
     #[test]
-    fn running_checkpoint_operation_is_interrupted_only_when_its_vm_is_idle() {
+    fn running_checkpoint_operation_is_interrupted_only_when_its_computer_is_idle() {
         let _test_state = crate::test_support::global_state();
         let running = || checkpoints::Operation {
             kind: "create".into(),
@@ -9159,27 +9238,25 @@ exit 9
     }
 
     #[test]
-    fn application_snapshot_ignores_hidden_housekeeping_and_single_vm_work() {
+    fn application_snapshot_ignores_hidden_housekeeping_and_single_computer_work() {
         let _test_state = crate::test_support::global_state();
         let gate = operation_gate::OperationGate::new();
-        assert!(gate.is_computer_idle());
-        let housekeeping = gate
-            .try_computer_hidden("Cleaning up expired logs")
-            .unwrap();
+        assert!(gate.is_device_idle());
+        let housekeeping = gate.try_device_hidden("Cleaning up expired logs").unwrap();
         assert!(!gate.is_idle());
         assert!(
-            gate.is_computer_idle(),
+            gate.is_device_idle(),
             "hidden housekeeping must not freeze state reads"
         );
         drop(housekeeping);
-        let checkpoint = gate.vm("a-id", "a", "Creating checkpoint").unwrap();
+        let checkpoint = gate.computer("a-id", "a", "Creating checkpoint").unwrap();
         assert!(
-            gate.is_computer_idle(),
-            "work on one VM must not freeze every sandbox"
+            gate.is_device_idle(),
+            "work on one computer must not freeze every computer"
         );
         drop(checkpoint);
-        let change = gate.computer("Applying sandbox changes").unwrap();
-        assert!(!gate.is_computer_idle());
+        let change = gate.device("Applying computer changes").unwrap();
+        assert!(!gate.is_device_idle());
         drop(change);
     }
 
@@ -9188,10 +9265,10 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
         let gate = operation_gate::OperationGate::new();
-        let change = gate.computer("Applying sandbox changes").unwrap();
+        let change = gate.device("Applying computer changes").unwrap();
         assert_eq!(
             read_application_snapshot(&runner, &paths, &gate)
                 .unwrap_err()
@@ -9229,20 +9306,20 @@ exit 9
         (release, holder)
     }
 
-    fn two_vm_reading(paths: &RuntimePaths, dev: &str, work: &str) -> StubRunner {
+    fn two_computer_reading(paths: &RuntimePaths, dev: &str, work: &str) -> StubRunner {
         StubRunner::successful_json(vec![
             json!([{"name": "dev"}, {"name": "work"}]),
-            inspect_named(paths, &vm(), dev),
-            inspect_named(paths, &second_vm(), work),
+            inspect_named(paths, &computer(), dev),
+            inspect_named(paths, &second_computer(), work),
         ])
     }
 
     fn row<'a>(source: &'a Value, name: &str) -> &'a Value {
-        source["workspaces"]
+        source["computers"]
             .as_array()
             .unwrap()
             .iter()
-            .find(|row| row["machine"]["name"] == name)
+            .find(|row| row["configuration"]["name"] == name)
             .unwrap()
     }
 
@@ -9251,23 +9328,34 @@ exit 9
     }
 
     #[test]
-    fn a_busy_vm_keeps_its_last_settled_reading_while_other_rows_refresh() {
+    fn a_busy_computer_keeps_its_last_settled_reading_while_other_rows_refresh() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &request(vec![computer(), second_computer()]),
+        )
+        .unwrap();
         let gate = leaked_gate();
-        let first =
-            read_application_snapshot(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate)
-                .unwrap();
-        remember_settled(&paths, &first.workspaces);
+        let first = read_application_snapshot(
+            &two_computer_reading(&paths, "Running", "Stopped"),
+            &paths,
+            gate,
+        )
+        .unwrap();
+        remember_settled(&paths, &first.computers);
         // A checkpoint pauses dev while work is started outside it.
         let (release, holder) = hold_elsewhere(gate, |gate| {
-            gate.vm(vm().id(), "dev", "Creating checkpoint").unwrap()
+            gate.computer(computer().id(), "dev", "Creating checkpoint")
+                .unwrap()
         });
-        let busy =
-            read_application_snapshot(&two_vm_reading(&paths, "Paused", "Running"), &paths, gate)
-                .unwrap();
+        let busy = read_application_snapshot(
+            &two_computer_reading(&paths, "Paused", "Running"),
+            &paths,
+            gate,
+        )
+        .unwrap();
         let encoded = published(&busy);
         assert_eq!(
             (
@@ -9280,42 +9368,55 @@ exit 9
         assert_eq!(row(&encoded, "work")["state"], "running");
         assert!(row(&encoded, "work").get("settling").is_none());
         // A settling row never replaces the remembered reading.
-        remember_settled(&paths, &busy.workspaces);
+        remember_settled(&paths, &busy.computers);
         assert!(matches!(
-            last_settled(&paths)[vm().id()].state,
-            WorkspaceState::Running
+            last_settled(&paths)[computer().id()].state,
+            ComputerState::Running
         ));
         drop(release);
         holder.join().unwrap();
         // Once nothing touches dev during a read, its row is fresh again.
         let settled = published(
-            &read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate)
-                .unwrap(),
+            &read_application_snapshot(
+                &two_computer_reading(&paths, "Stopped", "Running"),
+                &paths,
+                gate,
+            )
+            .unwrap(),
         );
         assert_eq!(row(&settled, "dev")["state"], "stopped");
         assert!(row(&settled, "dev").get("settling").is_none());
     }
 
     #[test]
-    fn a_busy_vm_missing_from_the_runtime_or_unreadable_does_not_fail_the_read() {
+    fn a_busy_computer_missing_from_the_runtime_or_unreadable_does_not_fail_the_read() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &request(vec![computer(), second_computer()]),
+        )
+        .unwrap();
         let gate = leaked_gate();
         remember_settled(
             &paths,
-            &read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate)
-                .unwrap()
-                .workspaces,
+            &read_application_snapshot(
+                &two_computer_reading(&paths, "Stopped", "Running"),
+                &paths,
+                gate,
+            )
+            .unwrap()
+            .computers,
         );
         let (release, holder) = hold_elsewhere(gate, |gate| {
-            gate.vm(vm().id(), "dev", "Restoring checkpoint").unwrap()
+            gate.computer(computer().id(), "dev", "Restoring checkpoint")
+                .unwrap()
         });
-        // A restore has removed dev's runtime VM and not yet recreated it.
+        // A restore has removed dev's runtime computer and not yet recreated it.
         let removed = StubRunner::successful_json(vec![
             json!([{"name": "work"}]),
-            inspect_named(&paths, &second_vm(), "Running"),
+            inspect_named(&paths, &second_computer(), "Running"),
         ]);
         let encoded = published(&read_application_snapshot(&removed, &paths, gate).unwrap());
         assert_eq!(
@@ -9332,7 +9433,7 @@ exit 9
             Err(RuntimeError::TimedOut {
                 operation: "inspect dev".into(),
             }),
-            identity_output(&inspect_named(&paths, &second_vm(), "Running").to_string()),
+            identity_output(&inspect_named(&paths, &second_computer(), "Running").to_string()),
         ]);
         let encoded = published(&read_application_snapshot(&unreadable, &paths, gate).unwrap());
         assert_eq!(
@@ -9343,13 +9444,17 @@ exit 9
             (Some("stopped"), Some(true))
         );
         assert!(row(&encoded, "dev").get("attention").is_none());
-        // With no earlier reading, a busy unreadable VM shows a neutral updating row.
+        // With no earlier reading, a busy unreadable computer shows a neutral updating row.
         let fresh_directory = tempfile::tempdir().unwrap();
         let fresh_paths = super::tests::paths(&fresh_directory);
-        write_metadata(&fresh_paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        write_metadata(
+            &fresh_paths.metadata,
+            &request(vec![computer(), second_computer()]),
+        )
+        .unwrap();
         let removed = StubRunner::successful_json(vec![
             json!([{"name": "work"}]),
-            inspect_named(&fresh_paths, &second_vm(), "Running"),
+            inspect_named(&fresh_paths, &second_computer(), "Running"),
         ]);
         let encoded = published(&read_application_snapshot(&removed, &fresh_paths, gate).unwrap());
         assert_eq!(
@@ -9369,34 +9474,41 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &request(vec![computer(), second_computer()]),
+        )
+        .unwrap();
         let gate = leaked_gate();
         let (release, holder) = hold_elsewhere(gate, |gate| {
-            gate.try_computer_hidden("Cleaning up expired logs")
-                .unwrap()
+            gate.try_device_hidden("Cleaning up expired logs").unwrap()
         });
         let encoded = published(
-            &read_application_snapshot(&two_vm_reading(&paths, "Stopped", "Running"), &paths, gate)
-                .unwrap(),
+            &read_application_snapshot(
+                &two_computer_reading(&paths, "Stopped", "Running"),
+                &paths,
+                gate,
+            )
+            .unwrap(),
         );
-        assert!(encoded["workspaces"]
+        assert!(encoded["computers"]
             .as_array()
             .unwrap()
             .iter()
             .all(|row| row.get("settling").is_none()));
         drop(release);
         holder.join().unwrap();
-        // The first read at launch succeeds while a selected sandbox boots.
+        // The first read at launch succeeds while a selected computer boots.
         let launch_paths = paths.clone();
         let (release, holder) = hold_elsewhere(gate, move |gate| {
-            match launch_start_guard(gate, &launch_paths, vm().id()).unwrap() {
+            match launch_start_guard(gate, &launch_paths, computer().id()).unwrap() {
                 LaunchAdmission::Admitted(guard) => guard,
                 _ => panic!("the launch start was not admitted"),
             }
         });
         let encoded = published(
             &read_application_snapshot(
-                &two_vm_reading(&paths, "Starting", "Running"),
+                &two_computer_reading(&paths, "Starting", "Running"),
                 &paths,
                 gate,
             )
@@ -9409,17 +9521,25 @@ exit 9
     }
 
     #[test]
-    fn an_idle_vm_whose_inspection_fails_is_stale_with_its_last_known_state() {
+    fn an_idle_computer_whose_inspection_fails_is_stale_with_its_last_known_state() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &request(vec![computer(), second_computer()]),
+        )
+        .unwrap();
         let gate = leaked_gate();
         remember_settled(
             &paths,
-            &read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate)
-                .unwrap()
-                .workspaces,
+            &read_application_snapshot(
+                &two_computer_reading(&paths, "Running", "Running"),
+                &paths,
+                gate,
+            )
+            .unwrap()
+            .computers,
         );
         let unreadable = || {
             StubRunner::new(vec![
@@ -9427,7 +9547,7 @@ exit 9
                 Err(RuntimeError::TimedOut {
                     operation: "inspect dev".into(),
                 }),
-                identity_output(&inspect_named(&paths, &second_vm(), "Stopped").to_string()),
+                identity_output(&inspect_named(&paths, &second_computer(), "Stopped").to_string()),
             ])
         };
         for source in [
@@ -9454,9 +9574,9 @@ exit 9
                 (Some("stopped"), Some("fresh"))
             );
             // A stale row is never remembered as a settled reading.
-            remember_settled(&paths, &source.workspaces);
+            remember_settled(&paths, &source.computers);
             assert!(matches!(
-                last_settled(&paths)[vm().id()].freshness,
+                last_settled(&paths)[computer().id()].freshness,
                 Freshness::Fresh
             ));
         }
@@ -9466,21 +9586,29 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &request(vec![computer(), second_computer()]),
+        )
+        .unwrap();
         let gate = leaked_gate();
         remember_settled(
             &paths,
-            &read_application_snapshot(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate)
-                .unwrap()
-                .workspaces,
+            &read_application_snapshot(
+                &two_computer_reading(&paths, "Running", "Stopped"),
+                &paths,
+                gate,
+            )
+            .unwrap()
+            .computers,
         );
-        // One VM's inspection times out after the change: only its row is stale.
+        // One computer's inspection times out after the change: only its row is stale.
         let unreadable = StubRunner::new(vec![
             identity_output(&json!([{"name": "dev"}, {"name": "work"}]).to_string()),
             Err(RuntimeError::TimedOut {
                 operation: "inspect dev".into(),
             }),
-            identity_output(&inspect_named(&paths, &second_vm(), "Running").to_string()),
+            identity_output(&inspect_named(&paths, &second_computer(), "Running").to_string()),
         ]);
         let encoded = published(&state_after_change(&unreadable, &paths, gate).unwrap());
         assert_eq!(
@@ -9497,7 +9625,7 @@ exit 9
             ),
             (Some("running"), Some("fresh"))
         );
-        // The whole read fails: every VM keeps its last known state with the reason.
+        // The whole read fails: every computer keeps its last known state with the reason.
         let failed = StubRunner::new(vec![Err(RuntimeError::Unavailable(
             "synthetic runtime read failure".into(),
         ))]);
@@ -9517,27 +9645,41 @@ exit 9
     }
 
     #[test]
-    fn a_change_response_settles_other_busy_vms_but_not_the_callers_own_work() {
+    fn a_change_response_settles_other_busy_computers_but_not_the_callers_own_work() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &request(vec![computer(), second_computer()]),
+        )
+        .unwrap();
         let gate = leaked_gate();
         remember_settled(
             &paths,
-            &read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate)
-                .unwrap()
-                .workspaces,
+            &read_application_snapshot(
+                &two_computer_reading(&paths, "Running", "Running"),
+                &paths,
+                gate,
+            )
+            .unwrap()
+            .computers,
         );
         let (release, holder) = hold_elsewhere(gate, |gate| {
-            gate.vm(second_vm().id(), "work", "Creating checkpoint")
+            gate.computer(second_computer().id(), "work", "Creating checkpoint")
                 .unwrap()
         });
         // The caller still holds dev's lane while it reads its own result.
-        let own = gate.vm(vm().id(), "dev", "Stopping dev").unwrap();
+        let own = gate
+            .computer(computer().id(), "dev", "Stopping dev")
+            .unwrap();
         let encoded = published(
-            &state_after_change(&two_vm_reading(&paths, "Stopped", "Paused"), &paths, gate)
-                .unwrap(),
+            &state_after_change(
+                &two_computer_reading(&paths, "Stopped", "Paused"),
+                &paths,
+                gate,
+            )
+            .unwrap(),
         );
         drop(own);
         assert_eq!(row(&encoded, "dev")["state"], "stopped");
@@ -9554,28 +9696,38 @@ exit 9
     }
 
     #[test]
-    fn a_change_response_keeps_running_vms_repositories_until_the_next_read() {
+    fn a_change_response_keeps_running_computers_repositories_until_the_next_read() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &request(vec![computer(), second_computer()]),
+        )
+        .unwrap();
         let gate = leaked_gate();
-        let mut first =
-            read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate)
-                .unwrap();
+        let mut first = read_application_snapshot(
+            &two_computer_reading(&paths, "Running", "Running"),
+            &paths,
+            gate,
+        )
+        .unwrap();
         let repositories = vec![
             json!({"path": "/workspace/app", "branch": "main", "ahead": 0, "behind": 0, "dirty": false}),
         ];
-        first.workspaces[0].repositories = repositories.clone();
-        remember_settled(&paths, &first.workspaces);
-        let mut response =
-            state_after_change(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate)
-                .unwrap();
-        keep_last_known_repositories(&paths, &mut response.workspaces);
-        assert_eq!(response.workspaces[0].repositories, repositories);
+        first.computers[0].repositories = repositories.clone();
+        remember_settled(&paths, &first.computers);
+        let mut response = state_after_change(
+            &two_computer_reading(&paths, "Running", "Stopped"),
+            &paths,
+            gate,
+        )
+        .unwrap();
+        keep_last_known_repositories(&paths, &mut response.computers);
+        assert_eq!(response.computers[0].repositories, repositories);
         assert!(
-            response.workspaces[1].repositories.is_empty(),
-            "a stopped VM lists no repositories"
+            response.computers[1].repositories.is_empty(),
+            "a stopped computer lists no repositories"
         );
     }
 
@@ -9601,10 +9753,14 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fs::create_dir_all(&paths.home).unwrap();
-        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        write_metadata(
+            &paths.metadata,
+            &request(vec![computer(), second_computer()]),
+        )
+        .unwrap();
         let slow = SlowRunner {
             timeouts: Mutex::new(Vec::new()),
-            inner: two_vm_reading(&paths, "Running", "Stopped"),
+            inner: two_computer_reading(&paths, "Running", "Stopped"),
         };
         // Three calls take about 90 ms together; each still gets its own 50 ms budget.
         let health = HealthRunner {
@@ -9612,7 +9768,7 @@ exit 9
             budget: Duration::from_millis(50),
         };
         let encoded = published(&read_application_state_with(&health, &paths).unwrap());
-        assert!(encoded["workspaces"]
+        assert!(encoded["computers"]
             .as_array()
             .unwrap()
             .iter()
@@ -9641,27 +9797,27 @@ exit 9
         assert!(inner.calls.lock().unwrap().is_empty());
     }
 
-    fn stopped_dev(paths: &RuntimePaths) -> Vec<ApplicationWorkspace> {
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+    fn stopped_dev(paths: &RuntimePaths) -> Vec<ApplicationComputer> {
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner =
             StubRunner::successful_json(vec![json!([{"name": "dev"}]), inspect(paths, "Stopped")]);
         read_application_state_with(&runner, paths)
             .unwrap()
-            .workspaces
+            .computers
     }
 
     #[test]
-    fn expired_log_cleanup_runs_off_the_read_path_at_most_hourly_per_vm() {
+    fn expired_log_cleanup_runs_off_the_read_path_at_most_hourly_per_computer() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let mut workspaces = stopped_dev(&paths);
-        fs::create_dir_all(vm_logs(&paths, "dev")).unwrap();
+        let mut computers = stopped_dev(&paths);
+        fs::create_dir_all(computer_logs(&paths, "dev")).unwrap();
         let now = Instant::now();
-        let due = plan_log_cleanup(&paths, &mut workspaces, now);
+        let due = plan_log_cleanup(&paths, &mut computers, now);
         assert_eq!(due, vec!["dev".to_string()]);
         assert!(
-            plan_log_cleanup(&paths, &mut workspaces, now).is_empty(),
+            plan_log_cleanup(&paths, &mut computers, now).is_empty(),
             "one pass at a time"
         );
         let gate = operation_gate::OperationGate::new();
@@ -9670,47 +9826,48 @@ exit 9
         assert_eq!(
             runner.calls.lock().unwrap().len(),
             1,
-            "the pass re-checks the VM is stopped"
+            "the pass re-checks the computer is stopped"
         );
         assert!(
-            plan_log_cleanup(&paths, &mut workspaces, now).is_empty(),
+            plan_log_cleanup(&paths, &mut computers, now).is_empty(),
             "cleaned within the hour"
         );
         assert_eq!(
             plan_log_cleanup(
                 &paths,
-                &mut workspaces,
+                &mut computers,
                 Instant::now() + LOG_CLEANUP_INTERVAL
             ),
             vec!["dev".to_string()]
         );
         clean_expired_logs(&StubRunner::successful_json(vec![]), &paths, &gate, &[]);
-        assert!(workspaces[0].attention.is_none());
+        assert!(computers[0].attention.is_none());
         // Running, settling or stale rows are never cleaned from a read.
-        workspaces[0].settling = true;
+        computers[0].settling = true;
         assert!(plan_log_cleanup(
             &paths,
-            &mut workspaces,
+            &mut computers,
             Instant::now() + 2 * LOG_CLEANUP_INTERVAL
         )
         .is_empty());
     }
 
     #[test]
-    fn a_busy_gate_postpones_log_cleanup_and_a_failure_flags_only_that_vm() {
+    fn a_busy_gate_postpones_log_cleanup_and_a_failure_flags_only_that_computer() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let mut workspaces = stopped_dev(&paths);
+        let mut computers = stopped_dev(&paths);
         // Logs that cannot be read as a directory make retention fail.
-        fs::create_dir_all(vm_logs(&paths, "dev").parent().unwrap()).unwrap();
-        fs::write(vm_logs(&paths, "dev"), b"not a directory").unwrap();
+        fs::create_dir_all(computer_logs(&paths, "dev").parent().unwrap()).unwrap();
+        fs::write(computer_logs(&paths, "dev"), b"not a directory").unwrap();
         let now = Instant::now();
         let gate = leaked_gate();
         let (release, holder) = hold_elsewhere(gate, |gate| {
-            gate.vm("other-id", "other", "Starting other").unwrap()
+            gate.computer("other-id", "other", "Starting other")
+                .unwrap()
         });
-        let due = plan_log_cleanup(&paths, &mut workspaces, now);
+        let due = plan_log_cleanup(&paths, &mut computers, now);
         let idle = StubRunner::successful_json(vec![]);
         clean_expired_logs(&idle, &paths, gate, &due);
         assert!(
@@ -9718,7 +9875,7 @@ exit 9
             "busy: nothing was inspected"
         );
         assert_eq!(
-            plan_log_cleanup(&paths, &mut workspaces, now),
+            plan_log_cleanup(&paths, &mut computers, now),
             due,
             "still due after a postponed pass"
         );
@@ -9730,15 +9887,15 @@ exit 9
             gate,
             &due,
         );
-        assert!(plan_log_cleanup(&paths, &mut workspaces, now).is_empty());
+        assert!(plan_log_cleanup(&paths, &mut computers, now).is_empty());
         assert_eq!(
-            workspaces[0].attention.as_ref().unwrap().message,
+            computers[0].attention.as_ref().unwrap().message,
             "Expired logs could not be cleaned up."
         );
     }
 
     #[test]
-    fn repository_discovery_for_one_vm_runs_one_caller_at_a_time() {
+    fn repository_discovery_for_one_computer_runs_one_caller_at_a_time() {
         let _test_state = crate::test_support::global_state();
         use std::sync::atomic::{AtomicUsize, Ordering};
         let active = Arc::new(AtomicUsize::new(0));
@@ -9786,7 +9943,7 @@ exit 9
                         let mut changed = self.changed.lock().unwrap();
                         if !*changed {
                             *changed = true;
-                            let mut edited = vm();
+                            let mut edited = computer();
                             edited.cpus += 1;
                             write_metadata(&paths.metadata, &request(vec![edited])).unwrap();
                         }
@@ -9802,7 +9959,7 @@ exit 9
         }
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = ChangeMetadataOnce {
             calls: Mutex::new(Vec::new()),
             changed: Mutex::new(false),
@@ -9810,8 +9967,8 @@ exit 9
         let source =
             read_application_snapshot(&runner, &paths, &operation_gate::OperationGate::new())
                 .unwrap();
-        assert_eq!(source.workspaces.len(), 1);
-        assert_eq!(source.workspaces[0].machine.cpus, vm().cpus + 1);
+        assert_eq!(source.computers.len(), 1);
+        assert_eq!(source.computers[0].configuration.cpus, computer().cpus + 1);
         assert_eq!(runner.calls.lock().unwrap().len(), 4);
     }
 
@@ -9820,7 +9977,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = crate::test_support::runner::ScriptedRunner::new([
             crate::test_support::runner::ExpectedCommand::error(
                 ["list", "--label", "silo.managed=true", "--format", "json"],
@@ -9841,7 +9998,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let configuration = request(vec![vm()]);
+        let configuration = request(vec![computer()]);
         write_metadata(&paths.metadata, &configuration).unwrap();
         configuration_recovery::begin(&paths, &configuration).unwrap();
         let runner = StubRunner::successful_json(Vec::new());
@@ -9859,7 +10016,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = StubRunner::successful_json(vec![
             json!([{"name":"dev","status":"Running","image":"ubuntu"}]),
             inspect(&paths, "Running"),
@@ -9867,13 +10024,13 @@ exit 9
 
         let state = read_application_state_with(&runner, &paths).unwrap();
         let encoded = serde_json::to_value(state).unwrap();
-        assert_eq!(encoded["workspaces"][0]["state"], "running");
-        assert_eq!(encoded["workspaces"][0]["machine"]["memoryGiB"], 16);
+        assert_eq!(encoded["computers"][0]["state"], "running");
+        assert_eq!(encoded["computers"][0]["configuration"]["memoryGiB"], 16);
         assert_eq!(
-            encoded["workspaces"][0]["machine"]["workspaceStorageGiB"],
+            encoded["computers"][0]["configuration"]["workspaceStorageGiB"],
             60
         );
-        assert!(encoded["workspaces"][0].get("attention").is_none());
+        assert!(encoded["computers"][0].get("attention").is_none());
         assert_eq!(
             runner.calls.lock().unwrap()[0],
             vec!["list", "--label", MANAGED_LABEL, "--format", "json"]
@@ -9886,22 +10043,22 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let encoded =
-            serde_json::to_value(application_source_for_workspaces(&paths, Vec::new()).unwrap())
+            serde_json::to_value(application_source_for_computers(&paths, Vec::new()).unwrap())
                 .unwrap();
-        let host = host_resources().unwrap();
-        let capacity = &encoded["hostCapacity"];
-        assert_eq!(capacity["logicalCpus"], json!(host.logical_cpus));
+        let device = device_resources().unwrap();
+        let capacity = &encoded["deviceCapacity"];
+        assert_eq!(capacity["logicalCpus"], json!(device.logical_cpus));
         assert_eq!(
             capacity["physicalMemoryBytes"],
-            json!(host.physical_memory_bytes.unwrap())
+            json!(device.physical_memory_bytes.unwrap())
         );
         // The published limits are exactly the largest ceilings the backend accepts.
-        let cpus = u8::try_from(host.logical_cpus).unwrap_or(u8::MAX);
+        let cpus = u8::try_from(device.logical_cpus).unwrap_or(u8::MAX);
         let memory = u32::try_from(capacity["maxMemoryGib"].as_u64().unwrap()).unwrap();
-        assert!(validate_host_ceiling("dev", cpus, memory, &host).is_ok());
-        assert!(validate_host_ceiling("dev", cpus, memory + 1, &host).is_err());
-        if host.logical_cpus < usize::from(u8::MAX) {
-            assert!(validate_host_ceiling("dev", cpus + 1, memory, &host).is_err());
+        assert!(validate_device_ceiling("dev", cpus, memory, &device).is_ok());
+        assert!(validate_device_ceiling("dev", cpus, memory + 1, &device).is_err());
+        if device.logical_cpus < usize::from(u8::MAX) {
+            assert!(validate_device_ceiling("dev", cpus + 1, memory, &device).is_err());
         }
     }
 
@@ -9909,73 +10066,81 @@ exit 9
     fn host_capacity_rounds_memory_down_and_is_absent_when_unmeasured() {
         let _test_state = crate::test_support::global_state();
         let gib = 1024 * 1024 * 1024;
-        let capacity = HostCapacity::of(&HostResources {
+        let capacity = DeviceCapacity::of(&DeviceResources {
             logical_cpus: 8,
             physical_memory_bytes: Some(16 * gib - 1),
         })
         .unwrap();
         assert_eq!((capacity.logical_cpus, capacity.max_memory_gib), (8, 15));
-        assert!(HostCapacity::of(&HostResources {
+        assert!(DeviceCapacity::of(&DeviceResources {
             logical_cpus: 8,
             physical_memory_bytes: None
         })
         .is_none());
-        assert!(HostCapacity::of(&HostResources {
+        assert!(DeviceCapacity::of(&DeviceResources {
             logical_cpus: 0,
             physical_memory_bytes: Some(gib)
         })
         .is_none());
     }
 
-    fn second_vm() -> MachineConfiguration {
-        let mut other = vm();
+    fn second_computer() -> ComputerConfiguration {
+        let mut other = computer();
         {
-            let MachineConfiguration { id, name, .. } = &mut other;
+            let ComputerConfiguration { id, name, .. } = &mut other;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
         other
     }
 
-    fn inspect_named(paths: &RuntimePaths, machine: &MachineConfiguration, status: &str) -> Value {
+    fn inspect_named(
+        paths: &RuntimePaths,
+        configuration: &ComputerConfiguration,
+        status: &str,
+    ) -> Value {
         let mut inspected = inspect(paths, status);
-        inspected["name"] = json!(machine.name());
-        inspected["config"]["labels"]["silo.machine-id"] = json!(machine.id());
+        inspected["name"] = json!(configuration.name());
+        inspected["config"]["labels"]["silo.machine-id"] = json!(configuration.id());
         inspected
     }
 
-    fn damaged_checkpoint_record(paths: &RuntimePaths, machine: &MachineConfiguration) {
+    fn damaged_checkpoint_record(paths: &RuntimePaths, configuration: &ComputerConfiguration) {
         let directory = paths.metadata.with_file_name("checkpoints");
         fs::create_dir_all(&directory).unwrap();
         // For example, written by a newer Silo before a downgrade.
         fs::write(
-            directory.join(format!("{}.json", machine.id())),
+            directory.join(format!("{}.json", configuration.id())),
             json!({"version": 2, "checkpoints": []}).to_string(),
         )
         .unwrap();
     }
 
     #[test]
-    fn a_damaged_checkpoint_record_degrades_only_its_own_sandbox() {
+    fn a_damaged_checkpoint_record_degrades_only_its_own_computer() {
         let _test_state = crate::test_support::global_state();
         for listed in [true, false] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
-            damaged_checkpoint_record(&paths, &vm());
+            write_metadata(
+                &paths.metadata,
+                &request(vec![computer(), second_computer()]),
+            )
+            .unwrap();
+            damaged_checkpoint_record(&paths, &computer());
             let mut outputs = Vec::new();
             if listed {
                 outputs.push(json!([{"name": "dev"}, {"name": "work"}]));
-                outputs.push(inspect_named(&paths, &vm(), "Running"));
+                outputs.push(inspect_named(&paths, &computer(), "Running"));
             } else {
-                // A pending fork with no runtime VM yet: its record decides, and is unreadable.
+                // A pending fork with no runtime computer yet: its record decides, and is unreadable.
                 outputs.push(json!([{"name": "work"}]));
             }
-            outputs.push(inspect_named(&paths, &second_vm(), "Running"));
+            outputs.push(inspect_named(&paths, &second_computer(), "Running"));
             let runner = StubRunner::successful_json(outputs);
             let source = read_application_state_with(&runner, &paths).unwrap();
             let encoded = serde_json::to_value(&source).unwrap();
-            let damaged = &encoded["workspaces"][0];
+            let damaged = &encoded["computers"][0];
             assert_eq!(damaged["attention"]["level"], "error", "{listed}");
             assert!(damaged["attention"]["message"]
                 .as_str()
@@ -9985,7 +10150,7 @@ exit 9
                 damaged.get("checkpoints").is_none()
                     && damaged.get("pendingCheckpointRestore").is_none()
             );
-            let healthy = &encoded["workspaces"][1];
+            let healthy = &encoded["computers"][1];
             assert_eq!(healthy["state"], "running");
             assert!(healthy.get("attention").is_none());
         }
@@ -9993,7 +10158,7 @@ exit 9
 
     fn pending_secret_fixture(directory: &tempfile::TempDir) -> crate::secrets::PendingRevocation {
         let store = directory.path().join("secrets.json");
-        fs::write(&store, r#"{"pendingRevocations":[{"secretId":"old-secret","generation":"old-value","name":"API_KEY","workspace":"dev"}]}"#).unwrap();
+        fs::write(&store, r#"{"pendingRevocations":[{"secretId":"old-secret","generation":"old-value","name":"API_KEY","computer":"dev"}]}"#).unwrap();
         crate::secrets::use_test_store(Some(store));
         crate::secrets::use_test_vault(Some(Default::default()));
         crate::secrets::pending_revocations().unwrap().remove(0)
@@ -10014,7 +10179,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let record = pending_secret_fixture(&directory);
         let removed = std::cell::RefCell::new(Vec::new());
         let mut remove = |name: &str| {
@@ -10057,7 +10222,7 @@ exit 9
         let missing = StubRunner::new(vec![Err(RuntimeError::Failed {
             operation: "inspect".into(),
             exit_code: Some(1),
-            detail: "sandbox 'dev' not found".into(),
+            detail: "computer 'dev' not found".into(),
         })]);
         assert!(revoke_secret_with(&missing, &paths, &record, &mut remove).unwrap());
         assert!(
@@ -10110,19 +10275,19 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let pending: checkpoints::Record = serde_json::from_value(json!({
             "version":1,
             "checkpoints":[],
             "restoreAttempted":true,
             "pendingCheckpointRestore":{
                 "checkpointId":"c000000000000000000000000000000",
-                "sourceWorkspace":"source",
+                "sourceComputer":"source",
                 "state":"disk"
             }
         }))
         .unwrap();
-        checkpoints::save(&paths, vm().id(), &pending).unwrap();
+        checkpoints::save(&paths, computer().id(), &pending).unwrap();
         let record = pending_secret_fixture(&directory);
         let mut removed = Vec::new();
         let result = revoke_secret_with(
@@ -10148,17 +10313,18 @@ exit 9
     }
 
     #[test]
-    fn pending_secret_retry_skips_busy_guests_and_rechecks_replacement_after_the_vm_settles() {
+    fn pending_secret_retry_skips_busy_guests_and_rechecks_replacement_after_the_computer_settles()
+    {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let record = pending_secret_fixture(&directory);
         let (release, released) = std::sync::mpsc::channel::<()>();
         let (held, holding) = std::sync::mpsc::channel();
         let holder = thread::spawn(move || {
             let _guard = OPERATIONS
-                .vm(
+                .computer(
                     "00000000-0000-4000-8000-000000000001",
                     "dev",
                     "Updating dev",
@@ -10176,10 +10342,10 @@ exit 9
         )
         .unwrap());
         // Replacement was applied by the preceding operation, before this retry's
-        // VM gate. The old journal entry must never remove the replacement by name.
+        // Computer gate. The old journal entry must never remove the replacement by name.
         let store = directory.path().join("secrets.json");
         let mut document: Value = serde_json::from_slice(&fs::read(&store).unwrap()).unwrap();
-        document["secrets"] = json!([{"id":"new-secret","valueId":"new-value","name":"API_KEY","workspaces":["dev"],"allowedDomains":["api.example.com"]}]);
+        document["secrets"] = json!([{"id":"new-secret","valueId":"new-value","name":"API_KEY","computers":["dev"],"allowedDomains":["api.example.com"]}]);
         fs::write(&store, document.to_string()).unwrap();
         release.send(()).unwrap();
         holder.join().unwrap();
@@ -10200,31 +10366,28 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let _record = pending_secret_fixture(&directory);
-        let source = application_source_for_workspaces(
+        let source = application_source_for_computers(
             &paths,
-            vec![vm_workspace(
+            vec![application_computer(
                 &paths,
-                vm(),
+                computer(),
                 &serde_json::from_value(inspect(&paths, "Running")).unwrap(),
             )],
         )
         .unwrap();
-        let previous = &source.workspaces[0];
+        let previous = &source.computers[0];
         assert_eq!(previous.pending_secret_revocations, ["API_KEY"]);
         assert_eq!(
             previous.attention.as_ref().unwrap().message,
             "May still have access to API_KEY until it restarts."
         );
-        crate::secrets::workspace_started(
-            "dev",
-            &crate::secrets::workspace_revision("dev").unwrap(),
-        )
-        .unwrap();
-        let mut current = unread_workspace(vm());
+        crate::secrets::computer_started("dev", &crate::secrets::computer_revision("dev").unwrap())
+            .unwrap();
+        let mut current = unread_computer(computer());
         keep_runtime_fields(&mut current, previous);
-        let cleared = application_source_for_workspaces(&paths, vec![current]).unwrap();
-        assert!(cleared.workspaces[0].pending_secret_revocations.is_empty());
-        assert!(cleared.workspaces[0].attention.is_none());
+        let cleared = application_source_for_computers(&paths, vec![current]).unwrap();
+        assert!(cleared.computers[0].pending_secret_revocations.is_empty());
+        assert!(cleared.computers[0].attention.is_none());
         crate::secrets::use_test_store(None);
         crate::secrets::use_test_vault(None);
     }
@@ -10234,7 +10397,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = StubRunner::successful_json(vec![
             json!([{"name":"dev","status":"Running","image":"ubuntu"}]),
             inspect(&paths, "Running"),
@@ -10250,7 +10413,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = StubRunner::successful_json(vec![json!([])]);
 
         let error = read_application_state_with(&runner, &paths).unwrap_err();
@@ -10258,7 +10421,7 @@ exit 9
     }
 
     #[test]
-    fn create_keeps_workspace_and_runtime_on_independent_app_owned_disks() {
+    fn create_keeps_computer_and_runtime_on_independent_app_owned_disks() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -10272,7 +10435,7 @@ exit 9
             inspect_owned_workspace(&paths, "Stopped"),
         ]);
 
-        create_machine(&runner, &paths, &vm()).unwrap();
+        create_computer(&runner, &paths, &computer()).unwrap();
 
         let calls = runner.calls.lock().unwrap();
         assert_eq!(
@@ -10316,11 +10479,11 @@ exit 9
         for final_state in ["Stopped", "Running"] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            let mut machine = vm();
+            let mut configuration = computer();
             {
-                let MachineConfiguration { desktop, .. } = &mut machine;
+                let ComputerConfiguration { desktop, .. } = &mut configuration;
                 *desktop = Some(crate::desktop::DesktopConfiguration {
-                    start_with_sandbox: true,
+                    start_with_computer: true,
                     built_in: false,
                 });
             }
@@ -10337,7 +10500,7 @@ exit 9
                 json!(null),
                 inspect(&paths, final_state),
             ]);
-            let result = create_machine(&runner, &paths, &machine);
+            let result = create_computer(&runner, &paths, &configuration);
             assert_eq!(result.is_ok(), final_state == "Stopped");
             let calls = runner.calls.lock().unwrap();
             assert_eq!(calls[9][0], "exec");
@@ -10354,20 +10517,20 @@ exit 9
         json!({"state": "ready", "apply": {"approval": "ask", "outcome": "applied", "reason": null}})
     }
 
-    fn built_in_vm() -> MachineConfiguration {
-        let mut machine = vm();
+    fn built_in_computer() -> ComputerConfiguration {
+        let mut configuration = computer();
         {
-            let MachineConfiguration { desktop, .. } = &mut machine;
+            let ComputerConfiguration { desktop, .. } = &mut configuration;
             *desktop = Some(crate::desktop::DesktopConfiguration {
-                start_with_sandbox: true,
+                start_with_computer: true,
                 built_in: true,
             });
         }
-        machine
+        configuration
     }
 
     #[test]
-    fn creating_a_built_in_vm_mounts_the_published_app_folder_read_only() {
+    fn creating_a_built_in_computer_mounts_the_published_app_folder_read_only() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -10390,7 +10553,7 @@ exit 9
             inspect(&paths, "Stopped"),
             applied_report(),
         ]);
-        create_machine(&runner, &paths, &built_in_vm()).unwrap();
+        create_computer(&runner, &paths, &built_in_computer()).unwrap();
         crate::computer_use::set_test_published_dir(None);
         let calls = runner.calls.lock().unwrap();
         let mount = format!("{}:/opt/silo/chatgpt:ro,uid=0,gid=0", published.display());
@@ -10406,7 +10569,7 @@ exit 9
     }
 
     #[test]
-    fn a_created_vm_takes_its_initial_approval_mode_from_the_setting() {
+    fn a_created_computer_takes_its_initial_approval_mode_from_the_setting() {
         use crate::computer_use::Approval;
         let _test_state = crate::test_support::global_state();
         for mode in [Approval::Ask, Approval::Auto] {
@@ -10429,12 +10592,12 @@ exit 9
                 inspect(&paths, "Stopped"),
                 applied_report(),
             ]);
-            let machine = built_in_vm();
+            let configuration = built_in_computer();
             crate::computer_use::with_initial_approval(mode, || {
-                create_machine(&runner, &paths, &machine).unwrap()
+                create_computer(&runner, &paths, &configuration).unwrap()
             });
             crate::computer_use::set_test_published_dir(None);
-            let settings = crate::computer_use::settings(&paths, machine.id());
+            let settings = crate::computer_use::settings(&paths, configuration.id());
             assert_eq!(settings.approval, mode);
             // Creation applies the mode itself, in the one boot that has the desktop up.
             let apply = runner.calls.lock().unwrap().last().cloned().unwrap();
@@ -10470,10 +10633,10 @@ exit 9
             json!(null),
             inspect(&paths, "Stopped"),
         ]);
-        let machine = built_in_vm();
-        crate::creation_inputs::exclude_computer_use(&[machine.id().to_owned()]);
+        let configuration = built_in_computer();
+        crate::creation_inputs::exclude_computer_use(&[configuration.id().to_owned()]);
         let events = Mutex::new(Vec::new());
-        create_machine_with_progress(&runner, &paths, &machine, &|step, _, _| {
+        create_computer_with_progress(&runner, &paths, &configuration, &|step, _, _| {
             events.lock().unwrap().push(step.to_owned())
         })
         .unwrap();
@@ -10489,41 +10652,41 @@ exit 9
             Some("computer-use-pending")
         );
         assert!(!crate::creation_inputs::take_without_computer_use(
-            machine.id()
+            configuration.id()
         ));
     }
 
     #[test]
-    fn creating_a_vm_needs_the_image_and_the_app_only_when_it_is_new_and_built_in() {
+    fn creating_a_computer_needs_the_image_and_the_app_only_when_it_is_new_and_built_in() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let mut plain = vm();
+        let mut plain = computer();
         {
-            let MachineConfiguration { desktop, .. } = &mut plain;
+            let ComputerConfiguration { desktop, .. } = &mut plain;
             *desktop = None;
         }
-        let request = |machines: Vec<MachineConfiguration>| MachineConfigurationRequest {
+        let request = |computers: Vec<ComputerConfiguration>| ComputerConfigurationRequest {
             schema_version: 1,
-            machines,
+            computers,
         };
         write_metadata(&paths.metadata, &request(Vec::new())).unwrap();
         // A v3 image has no built-in desktop: the image is needed, the app is not.
         let needs = creation_needs(&paths, request(vec![plain.clone()]));
-        assert_eq!(needs.machines, [plain.id().to_owned()]);
+        assert_eq!(needs.computers, [plain.id().to_owned()]);
         assert!(needs.computer_use.is_empty());
         {
             let _v4 = guest_image::pin_test_version("ubuntu-24.04-v4");
             let needs = creation_needs(&paths, request(vec![plain.clone()]));
             assert_eq!(needs.computer_use, [plain.id().to_owned()]);
         }
-        // An existing sandbox is never waited for.
+        // An existing computer is never waited for.
         write_metadata(&paths.metadata, &request(vec![plain.clone()])).unwrap();
         assert!(creation_needs(&paths, request(vec![plain])).is_empty());
     }
 
     #[test]
-    fn creating_a_vm_without_built_in_computer_use_adds_no_mount() {
+    fn creating_a_computer_without_built_in_computer_use_adds_no_mount() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -10537,7 +10700,7 @@ exit 9
             json!(null),
             inspect_owned_workspace(&paths, "Stopped"),
         ]);
-        create_machine(&runner, &paths, &vm()).unwrap();
+        create_computer(&runner, &paths, &computer()).unwrap();
         crate::computer_use::set_test_published_dir(None);
         let calls = runner.calls.lock().unwrap();
         assert!(!calls[3]
@@ -10546,13 +10709,13 @@ exit 9
     }
 
     #[test]
-    fn a_built_in_vm_is_not_created_without_the_shared_folder() {
+    fn a_built_in_computer_is_not_created_without_the_shared_folder() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         crate::computer_use::set_test_published_dir(None);
         let runner = StubRunner::successful_json(vec![]);
-        let error = create_machine(&runner, &paths, &built_in_vm()).unwrap_err();
+        let error = create_computer(&runner, &paths, &built_in_computer()).unwrap_err();
         assert!(error.to_string().contains("shared ChatGPT folder"));
         // Refused before the runtime was asked anything or anything was claimed.
         assert!(runner.calls.lock().unwrap().is_empty());
@@ -10576,7 +10739,7 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![json!([]), json!(0)]);
-        let error = create_machine(&runner, &paths, &vm()).unwrap_err();
+        let error = create_computer(&runner, &paths, &computer()).unwrap_err();
         assert!(error.to_string().contains("secure GitHub access"));
         assert!(!runner
             .calls
@@ -10600,7 +10763,7 @@ exit 9
             inspect(&paths, "Running"),
             json!([]),
         ]);
-        let error = create_machine(&runner, &paths, &vm()).unwrap_err();
+        let error = create_computer(&runner, &paths, &computer()).unwrap_err();
         assert!(error.to_string().contains("did not remain stopped"));
         assert!(runner.calls.lock().unwrap()[3]
             .iter()
@@ -10613,7 +10776,7 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![json!([{"name":"dev"}])]);
-        assert!(create_machine(&runner, &paths, &vm()).is_err());
+        assert!(create_computer(&runner, &paths, &computer()).is_err());
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
         assert!(!disk_path(&paths, "dev", "workspace").exists());
     }
@@ -10623,10 +10786,10 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let previous = vm();
+        let previous = computer();
         let mut changed = previous.clone();
         {
-            let MachineConfiguration {
+            let ComputerConfiguration {
                 workspace_storage_gib,
                 runtime_storage_gib,
                 ..
@@ -10636,7 +10799,7 @@ exit 9
         }
         let runner = StubRunner::new(Vec::new());
 
-        let error = update_machine(&runner, &paths, &previous, &changed).unwrap_err();
+        let error = update_computer(&runner, &paths, &previous, &changed).unwrap_err();
 
         assert!(error.to_string().contains("cannot be resized in place"));
         assert!(runner.calls.lock().unwrap().is_empty());
@@ -10648,11 +10811,11 @@ exit 9
         for status in ["Running", "Stopped"] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            let previous = request(vec![vm()]);
+            let previous = request(vec![computer()]);
             write_metadata(&paths.metadata, &previous).unwrap();
-            let mut changed = vm();
+            let mut changed = computer();
             {
-                let MachineConfiguration { cpus, .. } = &mut changed;
+                let ComputerConfiguration { cpus, .. } = &mut changed;
                 *cpus = 2;
             }
             let mut replacement = inspect(&paths, status);
@@ -10671,7 +10834,7 @@ exit 9
             let error = apply_whole_configuration(
                 &runner,
                 &paths,
-                &generous_host(),
+                &generous_device(),
                 request(vec![changed]),
             )
             .unwrap_err();
@@ -10689,13 +10852,13 @@ exit 9
         for desktop_only in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            let previous = vm();
+            let previous = computer();
             let mut changed = previous.clone();
             {
-                let MachineConfiguration { cpus, desktop, .. } = &mut changed;
+                let ComputerConfiguration { cpus, desktop, .. } = &mut changed;
                 if desktop_only {
                     *desktop = Some(crate::desktop::DesktopConfiguration {
-                        start_with_sandbox: true,
+                        start_with_computer: true,
                         built_in: false,
                     });
                 } else {
@@ -10707,7 +10870,7 @@ exit 9
                 json!("22222222-2222-4222-8222-222222222222");
             let runner = StubRunner::successful_json(vec![replacement, json!(1), json!(null)]);
 
-            let error = update_machine(&runner, &paths, &previous, &changed).unwrap_err();
+            let error = update_computer(&runner, &paths, &previous, &changed).unwrap_err();
 
             assert!(error.to_string().contains("identity"), "{error}");
             assert_eq!(runner.calls.lock().unwrap().len(), 1);
@@ -10719,10 +10882,10 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let previous = vm();
+        let previous = computer();
         let mut changed = previous.clone();
         {
-            let MachineConfiguration { cpus, .. } = &mut changed;
+            let ComputerConfiguration { cpus, .. } = &mut changed;
             *cpus = 2;
         }
         let mut replacement = inspect(&paths, "Stopped");
@@ -10735,7 +10898,7 @@ exit 9
             json!(null),
         ]);
 
-        let error = update_machine(&runner, &paths, &previous, &changed).unwrap_err();
+        let error = update_computer(&runner, &paths, &previous, &changed).unwrap_err();
 
         assert!(error.to_string().contains("identity"), "{error}");
         assert!(!runner
@@ -10747,14 +10910,14 @@ exit 9
     }
 
     #[test]
-    fn edit_stops_running_vm_before_modifying_and_does_not_restart() {
+    fn edit_stops_running_computer_before_modifying_and_does_not_restart() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let previous = vm();
+        let previous = computer();
         let mut changed = previous.clone();
         {
-            let MachineConfiguration { cpus, .. } = &mut changed;
+            let ComputerConfiguration { cpus, .. } = &mut changed;
             *cpus = 2;
         }
         let runner = StubRunner::successful_json(vec![
@@ -10763,7 +10926,7 @@ exit 9
             inspect(&paths, "Stopped"),
             json!(null),
         ]);
-        update_machine(&runner, &paths, &previous, &changed).unwrap();
+        update_computer(&runner, &paths, &previous, &changed).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[1], vec!["stop", "dev", "--quiet"]);
         assert_eq!(calls[3][0], "modify");
@@ -10777,13 +10940,13 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let previous = vm();
+        let previous = computer();
         let runner = StubRunner::successful_json(vec![
             inspect(&paths, "Running"),
             json!(null),
             inspect(&paths, "Running"),
         ]);
-        let error = update_machine(&runner, &paths, &previous, &previous).unwrap_err();
+        let error = update_computer(&runner, &paths, &previous, &previous).unwrap_err();
         assert!(error.to_string().contains("did not stop"));
         assert!(!runner
             .calls
@@ -10808,14 +10971,15 @@ exit 9
     }
 
     #[test]
-    fn launch_start_takes_only_its_vms_lane_like_a_user_start() {
+    fn launch_start_takes_only_its_computers_lane_like_a_user_start() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let gate: &'static operation_gate::OperationGate =
             Box::leak(Box::new(operation_gate::OperationGate::new()));
-        let LaunchAdmission::Admitted(guard) = launch_start_guard(gate, &paths, vm().id()).unwrap()
+        let LaunchAdmission::Admitted(guard) =
+            launch_start_guard(gate, &paths, computer().id()).unwrap()
         else {
             panic!("the launch start was not admitted");
         };
@@ -10824,22 +10988,25 @@ exit 9
         assert_eq!(
             (
                 entry.label.as_str(),
-                entry.vm_id.as_deref(),
+                entry.computer_id.as_deref(),
                 entry.kind,
                 entry.cancellable
             ),
             (
                 "Starting dev",
-                Some(vm().id()),
+                Some(computer().id()),
                 operation_gate::OperationKind::Lifecycle,
                 true
             ),
         );
         assert_eq!(entry.expected_ms, Some(180_000));
-        // Other sandboxes' actions and state reads are not held behind this boot.
-        assert!(gate.is_computer_idle());
+        // Other computers' actions and state reads are not held behind this boot.
+        assert!(gate.is_device_idle());
         std::thread::spawn(move || {
-            drop(gate.try_vm("other-id", "other", "Starting other").unwrap())
+            drop(
+                gate.try_computer("other-id", "other", "Starting other")
+                    .unwrap(),
+            )
         })
         .join()
         .unwrap();
@@ -10851,28 +11018,30 @@ exit 9
     }
 
     #[test]
-    fn launch_start_hands_off_to_a_user_start_already_waiting_for_the_vm() {
+    fn launch_start_hands_off_to_a_user_start_already_waiting_for_the_computer() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let gate: &'static operation_gate::OperationGate =
             Box::leak(Box::new(operation_gate::OperationGate::new()));
         let (release, released) = std::sync::mpsc::channel::<()>();
         let holder = std::thread::spawn(move || {
-            let _checkpoint = gate.vm(vm().id(), "dev", "Creating checkpoint").unwrap();
+            let _checkpoint = gate
+                .computer(computer().id(), "dev", "Creating checkpoint")
+                .unwrap();
             released.recv().unwrap();
         });
         wait_for_queue(gate, |queue| queue.running.len() == 1);
         let user = std::thread::spawn(move || {
             gate.kind(operation_gate::OperationKind::Lifecycle)
                 .acquire(
-                    operation_gate::Scope::Vm {
-                        id: vm().id().into(),
+                    operation_gate::Scope::Computer {
+                        id: computer().id().into(),
                     },
                     Some("dev".into()),
                     "Starting dev",
-                    Some(format!("vm:{}:start", vm().id())),
+                    Some(format!("computer:{}:start", computer().id())),
                 )
                 .map(drop)
         });
@@ -10880,7 +11049,7 @@ exit 9
         let launch_paths = paths.clone();
         let skipped = std::thread::spawn(move || {
             matches!(
-                launch_start_guard(gate, &launch_paths, vm().id()),
+                launch_start_guard(gate, &launch_paths, computer().id()),
                 Ok(LaunchAdmission::Skipped)
             )
         })
@@ -10897,22 +11066,22 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         pending_restore_record(&paths, false);
         let runner = StubRunner::successful_json(vec![]);
         assert_eq!(
-            start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap(),
+            start_at_launch_with(&runner, &paths, &generous_device(), computer().id()).unwrap(),
             LaunchStart::NeedsExplicitStart("dev".into()),
         );
         assert!(runner.calls.lock().unwrap().is_empty());
     }
 
     #[test]
-    fn launch_starts_selected_existing_vm_and_verifies_running() {
+    fn launch_starts_selected_existing_computer_and_verifies_running() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         for initial_status in ["Created", "Stopped"] {
             let runner = StubRunner::successful_json(vec![
                 inspect(&paths, initial_status),
@@ -10920,7 +11089,7 @@ exit 9
                 json!(null),
                 inspect(&paths, "Running"),
             ]);
-            start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap();
+            start_at_launch_with(&runner, &paths, &generous_device(), computer().id()).unwrap();
             let calls = runner.calls.lock().unwrap();
             assert_eq!(calls[2], vec!["start", "dev", "--quiet"]);
             assert_eq!(calls[3], vec!["inspect", "dev", "--format", "json"]);
@@ -10929,11 +11098,11 @@ exit 9
     }
 
     #[test]
-    fn launch_rejects_a_running_replacement_instead_of_reporting_the_selected_vm_ready() {
+    fn launch_rejects_a_running_replacement_instead_of_reporting_the_selected_computer_ready() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         for wrong_name in [false, true] {
             let mut observed = inspect(&paths, "Running");
             if wrong_name {
@@ -10943,8 +11112,8 @@ exit 9
                     json!(uuid::Uuid::new_v4().to_string());
             }
             let runner = StubRunner::successful_json(vec![observed]);
-            let error =
-                start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap_err();
+            let error = start_at_launch_with(&runner, &paths, &generous_device(), computer().id())
+                .unwrap_err();
             assert!(error.to_string().contains("identity changed"), "{error}");
             assert!(
                 runner
@@ -10963,11 +11132,11 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = StubRunner::successful_json(vec![inspect(&paths, "Running")]);
-        start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap();
+        start_at_launch_with(&runner, &paths, &generous_device(), computer().id()).unwrap();
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
-        assert!(start_at_launch_with(&runner, &paths, &generous_host(), "deleted").is_err());
+        assert!(start_at_launch_with(&runner, &paths, &generous_device(), "deleted").is_err());
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
         let runner = StubRunner::successful_json(vec![
             inspect(&paths, "Stopped"),
@@ -10976,7 +11145,7 @@ exit 9
             inspect(&paths, "Stopped"),
         ]);
         assert!(
-            start_at_launch_with(&runner, &paths, &generous_host(), vm().id())
+            start_at_launch_with(&runner, &paths, &generous_device(), computer().id())
                 .unwrap_err()
                 .to_string()
                 .contains("did not reach")
@@ -10984,14 +11153,16 @@ exit 9
     }
 
     #[test]
-    fn launch_does_not_recover_crashed_or_transitioning_vms() {
+    fn launch_does_not_recover_crashed_or_transitioning_computers() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         for status in ["Crashed", "Starting", "Draining", "Paused"] {
             let runner = StubRunner::successful_json(vec![inspect(&paths, status)]);
-            assert!(start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).is_err());
+            assert!(
+                start_at_launch_with(&runner, &paths, &generous_device(), computer().id()).is_err()
+            );
             assert_eq!(runner.calls.lock().unwrap().len(), 1);
         }
     }
@@ -11001,20 +11172,22 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let mut unowned = inspect(&paths, "Stopped");
         unowned["config"]["labels"] = json!({});
         let runner = StubRunner::successful_json(vec![unowned]);
-        assert!(start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).is_err());
+        assert!(
+            start_at_launch_with(&runner, &paths, &generous_device(), computer().id()).is_err()
+        );
         let runner = StubRunner::successful_json(vec![
             inspect(&paths, "Stopped"),
             inspect(&paths, "Stopped"),
         ]);
-        let host = HostResources {
+        let device = DeviceResources {
             logical_cpus: 1,
             physical_memory_bytes: Some(1024),
         };
-        assert!(start_at_launch_with(&runner, &paths, &host, vm().id()).is_err());
+        assert!(start_at_launch_with(&runner, &paths, &device, computer().id()).is_err());
         assert!(!runner
             .calls
             .lock()
@@ -11028,14 +11201,14 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = StubRunner::successful_json(vec![
             inspect(&paths, "Stopped"),
             json!(null),
             inspect(&paths, "Running"),
         ]);
 
-        workspace_action_with(&runner, &paths, &generous_host(), "start", "dev").unwrap();
+        computer_action_with(&runner, &paths, &generous_device(), "start", "dev").unwrap();
 
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[0], vec!["inspect", "dev", "--format", "json"]);
@@ -11047,7 +11220,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = StubRunner::successful_json(vec![
             inspect(&paths, "Running"),
             json!(null),
@@ -11055,8 +11228,8 @@ exit 9
             json!(null),
             inspect(&paths, "Stopped"),
         ]);
-        let error =
-            workspace_action_with(&runner, &paths, &generous_host(), "restart", "dev").unwrap_err();
+        let error = computer_action_with(&runner, &paths, &generous_device(), "restart", "dev")
+            .unwrap_err();
         assert!(error
             .to_string()
             .contains("did not reach the Running state"));
@@ -11067,13 +11240,13 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let mut unowned = inspect(&paths, "Stopped");
         unowned["config"]["labels"] = json!({});
         let runner = StubRunner::successful_json(vec![unowned]);
 
         let error =
-            workspace_action_with(&runner, &paths, &generous_host(), "start", "dev").unwrap_err();
+            computer_action_with(&runner, &paths, &generous_device(), "start", "dev").unwrap_err();
         assert!(error.to_string().contains("not owned by Silo"));
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
     }
@@ -11081,16 +11254,16 @@ exit 9
     #[test]
     fn validation_rejects_duplicates_and_invalid_resource_order() {
         let _test_state = crate::test_support::global_state();
-        let mut duplicate = vm();
+        let mut duplicate = computer();
         {
-            let MachineConfiguration { name, .. } = &mut duplicate;
+            let ComputerConfiguration { name, .. } = &mut duplicate;
             *name = "dev".into();
         }
-        assert!(validate_request(&request(vec![vm(), duplicate])).is_err());
+        assert!(validate_request(&request(vec![computer(), duplicate])).is_err());
 
-        let mut invalid = vm();
+        let mut invalid = computer();
         {
-            let MachineConfiguration { cpus, max_cpus, .. } = &mut invalid;
+            let ComputerConfiguration { cpus, max_cpus, .. } = &mut invalid;
             *cpus = 8;
             *max_cpus = 4;
         }
@@ -11102,7 +11275,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let expected = request(vec![vm()]);
+        let expected = request(vec![computer()]);
         write_metadata(&paths.metadata, &expected).unwrap();
 
         assert_eq!(read_metadata(&paths.metadata).unwrap(), expected);
@@ -11115,20 +11288,20 @@ exit 9
     fn saved_configuration_distinguishes_first_launch_from_invalid_data() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("machines.json");
-        assert!(read_metadata(&path).unwrap().machines.is_empty());
+        let path = directory.path().join("computers.json");
+        assert!(read_metadata(&path).unwrap().computers.is_empty());
 
         fs::write(&path, b"not json").unwrap();
         assert!(read_metadata(&path).is_err());
-        fs::write(&path, br#"{"schemaVersion":1,"machines":[]}"#).unwrap();
-        assert!(read_metadata(&path).unwrap().machines.is_empty());
+        fs::write(&path, br#"{"schemaVersion":1,"computers":[]}"#).unwrap();
+        assert!(read_metadata(&path).unwrap().computers.is_empty());
     }
 
     #[test]
     fn pre_desktop_metadata_keeps_its_persisted_field_names_on_round_trip() {
         let saved = json!({
             "schemaVersion": 1,
-            "machines": [
+            "computers": [
                 {
                     "id": "00000000-0000-4000-8000-000000000001",
                     "name": "dev",
@@ -11141,11 +11314,11 @@ exit 9
                 }
             ]
         });
-        let request: MachineConfigurationRequest = serde_json::from_value(saved.clone()).unwrap();
+        let request: ComputerConfigurationRequest = serde_json::from_value(saved.clone()).unwrap();
         validate_request(&request).unwrap();
         assert!(matches!(
-            request.machines[0],
-            MachineConfiguration { desktop: None, .. }
+            request.computers[0],
+            ComputerConfiguration { desktop: None, .. }
         ));
         assert_eq!(serde_json::to_value(&request).unwrap(), saved);
     }
@@ -11155,7 +11328,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let expected = request(vec![vm()]);
+        let expected = request(vec![computer()]);
 
         write_metadata(&paths.metadata, &expected).unwrap();
 
@@ -11165,8 +11338,8 @@ exit 9
     #[test]
     fn measured_resources_reject_impossible_cpu_and_memory_requests() {
         let _test_state = crate::test_support::global_state();
-        let request = request(vec![vm()]);
-        let constrained_cpu = HostResources {
+        let request = request(vec![computer()]);
+        let constrained_cpu = DeviceResources {
             logical_cpus: 4,
             physical_memory_bytes: Some(256 * 1024 * 1024 * 1024),
         };
@@ -11175,7 +11348,7 @@ exit 9
             .to_string()
             .contains("reports 4 logical CPUs"));
 
-        let constrained_memory = HostResources {
+        let constrained_memory = DeviceResources {
             logical_cpus: 64,
             physical_memory_bytes: Some(31 * 1024 * 1024 * 1024),
         };
@@ -11186,7 +11359,7 @@ exit 9
     }
 
     #[test]
-    fn removal_cleans_workspace_only_after_runtime_removal_succeeds() {
+    fn removal_cleans_computer_only_after_runtime_removal_succeeds() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -11200,10 +11373,10 @@ exit 9
             }),
             Err(RuntimeError::Unavailable("runtime removal failed".into())),
         ]);
-        assert!(remove_machine(&failed, &paths, &vm()).is_err());
+        assert!(remove_computer(&failed, &paths, &computer()).is_err());
         assert_eq!(fs::read(&disk).unwrap(), b"workspace-data");
         let successful = StubRunner::successful_json(vec![inspect(&paths, "Stopped"), json!(null)]);
-        remove_machine(&successful, &paths, &vm()).unwrap();
+        remove_computer(&successful, &paths, &computer()).unwrap();
         assert!(!disk.exists());
     }
 
@@ -11213,39 +11386,39 @@ exit 9
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![]);
-        let request = MachineConfigurationRequest {
+        let request = ComputerConfigurationRequest {
             schema_version: 1,
-            machines: vec![],
+            computers: vec![],
         };
         apply_whole_configuration_with_progress(
             &runner,
             &paths,
-            &generous_host(),
+            &generous_device(),
             request.clone(),
             None,
             &|_, _, _| {},
         )
         .unwrap();
-        configure_workspace_identities_with(&runner, &paths, &[]).unwrap();
-        assert!(verify_workspace_identities_with(&runner, &paths, &[]).unwrap());
+        configure_computer_identities_with(&runner, &paths, &[]).unwrap();
+        assert!(verify_computer_identities_with(&runner, &paths, &[]).unwrap());
         read_application_state_with(&runner, &paths).unwrap();
         assert_eq!(read_metadata(&paths.metadata).unwrap(), request);
         assert!(!paths.home.exists());
-        // Empty identity input must not verify a configured VM's identity.
+        // Empty identity input must not verify a configured computer's identity.
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![vm()],
+                computers: vec![computer()],
             },
         )
         .unwrap();
-        assert!(!verify_workspace_identities_with(&runner, &paths, &[]).unwrap());
+        assert!(!verify_computer_identities_with(&runner, &paths, &[]).unwrap());
     }
 
-    fn test_identity() -> WorkspaceIdentity {
-        WorkspaceIdentity {
-            workspace: "dev".into(),
+    fn test_identity() -> ComputerIdentity {
+        ComputerIdentity {
+            computer: "dev".into(),
             name: "Test User".into(),
             email: "test@example.com".into(),
             apply: true,
@@ -11264,7 +11437,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let mut replacement = inspect(&paths, "Running");
         replacement["config"]["labels"]["silo.machine-id"] =
             json!("22222222-2222-4222-8222-222222222222");
@@ -11279,8 +11452,8 @@ exit 9
             identity_output("silo-identity-verified"),
         ]);
 
-        assert!(configure_workspace_identities_with(&writer, &paths, &[test_identity()]).is_err());
-        assert!(verify_workspace_identities_with(&verifier, &paths, &[test_identity()]).is_err());
+        assert!(configure_computer_identities_with(&writer, &paths, &[test_identity()]).is_err());
+        assert!(verify_computer_identities_with(&verifier, &paths, &[test_identity()]).is_err());
         for runner in [writer, verifier] {
             assert!(runner
                 .calls
@@ -11296,7 +11469,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let mut replacement = inspect(&paths, "Running");
         replacement["config"]["labels"]["silo.machine-id"] =
             json!("22222222-2222-4222-8222-222222222222");
@@ -11307,23 +11480,23 @@ exit 9
             identity_output("silo-identity-verified"),
         ]);
 
-        assert!(configure_workspace_identities_with(&runner, &paths, &[test_identity()]).is_err());
+        assert!(configure_computer_identities_with(&runner, &paths, &[test_identity()]).is_err());
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
         assert!(calls.iter().all(|args| args[0] == "inspect"));
     }
 
     #[test]
-    fn git_identity_rechecks_the_machine_after_admission() {
+    fn git_identity_rechecks_the_computer_after_admission() {
         let _test_state = crate::test_support::global_state();
         for verify_only in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-            let lane = |_: &MachineConfiguration, _: &str| {
-                let mut replacement = vm();
+            write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
+            let lane = |_: &ComputerConfiguration, _: &str| {
+                let mut replacement = computer();
                 {
-                    let MachineConfiguration { id, .. } = &mut replacement;
+                    let ComputerConfiguration { id, .. } = &mut replacement;
                     *id = "22222222-2222-4222-8222-222222222222".into();
                 }
                 write_metadata(&paths.metadata, &request(vec![replacement]))?;
@@ -11344,9 +11517,9 @@ exit 9
             });
 
             let rejected = if verify_only {
-                verify_workspace_identities_in(&runner, &paths, &[test_identity()], &lane).is_err()
+                verify_computer_identities_in(&runner, &paths, &[test_identity()], &lane).is_err()
             } else {
-                configure_workspace_identities_in(&runner, &paths, &[test_identity()], &lane)
+                configure_computer_identities_in(&runner, &paths, &[test_identity()], &lane)
                     .is_err()
             };
 
@@ -11365,12 +11538,12 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("silo-identity-verified"),
         ]);
-        assert!(verify_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap());
+        assert!(verify_computer_identities_with(&runner, &paths, &[test_identity()]).unwrap());
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[1][0], "exec");
         assert!(!calls.iter().any(|args| args[0] == "modify"));
@@ -11382,7 +11555,7 @@ exit 9
         let user = "silo";
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let state = inspect(&paths, "Running");
         let runner = StubRunner::new(vec![
             identity_output(&state.to_string()),
@@ -11391,7 +11564,7 @@ exit 9
             identity_output(""),
             identity_output("silo-identity-verified"),
         ]);
-        configure_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap();
+        configure_computer_identities_with(&runner, &paths, &[test_identity()]).unwrap();
         let calls = runner.calls.lock().unwrap();
         for command in calls.iter().filter(|args| args[0] == "exec") {
             assert!(command.windows(2).any(|pair| pair == ["--user", user]));
@@ -11403,7 +11576,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let mut identity = test_identity();
         identity.name = "O'Neil $(touch /tmp/unsafe)".into();
         let runner = StubRunner::new(vec![
@@ -11413,7 +11586,7 @@ exit 9
             identity_output(""),
             identity_output("silo-identity-verified"),
         ]);
-        configure_workspace_identities_with(&runner, &paths, &[identity]).unwrap();
+        configure_computer_identities_with(&runner, &paths, &[identity]).unwrap();
         let calls = runner.calls.lock().unwrap();
         assert!(calls[2].iter().any(|arg| arg == "--env-rm"));
         assert_eq!(calls[3][0], "exec");
@@ -11430,14 +11603,14 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        let mut record = checkpoints::load(&paths, vm().id()).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
+        let mut record = checkpoints::load(&paths, computer().id()).unwrap();
         record.set_environment_for_test(&[
             ("PROJECT_MODE", "kept"),
             ("GIT_AUTHOR_NAME", "Old Author"),
             ("JJ_USER", "Old Author"),
         ]);
-        checkpoints::save(&paths, vm().id(), &record).unwrap();
+        checkpoints::save(&paths, computer().id(), &record).unwrap();
         let state = inspect(&paths, "Running").to_string();
         let runner = StubRunner::new(vec![
             identity_output(&state),
@@ -11446,9 +11619,9 @@ exit 9
             identity_output(""),
             identity_output("silo-identity-verified"),
         ]);
-        configure_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap();
+        configure_computer_identities_with(&runner, &paths, &[test_identity()]).unwrap();
         assert_eq!(
-            checkpoints::load(&paths, vm().id())
+            checkpoints::load(&paths, computer().id())
                 .unwrap()
                 .environment_keys_for_test(),
             ["PROJECT_MODE"]
@@ -11456,28 +11629,28 @@ exit 9
     }
 
     #[test]
-    fn identity_verification_never_boots_a_stopped_vm() {
+    fn identity_verification_never_boots_a_stopped_computer() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-        // A stopped VM's identity is unknown without booting it: not verified, no exec.
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
+        // A stopped computer's identity is unknown without booting it: not verified, no exec.
         let stopped = StubRunner::new(vec![identity_output(
             &inspect(&paths, "Stopped").to_string(),
         )]);
-        assert!(!verify_workspace_identities_with(&stopped, &paths, &[test_identity()]).unwrap());
+        assert!(!verify_computer_identities_with(&stopped, &paths, &[test_identity()]).unwrap());
         assert!(stopped
             .calls
             .lock()
             .unwrap()
             .iter()
             .all(|args| args[0] == "inspect"));
-        // A running VM is checked in place, never through exec's temporary boot.
+        // A running computer is checked in place, never through exec's temporary boot.
         let running = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("silo-identity-verified"),
         ]);
-        assert!(verify_workspace_identities_with(&running, &paths, &[test_identity()]).unwrap());
+        assert!(verify_computer_identities_with(&running, &paths, &[test_identity()]).unwrap());
         let calls = running.calls.lock().unwrap();
         let options: Vec<&str> = calls[1]
             .iter()
@@ -11488,29 +11661,29 @@ exit 9
     }
 
     #[test]
-    fn identity_work_holds_one_named_cancellable_vm_lane_at_a_time() {
+    fn identity_work_holds_one_named_cancellable_computer_lane_at_a_time() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let mut other = vm();
+        let mut other = computer();
         {
-            let MachineConfiguration { id, name, .. } = &mut other;
+            let ComputerConfiguration { id, name, .. } = &mut other;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
-        write_metadata(&paths.metadata, &request(vec![vm(), other.clone()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer(), other.clone()])).unwrap();
         let lanes = Mutex::new(Vec::new());
-        let lane = |machine: &MachineConfiguration, label: &str| {
-            let guard = identity_lane(machine, label)?;
+        let lane = |configuration: &ComputerConfiguration, label: &str| {
+            let guard = identity_lane(configuration, label)?;
             let queue = OPERATIONS.snapshot();
             assert!(
-                OPERATIONS.is_computer_idle(),
-                "identity work must not take the whole computer"
+                OPERATIONS.is_device_idle(),
+                "identity work must not take the whole device"
             );
             let entry = queue
                 .running
                 .iter()
-                .find(|entry| entry.vm_id.as_deref() == Some(machine.id()))
+                .find(|entry| entry.computer_id.as_deref() == Some(configuration.id()))
                 .unwrap();
             assert!(entry.cancellable);
             lanes.lock().unwrap().push(entry.label.clone());
@@ -11526,9 +11699,9 @@ exit 9
             identity_output("silo-identity-verified"),
         ]);
         let mut work = test_identity();
-        work.workspace = "work".into();
+        work.computer = "work".into();
         assert!(
-            verify_workspace_identities_in(&runner, &paths, &[test_identity(), work], &lane)
+            verify_computer_identities_in(&runner, &paths, &[test_identity(), work], &lane)
                 .unwrap()
         );
         assert_eq!(
@@ -11538,7 +11711,9 @@ exit 9
                 "Checking Git identity for work"
             ]
         );
-        assert!(OPERATIONS.is_vm_idle(vm().id()) && OPERATIONS.is_vm_idle(other.id()));
+        assert!(
+            OPERATIONS.is_computer_idle(computer().id()) && OPERATIONS.is_computer_idle(other.id())
+        );
         lanes.lock().unwrap().clear();
         let writer = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
@@ -11547,7 +11722,7 @@ exit 9
             identity_output(""),
             identity_output("silo-identity-verified"),
         ]);
-        configure_workspace_identities_in(&writer, &paths, &[test_identity()], &lane).unwrap();
+        configure_computer_identities_in(&writer, &paths, &[test_identity()], &lane).unwrap();
         assert_eq!(*lanes.lock().unwrap(), vec!["Saving Git identity for dev"]);
     }
 
@@ -11556,30 +11731,30 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let runner = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
             identity_output(""),
         ]);
-        assert!(!verify_workspace_identities_with(&runner, &paths, &[test_identity()]).unwrap());
+        assert!(!verify_computer_identities_with(&runner, &paths, &[test_identity()]).unwrap());
         let failed = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
             Err(RuntimeError::Unavailable("guest unavailable".into())),
         ]);
-        assert!(verify_workspace_identities_with(&failed, &paths, &[test_identity()]).is_err());
+        assert!(verify_computer_identities_with(&failed, &paths, &[test_identity()]).is_err());
     }
 
     #[test]
-    fn unapplied_identity_does_not_modify_vm() {
+    fn unapplied_identity_does_not_modify_computer() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::new(vec![]);
-        configure_workspace_identities_with(
+        configure_computer_identities_with(
             &runner,
             &paths,
-            &[WorkspaceIdentity {
-                workspace: "dev".into(),
+            &[ComputerIdentity {
+                computer: "dev".into(),
                 name: String::new(),
                 email: String::new(),
                 apply: false,
@@ -11592,16 +11767,16 @@ exit 9
     #[test]
     fn unknown_and_overflowing_resource_checks_never_pass() {
         let _test_state = crate::test_support::global_state();
-        let unknown = HostResources {
+        let unknown = DeviceResources {
             logical_cpus: 8,
             physical_memory_bytes: None,
         };
-        assert!(validate_host_ceiling("dev", 1, 1, &unknown).is_err());
-        assert!(validate_host_ceiling("dev", 0, 1, &generous_host()).is_err());
+        assert!(validate_device_ceiling("dev", 1, 1, &unknown).is_err());
+        assert!(validate_device_ceiling("dev", 0, 1, &generous_device()).is_err());
         assert!(validate_inspected_resources(
             "dev",
             &json!({"resources": {"max_cpus": 1, "max_memory_mib": u64::MAX}}),
-            &generous_host()
+            &generous_device()
         )
         .is_err());
     }
@@ -11619,7 +11794,7 @@ exit 9
             .path()
             .join("long-application-support-path/runtime/microsandbox");
         fs::create_dir_all(&storage).unwrap();
-        fs::write(storage.join("existing-vm-data"), b"preserved").unwrap();
+        fs::write(storage.join("existing-computer-data"), b"preserved").unwrap();
         let alias = runtime_home_alias(directory.path(), &storage);
         prepare_runtime_home(&alias, Some(&storage)).unwrap();
         assert_eq!(fs::read_link(&alias).unwrap(), storage);
@@ -11627,7 +11802,7 @@ exit 9
         fs::create_dir_all(socket.parent().unwrap()).unwrap();
         let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         assert_eq!(
-            fs::read(alias.join("existing-vm-data")).unwrap(),
+            fs::read(alias.join("existing-computer-data")).unwrap(),
             b"preserved"
         );
         assert!(
@@ -11639,7 +11814,7 @@ exit 9
                 <= 103
         );
         assert_eq!(
-            fs::read(storage.join("existing-vm-data")).unwrap(),
+            fs::read(storage.join("existing-computer-data")).unwrap(),
             b"preserved"
         );
         prepare_runtime_home(&alias, Some(&storage)).unwrap();
@@ -11844,7 +12019,7 @@ exit 9
             executable,
             library,
             home: directory.path().join("home"),
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         assert!(matches!(
@@ -11856,7 +12031,7 @@ exit 9
     #[test]
     fn host_resource_probe_returns_measured_cpu_and_memory() {
         let _test_state = crate::test_support::global_state();
-        let measured = host_resources().unwrap();
+        let measured = device_resources().unwrap();
         assert!(measured.logical_cpus > 0);
         assert!(measured
             .physical_memory_bytes
@@ -11884,19 +12059,19 @@ exit 9
                 final_state,
             ]);
             let events = Mutex::new(Vec::new());
-            let report = |step: &str, workspace: &str, fraction: u8| {
-                events.lock().unwrap().push(machine_progress(
+            let report = |step: &str, computer: &str, fraction: u8| {
+                events.lock().unwrap().push(computer_progress(
                     "request-1",
                     step,
-                    workspace,
+                    computer,
                     fraction,
                 ))
             };
             let result = apply_whole_configuration_with_progress(
                 &runner,
                 &paths,
-                &generous_host(),
-                request(vec![vm()]),
+                &generous_device(),
+                request(vec![computer()]),
                 None,
                 &report,
             );
@@ -11911,53 +12086,56 @@ exit 9
                 })
                 .collect();
             let mut expected = vec![
-                ("workspace-configuration", 0),
-                ("workspace-configuration", 1),
-                ("workspace-verification", 0),
+                ("computer-configuration", 0),
+                ("computer-configuration", 1),
+                ("computer-verification", 0),
             ];
             if !fail_verification {
-                expected.push(("workspace-verification", 1));
+                expected.push(("computer-verification", 1));
             }
             assert_eq!(boundaries, expected);
             for event in events.iter() {
                 let encoded = serde_json::to_value(event).unwrap();
                 assert_eq!(encoded["type"], "progress");
                 assert_eq!(encoded["requestId"], "request-1");
-                assert_eq!(encoded["workspace"], "dev");
+                assert_eq!(encoded["computer"], "dev");
                 assert_eq!(encoded["safeForDisplay"], true);
             }
         }
     }
 
     #[test]
-    fn unavailable_local_runtime_shell_preserves_error_without_inventing_vm_state() {
+    fn unavailable_local_runtime_shell_preserves_error_without_inventing_computer_state() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let source = application_shell(&paths, "Local runtime could not be reached.").unwrap();
-        assert!(source.workspaces.is_empty());
+        assert!(source.computers.is_empty());
         assert_eq!(
             source.runtime_repair.unwrap()["reason"],
             "Local runtime could not be reached."
         );
         assert!(!paths.executable.exists());
-        assert_eq!(read_metadata(&paths.metadata).unwrap(), request(vec![vm()]));
+        assert_eq!(
+            read_metadata(&paths.metadata).unwrap(),
+            request(vec![computer()])
+        );
     }
 
     #[test]
-    fn deleting_last_vm_persists_empty_inventory_without_requiring_runtime_for_snapshot() {
+    fn deleting_last_computer_persists_empty_inventory_without_requiring_runtime_for_snapshot() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let inspected = inspect(&paths, "Stopped");
         let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
-        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
-        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        apply_whole_configuration(&runner, &paths, &generous_device(), request(vec![])).unwrap();
+        assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
         let unavailable_runtime = StubRunner::successful_json(vec![]);
         let source = read_application_state_with(&unavailable_runtime, &paths).unwrap();
-        assert!(source.workspaces.is_empty());
+        assert!(source.computers.is_empty());
         assert!(unavailable_runtime.calls.lock().unwrap().is_empty());
     }
 
@@ -11966,24 +12144,24 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         let network = paths.metadata.with_file_name("network.json");
         fs::write(
             &network,
             json!({"mappings":[
-                {"workspace":"dev","port":3000,"hostPort":43000,"scheme":"http","enabled":true},
-                {"workspace":"other","port":8080,"hostPort":null,"scheme":null,"enabled":true}
+                {"computer":"dev","port":3000,"hostPort":43000,"scheme":"http","enabled":true},
+                {"computer":"other","port":8080,"hostPort":null,"scheme":null,"enabled":true}
             ]})
             .to_string(),
         )
         .unwrap();
         let inspected = inspect(&paths, "Stopped");
         let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
-        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        apply_whole_configuration(&runner, &paths, &generous_device(), request(vec![])).unwrap();
         let saved: Value = serde_json::from_slice(&fs::read(&network).unwrap()).unwrap();
         assert_eq!(saved["mappings"].as_array().unwrap().len(), 1);
-        assert_eq!(saved["mappings"][0]["workspace"], "other");
-        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        assert_eq!(saved["mappings"][0]["computer"], "other");
+        assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
     }
 
     #[test]
@@ -11991,18 +12169,18 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let previous = request(vec![vm()]);
+        let previous = request(vec![computer()]);
         write_metadata(&paths.metadata, &previous).unwrap();
         fs::write(paths.metadata.with_file_name("network.json"), "invalid").unwrap();
         let inspected = inspect(&paths, "Stopped");
         let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
-        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+        let error = apply_whole_configuration(&runner, &paths, &generous_device(), request(vec![]))
             .unwrap_err();
         assert!(error.to_string().contains("Saved ports are invalid"));
         assert_eq!(read_metadata(&paths.metadata).unwrap(), previous);
     }
 
-    /// The runtime's sandbox `dev` as the bundled `msb` treats it: `inspect` reports its
+    /// The runtime's computer `dev` as the bundled `msb` treats it: `inspect` reports its
     /// status, and `remove` accepts one that is `Created` (never started), `Stopped` or
     /// `Crashed` and refuses any other with the runtime's own error. Every call is recorded.
     struct RemovalRuntime {
@@ -12032,10 +12210,10 @@ exit 9
                 ["remove", "--quiet", "dev"] => {
                     if !matches!(self.status, "Created" | "Stopped" | "Crashed") {
                         return Err(RuntimeError::Failed {
-                            operation: "Removing the sandbox".into(),
+                            operation: "Removing the computer".into(),
                             exit_code: Some(1),
                             detail: format!(
-                                "sandbox still running: cannot remove sandbox \"dev\": status is {}",
+                                "computer still running: cannot remove computer \"dev\": status is {}",
                                 self.status
                             ),
                         });
@@ -12056,15 +12234,15 @@ exit 9
     }
 
     #[test]
-    fn deleting_a_sandbox_that_never_started_removes_it_from_the_runtime_and_its_disk() {
+    fn deleting_a_computer_that_never_started_removes_it_from_the_runtime_and_its_disk() {
         let _test_state = crate::test_support::global_state();
-        // A sandbox whose first start never happened is `Created`: a setup that failed before
+        // A computer whose first start never happened is `Created`: a setup that failed before
         // its first boot, a fork or restore not yet started, an interrupted import's orphan.
         // Silo treats it as stopped, and the runtime now removes it the same way.
         for status in ["Created", "Stopped", "Crashed"] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
             let disk = disk_path(&paths, "dev", "workspace");
             fs::create_dir_all(disk.parent().unwrap()).unwrap();
             fs::write(&disk, b"workspace-data").unwrap();
@@ -12075,7 +12253,7 @@ exit 9
                 calls: Mutex::new(Vec::new()),
             };
 
-            apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+            apply_whole_configuration(&runner, &paths, &generous_device(), request(vec![]))
                 .unwrap_or_else(|error| panic!("{status}: {error}"));
 
             let calls = runner.calls.lock().unwrap().clone();
@@ -12084,18 +12262,18 @@ exit 9
                 "{status}: {calls:?}"
             );
             assert!(*runner.removed.lock().unwrap(), "{status}");
-            assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
-            assert!(!disk.exists(), "{status}: the disk goes with the sandbox");
+            assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
+            assert!(!disk.exists(), "{status}: the disk goes with the computer");
         }
     }
 
     #[test]
-    fn deleting_a_sandbox_the_runtime_would_refuse_to_remove_keeps_everything() {
+    fn deleting_a_computer_the_runtime_would_refuse_to_remove_keeps_everything() {
         let _test_state = crate::test_support::global_state();
         for status in ["Running", "Starting", "Draining", "Paused"] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
             let disk = disk_path(&paths, "dev", "workspace");
             fs::create_dir_all(disk.parent().unwrap()).unwrap();
             fs::write(&disk, b"workspace-data").unwrap();
@@ -12106,10 +12284,13 @@ exit 9
                 calls: Mutex::new(Vec::new()),
             };
 
-            let error = remove_machine(&runner, &paths, &vm()).unwrap_err();
+            let error = remove_computer(&runner, &paths, &computer()).unwrap_err();
 
-            // Silo refuses first, so `remove` is never issued for a sandbox that may run.
-            assert!(error.to_string().contains("Stop sandbox 'dev'"), "{status}");
+            // Silo refuses first, so `remove` is never issued for a computer that may run.
+            assert!(
+                error.to_string().contains("Stop computer 'dev'"),
+                "{status}"
+            );
             assert_eq!(
                 *runner.calls.lock().unwrap(),
                 ["inspect dev --format json"],
@@ -12121,14 +12302,14 @@ exit 9
     }
 
     #[test]
-    fn adding_or_removing_a_vm_does_not_recheck_or_report_unchanged_vms() {
+    fn adding_or_removing_a_computer_does_not_recheck_or_report_unchanged_computers() {
         let _test_state = crate::test_support::global_state();
-        for (removing, retry_workspace) in [(false, None), (true, None), (true, Some("work"))] {
+        for (removing, retry_computer) in [(false, None), (true, None), (true, Some("work"))] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            let mut other = vm();
+            let mut other = computer();
             {
-                let MachineConfiguration { id, name, .. } = &mut other;
+                let ComputerConfiguration { id, name, .. } = &mut other;
                 *id = "00000000-0000-4000-8000-000000000002".into();
                 *name = "work".into();
             }
@@ -12137,14 +12318,14 @@ exit 9
             other_inspect["config"]["name"] = json!("work");
             other_inspect["config"]["labels"]["silo.machine-id"] = json!(other.id());
             let previous = if removing {
-                request(vec![vm(), other.clone()])
+                request(vec![computer(), other.clone()])
             } else {
-                request(vec![vm()])
+                request(vec![computer()])
             };
             let requested = if removing {
-                request(vec![vm()])
+                request(vec![computer()])
             } else {
-                request(vec![vm(), other])
+                request(vec![computer(), other])
             };
             write_metadata(&paths.metadata, &previous).unwrap();
             let runner = StubRunner::successful_json(if removing {
@@ -12165,9 +12346,9 @@ exit 9
             apply_whole_configuration_with_progress(
                 &runner,
                 &paths,
-                &generous_host(),
+                &generous_device(),
                 requested.clone(),
-                retry_workspace,
+                retry_computer,
                 &|step, name, fraction| {
                     events
                         .lock()
@@ -12195,19 +12376,19 @@ exit 9
     #[test]
     fn interrupted_verification_resumes_only_until_it_completes() {
         let _test_state = crate::test_support::global_state();
-        let started = machine_progress("request-1", "workspace-verification", "dev", 0);
-        let failed = machine_progress("request-1", "setup-failed", "dev", 0);
+        let started = computer_progress("request-1", "computer-verification", "dev", 0);
+        let failed = computer_progress("request-1", "setup-failed", "dev", 0);
         assert_eq!(
-            pending_verification_workspace(&[started.clone(), failed]),
+            pending_verification_computer(&[started.clone(), failed]),
             Some("dev".into())
         );
-        let done = machine_progress("request-1", "workspace-verification", "dev", 1);
+        let done = computer_progress("request-1", "computer-verification", "dev", 1);
         assert_eq!(
-            pending_verification_workspace(&[started.clone(), done]),
+            pending_verification_computer(&[started.clone(), done]),
             None
         );
-        let completed = machine_progress("request-1", "setup-completed", "", 0);
-        assert_eq!(pending_verification_workspace(&[started, completed]), None);
+        let completed = computer_progress("request-1", "setup-completed", "", 0);
+        assert_eq!(pending_verification_computer(&[started, completed]), None);
     }
 
     #[test]
@@ -12215,7 +12396,7 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let configured = request(vec![vm()]);
+        let configured = request(vec![computer()]);
         write_metadata(&paths.metadata, &configured).unwrap();
         let mut mismatch = inspect(&paths, "Stopped");
         mismatch["config"]["resources"]["cpus"] = json!(1);
@@ -12223,7 +12404,7 @@ exit 9
         let error = apply_whole_configuration_with_progress(
             &runner,
             &paths,
-            &generous_host(),
+            &generous_device(),
             configured,
             Some("dev"),
             &|_, _, _| {},
@@ -12239,21 +12420,21 @@ exit 9
     }
 
     #[test]
-    fn removal_preflight_checks_every_vm_before_deleting_any() {
+    fn removal_preflight_checks_every_computer_before_deleting_any() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let first = vm();
-        let mut second = vm();
+        let first = computer();
+        let mut second = computer();
         {
-            let MachineConfiguration { id, name, .. } = &mut second;
+            let ComputerConfiguration { id, name, .. } = &mut second;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
-        let remote = MachineConfiguration {
+        let remote = ComputerConfiguration {
             id: "00000000-0000-4000-8000-000000000003".into(),
             name: "keep".into(),
-            ..vm()
+            ..computer()
         };
         let previous = request(vec![first, second, remote.clone()]);
         write_metadata(&paths.metadata, &previous).unwrap();
@@ -12264,7 +12445,7 @@ exit 9
         assert!(apply_whole_configuration(
             &runner,
             &paths,
-            &generous_host(),
+            &generous_device(),
             request(vec![remote])
         )
         .is_err());
@@ -12278,39 +12459,39 @@ exit 9
     }
 
     #[test]
-    fn failed_later_removal_keeps_metadata_for_surviving_vms() {
+    fn failed_later_removal_keeps_metadata_for_surviving_computers() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let mut second = vm();
+        let mut second = computer();
         {
-            let MachineConfiguration { id, name, .. } = &mut second;
+            let ComputerConfiguration { id, name, .. } = &mut second;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
-        let remote = MachineConfiguration {
+        let remote = ComputerConfiguration {
             id: "00000000-0000-4000-8000-000000000003".into(),
             name: "keep".into(),
-            ..vm()
+            ..computer()
         };
         write_metadata(
             &paths.metadata,
-            &request(vec![vm(), second.clone(), remote.clone()]),
+            &request(vec![computer(), second.clone(), remote.clone()]),
         )
         .unwrap();
-        let stopped = |machine: &MachineConfiguration| {
+        let stopped = |configuration: &ComputerConfiguration| {
             let mut inspected = inspect(&paths, "Stopped");
-            inspected["name"] = json!(machine.name());
-            inspected["config"]["labels"]["silo.machine-id"] = json!(machine.id());
+            inspected["name"] = json!(configuration.name());
+            inspected["config"]["labels"]["silo.machine-id"] = json!(configuration.id());
             Ok(CommandOutput {
                 stdout: inspected.to_string(),
                 stderr: String::new(),
             })
         };
         let runner = StubRunner::new(vec![
-            stopped(&vm()),
+            stopped(&computer()),
             stopped(&second),
-            stopped(&vm()),
+            stopped(&computer()),
             Ok(CommandOutput {
                 stdout: String::new(),
                 stderr: String::new(),
@@ -12321,13 +12502,13 @@ exit 9
         let error = apply_whole_configuration(
             &runner,
             &paths,
-            &generous_host(),
+            &generous_device(),
             request(vec![remote.clone()]),
         )
         .unwrap_err();
         assert!(error.to_string().contains("Completed changes were kept"));
         assert_eq!(
-            read_metadata(&paths.metadata).unwrap().machines,
+            read_metadata(&paths.metadata).unwrap().computers,
             vec![second, remote]
         );
     }
@@ -12337,10 +12518,10 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let first = vm();
-        let mut second = vm();
+        let first = computer();
+        let mut second = computer();
         {
-            let MachineConfiguration { id, name, .. } = &mut second;
+            let ComputerConfiguration { id, name, .. } = &mut second;
             *id = "00000000-0000-4000-8000-000000000002".into();
             *name = "work".into();
         }
@@ -12390,7 +12571,7 @@ exit 9
                 stderr: String::new(),
             }),
             Err(RuntimeError::Failed {
-                operation: "Creating the sandbox".into(),
+                operation: "Creating the computer".into(),
                 exit_code: Some(1),
                 detail: "image pull failed".into(),
             }),
@@ -12407,7 +12588,7 @@ exit 9
         let error = apply_whole_configuration(
             &runner,
             &paths,
-            &generous_host(),
+            &generous_device(),
             request(vec![first, second]),
         )
         .unwrap_err();
@@ -12423,7 +12604,10 @@ exit 9
             .unwrap()
             .iter()
             .any(|args| args[0] == "remove"));
-        assert_eq!(read_metadata(&paths.metadata).unwrap().machines, vec![vm()]);
+        assert_eq!(
+            read_metadata(&paths.metadata).unwrap().computers,
+            vec![computer()]
+        );
         assert!(error.to_string().contains("Completed changes were kept"));
     }
 
@@ -12436,7 +12620,7 @@ exit 9
             "version": 1,
             "checkpoints": [],
             "snapshotGroup": "dev",
-            "pendingCheckpointRestore": {"checkpointId": "c000000000000000000000000000000", "sourceWorkspace": "dev", "state": "full"},
+            "pendingCheckpointRestore": {"checkpointId": "c000000000000000000000000000000", "sourceComputer": "dev", "state": "full"},
             "checkpointOperation": null,
         });
         if attempted {
@@ -12444,7 +12628,7 @@ exit 9
             record["restoreAttemptId"] = json!(ATTEMPT_ID);
         }
         fs::write(
-            directory.join(format!("{}.json", vm().id())),
+            directory.join(format!("{}.json", computer().id())),
             record.to_string(),
         )
         .unwrap();
@@ -12456,11 +12640,11 @@ exit 9
         attempt
     }
 
-    fn missing_sandbox() -> Result<CommandOutput, RuntimeError> {
+    fn missing_computer() -> Result<CommandOutput, RuntimeError> {
         Err(RuntimeError::Failed {
             operation: "inspect dev".into(),
             exit_code: Some(1),
-            detail: "sandbox not found".into(),
+            detail: "computer not found".into(),
         })
     }
 
@@ -12470,7 +12654,7 @@ exit 9
         for (status, stops) in [("Stopped", false), ("Running", true)] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
-            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
             pending_restore_record(&paths, true);
             let attempt = restore_attempt(&paths, status);
             use crate::test_support::runner::{ExpectedCommand, ScriptedRunner};
@@ -12502,14 +12686,15 @@ exit 9
                 ),
             ]);
             let runner = ScriptedRunner::new(commands);
-            apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+            apply_whole_configuration(&runner, &paths, &generous_device(), request(vec![]))
+                .unwrap();
             runner.assert_finished();
-            // The runtime VM is removed before Silo forgets the sandbox and its record.
-            assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+            // The runtime computer is removed before Silo forgets the computer and its record.
+            assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
             assert!(!paths
                 .metadata
                 .with_file_name("checkpoints")
-                .join(format!("{}.json", vm().id()))
+                .join(format!("{}.json", computer().id()))
                 .exists());
         }
     }
@@ -12519,23 +12704,23 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         pending_restore_record(&paths, false);
         use crate::test_support::runner::{ExpectedCommand, ScriptedRunner};
         let runner = ScriptedRunner::new([
             ExpectedCommand::error(
                 ["inspect", "dev", "--format", "json"],
-                missing_sandbox().unwrap_err(),
+                missing_computer().unwrap_err(),
             ),
             ExpectedCommand::error(
                 ["inspect", "dev", "--format", "json"],
-                missing_sandbox().unwrap_err(),
+                missing_computer().unwrap_err(),
             ),
             ExpectedCommand::ok(["snapshot", "list", "--format", "json"], "[]"),
         ]);
-        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        apply_whole_configuration(&runner, &paths, &generous_device(), request(vec![])).unwrap();
         runner.assert_finished();
-        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        assert!(read_metadata(&paths.metadata).unwrap().computers.is_empty());
     }
 
     #[test]
@@ -12543,10 +12728,10 @@ exit 9
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
         pending_restore_record(&paths, true);
         let runner = StubRunner::successful_json(vec![inspect(&paths, "Stopped")]);
-        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+        let error = apply_whole_configuration(&runner, &paths, &generous_device(), request(vec![]))
             .unwrap_err();
         assert!(error.to_string().contains("preserved"), "{error}");
         assert!(runner
@@ -12555,18 +12740,21 @@ exit 9
             .unwrap()
             .iter()
             .all(|args| args[0] == "inspect"));
-        assert_eq!(read_metadata(&paths.metadata).unwrap().machines, vec![vm()]);
+        assert_eq!(
+            read_metadata(&paths.metadata).unwrap().computers,
+            vec![computer()]
+        );
     }
 
     #[test]
-    fn remove_refuses_a_running_vm_without_stopping_it_implicitly() {
+    fn remove_refuses_a_running_computer_without_stopping_it_implicitly() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let runner = StubRunner::successful_json(vec![inspect(&paths, "Running")]);
 
-        let error = remove_machine(&runner, &paths, &vm()).unwrap_err();
-        assert!(error.to_string().contains("Stop sandbox 'dev'"));
+        let error = remove_computer(&runner, &paths, &computer()).unwrap_err();
+        assert!(error.to_string().contains("Stop computer 'dev'"));
         assert_eq!(runner.calls.lock().unwrap().len(), 1);
     }
 }
@@ -12575,19 +12763,19 @@ exit 9
 #[path = "runtime_github_tests.rs"]
 mod github_integration_tests;
 
-/// Apply secret policy under the same per-VM lock as GitHub updates and boot.
-pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str) -> Result<Vec<String>, String> {
-    validate_name(workspace).map_err(|error| error.to_string())?;
-    apply_secrets_at_paths(runtime_paths(app)?, workspace)
+/// Apply secret policy under the same per-computer lock as GitHub updates and boot.
+pub(crate) fn apply_secrets(app: &AppHandle, computer: &str) -> Result<Vec<String>, String> {
+    validate_name(computer).map_err(|error| error.to_string())?;
+    apply_secrets_at_paths(runtime_paths(app)?, computer)
 }
 
-fn apply_secrets_at_paths(paths: RuntimePaths, workspace: &str) -> Result<Vec<String>, String> {
-    let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
-    let base_label = format!("Saving secrets for {workspace}");
+fn apply_secrets_at_paths(paths: RuntimePaths, computer: &str) -> Result<Vec<String>, String> {
+    let computer_id = resolve_computer_id(&paths, computer).map_err(|error| error.to_string())?;
+    let base_label = format!("Saving secrets for {computer}");
     let acquire =
         |label: &str| -> Result<operation_gate::OperationGuard<'static>, secrets_runtime::Attempt> {
             OPERATIONS
-                .vm(&vm_id, workspace, label)
+                .computer(&computer_id, computer, label)
                 // Gate rejections (busy, already queued, cancelled) are never transient.
                 .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))
         };
@@ -12598,44 +12786,47 @@ fn apply_secrets_at_paths(paths: RuntimePaths, workspace: &str) -> Result<Vec<St
     };
     let work = || -> Result<Vec<String>, secrets_runtime::Attempt> {
         shutdown::ensure_accepting_operations().map_err(secrets_runtime::Attempt::Final)?;
-        let access =
-            vm_access_state(&paths.home, workspace).map_err(secrets_runtime::Attempt::Final)?;
-        let _guard =
-            lock_vm_runtime(&access, MUTATION_TIMEOUT, "Saving secrets").map_err(|error| {
+        let access = computer_access_state(&paths.home, computer)
+            .map_err(secrets_runtime::Attempt::Final)?;
+        let _guard = lock_computer_runtime(&access, MUTATION_TIMEOUT, "Saving secrets").map_err(
+            |error| {
                 match error {
                     RuntimeError::Cancelled { .. } => {
                         secrets_runtime::Attempt::Cancelled("Saving secrets was cancelled.".into())
                     }
-                    // Another change to this VM is still finishing; a later attempt may proceed.
+                    // Another change to this computer is still finishing; a later attempt may proceed.
                     _ => secrets_runtime::Attempt::Transient(
-                        "Another change to this sandbox is still running. Retry after it finishes."
+                        "Another change to this computer is still running. Retry after it finishes."
                             .into(),
                     ),
                 }
-            })?;
-        let machine = read_metadata(&paths.metadata)
+            },
+        )?;
+        let configuration = read_metadata(&paths.metadata)
             .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))?
-            .machines
+            .computers
             .into_iter()
-            .find(|machine| machine.id() == vm_id && machine.name() == workspace)
+            .find(|configuration| {
+                configuration.id() == computer_id && configuration.name() == computer
+            })
             .ok_or_else(|| {
                 secrets_runtime::Attempt::Final(
-                    "The sandbox identity changed. No secrets were applied.".into(),
+                    "The computer identity changed. No secrets were applied.".into(),
                 )
             })?;
-        let inspected = inspect_workspace(&ProcessRunner, &paths, workspace).map_err(|_| {
-            secrets_runtime::Attempt::Final("Could not inspect sandbox secrets.".into())
+        let inspected = inspect_computer(&ProcessRunner, &paths, computer).map_err(|_| {
+            secrets_runtime::Attempt::Final("Could not inspect computer secrets.".into())
         })?;
-        ensure_machine_identity(&machine, &inspected)
+        ensure_computer_identity(&configuration, &inspected)
             .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))?;
         // An edit/remove may have committed while this operation waited for the
-        // VM gate. Never send the caller's stale values back into the guest.
-        let revision = crate::secrets::workspace_revision(workspace)?;
-        let desired = crate::secrets::runtime_material(workspace)?;
+        // Computer gate. Never send the caller's stale values back into the guest.
+        let revision = crate::secrets::computer_revision(computer)?;
+        let desired = crate::secrets::runtime_material(computer)?;
         let records = crate::secrets::pending_revocations()?;
-        let pending = secrets_runtime::apply(&paths, workspace, &desired, false)?;
-        if crate::secrets::workspace_revision(workspace)? == revision {
-            crate::secrets::revocations_replaced(&records, workspace, &pending)?;
+        let pending = secrets_runtime::apply(&paths, computer, &desired, false)?;
+        if crate::secrets::computer_revision(computer)? == revision {
+            crate::secrets::revocations_replaced(&records, computer, &pending)?;
         }
         Ok(pending)
     };
@@ -12654,7 +12845,7 @@ fn apply_secrets_at_paths(paths: RuntimePaths, workspace: &str) -> Result<Vec<St
     .map_err(String::from)
 }
 
-/// Background name-only revocation. Use the owner computer's existing VM gate;
+/// Background name-only revocation. Use the owner device's existing computer gate;
 /// skip busy/transitional/unreadable guests and retry on a later state refresh.
 pub(crate) fn revoke_secret(
     app: &AppHandle,
@@ -12662,7 +12853,7 @@ pub(crate) fn revoke_secret(
 ) -> Result<bool, String> {
     let paths = runtime_paths(app)?;
     revoke_secret_with(&ProcessRunner, &paths, record, &mut |name| {
-        secrets_runtime::remove_name(&paths, &record.workspace, name)
+        secrets_runtime::remove_name(&paths, &record.computer, name)
     })
 }
 
@@ -12673,39 +12864,41 @@ fn revoke_secret_with(
     remove: &mut dyn FnMut(&str) -> Result<(), String>,
 ) -> Result<bool, String> {
     let metadata = read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
-    let Some(machine) = metadata
-        .machines
+    let Some(configuration) = metadata
+        .computers
         .iter()
-        .find(|machine| machine.name() == record.workspace)
+        .find(|configuration| configuration.name() == record.computer)
     else {
         return Ok(true);
     };
-    let Ok(_turn) =
-        OPERATIONS.try_vm_hidden(machine.id(), &record.workspace, "Revoking removed secret")
-    else {
+    let Ok(_turn) = OPERATIONS.try_computer_hidden(
+        configuration.id(),
+        &record.computer,
+        "Revoking removed secret",
+    ) else {
         return Ok(false);
     };
-    let access = vm_access_state(&paths.home, &record.workspace)?;
+    let access = computer_access_state(&paths.home, &record.computer)?;
     let Ok(_runtime) = access.runtime.try_lock() else {
         return Ok(false);
     };
-    // Read after acquiring the VM gate: a queued old retry cannot remove a
+    // Read after acquiring the computer gate: a queued old retry cannot remove a
     // replacement that has since been applied under that same gate.
     let observed =
-        observe_vm(runner, paths, &record.workspace).map_err(|error| error.to_string())?;
+        observe_computer(runner, paths, &record.computer).map_err(|error| error.to_string())?;
     match observed {
-        VmRuntime::Absent => Ok(true),
-        VmRuntime::Present(inspected) => {
+        ComputerRuntime::Absent => Ok(true),
+        ComputerRuntime::Present(inspected) => {
             ensure_managed(&inspected).map_err(|error| error.to_string())?;
-            if inspected.name != record.workspace
+            if inspected.name != record.computer
                 || inspected
                     .config
                     .pointer("/labels/silo.machine-id")
                     .and_then(Value::as_str)
-                    != Some(machine.id())
+                    != Some(configuration.id())
             {
                 return Err(
-                    "The sandbox identity changed. Its secret revocation remains pending.".into(),
+                    "The computer identity changed. Its secret revocation remains pending.".into(),
                 );
             }
             if matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed") {
@@ -12717,7 +12910,7 @@ fn revoke_secret_with(
             secrets_runtime::revoke_observed_with(
                 runner,
                 paths,
-                &record.workspace,
+                &record.computer,
                 &record.name,
                 &inspected,
                 remove,
@@ -12733,42 +12926,42 @@ pub(crate) fn validate_secret_material_for_tests(
     secrets_runtime::validate_material(&material.to_vec())
 }
 
-pub(crate) fn validate_secret_workspaces(
+pub(crate) fn validate_secret_computers(
     app: &AppHandle,
-    workspaces: &[String],
+    computers: &[String],
 ) -> Result<(), String> {
     let paths = runtime_paths(app)?;
     let metadata = read_metadata(&paths.metadata)
-        .map_err(|_| "Sandbox settings could not be read.".to_string())?;
-    for workspace in workspaces {
-        validate_name(workspace).map_err(|_| "Invalid sandbox selection.".to_string())?;
+        .map_err(|_| "Computer settings could not be read.".to_string())?;
+    for computer in computers {
+        validate_name(computer).map_err(|_| "Invalid computer selection.".to_string())?;
         if !metadata
-            .machines
+            .computers
             .iter()
-            .any(|machine| machine.name() == workspace)
+            .any(|configuration| configuration.name() == computer)
         {
-            return Err("Secrets can only be assigned to local Silo sandboxes.".into());
+            return Err("Secrets can only be assigned to local Silo computers.".into());
         }
-        let inspected = inspect_workspace(&ProcessRunner, &paths, workspace)
-            .map_err(|_| "Could not verify the selected sandbox.".to_string())?;
+        let inspected = inspect_computer(&ProcessRunner, &paths, computer)
+            .map_err(|_| "Could not verify the selected computer.".to_string())?;
         ensure_managed(&inspected)
-            .map_err(|_| "Secrets can only be assigned to managed Silo sandboxes.".to_string())?;
+            .map_err(|_| "Secrets can only be assigned to managed Silo computers.".to_string())?;
     }
     Ok(())
 }
 
-/// Caller holds the operation gate for this VM and has verified the stable VM identity.
-pub(crate) fn start_for_desktop(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeError> {
+/// Caller holds the operation gate for this computer and has verified the stable computer identity.
+pub(crate) fn start_for_desktop(paths: &RuntimePaths, computer: &str) -> Result<(), RuntimeError> {
     debug_assert!(
         operation_gate::held(),
-        "a desktop start requires the VM's operation gate"
+        "a desktop start requires the computer's operation gate"
     );
-    workspace_action_with(
+    computer_action_with(
         &ProcessRunner,
         paths,
-        &host_resources()?,
+        &device_resources()?,
         "start",
-        workspace,
+        computer,
     )
 }
 
@@ -12776,8 +12969,8 @@ pub(crate) fn start_for_desktop(paths: &RuntimePaths, workspace: &str) -> Result
 mod change_configuration_tests {
     use super::*;
 
-    fn vm(id: &str, name: &str, cpus: u8) -> MachineConfiguration {
-        MachineConfiguration {
+    fn computer(id: &str, name: &str, cpus: u8) -> ComputerConfiguration {
+        ComputerConfiguration {
             id: id.into(),
             name: name.into(),
             cpus,
@@ -12791,11 +12984,11 @@ mod change_configuration_tests {
     }
 
     fn upsert(
-        machine: &MachineConfiguration,
-        expected: Option<&MachineConfiguration>,
-    ) -> MachineConfigurationChange {
-        MachineConfigurationChange::Upsert {
-            machine: machine.clone(),
+        configuration: &ComputerConfiguration,
+        expected: Option<&ComputerConfiguration>,
+    ) -> ComputerConfigurationChange {
+        ComputerConfigurationChange::Upsert {
+            configuration: configuration.clone(),
             expected: expected.cloned(),
         }
     }
@@ -12803,51 +12996,51 @@ mod change_configuration_tests {
     #[test]
     fn upsert_rejected_when_expected_does_not_match_current() {
         let _test_state = crate::test_support::global_state();
-        let current = vm("a", "dev", 2);
-        let mut machines = vec![current.clone(), vm("b", "web", 2)];
-        // The user edited from a two-CPU baseline, but the VM now has four CPUs.
-        let stale_expected = vm("a", "dev", 4);
-        let edited = vm("a", "dev", 3);
+        let current = computer("a", "dev", 2);
+        let mut computers = vec![current.clone(), computer("b", "web", 2)];
+        // The user edited from a two-CPU baseline, but the computer now has four CPUs.
+        let stale_expected = computer("a", "dev", 4);
+        let edited = computer("a", "dev", 3);
         let error = upsert(&edited, Some(&stale_expected))
-            .apply(&mut machines)
+            .apply(&mut computers)
             .unwrap_err();
         assert!(
             error.contains("changed while your edit was waiting"),
             "{error}"
         );
         // Nothing is mutated on rejection.
-        assert_eq!(machines, vec![current, vm("b", "web", 2)]);
+        assert_eq!(computers, vec![current, computer("b", "web", 2)]);
     }
 
     #[test]
-    fn delete_rejected_when_vm_no_longer_exists() {
+    fn delete_rejected_when_computer_no_longer_exists() {
         let _test_state = crate::test_support::global_state();
-        let mut machines = vec![vm("b", "web", 2)];
-        let change = MachineConfigurationChange::Delete {
-            vm_id: "a".into(),
-            expected: vm("a", "dev", 2),
+        let mut computers = vec![computer("b", "web", 2)];
+        let change = ComputerConfigurationChange::Delete {
+            computer_id: "a".into(),
+            expected: computer("a", "dev", 2),
         };
         // Current config for "a" is absent, so it never equals the expected snapshot.
-        let error = change.apply(&mut machines).unwrap_err();
+        let error = change.apply(&mut computers).unwrap_err();
         assert!(
             error.contains("changed while your edit was waiting"),
             "{error}"
         );
-        assert_eq!(machines, vec![vm("b", "web", 2)]);
+        assert_eq!(computers, vec![computer("b", "web", 2)]);
     }
 
     #[test]
-    fn delete_of_present_vm_removes_only_that_vm() {
+    fn delete_of_present_computer_removes_only_that_computer() {
         let _test_state = crate::test_support::global_state();
-        let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2)];
-        let change = MachineConfigurationChange::Delete {
-            vm_id: "a".into(),
-            expected: vm("a", "dev", 2),
+        let mut computers = vec![computer("a", "dev", 2), computer("b", "web", 2)];
+        let change = ComputerConfigurationChange::Delete {
+            computer_id: "a".into(),
+            expected: computer("a", "dev", 2),
         };
-        change.apply(&mut machines).unwrap();
-        assert_eq!(machines, vec![vm("b", "web", 2)]);
-        // A second identical delete now fails: the VM is gone.
-        assert!(change.apply(&mut machines).is_err());
+        change.apply(&mut computers).unwrap();
+        assert_eq!(computers, vec![computer("b", "web", 2)]);
+        // A second identical delete now fails: the computer is gone.
+        assert!(change.apply(&mut computers).is_err());
     }
 
     #[test]
@@ -12855,56 +13048,71 @@ mod change_configuration_tests {
         let _test_state = crate::test_support::global_state();
         // Each targeted change reads fresh state and applies on top of the previous
         // one, so both survive instead of the second overwriting the first.
-        let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2)];
+        let mut computers = vec![computer("a", "dev", 2), computer("b", "web", 2)];
 
         // First edit: change "a" to three CPUs, expecting the two-CPU baseline.
-        let first = upsert(&vm("a", "dev", 3), Some(&vm("a", "dev", 2)));
-        first.apply(&mut machines).unwrap();
+        let first = upsert(&computer("a", "dev", 3), Some(&computer("a", "dev", 2)));
+        first.apply(&mut computers).unwrap();
 
         // Second edit targets "b" and expects the current "b" (unchanged by the first).
-        let second = upsert(&vm("b", "web", 3), Some(&vm("b", "web", 2)));
-        second.apply(&mut machines).unwrap();
+        let second = upsert(&computer("b", "web", 3), Some(&computer("b", "web", 2)));
+        second.apply(&mut computers).unwrap();
 
         // Both edits are preserved, and order is stable (edit in place, not append).
-        assert_eq!(machines, vec![vm("a", "dev", 3), vm("b", "web", 3)]);
+        assert_eq!(
+            computers,
+            vec![computer("a", "dev", 3), computer("b", "web", 3)]
+        );
     }
 
     #[test]
     fn edit_preserves_position_instead_of_appending() {
         let _test_state = crate::test_support::global_state();
-        let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2), vm("c", "db", 2)];
-        upsert(&vm("a", "dev", 3), Some(&vm("a", "dev", 2)))
-            .apply(&mut machines)
+        let mut computers = vec![
+            computer("a", "dev", 2),
+            computer("b", "web", 2),
+            computer("c", "db", 2),
+        ];
+        upsert(&computer("a", "dev", 3), Some(&computer("a", "dev", 2)))
+            .apply(&mut computers)
             .unwrap();
         assert_eq!(
-            machines,
-            vec![vm("a", "dev", 3), vm("b", "web", 2), vm("c", "db", 2)]
+            computers,
+            vec![
+                computer("a", "dev", 3),
+                computer("b", "web", 2),
+                computer("c", "db", 2)
+            ]
         );
     }
 
     #[test]
     fn reorder_requires_matching_expected_order() {
         let _test_state = crate::test_support::global_state();
-        let mut machines = vec![vm("a", "dev", 2), vm("b", "web", 2), vm("c", "db", 2)];
-        let change = MachineConfigurationChange::Reorder {
+        let mut computers = vec![
+            computer("a", "dev", 2),
+            computer("b", "web", 2),
+            computer("c", "db", 2),
+        ];
+        let change = ComputerConfigurationChange::Reorder {
             order: vec!["c".into(), "a".into(), "b".into()],
             expected_order: vec!["a".into(), "b".into(), "c".into()],
         };
-        change.apply(&mut machines).unwrap();
+        change.apply(&mut computers).unwrap();
         assert_eq!(
-            machines
+            computers
                 .iter()
-                .map(MachineConfiguration::id)
+                .map(ComputerConfiguration::id)
                 .collect::<Vec<_>>(),
             vec!["c", "a", "b"]
         );
 
         // A stale expected order (the inventory changed meanwhile) is rejected.
-        let stale = MachineConfigurationChange::Reorder {
+        let stale = ComputerConfigurationChange::Reorder {
             order: vec!["a".into(), "b".into(), "c".into()],
             expected_order: vec!["a".into(), "b".into(), "c".into()],
         };
-        let error = stale.apply(&mut machines).unwrap_err();
+        let error = stale.apply(&mut computers).unwrap_err();
         assert!(
             error.contains("changed while your edit was waiting"),
             "{error}"
@@ -12916,65 +13124,69 @@ mod change_configuration_tests {
         let _test_state = crate::test_support::global_state();
         // A create carries `expected: null` meaning "must not already exist". An id that
         // is already present makes the current value differ from the expected absence.
-        let mut machines = vec![vm("a", "dev", 2)];
-        let error = upsert(&vm("a", "dev", 3), None)
-            .apply(&mut machines)
+        let mut computers = vec![computer("a", "dev", 2)];
+        let error = upsert(&computer("a", "dev", 3), None)
+            .apply(&mut computers)
             .unwrap_err();
         assert!(
             error.contains("changed while your edit was waiting"),
             "{error}"
         );
-        assert_eq!(machines, vec![vm("a", "dev", 2)]);
+        assert_eq!(computers, vec![computer("a", "dev", 2)]);
     }
 
     #[test]
     fn batch_applies_every_change_in_order() {
         let _test_state = crate::test_support::global_state();
-        let mut machines = vec![vm("a", "dev", 2)];
-        let batch = MachineConfigurationChange::Batch {
+        let mut computers = vec![computer("a", "dev", 2)];
+        let batch = ComputerConfigurationChange::Batch {
             changes: vec![
-                upsert(&vm("a", "dev", 3), Some(&vm("a", "dev", 2))),
-                upsert(&vm("b", "web", 2), None),
-                upsert(&vm("c", "db", 2), None),
+                upsert(&computer("a", "dev", 3), Some(&computer("a", "dev", 2))),
+                upsert(&computer("b", "web", 2), None),
+                upsert(&computer("c", "db", 2), None),
             ],
         };
-        batch.apply(&mut machines).unwrap();
+        batch.apply(&mut computers).unwrap();
         assert_eq!(
-            machines,
-            vec![vm("a", "dev", 3), vm("b", "web", 2), vm("c", "db", 2)]
+            computers,
+            vec![
+                computer("a", "dev", 3),
+                computer("b", "web", 2),
+                computer("c", "db", 2)
+            ]
         );
     }
 
     #[test]
     fn batch_rejects_all_or_nothing_when_one_change_is_stale() {
         let _test_state = crate::test_support::global_state();
-        let mut machines = vec![vm("a", "dev", 2)];
+        let mut computers = vec![computer("a", "dev", 2)];
         // The second change expects a two-CPU baseline for "a" that the first already
         // moved to three, so it is stale and the whole batch is rejected untouched.
-        let batch = MachineConfigurationChange::Batch {
+        let batch = ComputerConfigurationChange::Batch {
             changes: vec![
-                upsert(&vm("b", "web", 2), None),
-                upsert(&vm("a", "dev", 4), Some(&vm("a", "dev", 3))),
+                upsert(&computer("b", "web", 2), None),
+                upsert(&computer("a", "dev", 4), Some(&computer("a", "dev", 3))),
             ],
         };
-        let error = batch.apply(&mut machines).unwrap_err();
+        let error = batch.apply(&mut computers).unwrap_err();
         assert!(
             error.contains("changed while your edit was waiting"),
             "{error}"
         );
         // No change survives: neither the new "b" nor the edit to "a".
-        assert_eq!(machines, vec![vm("a", "dev", 2)]);
+        assert_eq!(computers, vec![computer("a", "dev", 2)]);
     }
 
     #[test]
     fn nested_batches_are_rejected() {
         let _test_state = crate::test_support::global_state();
-        let mut machines = vec![vm("a", "dev", 2)];
-        let batch = MachineConfigurationChange::Batch {
-            changes: vec![MachineConfigurationChange::Batch { changes: vec![] }],
+        let mut computers = vec![computer("a", "dev", 2)];
+        let batch = ComputerConfigurationChange::Batch {
+            changes: vec![ComputerConfigurationChange::Batch { changes: vec![] }],
         };
-        let error = batch.apply(&mut machines).unwrap_err();
+        let error = batch.apply(&mut computers).unwrap_err();
         assert!(error.contains("Nested"), "{error}");
-        assert_eq!(machines, vec![vm("a", "dev", 2)]);
+        assert_eq!(computers, vec![computer("a", "dev", 2)]);
     }
 }

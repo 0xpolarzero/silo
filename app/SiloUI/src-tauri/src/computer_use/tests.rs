@@ -3,11 +3,11 @@ use crate::runtime::CommandOutput;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
-const VM_ID: &str = "00000000-0000-4000-8000-000000000001";
+const COMPUTER_ID: &str = "00000000-0000-4000-8000-000000000001";
 
-fn machine(built_in: bool) -> MachineConfiguration {
-    MachineConfiguration {
-        id: VM_ID.into(),
+fn computer_configuration(built_in: bool) -> ComputerConfiguration {
+    ComputerConfiguration {
+        id: COMPUTER_ID.into(),
         name: "dev".into(),
         cpus: 1,
         max_cpus: 1,
@@ -16,7 +16,7 @@ fn machine(built_in: bool) -> MachineConfiguration {
         workspace_storage_gib: 1,
         runtime_storage_gib: 1,
         desktop: Some(desktop::DesktopConfiguration {
-            start_with_sandbox: true,
+            start_with_computer: true,
             built_in,
         }),
     }
@@ -81,10 +81,13 @@ fn with_published<T>(work: impl FnOnce(&Path) -> T) -> T {
 // ---------------------------------------------------------------- mount
 
 #[test]
-fn only_built_in_vms_get_the_mount_and_it_is_read_only() {
+fn only_built_in_computers_get_the_mount_and_it_is_read_only() {
     with_published(|dir| {
-        assert_eq!(mount_args(&machine(false)).unwrap(), Vec::<String>::new());
-        let args = mount_args(&machine(true)).unwrap();
+        assert_eq!(
+            mount_args(&computer_configuration(false)).unwrap(),
+            Vec::<String>::new()
+        );
+        let args = mount_args(&computer_configuration(true)).unwrap();
         assert_eq!(
             args,
             [
@@ -99,9 +102,13 @@ fn only_built_in_vms_get_the_mount_and_it_is_read_only() {
 fn the_lcu_folder_is_lent_read_only_when_silo_has_one() {
     with_published(|_| {
         let lcu = tempfile::tempdir().unwrap();
-        let without = mount_args_with(&machine(true), None).unwrap();
+        let without = mount_args_with(&computer_configuration(true), None).unwrap();
         assert_eq!(without.len(), 2);
-        let with = mount_args_with(&machine(true), Some(lcu.path().to_path_buf())).unwrap();
+        let with = mount_args_with(
+            &computer_configuration(true),
+            Some(lcu.path().to_path_buf()),
+        )
+        .unwrap();
         assert_eq!(with[..2], without[..]);
         assert_eq!(
             with[2..],
@@ -113,17 +120,20 @@ fn the_lcu_folder_is_lent_read_only_when_silo_has_one() {
                 )
             ]
         );
-        // A folder that is gone is skipped, and a VM without computer use gets nothing.
+        // A folder that is gone is skipped, and a computer without computer use gets nothing.
         let gone = lcu.path().join("gone");
         assert_eq!(
-            mount_args_with(&machine(true), Some(gone)).unwrap().len(),
+            mount_args_with(&computer_configuration(true), Some(gone))
+                .unwrap()
+                .len(),
             2
         );
-        assert!(
-            mount_args_with(&machine(false), Some(lcu.path().to_path_buf()))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(mount_args_with(
+            &computer_configuration(false),
+            Some(lcu.path().to_path_buf())
+        )
+        .unwrap()
+        .is_empty());
     });
 }
 
@@ -132,17 +142,17 @@ fn creation_applies_computer_use_in_one_temporary_boot_and_records_it() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
     let recorder = Recorder::new("{\"state\":\"ready\",\"apply\":{\"approval\":\"ask\",\"outcome\":\"applied\",\"reason\":null}}\n");
-    finish_in_creation(&recorder, &paths, VM_ID, "dev").unwrap();
+    finish_in_creation(&recorder, &paths, COMPUTER_ID, "dev").unwrap();
     let calls = recorder.calls.lock().unwrap().clone();
     assert_eq!(calls.len(), 1);
-    // No `--no-start`: the call boots the stopped VM and the runtime stops it again.
+    // No `--no-start`: the call boots the stopped computer and the runtime stops it again.
     assert!(!calls[0].contains(&"--no-start".to_owned()));
     assert!(calls[0]
         .last()
         .unwrap()
         .contains("apply --approval ask --boot"));
     assert_eq!(
-        read_policy(&paths, VM_ID)
+        read_policy(&paths, COMPUTER_ID)
             .last
             .map(|attempt| attempt.outcome),
         Some(Outcome::Applied)
@@ -155,21 +165,21 @@ fn a_failed_creation_apply_is_reported_short_and_left_for_the_first_start() {
     let paths = paths(&directory);
     let recorder = Recorder::new("{\"state\":\"ready\",\"apply\":{\"approval\":\"ask\",\"outcome\":\"failed\",\"reason\":\"lcu-archive-unavailable\"}}\n");
     assert_eq!(
-        finish_in_creation(&recorder, &paths, VM_ID, "dev"),
+        finish_in_creation(&recorder, &paths, COMPUTER_ID, "dev"),
         Err("lcu-archive-unavailable".into())
     );
     let missing = Recorder::new("{\"state\":\"ready\",\"apply\":{\"approval\":\"ask\",\"outcome\":\"failed\",\"reason\":\"app-missing\"}}\n");
-    assert!(finish_in_creation(&missing, &paths, VM_ID, "dev").is_err());
+    assert!(finish_in_creation(&missing, &paths, COMPUTER_ID, "dev").is_err());
 }
 
 #[test]
 fn an_existing_but_empty_shared_folder_never_blocks_the_mount() {
     with_published(|dir| {
         assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
-        assert_eq!(mount_args(&machine(true)).unwrap().len(), 2);
+        assert_eq!(mount_args(&computer_configuration(true)).unwrap().len(), 2);
         // Still mounted unchanged once the app (or anything else) is published into it.
         std::fs::create_dir(dir.join("1.0-arm64")).unwrap();
-        assert_eq!(mount_args(&machine(true)).unwrap().len(), 2);
+        assert_eq!(mount_args(&computer_configuration(true)).unwrap().len(), 2);
     });
 }
 
@@ -180,21 +190,29 @@ fn a_missing_or_unusable_shared_folder_blocks_the_mount() {
     std::fs::write(&file, b"x").unwrap();
     for bad in [directory.path().join("gone"), file] {
         set_test_published_dir(Some(bad));
-        let error = mount_args(&machine(true)).unwrap_err().to_string();
+        let error = mount_args(&computer_configuration(true))
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("shared ChatGPT folder"), "{error}");
-        assert!(mount_args(&machine(false)).unwrap().is_empty());
+        assert!(mount_args(&computer_configuration(false))
+            .unwrap()
+            .is_empty());
     }
     set_test_published_dir(None);
 }
 
 #[test]
-fn a_built_in_vm_without_a_shared_folder_is_an_error_not_a_silent_omission() {
+fn a_built_in_computer_without_a_shared_folder_is_an_error_not_a_silent_omission() {
     let _state = crate::test_support::global_state();
     reset_published_for_test();
     set_test_published_dir(None);
-    let error = mount_args(&machine(true)).unwrap_err().to_string();
+    let error = mount_args(&computer_configuration(true))
+        .unwrap_err()
+        .to_string();
     assert!(error.contains("shared ChatGPT folder"), "{error}");
-    assert!(mount_args(&machine(false)).unwrap().is_empty());
+    assert!(mount_args(&computer_configuration(false))
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -203,36 +221,39 @@ fn the_mount_check_needs_a_read_only_bind_at_the_guest_path() {
         json!({"type":"Bind","host":"/h/chatgpt/published","guest":guest,
             "options":{"readonly":readonly,"noexec":false}})
     };
-    let workspace = json!({"type":"Owned","guest":"/workspace",
+    let computer = json!({"type":"Owned","guest":"/workspace",
         "storage":{"kind":"disk","capacity_mib":1024}});
     let config = |mounts: Value| json!({"mounts": mounts});
-    let built_in = machine(true);
+    let built_in = computer_configuration(true);
     assert!(mount_present(
-        &config(json!([workspace, bind("/opt/silo/chatgpt", true)])),
+        &config(json!([computer, bind("/opt/silo/chatgpt", true)])),
         &built_in
     ));
-    assert!(!mount_present(&config(json!([workspace])), &built_in));
+    assert!(!mount_present(&config(json!([computer])), &built_in));
     assert!(!mount_present(
-        &config(json!([workspace, bind("/opt/silo/chatgpt", false)])),
+        &config(json!([computer, bind("/opt/silo/chatgpt", false)])),
         &built_in
     ));
     assert!(!mount_present(
-        &config(json!([workspace, bind("/elsewhere", true)])),
+        &config(json!([computer, bind("/elsewhere", true)])),
         &built_in
     ));
     assert!(!mount_present(&json!({}), &built_in));
-    // A VM without built-in computer use needs no mount.
-    assert!(mount_present(&config(json!([workspace])), &machine(false)));
+    // A computer without built-in computer use needs no mount.
+    assert!(mount_present(
+        &config(json!([computer])),
+        &computer_configuration(false)
+    ));
 }
 
 #[test]
 fn export_drops_the_host_specific_mount_and_refuses_a_writable_one() {
-    let workspace = json!({"type":"Owned","guest":"/workspace"});
+    let computer = json!({"type":"Owned","guest":"/workspace"});
     let mount = json!({"type":"Bind","host":"/h/chatgpt/published","guest":"/opt/silo/chatgpt",
         "options":{"readonly":true}});
-    let mut config = json!({"mounts":[workspace.clone(), mount.clone()]});
+    let mut config = json!({"mounts":[computer.clone(), mount.clone()]});
     strip_mount_for_export(&mut config).unwrap();
-    assert_eq!(config["mounts"], json!([workspace]));
+    assert_eq!(config["mounts"], json!([computer]));
     let mut writable = json!({"mounts":[{"type":"Bind","host":"/h","guest":"/opt/silo/chatgpt",
         "options":{"readonly":false}}]});
     assert!(strip_mount_for_export(&mut writable).is_err());
@@ -247,16 +268,16 @@ fn export_drops_the_host_specific_mount_and_refuses_a_writable_one() {
 // ------------------------------------------------------------- settings
 
 #[test]
-fn approval_defaults_to_ask_and_is_kept_per_vm() {
+fn approval_defaults_to_ask_and_is_kept_per_computer() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    assert_eq!(settings(&paths, VM_ID).approval, Approval::Ask);
-    set_approval(&paths, VM_ID, Approval::Auto).unwrap();
-    assert_eq!(settings(&paths, VM_ID).approval, Approval::Auto);
+    assert_eq!(settings(&paths, COMPUTER_ID).approval, Approval::Ask);
+    set_approval(&paths, COMPUTER_ID, Approval::Auto).unwrap();
+    assert_eq!(settings(&paths, COMPUTER_ID).approval, Approval::Auto);
     let other = "00000000-0000-4000-8000-000000000002";
     assert_eq!(settings(&paths, other).approval, Approval::Ask);
-    set_approval(&paths, VM_ID, Approval::Ask).unwrap();
-    assert_eq!(settings(&paths, VM_ID).approval, Approval::Ask);
+    set_approval(&paths, COMPUTER_ID, Approval::Ask).unwrap();
+    assert_eq!(settings(&paths, COMPUTER_ID).approval, Approval::Ask);
     assert!(set_approval(&paths, "../escape", Approval::Auto).is_err());
     assert_eq!(Approval::parse("auto"), Some(Approval::Auto));
     assert_eq!(Approval::parse("yes"), None);
@@ -266,27 +287,27 @@ fn approval_defaults_to_ask_and_is_kept_per_vm() {
 fn a_damaged_settings_file_means_ask() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    set_approval(&paths, VM_ID, Approval::Auto).unwrap();
-    fs::write(policy_path(&paths, VM_ID).unwrap(), b"{not json").unwrap();
-    assert_eq!(settings(&paths, VM_ID).approval, Approval::Ask);
+    set_approval(&paths, COMPUTER_ID, Approval::Auto).unwrap();
+    fs::write(policy_path(&paths, COMPUTER_ID).unwrap(), b"{not json").unwrap();
+    assert_eq!(settings(&paths, COMPUTER_ID).approval, Approval::Ask);
 }
 
 #[test]
 fn oversized_computer_use_policy_remains_unreadable_and_untouched() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let path = policy_path(&paths, VM_ID).unwrap();
+    let path = policy_path(&paths, COMPUTER_ID).unwrap();
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let mut bytes = br#"{"approval":"auto"}"#.to_vec();
     bytes.resize(1024 * 1024, b' ');
     fs::write(&path, &bytes).unwrap();
     assert_eq!(
-        read_policy_checked(&paths, VM_ID).unwrap().approval,
+        read_policy_checked(&paths, COMPUTER_ID).unwrap().approval,
         Approval::Auto
     );
     bytes.push(b' ');
     fs::write(&path, &bytes).unwrap();
-    let stored = settings(&paths, VM_ID);
+    let stored = settings(&paths, COMPUTER_ID);
     assert!(stored.unreadable);
     assert_eq!(stored.approval, Approval::Ask);
     assert_eq!(fs::read(&path).unwrap(), bytes);
@@ -325,17 +346,17 @@ fn a_fifo_computer_use_record_is_refused_without_waiting_for_a_writer() {
 fn oversized_computer_use_observation_is_ignored_without_changing_the_policy() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let policy = policy_path(&paths, VM_ID).unwrap();
-    let observed = observed_path(&paths, VM_ID).unwrap();
+    let policy = policy_path(&paths, COMPUTER_ID).unwrap();
+    let observed = observed_path(&paths, COMPUTER_ID).unwrap();
     fs::create_dir_all(policy.parent().unwrap()).unwrap();
     fs::write(&policy, br#"{"approval":"auto"}"#).unwrap();
     let mut bytes = br#"{"state":"ready"}"#.to_vec();
     bytes.resize(1024 * 1024, b' ');
     fs::write(&observed, &bytes).unwrap();
-    assert_eq!(settings(&paths, VM_ID).known.unwrap().state, "ready");
+    assert_eq!(settings(&paths, COMPUTER_ID).known.unwrap().state, "ready");
     bytes.push(b' ');
     fs::write(&observed, &bytes).unwrap();
-    let stored = settings(&paths, VM_ID);
+    let stored = settings(&paths, COMPUTER_ID);
     assert!(stored.known.is_none());
     assert!(!stored.unreadable);
     assert_eq!(stored.approval, Approval::Auto);
@@ -348,17 +369,17 @@ fn unfamiliar_saved_attempt_outcome_preserves_the_approval_choice() {
     let paths = paths(&directory);
     fs::create_dir_all(directory_of(&paths)).unwrap();
     let saved = br#"{"approval":"auto","applied":"auto","last":{"mode":"auto","outcome":"future-outcome","at":1790000000}}"#;
-    fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
+    fs::write(policy_path(&paths, COMPUTER_ID).unwrap(), saved).unwrap();
 
-    let stored = settings(&paths, VM_ID);
+    let stored = settings(&paths, COMPUTER_ID);
     assert!(!stored.unreadable);
     assert_eq!(stored.approval, Approval::Auto);
     assert_eq!(stored.applied, Some(Approval::Auto));
     assert_eq!(stored.last.as_ref().unwrap().outcome, Outcome::Failed);
-    let policy = read_policy_checked(&paths, VM_ID).unwrap();
+    let policy = read_policy_checked(&paths, COMPUTER_ID).unwrap();
     assert!(policy.needs_apply());
-    write_atomic(&paths, policy_path(&paths, VM_ID), &policy).unwrap();
-    assert_eq!(settings(&paths, VM_ID), stored);
+    write_atomic(&paths, policy_path(&paths, COMPUTER_ID), &policy).unwrap();
+    assert_eq!(settings(&paths, COMPUTER_ID), stored);
     assert!(Outcome::parse("future-outcome").is_none());
 }
 
@@ -374,10 +395,10 @@ fn unfamiliar_saved_approval_modes_remain_unreadable() {
         br#"{"approval":"auto","last":{"mode":"future-mode","outcome":"applied","at":1}}"#,
         br#"{"approval":"auto","last":{"mode":"auto","outcome":null,"at":1}}"#,
     ] {
-        fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
-        assert!(settings(&paths, VM_ID).unreadable);
+        fs::write(policy_path(&paths, COMPUTER_ID).unwrap(), saved).unwrap();
+        assert!(settings(&paths, COMPUTER_ID).unreadable);
         assert_eq!(
-            fs::read(policy_path(&paths, VM_ID).unwrap()).unwrap(),
+            fs::read(policy_path(&paths, COMPUTER_ID).unwrap()).unwrap(),
             saved
         );
     }
@@ -391,15 +412,15 @@ fn a_policy_of_an_older_version_keeps_its_choice_and_applies_again() {
     let paths = paths(&directory);
     fs::create_dir_all(directory_of(&paths)).unwrap();
     fs::write(
-        policy_path(&paths, VM_ID).unwrap(),
+        policy_path(&paths, COMPUTER_ID).unwrap(),
         br#"{"approval":"auto","revision":1790000000000,"generation":"22222222-2222-4222-8222-222222222222"}"#,
     )
     .unwrap();
-    let stored = settings(&paths, VM_ID);
+    let stored = settings(&paths, COMPUTER_ID);
     assert_eq!(stored.approval, Approval::Auto);
     assert!(!stored.unreadable);
     assert_eq!((stored.applied, stored.last), (None, None));
-    assert!(read_policy(&paths, VM_ID).needs_apply());
+    assert!(read_policy(&paths, COMPUTER_ID).needs_apply());
 }
 
 fn directory_of(paths: &RuntimePaths) -> PathBuf {
@@ -407,26 +428,26 @@ fn directory_of(paths: &RuntimePaths) -> PathBuf {
 }
 
 #[test]
-fn forks_inherit_only_the_approval_and_deleted_vms_are_forgotten() {
+fn forks_inherit_only_the_approval_and_deleted_computers_are_forgotten() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
     let child = "00000000-0000-4000-8000-000000000003";
-    set_approval(&paths, VM_ID, Approval::Auto).unwrap();
+    set_approval(&paths, COMPUTER_ID, Approval::Auto).unwrap();
     record_attempt(
         &paths,
-        VM_ID,
+        COMPUTER_ID,
         attempt(Approval::Auto, Outcome::Applied, None),
     );
     remember(
         &paths,
-        VM_ID,
+        COMPUTER_ID,
         Known {
             state: "ready".into(),
             app_version: Some("1".into()),
             ..Known::default()
         },
     );
-    inherit_settings(&paths, VM_ID, child).unwrap();
+    inherit_settings(&paths, COMPUTER_ID, child).unwrap();
     let inherited = settings(&paths, child);
     assert_eq!(inherited.approval, Approval::Auto);
     // The fork's disk carries the source's configuration: nothing is known to be applied,
@@ -434,8 +455,8 @@ fn forks_inherit_only_the_approval_and_deleted_vms_are_forgotten() {
     assert_eq!((inherited.applied, inherited.last), (None, None));
     assert_eq!(inherited.known, None);
     assert!(read_policy(&paths, child).needs_apply());
-    forget(&paths, VM_ID).unwrap();
-    assert_eq!(settings(&paths, VM_ID), Settings::default());
+    forget(&paths, COMPUTER_ID).unwrap();
+    assert_eq!(settings(&paths, COMPUTER_ID), Settings::default());
     assert!(policy_path(&paths, child).unwrap().exists());
 }
 
@@ -528,43 +549,43 @@ fn the_guest_script_installs_the_helper_and_pair_before_running_the_command() {
 
 // ----------------------------------------------------- guest commands
 
-/// Every fixture gets a fresh VM id because pending applies are shared by the process.
-fn vm() -> String {
+/// Every fixture gets a fresh computer id because pending applies are shared by the process.
+fn computer() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
 #[test]
-fn independent_vm_fixtures_do_not_share_pending_approval_state() {
+fn independent_computer_fixtures_do_not_share_pending_approval_state() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let other = vm();
-    let id = vm();
+    let other = computer();
+    let id = computer();
     set_approval(&paths, &id, Approval::Ask).unwrap();
     record_attempt(&paths, &id, attempt(Approval::Ask, Outcome::Applied, None));
     let _pending = Pending::begin(&other);
-    let state = desktop_state(&paths, &machine_of(&id, true), false, None).unwrap();
+    let state = desktop_state(&paths, &computer_of(&id, true), false, None).unwrap();
     assert_eq!(state["approvalApply"], "applied");
 }
 
-fn machine_of(id: &str, built_in: bool) -> MachineConfiguration {
-    MachineConfiguration {
+fn computer_of(id: &str, built_in: bool) -> ComputerConfiguration {
+    ComputerConfiguration {
         id: id.into(),
-        ..machine(built_in)
+        ..computer_configuration(built_in)
     }
 }
 
-fn write_machines_of(paths: &RuntimePaths, id: &str) {
-    let request = runtime::MachineConfigurationRequest {
+fn write_computers_of(paths: &RuntimePaths, id: &str) {
+    let request = runtime::ComputerConfigurationRequest {
         schema_version: 1,
-        machines: vec![machine_of(id, true)],
+        computers: vec![computer_of(id, true)],
     };
     runtime::write_metadata(&paths.metadata, &request).unwrap();
 }
 
-fn write_machines(paths: &RuntimePaths, built_in: bool) {
-    let request = runtime::MachineConfigurationRequest {
+fn write_computers(paths: &RuntimePaths, built_in: bool) {
+    let request = runtime::ComputerConfigurationRequest {
         schema_version: 1,
-        machines: vec![machine(built_in)],
+        computers: vec![computer_configuration(built_in)],
     };
     runtime::write_metadata(&paths.metadata, &request).unwrap();
 }
@@ -579,13 +600,13 @@ enum Reply {
     Failed(&'static str),
 }
 
-/// A guest that answers like the helper: `inspect` as a running labelled VM, `status`,
+/// A guest that answers like the helper: `inspect` as a running labelled computer, `status`,
 /// and `apply --approval <mode>` with the next planned reply (applied by default). It
 /// records every run and what the agents' configuration holds, and a run can be held until
 /// the test releases it.
 struct Guest {
     id: String,
-    /// Inspections answered so far, and after how many the VM becomes another instance.
+    /// Inspections answered so far, and after how many the computer becomes another instance.
     inspects: StdMutex<(usize, Option<usize>)>,
     plan: StdMutex<std::collections::VecDeque<Reply>>,
     /// `(mode, force, boot, timeout)` of every run, in the order they reached the guest.
@@ -709,15 +730,15 @@ fn boot_of(
 }
 
 fn answer_of(paths: &RuntimePaths, id: &str, running: bool) -> Value {
-    desktop_state(paths, &machine_of(id, true), running, None).unwrap()
+    desktop_state(paths, &computer_of(id, true), running, None).unwrap()
 }
 
 #[test]
-fn after_boot_runs_the_helper_to_completion_with_the_vms_chosen_mode() {
+fn after_boot_runs_the_helper_to_completion_with_the_computers_chosen_mode() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
     boot_of(test_gate(), &guest, &paths)
@@ -747,20 +768,20 @@ fn after_boot_runs_the_helper_to_completion_with_the_vms_chosen_mode() {
 }
 
 #[test]
-fn a_vm_booted_by_its_pending_restore_still_gets_its_apply() {
+fn a_computer_booted_by_its_pending_restore_still_gets_its_apply() {
     // Imports and forks boot inside the restore, while Silo still records them as pending.
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    write_machines(&paths, true);
+    write_computers(&paths, true);
     runtime::checkpoints::import_pending_restore(
         &paths,
-        VM_ID,
+        COMPUTER_ID,
         "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
         "silo-backup-0-330418-1790360984903",
     )
     .unwrap();
     assert!(runtime::is_pending_restore(&paths, "dev"));
-    let guest = Guest::new(VM_ID);
+    let guest = Guest::new(COMPUTER_ID);
     boot_of(test_gate(), &guest, &paths)
         .unwrap()
         .join()
@@ -769,11 +790,11 @@ fn a_vm_booted_by_its_pending_restore_still_gets_its_apply() {
 }
 
 #[test]
-fn after_boot_does_nothing_for_vms_without_built_in_computer_use() {
+fn after_boot_does_nothing_for_computers_without_built_in_computer_use() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    write_machines(&paths, false);
-    let guest = Guest::new(VM_ID);
+    write_computers(&paths, false);
+    let guest = Guest::new(COMPUTER_ID);
     assert!(boot_of(test_gate(), &guest, &paths).is_none());
     assert!(apply_with(test_gate(), guest.clone(), &paths, "unknown", Trigger::Boot).is_none());
     assert!(guest.runs.lock().unwrap().is_empty());
@@ -795,8 +816,8 @@ fn a_boot_that_cannot_start_computer_use_still_succeeds() {
     }
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    write_machines(&paths, true);
-    // A runtime that cannot even inspect the VM means nothing is run.
+    write_computers(&paths, true);
+    // A runtime that cannot even inspect the computer means nothing is run.
     if let Some(handle) = apply_with(test_gate(), Arc::new(Failing), &paths, "dev", Trigger::Boot) {
         handle.join().unwrap();
     }
@@ -806,8 +827,8 @@ fn a_boot_that_cannot_start_computer_use_still_succeeds() {
 fn a_stalled_guest_never_delays_the_boot_that_scheduled_the_apply() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     let (entered, entered_receiver) = std::sync::mpsc::channel();
     let release = Arc::new(std::sync::Barrier::new(2));
@@ -832,8 +853,8 @@ fn a_stalled_guest_never_delays_the_boot_that_scheduled_the_apply() {
 fn queued_applies_never_write_an_older_choice_over_a_newer_one() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
     let gate = test_gate();
@@ -846,10 +867,10 @@ fn queued_applies_never_write_an_older_choice_over_a_newer_one() {
         .recv_timeout(Duration::from_secs(10))
         .unwrap();
     // The user then flips the switch three times; each change queues its own apply.
-    let machine = machine_of(&id, true);
+    let configuration = computer_of(&id, true);
     let mut queued = Vec::new();
     for approval in [Approval::Ask, Approval::Auto, Approval::Ask] {
-        let handle = apply_approval_in(gate, guest.clone(), &paths, &machine, approval, true)
+        let handle = apply_approval_in(gate, guest.clone(), &paths, &configuration, approval, true)
             .unwrap()
             .expect("a change that needs applying starts one");
         queued.push(handle);
@@ -878,19 +899,26 @@ fn queued_applies_never_write_an_older_choice_over_a_newer_one() {
 }
 
 #[test]
-fn changing_the_approval_of_a_running_vm_applies_it_in_the_background() {
+fn changing_the_approval_of_a_running_computer_applies_it_in_the_background() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     let gate = test_gate();
-    let machine = machine_of(&id, true);
+    let configuration = computer_of(&id, true);
     // The choice is stored and the state is pending before anything ran.
-    let held = gate.vm(&id, "dev", "Another operation").unwrap();
-    let handle = apply_approval_in(gate, guest.clone(), &paths, &machine, Approval::Auto, true)
-        .unwrap()
-        .unwrap();
+    let held = gate.computer(&id, "dev", "Another operation").unwrap();
+    let handle = apply_approval_in(
+        gate,
+        guest.clone(),
+        &paths,
+        &configuration,
+        Approval::Auto,
+        true,
+    )
+    .unwrap()
+    .unwrap();
     let state = answer_of(&paths, &id, true);
     assert_eq!(
         (state["approval"].as_str(), state["approvalApply"].as_str()),
@@ -910,25 +938,30 @@ fn changing_the_approval_of_a_running_vm_applies_it_in_the_background() {
         (Some("applied"), Some("auto"))
     );
     // Choosing what is already applied starts nothing.
-    assert!(
-        apply_approval_in(gate, guest.clone(), &paths, &machine, Approval::Auto, true)
-            .unwrap()
-            .is_none()
-    );
+    assert!(apply_approval_in(
+        gate,
+        guest.clone(),
+        &paths,
+        &configuration,
+        Approval::Auto,
+        true
+    )
+    .unwrap()
+    .is_none());
     assert_eq!(guest.runs.lock().unwrap().len(), 1);
 }
 
 #[test]
-fn changing_the_approval_of_a_stopped_vm_only_saves_it_for_the_next_boot() {
+fn changing_the_approval_of_a_stopped_computer_only_saves_it_for_the_next_boot() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
+    let id = computer();
     let guest = Guest::new(&id);
     assert!(apply_approval_in(
         test_gate(),
         guest.clone(),
         &paths,
-        &machine_of(&id, true),
+        &computer_of(&id, true),
         Approval::Auto,
         false
     )
@@ -996,11 +1029,11 @@ fn hanging(id: &str) -> (Arc<Hanging>, std::sync::mpsc::Receiver<()>) {
 }
 
 #[test]
-fn a_stop_of_the_vm_cancels_a_running_apply_promptly_and_the_result_is_kept() {
+fn a_stop_of_the_computer_cancels_a_running_apply_promptly_and_the_result_is_kept() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
@@ -1008,20 +1041,20 @@ fn a_stop_of_the_vm_cancels_a_running_apply_promptly_and_the_result_is_kept() {
     entered
         .recv_timeout(Duration::from_secs(10))
         .expect("the helper reached the guest");
-    // Another VM's stop does not touch it.
+    // Another computer's stop does not touch it.
     drop(
         gate.kind(runtime::operation_gate::OperationKind::Lifecycle)
-            .vm(&vm(), "other", "Stopping other")
+            .computer(&computer(), "other", "Stopping other")
             .unwrap(),
     );
     std::thread::sleep(Duration::from_millis(200));
     assert!(!handle.is_finished());
-    // This VM's stop queues behind the apply's turn and must get it long before the guest
+    // This computer's stop queues behind the apply's turn and must get it long before the guest
     // answers.
     let started = std::time::Instant::now();
     let stop = gate
         .kind(runtime::operation_gate::OperationKind::Lifecycle)
-        .vm(&id, "dev", "Stopping dev")
+        .computer(&id, "dev", "Stopping dev")
         .unwrap();
     assert!(
         started.elapsed() < Duration::from_secs(5),
@@ -1054,22 +1087,22 @@ fn a_stop_of_the_vm_cancels_a_running_apply_promptly_and_the_result_is_kept() {
 }
 
 #[test]
-fn quit_cancels_a_running_apply_whatever_vm_it_names() {
+fn quit_cancels_a_running_apply_whatever_computer_it_names() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
     let handle = apply_with(gate, guest, &paths, "dev", Trigger::Boot).unwrap();
     entered
         .recv_timeout(Duration::from_secs(10))
         .expect("the helper reached the guest");
-    // Quit is computer-wide (no VM id) and waits for every running operation.
+    // Quit is device-wide (no computer id) and waits for every running operation.
     let started = std::time::Instant::now();
     let quit = gate
         .kind(runtime::operation_gate::OperationKind::Shutdown)
-        .computer("Quitting")
+        .device("Quitting")
         .unwrap();
     assert!(
         started.elapsed() < Duration::from_secs(5),
@@ -1086,24 +1119,24 @@ fn quit_cancels_a_running_apply_whatever_vm_it_names() {
 }
 
 #[test]
-fn a_computer_wide_operation_that_is_not_a_shutdown_does_not_cancel_an_apply() {
+fn a_device_wide_operation_that_is_not_a_shutdown_does_not_cancel_an_apply() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
     let handle = apply_with(gate, guest, &paths, "dev", Trigger::Boot).unwrap();
     entered.recv_timeout(Duration::from_secs(10)).unwrap();
     let waiting = std::thread::spawn(move || {
-        drop(gate.computer("Creating a sandbox").unwrap());
+        drop(gate.device("Creating a computer").unwrap());
     });
     std::thread::sleep(Duration::from_millis(300));
     assert!(!handle.is_finished(), "unrelated work waits for the apply");
-    // End it through the VM's stop.
+    // End it through the computer's stop.
     drop(
         gate.kind(runtime::operation_gate::OperationKind::Lifecycle)
-            .vm(&id, "dev", "Stopping dev")
+            .computer(&id, "dev", "Stopping dev")
             .unwrap(),
     );
     handle.join().unwrap();
@@ -1114,8 +1147,8 @@ fn a_computer_wide_operation_that_is_not_a_shutdown_does_not_cancel_an_apply() {
 fn an_apply_that_times_out_is_recorded_as_failed_and_retried_at_the_next_boot() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
     guest.plan([Reply::TimedOut]);
@@ -1182,10 +1215,10 @@ fn failed_partial_and_unreachable_results_are_kept_and_reported() {
             "writable",
         ),
     ] {
-        let id = vm();
+        let id = computer();
         let directory = tempfile::tempdir().unwrap();
         let paths = self::paths(&directory);
-        write_machines_of(&paths, &id);
+        write_computers_of(&paths, &id);
         let guest = Guest::new(&id);
         // Applied ask earlier; the user then chose auto and the apply ended as planned.
         boot_of(gate, &guest, &paths).unwrap().join().unwrap();
@@ -1194,7 +1227,7 @@ fn failed_partial_and_unreachable_results_are_kept_and_reported() {
             gate,
             guest.clone(),
             &paths,
-            &machine_of(&id, true),
+            &computer_of(&id, true),
             Approval::Auto,
             true,
         )
@@ -1227,22 +1260,36 @@ fn failed_partial_and_unreachable_results_are_kept_and_reported() {
 fn a_partial_result_is_never_taken_for_applied_even_after_the_choice_changes_back() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     let gate = test_gate();
     boot_of(gate, &guest, &paths).unwrap().join().unwrap();
     guest.plan([Reply::Report("partial", Some("setup-partial"))]);
-    let machine = machine_of(&id, true);
-    apply_approval_in(gate, guest.clone(), &paths, &machine, Approval::Auto, true)
-        .unwrap()
-        .unwrap()
-        .join()
-        .unwrap();
+    let configuration = computer_of(&id, true);
+    apply_approval_in(
+        gate,
+        guest.clone(),
+        &paths,
+        &configuration,
+        Approval::Auto,
+        true,
+    )
+    .unwrap()
+    .unwrap()
+    .join()
+    .unwrap();
     // Back to the mode that was applied before the partial run: the last attempt (auto,
     // partial) does not make `ask` current, so it is applied again.
-    let handle =
-        apply_approval_in(gate, guest.clone(), &paths, &machine, Approval::Ask, true).unwrap();
+    let handle = apply_approval_in(
+        gate,
+        guest.clone(),
+        &paths,
+        &configuration,
+        Approval::Ask,
+        true,
+    )
+    .unwrap();
     handle.expect("ask must be applied again").join().unwrap();
     assert_eq!(guest.modes(), ["ask", "auto", "ask"]);
     assert_eq!(answer_of(&paths, &id, true)["approvalApply"], "applied");
@@ -1252,8 +1299,8 @@ fn a_partial_result_is_never_taken_for_applied_even_after_the_choice_changes_bac
 fn an_app_that_is_not_there_yet_is_not_a_result_and_the_apply_stays_pending() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([Reply::Report("failed", Some("app-missing"))]);
     boot_of(test_gate(), &guest, &paths)
@@ -1291,7 +1338,7 @@ fn a_report_the_host_cannot_read_is_a_failed_attempt_not_a_crash() {
 fn setup_reruns_with_force_applies_the_chosen_mode_and_returns_the_guest_status() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
+    let id = computer();
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let recorder = Recorder::new("noise\n{\"state\":\"ready\",\"apply\":{\"approval\":\"auto\",\"outcome\":\"applied\",\"reason\":null}}\n");
     let idle = || Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1299,7 +1346,7 @@ fn setup_reruns_with_force_applies_the_chosen_mode_and_returns_the_guest_status(
         test_gate(),
         &recorder,
         &paths,
-        &machine_of(&id, true),
+        &computer_of(&id, true),
         true,
         idle(),
     )
@@ -1312,7 +1359,7 @@ fn setup_reruns_with_force_applies_the_chosen_mode_and_returns_the_guest_status(
         test_gate(),
         &broken,
         &paths,
-        &machine_of(&id, true),
+        &computer_of(&id, true),
         false,
         idle()
     )
@@ -1329,8 +1376,8 @@ fn setup_reruns_with_force_applies_the_chosen_mode_and_returns_the_guest_status(
 fn app_start_applies_where_the_last_attempt_is_missing_failed_or_for_another_mode() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     let runner: SharedRunner = guest.clone();
     let names = ["dev".to_owned()];
@@ -1369,8 +1416,8 @@ fn app_start_applies_where_the_last_attempt_is_missing_failed_or_for_another_mod
         set_approval(&paths, &id, Approval::Auto).unwrap();
         assert_eq!(reconcile(gate), 1);
     }
-    // A VM that is not built in is left alone.
-    write_machines(&paths, false);
+    // A computer that is not built in is left alone.
+    write_computers(&paths, false);
     assert_eq!(reconcile(gate), 0);
 }
 
@@ -1391,16 +1438,16 @@ fn the_initial_mode_comes_from_the_app_setting_and_only_true_means_auto() {
 }
 
 #[test]
-fn a_new_sandbox_starts_with_the_initial_mode_and_no_attempt() {
+fn a_new_computer_starts_with_the_initial_mode_and_no_attempt() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
+    let id = computer();
     start_with(&paths, &id, Approval::Auto);
     let fresh = settings(&paths, &id);
     assert_eq!(fresh.approval, Approval::Auto);
     assert_eq!((fresh.applied, fresh.last), (None, None));
     let guest = Guest::new(&id);
-    write_machines_of(&paths, &id);
+    write_computers_of(&paths, &id);
     boot_of(test_gate(), &guest, &paths)
         .unwrap()
         .join()
@@ -1409,10 +1456,10 @@ fn a_new_sandbox_starts_with_the_initial_mode_and_no_attempt() {
 }
 
 #[test]
-fn an_import_takes_the_local_initial_mode_whatever_the_archive_or_an_earlier_vm_had() {
+fn an_import_takes_the_local_initial_mode_whatever_the_archive_or_an_earlier_computer_had() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
+    let id = computer();
     let import = |mode| {
         with_initial_approval(mode, || {
             runtime::checkpoints::import_pending_restore(
@@ -1426,7 +1473,7 @@ fn an_import_takes_the_local_initial_mode_whatever_the_archive_or_an_earlier_vm_
     };
     import(Approval::Auto);
     assert_eq!(settings(&paths, &id).approval, Approval::Auto);
-    // An earlier VM of this id that had auto does not carry it over when the setting is off.
+    // An earlier computer of this id that had auto does not carry it over when the setting is off.
     set_approval(&paths, &id, Approval::Auto).unwrap();
     import(Approval::Ask);
     let imported = settings(&paths, &id);
@@ -1438,9 +1485,9 @@ fn an_import_takes_the_local_initial_mode_whatever_the_archive_or_an_earlier_vm_
 fn the_boot_applies_what_an_imported_or_forked_disk_does_not_have() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
-    // A VM of this id had auto applied here; importing it again starts from ask.
+    let id = computer();
+    write_computers_of(&paths, &id);
+    // A computer of this id had auto applied here; importing it again starts from ask.
     set_approval(&paths, &id, Approval::Auto).unwrap();
     record_attempt(&paths, &id, attempt(Approval::Auto, Outcome::Applied, None));
     runtime::checkpoints::import_pending_restore(
@@ -1465,10 +1512,10 @@ fn the_boot_applies_what_an_imported_or_forked_disk_does_not_have() {
     );
     assert_eq!(settings(&paths, &id).applied, Some(Approval::Ask));
     // A fork inherits its source's choice and applies it at its own first boot.
-    let child = vm();
+    let child = computer();
     set_approval(&paths, &id, Approval::Auto).unwrap();
     inherit_settings(&paths, &id, &child).unwrap();
-    write_machines_of(&paths, &child);
+    write_computers_of(&paths, &child);
     let guest = Guest::new(&child);
     boot_of(test_gate(), &guest, &paths)
         .unwrap()
@@ -1507,7 +1554,7 @@ fn app_status_maps_to_the_computer_use_state() {
     let map = |app: Option<&Status>| {
         state(Inputs {
             app,
-            vm_running: true,
+            computer_running: true,
             guest: None,
             settings: &settings,
             pending: false,
@@ -1549,7 +1596,7 @@ fn app_status_maps_to_the_computer_use_state() {
     );
     assert_eq!(final_failure["cause"], "app-download");
     assert!(failed.get("cause").is_none());
-    // Ready app, running VM, no helper yet.
+    // Ready app, running computer, no helper yet.
     let waiting = map(Some(&ready()));
     assert_eq!(waiting["state"], "unavailable");
     assert!(waiting["reason"]
@@ -1591,7 +1638,7 @@ fn the_confirmed_approval_is_reported_whatever_the_download_state() {
         for running in [false, true] {
             let value = state(Inputs {
                 app: app.as_ref(),
-                vm_running: running,
+                computer_running: running,
                 guest: None,
                 settings: &settings,
                 pending: false,
@@ -1616,7 +1663,7 @@ fn guest_status_maps_to_the_contract_fields() {
     let map = |guest: Value| {
         computer_use_state(&Inputs {
             app: Some(&app),
-            vm_running: true,
+            computer_running: true,
             guest: Some(&guest),
             settings: &settings,
             pending: false,
@@ -1680,7 +1727,7 @@ fn what_the_guest_reports_about_approval_never_changes_what_the_host_reports() {
     guest["approvalConfirmed"] = json!(true);
     let value = state(Inputs {
         app: Some(&app),
-        vm_running: true,
+        computer_running: true,
         guest: Some(&guest),
         settings: &settings,
         pending: false,
@@ -1765,12 +1812,12 @@ fn every_failure_code_has_a_message_and_mount_problems_are_explained() {
         assert!(!approval_reason_text(code).is_empty(), "{code}");
         assert!(!approval_reason_text(code).contains(code), "{code}");
     }
-    assert!(reason_text("mount-missing").contains("new sandbox"));
+    assert!(reason_text("mount-missing").contains("new computer"));
     assert!(!reason_text("anything-else").contains("anything-else"));
 }
 
 #[test]
-fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
+fn a_stopped_computer_keeps_its_approval_and_last_known_versions() {
     let app = ready();
     let settings = Settings {
         approval: Approval::Auto,
@@ -1787,7 +1834,7 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
     };
     let (value, remembered) = computer_use_state(&Inputs {
         app: Some(&app),
-        vm_running: false,
+        computer_running: false,
         guest: None,
         settings: &settings,
         pending: false,
@@ -1803,7 +1850,7 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
     // Nothing known yet: unavailable, with the approval still shown.
     let (fresh, _) = computer_use_state(&Inputs {
         app: Some(&app),
-        vm_running: false,
+        computer_running: false,
         guest: None,
         settings: &Settings {
             approval: Approval::Auto,
@@ -1814,13 +1861,13 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
     });
     assert_eq!(fresh["state"], "unavailable");
     assert_eq!(fresh["approval"], "auto");
-    // App problems still win for a stopped VM.
+    // App problems still win for a stopped computer.
     let (download, _) = computer_use_state(&Inputs {
         app: Some(&Status::Failed {
             reason: "The checksum did not match.".into(),
             retryable: false,
         }),
-        vm_running: false,
+        computer_running: false,
         guest: None,
         settings: &settings,
         pending: false,
@@ -1831,32 +1878,32 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
 }
 
 #[test]
-fn desktop_state_is_reported_only_for_built_in_vms() {
+fn desktop_state_is_reported_only_for_built_in_computers() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    assert!(desktop_state(&paths, &machine(false), true, None).is_none());
-    let value = desktop_state(&paths, &machine(true), false, None).unwrap();
+    assert!(desktop_state(&paths, &computer_configuration(false), true, None).is_none());
+    let value = desktop_state(&paths, &computer_configuration(true), false, None).unwrap();
     assert_eq!(value["approval"], "ask");
     assert!(value["state"].is_string());
 }
 
 #[test]
-fn a_ready_report_is_remembered_for_the_stopped_vm() {
+fn a_ready_report_is_remembered_for_the_stopped_computer() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
     let app = ready();
     let report = guest_status("ready", None);
-    let current = settings(&paths, VM_ID);
+    let current = settings(&paths, COMPUTER_ID);
     let (_, remembered) = computer_use_state(&Inputs {
         app: Some(&app),
-        vm_running: true,
+        computer_running: true,
         guest: Some(&report),
         settings: &current,
         pending: false,
         retrying: false,
     });
-    remember(&paths, VM_ID, remembered.unwrap());
-    let known = settings(&paths, VM_ID).known.unwrap();
+    remember(&paths, COMPUTER_ID, remembered.unwrap());
+    let known = settings(&paths, COMPUTER_ID).known.unwrap();
     assert_eq!(known.lcu_version.as_deref(), Some("0.8.0"));
     assert_eq!(known.agents, Some(vec!["claude-code".to_owned()]));
 }
@@ -1867,7 +1914,7 @@ fn a_ready_report_is_remembered_for_the_stopped_vm() {
 fn status_reads_never_rewrite_the_policy() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
+    let id = computer();
     set_approval(&paths, &id, Approval::Auto).unwrap();
     record_attempt(
         &paths,
@@ -1879,7 +1926,7 @@ fn status_reads_never_rewrite_the_policy() {
     for running in [false, true] {
         for _ in 0..3 {
             let value =
-                desktop_state(&paths, &machine_of(&id, true), running, Some(&report)).unwrap();
+                desktop_state(&paths, &computer_of(&id, true), running, Some(&report)).unwrap();
             assert_eq!(value["approval"], "auto");
         }
     }
@@ -1913,10 +1960,10 @@ fn recording_an_attempt_never_loses_the_users_choice() {
                     } else {
                         Approval::Ask
                     };
-                    record_attempt(paths, VM_ID, attempt(mode, Outcome::Applied, None));
+                    record_attempt(paths, COMPUTER_ID, attempt(mode, Outcome::Applied, None));
                     remember(
                         paths,
-                        VM_ID,
+                        COMPUTER_ID,
                         Known {
                             state: "ready".into(),
                             app_version: Some(format!("{reader}-{round}")),
@@ -1934,23 +1981,23 @@ fn recording_an_attempt_never_loses_the_users_choice() {
                 } else {
                     Approval::Ask
                 };
-                set_approval(paths, VM_ID, approval).unwrap();
+                set_approval(paths, COMPUTER_ID, approval).unwrap();
             }
         });
     });
     // Round 149 was the last change: `ask`, whatever the attempts recorded meanwhile.
-    let policy = read_policy(&paths, VM_ID);
+    let policy = read_policy(&paths, COMPUTER_ID);
     assert_eq!(policy.approval, Approval::Ask);
     assert!(policy.last.is_some() && policy.applied.is_some());
-    assert!(settings(&paths, VM_ID).known.is_some());
+    assert!(settings(&paths, COMPUTER_ID).known.is_some());
 }
 
 #[test]
 fn an_unreadable_policy_is_unknown_not_ask_until_an_apply_replaces_it_with_the_default() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     // No policy yet: the default ask is the real choice.
     assert!(!settings(&paths, &id).unreadable);
     let value = answer_of(&paths, &id, false);
@@ -1981,22 +2028,25 @@ fn an_unreadable_policy_is_unknown_not_ask_until_an_apply_replaces_it_with_the_d
 
 // ------------------------------------------------------------- identity
 
-/// A VM that Silo replaced (deleted and created again under the same name) while the
+/// A computer that Silo replaced (deleted and created again under the same name) while the
 /// apply waited for its turn is never touched; the replacement is recognised by its
 /// runtime instance, not by its name.
 #[test]
-fn a_vm_replaced_after_inspection_is_not_applied_once_the_apply_gets_its_turn() {
+fn a_computer_replaced_after_inspection_is_not_applied_once_the_apply_gets_its_turn() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     let gate = test_gate();
-    // A delete-and-create holds the VM's turn when the apply is scheduled.
-    let replacing = gate.vm(&id, "dev", "Recreating dev").unwrap();
+    // A delete-and-create holds the computer's turn when the apply is scheduled.
+    let replacing = gate.computer(&id, "dev", "Recreating dev").unwrap();
     let handle = boot_of(gate, &guest, &paths).unwrap();
     std::thread::sleep(Duration::from_millis(300));
-    assert!(!handle.is_finished(), "the apply waits for the VM's turn");
+    assert!(
+        !handle.is_finished(),
+        "the apply waits for the computer's turn"
+    );
     assert!(guest.runs.lock().unwrap().is_empty());
     // The replacement is another runtime instance by the time the turn ends.
     guest.inspects.lock().unwrap().1 = Some(1);
@@ -2011,11 +2061,11 @@ fn a_vm_replaced_after_inspection_is_not_applied_once_the_apply_gets_its_turn() 
 }
 
 #[test]
-fn the_helper_runs_inside_the_vms_turn() {
+fn the_helper_runs_inside_the_computers_turn() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     let (entered, entered_receiver) = std::sync::mpsc::channel();
     let release = Arc::new(std::sync::Barrier::new(2));
@@ -2025,21 +2075,21 @@ fn the_helper_runs_inside_the_vms_turn() {
     entered_receiver
         .recv_timeout(Duration::from_secs(10))
         .expect("the helper reached the guest");
-    // Other work on the VM cannot start while the helper is in the guest.
+    // Other work on the computer cannot start while the helper is in the guest.
     assert_eq!(
-        gate.try_vm(&id, "dev", "Checkpointing dev").err(),
+        gate.try_computer(&id, "dev", "Checkpointing dev").err(),
         Some(runtime::operation_gate::GateError::Busy)
     );
     release.wait();
     handle.join().unwrap();
-    assert!(gate.try_vm(&id, "dev", "Checkpointing dev").is_ok());
+    assert!(gate.try_computer(&id, "dev", "Checkpointing dev").is_ok());
 }
 
 #[test]
 fn an_identity_that_cannot_be_established_at_boot_is_never_applied_later() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    write_machines(&paths, true);
+    write_computers(&paths, true);
     let running = |config: Value, instance: Option<&str>| {
         let mut value = json!({"name":"dev","status":"Running","config":config});
         if let Some(instance) = instance {
@@ -2073,13 +2123,13 @@ fn an_identity_that_cannot_be_established_at_boot_is_never_applied_later() {
             self.1.run(paths, args, timeout)
         }
     }
-    let labelled = json!({"labels":{"silo.machine-id":VM_ID}});
+    let labelled = json!({"labels":{"silo.machine-id":COMPUTER_ID}});
     let good = running(labelled.clone(), Some("one")).to_string();
     let failing = || None;
     let cases = [
         // The first inspection failed; a later one would show a running instance.
         vec![failing(), Some(good.clone())],
-        // No instance id, an unlabelled sandbox, and another VM's label.
+        // No instance id, an unlabelled computer, and another computer's label.
         vec![
             Some(running(labelled.clone(), None).to_string()),
             Some(good.clone()),
@@ -2104,7 +2154,7 @@ fn an_identity_that_cannot_be_established_at_boot_is_never_applied_later() {
         assert!(apply_with(test_gate(), runner.clone(), &paths, "dev", Trigger::Boot).is_none());
         assert!(runner.1.calls.lock().unwrap().is_empty());
     }
-    // Another VM with the same name inside the turn: the label differs, nothing runs.
+    // Another computer with the same name inside the turn: the label differs, nothing runs.
     let runner = Arc::new(Sequence(
         StdMutex::new(vec![
             Some(good.clone()),
@@ -2125,11 +2175,11 @@ fn an_identity_that_cannot_be_established_at_boot_is_never_applied_later() {
     assert!(runner.1.calls.lock().unwrap().is_empty());
 }
 
-/// Inspect output of a running built-in VM. `instance` is the reported `runtime_instance_id`;
+/// Inspect output of a running built-in computer. `instance` is the reported `runtime_instance_id`;
 /// `None` leaves the entry out, as a runtime without Silo's patch does.
 fn inspected_instance(instance: Option<&str>) -> String {
     let mut value = json!({"name":"dev","status":"Running",
-        "config":{"labels":{"silo.machine-id":VM_ID}}});
+        "config":{"labels":{"silo.machine-id":COMPUTER_ID}}});
     if let Some(instance) = instance {
         value["runtime_instance_id"] = json!(instance);
     }
@@ -2142,7 +2192,7 @@ fn inspected_instance(instance: Option<&str>) -> String {
 fn a_restart_between_the_boot_and_the_launch_is_refused() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    write_machines(&paths, true);
+    write_computers(&paths, true);
     struct Sequence(StdMutex<Vec<&'static str>>, Recorder);
     impl RuntimeRunner for Sequence {
         fn run(
@@ -2190,7 +2240,7 @@ fn a_restart_between_the_boot_and_the_launch_is_refused() {
 fn a_runtime_that_reports_no_instance_id_never_runs_the_helper() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    write_machines(&paths, true);
+    write_computers(&paths, true);
     struct Unpatched(Recorder);
     impl RuntimeRunner for Unpatched {
         fn run(
@@ -2214,10 +2264,10 @@ fn a_runtime_that_reports_no_instance_id_never_runs_the_helper() {
 }
 
 #[test]
-fn a_stopped_vm_is_left_alone() {
+fn a_stopped_computer_is_left_alone() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    write_machines(&paths, true);
+    write_computers(&paths, true);
     struct Stopped;
     impl RuntimeRunner for Stopped {
         fn run(
@@ -2247,11 +2297,11 @@ fn the_shared_folder_is_prepared_again_when_the_start_up_attempt_failed() {
     fs::write(&blocker, b"x").unwrap();
     let root = blocker.join("chatgpt");
     assert!(register_published(&root).is_err());
-    assert!(mount_args(&machine(true)).is_err());
+    assert!(mount_args(&computer_configuration(true)).is_err());
     // The cause goes away; neither a restart nor a preparation attempt has run yet:
-    // the next VM that needs the folder prepares it itself.
+    // the next computer that needs the folder prepares it itself.
     fs::remove_file(&blocker).unwrap();
-    let args = mount_args(&machine(true)).unwrap();
+    let args = mount_args(&computer_configuration(true)).unwrap();
     let dir = published_dir().expect("the folder is registered");
     assert!(
         dir.ends_with("chatgpt/published") && dir.is_dir(),
@@ -2277,28 +2327,42 @@ fn the_shared_folder_is_prepared_again_when_the_start_up_attempt_failed() {
 fn choosing_ask_while_auto_applies_converges_even_after_a_successful_ask() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     let gate = test_gate();
     // Ask is applied successfully first.
     boot_of(gate, &guest, &paths).unwrap().join().unwrap();
     assert_eq!(settings(&paths, &id).applied, Some(Approval::Ask));
-    let machine = machine_of(&id, true);
+    let configuration = computer_of(&id, true);
     let (entered, entered_receiver) = std::sync::mpsc::channel();
     let release = Arc::new(std::sync::Barrier::new(2));
     *guest.stall.lock().unwrap() = Some((entered, release.clone()));
-    let auto = apply_approval_in(gate, guest.clone(), &paths, &machine, Approval::Auto, true)
-        .unwrap()
-        .unwrap();
+    let auto = apply_approval_in(
+        gate,
+        guest.clone(),
+        &paths,
+        &configuration,
+        Approval::Auto,
+        true,
+    )
+    .unwrap()
+    .unwrap();
     entered_receiver
         .recv_timeout(Duration::from_secs(10))
         .unwrap();
     // Back to ask while auto is still running. The ask result from before must not leave
     // the choice pending: whether a follow-up is scheduled or not, the running turn
     // converges on the current choice.
-    let back =
-        apply_approval_in(gate, guest.clone(), &paths, &machine, Approval::Ask, true).unwrap();
+    let back = apply_approval_in(
+        gate,
+        guest.clone(),
+        &paths,
+        &configuration,
+        Approval::Ask,
+        true,
+    )
+    .unwrap();
     release.wait();
     auto.join().unwrap();
     if let Some(back) = back {
@@ -2319,21 +2383,24 @@ fn choosing_ask_while_auto_applies_converges_even_after_a_successful_ask() {
 }
 
 #[test]
-fn a_delete_of_the_vm_cancels_a_running_apply_and_another_vms_delete_does_not() {
+fn a_delete_of_the_computer_cancels_a_running_apply_and_another_computers_delete_does_not() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
     let handle = apply_with(gate, guest, &paths, "dev", Trigger::Boot).unwrap();
     entered.recv_timeout(Duration::from_secs(10)).unwrap();
-    let other = vm();
+    let other = computer();
     let queued = std::thread::spawn(move || {
         drop(gate.removing(&[other], "Deleting other").unwrap());
     });
     std::thread::sleep(Duration::from_millis(300));
-    assert!(!handle.is_finished(), "another VM's delete leaves it alone");
+    assert!(
+        !handle.is_finished(),
+        "another computer's delete leaves it alone"
+    );
     let started = std::time::Instant::now();
     drop(gate.removing(&[id.clone()], "Deleting dev").unwrap());
     assert!(
@@ -2349,7 +2416,7 @@ fn a_delete_of_the_vm_cancels_a_running_apply_and_another_vms_delete_does_not() 
     );
 }
 
-/// Runs the manual setup on its own thread inside the VM's cancellable turn, like the
+/// Runs the manual setup on its own thread inside the computer's cancellable turn, like the
 /// desktop action does.
 fn manual_setup(
     gate: &'static runtime::operation_gate::OperationGate,
@@ -2358,13 +2425,13 @@ fn manual_setup(
     id: String,
 ) -> std::thread::JoinHandle<Result<Value, RuntimeError>> {
     std::thread::spawn(move || {
-        let turn = gate.vm(&id, "dev", "Updating dev desktop").unwrap();
+        let turn = gate.computer(&id, "dev", "Updating dev desktop").unwrap();
         turn.allow_cancel();
         setup_with(
             gate,
             guest.as_ref(),
             &paths,
-            &machine_of(&id, true),
+            &computer_of(&id, true),
             true,
             turn.cancel_token(),
         )
@@ -2372,12 +2439,12 @@ fn manual_setup(
 }
 
 #[test]
-fn manual_setup_is_cancelled_by_a_stop_of_the_vm_and_by_quit() {
+fn manual_setup_is_cancelled_by_a_stop_of_the_computer_and_by_quit() {
     for shutdown in [false, true] {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let id = vm();
-        write_machines_of(&paths, &id);
+        let id = computer();
+        write_computers_of(&paths, &id);
         let (guest, entered) = hanging(&id);
         let gate = test_gate();
         let handle = manual_setup(gate, guest, paths.clone(), id.clone());
@@ -2385,11 +2452,11 @@ fn manual_setup_is_cancelled_by_a_stop_of_the_vm_and_by_quit() {
         let started = std::time::Instant::now();
         let waiting = if shutdown {
             gate.kind(runtime::operation_gate::OperationKind::Shutdown)
-                .computer("Quitting")
+                .device("Quitting")
                 .unwrap()
         } else {
             gate.kind(runtime::operation_gate::OperationKind::Lifecycle)
-                .vm(&id, "dev", "Stopping dev")
+                .computer(&id, "dev", "Stopping dev")
                 .unwrap()
         };
         assert!(
@@ -2413,8 +2480,8 @@ fn manual_setup_is_cancelled_by_a_stop_of_the_vm_and_by_quit() {
 fn an_attempt_that_never_ended_is_applied_again_even_when_the_last_result_matches() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
     let gate = test_gate();
@@ -2432,13 +2499,13 @@ fn an_attempt_that_never_ended_is_applied_again_even_when_the_last_result_matche
             panic!("the app was killed");
         }
     }
-    let machine = machine_of(&id, true);
+    let configuration = computer_of(&id, true);
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _ = setup_with(
             gate,
             &Crashing,
             &paths,
-            &machine,
+            &configuration,
             true,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
@@ -2467,8 +2534,8 @@ fn an_attempt_that_never_ended_is_applied_again_even_when_the_last_result_matche
 fn a_run_that_was_not_an_attempt_leaves_the_unfinished_marker_as_it_was() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([Reply::Report("failed", Some("app-missing"))]);
     boot_of(test_gate(), &guest, &paths)
@@ -2480,11 +2547,11 @@ fn a_run_that_was_not_an_attempt_leaves_the_unfinished_marker_as_it_was() {
 }
 
 #[test]
-fn the_runtimes_exec_timeout_is_a_timed_out_attempt_not_an_unreachable_sandbox() {
+fn the_runtimes_exec_timeout_is_a_timed_out_attempt_not_an_unreachable_computer() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
     // MicroSandbox's `msb exec --timeout 900s` ends this way (drive_stream in exec.rs).
@@ -2501,7 +2568,7 @@ fn the_runtimes_exec_timeout_is_a_timed_out_attempt_not_an_unreachable_sandbox()
     // Other failures of the command stay unreachable.
     for detail in [
         "exec session ended without exit event",
-        "the sandbox timed out after 5s",
+        "the computer timed out after 5s",
     ] {
         guest.plan([Reply::Failed(detail)]);
         boot_of(test_gate(), &guest, &paths)
@@ -2518,16 +2585,16 @@ fn the_runtimes_exec_timeout_is_a_timed_out_attempt_not_an_unreachable_sandbox()
 
 #[test]
 fn only_a_stop_or_restart_key_preempts_the_helper() {
-    let id = vm();
+    let id = computer();
     for (key, preempts) in [
-        (format!("vm:{id}:stop"), true),
-        (format!("vm:{id}:restart"), true),
-        (format!("vm:{id}:start"), false),
-        (format!("vm:{id}:dismiss-error"), false),
-        (format!("vm:{id}:modify"), false),
-        // Another VM's key and a malformed one never name this VM's stop.
-        (format!("vm:{}:stop", vm()), false),
-        (format!("vm:{id}stop"), false),
+        (format!("computer:{id}:stop"), true),
+        (format!("computer:{id}:restart"), true),
+        (format!("computer:{id}:start"), false),
+        (format!("computer:{id}:dismiss-error"), false),
+        (format!("computer:{id}:modify"), false),
+        // Another computer's key and a malformed one never name this computer's stop.
+        (format!("computer:{}:stop", computer()), false),
+        (format!("computer:{id}stop"), false),
     ] {
         assert_eq!(lifecycle_key_preempts(Some(&key), &id), preempts, "{key}");
     }
@@ -2547,10 +2614,10 @@ fn queue_keyed(
         drop(
             gate.kind(runtime::operation_gate::OperationKind::Lifecycle)
                 .acquire(
-                    runtime::operation_gate::Scope::Vm { id: id.clone() },
+                    runtime::operation_gate::Scope::Computer { id: id.clone() },
                     Some("dev".into()),
                     &format!("{action} dev"),
-                    Some(format!("vm:{id}:{action}")),
+                    Some(format!("computer:{id}:{action}")),
                 )
                 .unwrap(),
         );
@@ -2576,8 +2643,8 @@ fn wait_until_queued(
 fn a_queued_start_or_dismiss_error_does_not_cancel_a_running_apply() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
@@ -2608,8 +2675,8 @@ fn a_queued_start_or_dismiss_error_does_not_cancel_a_running_apply() {
 fn a_queued_start_or_dismiss_error_does_not_cancel_manual_setup() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let (guest, entered) = hanging(&id);
     let gate = test_gate();
     let handle = manual_setup(gate, guest, paths.clone(), id.clone());
@@ -2636,7 +2703,7 @@ fn a_queued_start_or_dismiss_error_does_not_cancel_manual_setup() {
 fn an_attempt_whose_marker_cannot_be_saved_does_not_run_the_helper() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
+    let id = computer();
     set_approval(&paths, &id, Approval::Auto).unwrap();
     // The settings directory can no longer be written: a file takes its place.
     let settings_directory = directory_of(&paths);
@@ -2647,7 +2714,7 @@ fn an_attempt_whose_marker_cannot_be_saved_does_not_run_the_helper() {
         test_gate(),
         &recorder,
         &paths,
-        &machine_of(&id, true),
+        &computer_of(&id, true),
         true,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
     );
@@ -2671,8 +2738,8 @@ fn an_attempt_whose_marker_cannot_be_saved_does_not_run_the_helper() {
 fn manual_setup_converges_on_a_choice_saved_while_its_helper_runs() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let guest = Guest::new(&id);
     let gate = test_gate();
@@ -2682,13 +2749,13 @@ fn manual_setup_converges_on_a_choice_saved_while_its_helper_runs() {
     let worker = {
         let (guest, paths, id) = (guest.clone(), paths.clone(), id.clone());
         std::thread::spawn(move || {
-            let turn = gate.vm(&id, "dev", "Updating dev desktop").unwrap();
+            let turn = gate.computer(&id, "dev", "Updating dev desktop").unwrap();
             turn.allow_cancel();
             setup_with(
                 gate,
                 guest.as_ref(),
                 &paths,
-                &machine_of(&id, true),
+                &computer_of(&id, true),
                 true,
                 turn.cancel_token(),
             )
@@ -2749,8 +2816,8 @@ fn wait_for(what: &str, condition: impl Fn() -> bool) {
 fn a_network_failure_is_retried_until_the_download_works() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE, UNAVAILABLE]);
     boot_with(&guest, &paths, SHORT).join().unwrap();
@@ -2770,8 +2837,8 @@ fn a_network_failure_is_retried_until_the_download_works() {
 fn retries_are_bounded_and_the_failure_then_stays() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, UNAVAILABLE]);
     boot_with(&guest, &paths, SHORT).join().unwrap();
@@ -2792,8 +2859,8 @@ fn retries_are_bounded_and_the_failure_then_stays() {
 fn other_failures_are_not_retried() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([
         Reply::Report("failed", Some("lcu-archive-mismatch")),
@@ -2807,8 +2874,8 @@ fn other_failures_are_not_retried() {
 fn a_waiting_retry_is_visible_and_can_be_cancelled() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE]);
     let handle = boot_with(&guest, &paths, LONG);
@@ -2819,7 +2886,7 @@ fn a_waiting_retry_is_visible_and_can_be_cancelled() {
     let guest_state = guest_status("failed", Some("lcu-archive-unavailable"));
     let inputs = |retrying| Inputs {
         app: Some(&app),
-        vm_running: true,
+        computer_running: true,
         guest: Some(&guest_state),
         settings: &settings_now,
         pending: false,
@@ -2849,8 +2916,8 @@ fn a_waiting_retry_is_visible_and_can_be_cancelled() {
 fn a_manual_setup_or_a_deletion_takes_over_from_a_waiting_retry() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE]);
     let handle = boot_with(&guest, &paths, LONG);
@@ -2859,7 +2926,7 @@ fn a_manual_setup_or_a_deletion_takes_over_from_a_waiting_retry() {
         test_gate(),
         guest.as_ref(),
         &paths,
-        &machine_of(&id, true),
+        &computer_of(&id, true),
         false,
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
     )
@@ -2876,7 +2943,7 @@ fn a_manual_setup_or_a_deletion_takes_over_from_a_waiting_retry() {
         Outcome::Applied
     );
 
-    // A deleted VM drops its retry too.
+    // A deleted computer drops its retry too.
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE]);
     let handle = boot_with(&guest, &paths, LONG);
@@ -2887,11 +2954,11 @@ fn a_manual_setup_or_a_deletion_takes_over_from_a_waiting_retry() {
 }
 
 #[test]
-fn a_retry_ends_when_the_vm_is_no_longer_the_same_running_instance() {
+fn a_retry_ends_when_the_computer_is_no_longer_the_same_running_instance() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    let id = vm();
-    write_machines_of(&paths, &id);
+    let id = computer();
+    write_computers_of(&paths, &id);
     let guest = Guest::new(&id);
     guest.plan([UNAVAILABLE]);
     // The instance is replaced after the checks of the first run (a restart).

@@ -140,17 +140,17 @@ pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result
     .unwrap_or(Ok(()))
 }
 
-/// Disable access is a global kill switch: no VM keeps the personal token while it is off.
+/// Disable access is a global kill switch: no computer keeps the personal token while it is off.
 fn keeps_token(d: &Document, name: &str, current: Option<&String>, attached: &String) -> bool {
     d.access_enabled
-        && d.workspaces
+        && d.computers
             .iter()
-            .any(|w| w["workspace"] == name && selected(w))
+            .any(|w| w["computer"] == name && selected(w))
         && current == Some(attached)
 }
 /// Remove token authority before a method switch, removal, failed validation or replacement.
 /// OAuth reconciliation never substitutes its own credential for a disconnected personal token.
-/// Every VM is detached even when another fails; failures are reported per workspace.
+/// Every computer is detached even when another fails; failures are reported per computer.
 pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowErrors) {
     let prefix = match path(app) {
         Ok(path) => format!("{}:", path.display()),
@@ -184,7 +184,7 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
                 .then(|| (name.to_owned(), key.clone()))
         })
         .collect();
-    each_workspace(
+    each_computer(
         stale
             .iter()
             .map(|(name, key)| (name.as_str(), key.as_str())),
@@ -194,9 +194,9 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
     // A surviving runtime may still hold a token from the preceding app process.
     if d.session != session() {
         let mut restored = Vec::new();
-        for w in d.workspaces.iter().filter(|w| selected(w)) {
-            let Some(name) = w["workspace"].as_str() else {
-                errors.record_all("Invalid sandbox policy.".into());
+        for w in d.computers.iter().filter(|w| selected(w)) {
+            let Some(name) = w["computer"].as_str() else {
+                errors.record_all("Invalid computer policy.".into());
                 continue;
             };
             match active_key(app, name) {
@@ -204,7 +204,7 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
                 Err(error) => errors.record(name, error),
             }
         }
-        each_workspace(
+        each_computer(
             restored
                 .iter()
                 .map(|(name, key)| (name.as_str(), key.as_str())),
@@ -228,10 +228,10 @@ fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String>
         d.personal_token_removing = removing;
     }
     let names: Vec<_> = d
-        .workspaces
+        .computers
         .iter()
         .filter(|w| selected(w))
-        .filter_map(|w| w["workspace"].as_str().map(str::to_owned))
+        .filter_map(|w| w["computer"].as_str().map(str::to_owned))
         .collect();
     for name in &names {
         if !d.access_pending.contains(name) {
@@ -248,7 +248,7 @@ fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String>
     result
 }
 
-/// A deleted sandbox no longer holds the token; forget its attachment.
+/// A deleted computer no longer holds the token; forget its attachment.
 pub(super) fn forget(key: &str) {
     applied()
         .lock()
@@ -290,10 +290,10 @@ pub(super) fn check(app: &tauri::AppHandle) {
             let _state = serialize(&STATE);
             if let Ok(mut d) = load(app) {
                 for name in d
-                    .workspaces
+                    .computers
                     .iter()
                     .filter(|w| selected(w))
-                    .filter_map(|w| w["workspace"].as_str())
+                    .filter_map(|w| w["computer"].as_str())
                 {
                     d.access_errors.insert(name.into(), message.clone());
                 }
@@ -529,11 +529,11 @@ mod tests {
         assert!(validate_method_change(None, &oauth, false, false).is_ok());
     }
     #[test]
-    fn disable_access_detaches_personal_token_vms() {
+    fn disable_access_detaches_personal_token_computers() {
         let fingerprint = "attached".to_string();
         let mut d = Document {
             access_enabled: true,
-            workspaces: vec![json!({"workspace":"dev","authenticationMethod":"token"})],
+            computers: vec![json!({"computer":"dev","authenticationMethod":"token"})],
             ..Document::default()
         };
         assert!(keeps_token(&d, "dev", Some(&fingerprint), &fingerprint));

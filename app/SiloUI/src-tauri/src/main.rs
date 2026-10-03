@@ -14,6 +14,7 @@ mod dependencies;
 mod desktop;
 mod desktop_proxy;
 mod desktop_viewer;
+mod device_identity;
 mod editor;
 mod files;
 mod github;
@@ -26,7 +27,6 @@ mod github_live_tests;
 mod github_permissions_tests;
 mod github_tokens;
 mod health_watch;
-mod host_identity;
 mod host_push;
 mod host_push_cache;
 mod host_push_operations;
@@ -99,7 +99,7 @@ fn main() {
     }
     // Plugins initialize while the app is built, in registration order, and the
     // setup hook runs only after that. A second launch therefore exits inside
-    // the single-instance plugin before any migration, remote-management or VM work.
+    // the single-instance plugin before any migration, Connections or computer work.
     let app = tauri::Builder::default()
         .plugin(single_instance::plugin())
         .on_page_load(|webview, _| {
@@ -144,7 +144,7 @@ fn main() {
             host_push_operations::start_repository_push,
             host_push_operations::repository_push_status,
             host_push::dismiss_repository_push,
-            files::list_workspace_directory,
+            files::list_computer_directory,
             network::read_network_state,
             network::save_network_port,
             network::remove_network_port,
@@ -178,29 +178,29 @@ fn main() {
             settings::complete_settings_flush,
             settings::cancel_settings_flush,
             settings::read_shutdown_state,
-            remote::remote_management_status,
-            remote::remote_authorize_ssh,
-            remote::remote_setup_ssh_key,
+            remote::connections_status,
+            remote::authorize_device,
+            remote::setup_device_key,
             remote_network::remote_network_state,
             remote_ssh_access::remote_ssh_access_state,
             remote_ssh_access::remote_save_ssh_access,
             remote_network::remote_save_network_port,
             remote_network::remote_remove_network_port,
             remote_network::remote_open_network_port,
-            remote::set_remote_management,
-            remote::remote_host_list,
-            remote::connect_remote_host,
-            remote::remove_remote_host,
-            remote::remote_host_snapshot,
-            remote::remote_workspace_action,
+            remote::set_connections_enabled,
+            remote::device_list,
+            remote::connect_device,
+            remote::remove_device,
+            remote::device_snapshot,
+            remote::remote_computer_action,
             remote::remote_checkpoint_action,
-            remote::remote_upsert_machine,
-            remote::remote_delete_machine,
+            remote::remote_upsert_computer,
+            remote::remote_delete_computer,
             system_integrations::read_system_integrations,
             system_integrations::set_login_item,
             system_integrations::request_notification_authorization,
             notifications::deliver_notice,
-            notifications::clear_sandbox_notices,
+            notifications::clear_computer_notices,
             system_integrations::open_integration_settings,
             system_integrations::show_integration_error,
             editor::read_editor_include_notice,
@@ -229,14 +229,14 @@ fn main() {
             runtime::read_application_state,
             runtime::storage::read_workspace_storage,
             runtime::storage::reclaim_workspace_storage,
-            runtime::runtime_logs::query_sandbox_logs,
-            log_export::export_workspace_logs,
+            runtime::runtime_logs::query_computer_logs,
+            log_export::export_computer_logs,
             log_export::cancel_log_export,
             runtime::read_application_shell,
-            runtime::read_machine_configuration,
-            runtime::configure_workspace_identities,
-            runtime::verify_workspace_identities,
-            runtime::workspace_action,
+            runtime::read_computer_configuration,
+            runtime::configure_computer_identities,
+            runtime::verify_computer_identities,
+            runtime::computer_action,
             runtime::checkpoints::create_checkpoint,
             runtime::checkpoints::fork_checkpoint,
             runtime::checkpoints::restore_checkpoint,
@@ -246,9 +246,9 @@ fn main() {
             runtime::read_setup_activity,
             runtime::read_operation_queue,
             runtime::cancel_operation,
-            runtime::retry_machine_configuration,
+            runtime::retry_computer_configuration,
             runtime::skip_computer_use_wait,
-            runtime::change_machine_configuration
+            runtime::change_computer_configuration
         ])
         .setup(|app| {
             // Tauri panics on a setup error. Explain the failure and exit instead.
@@ -340,7 +340,7 @@ fn main() {
 
 /// Setup stopped part-way, so some native state the UI relies on is missing. Stop
 /// the UI from using it, explain the failure, and exit without the Quit path: it
-/// would stop VMs that this process never managed.
+/// would stop computers that this process never managed.
 fn startup_failed(app: &tauri::AppHandle, error: &str) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
     let name = channel::current().product_name();

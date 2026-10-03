@@ -54,7 +54,7 @@ const REPOSITORY_PERMISSIONS: &[&str] = &[
 // Token permissions are explicit allowlists, each capped by what the App
 // installation grants (docs/SiloUI-REVIEW-DESIGN-NOTES.md, B-05). Admin and
 // secret-bearing scopes are never requested.
-const SANDBOX_READ: &[(&str, &str)] = &[
+const COMPUTER_READ: &[(&str, &str)] = &[
     ("metadata", "read"),
     ("contents", "read"),
     ("issues", "read"),
@@ -63,7 +63,7 @@ const SANDBOX_READ: &[(&str, &str)] = &[
     ("checks", "read"),
 ];
 /// "Allow GitHub changes" also lets agents change workflows and read CI runs.
-const SANDBOX_WRITE: &[(&str, &str)] = &[
+const COMPUTER_WRITE: &[(&str, &str)] = &[
     ("metadata", "read"),
     ("contents", "write"),
     ("issues", "write"),
@@ -128,14 +128,14 @@ pub(crate) fn execute(
 ) -> Result<Value, String> {
     execute_with(config, operation, body, github_http::send)
 }
-pub(crate) fn execute_for_workspace(
+pub(crate) fn execute_for_computer(
     config: &Configuration,
     operation: Operation,
     body: Value,
-    workspace: &str,
+    computer: &str,
 ) -> Result<Value, String> {
     execute_with(config, operation, body, |request| {
-        github_http::send_for_workspace(request, workspace)
+        github_http::send_for_computer(request, computer)
     })
 }
 fn execute_with(
@@ -263,9 +263,9 @@ fn execute_with(
             let allowlist = if host_push {
                 HOST_PUSH
             } else if changes {
-                SANDBOX_WRITE
+                COMPUTER_WRITE
             } else {
-                SANDBOX_READ
+                COMPUTER_READ
             };
             let ids: Vec<u64> = repositories.iter().map(id).collect::<Result<_, _>>()?;
             if ids.iter().collect::<std::collections::HashSet<_>>().len() != ids.len() {
@@ -301,7 +301,7 @@ fn execute_with(
                         .ok_or("GitHub returned invalid App permissions.")?;
                     for (name, level) in granted {
                         if !REPOSITORY_PERMISSIONS.contains(&name.as_str()) {
-                            return Err("The GitHub App has unsupported or non-repository permissions. Its administrator must remove them before Silo can grant sandbox access.".into());
+                            return Err("The GitHub App has unsupported or non-repository permissions. Its administrator must remove them before Silo can grant computer access.".into());
                         }
                         if !matches!(level.as_str(), Some("read" | "write" | "admin")) {
                             return Err("GitHub returned invalid App permissions.".into());
@@ -612,7 +612,7 @@ mod tests {
         "security_events",
     ];
     #[test]
-    fn sandbox_tokens_use_explicit_allowlists_and_never_admin_or_secret_scopes() {
+    fn computer_tokens_use_explicit_allowlists_and_never_admin_or_secret_scopes() {
         let read = scoped_permissions(input(), broad_installation()).unwrap();
         assert_eq!(
             read["permissions"],
