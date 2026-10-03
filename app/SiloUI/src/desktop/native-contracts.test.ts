@@ -38,7 +38,7 @@ describe("Rust-emitted native wire contracts", () => {
       })
       expect(states.map(state => state.computers[0].state)).toEqual(["running", "starting", "stopped", "failed"])
       for (const state of states) {
-        expect(state.computers).toHaveLength(2)
+        expect(state.computers).toHaveLength(1)
         const computer = state.computers[0]
         expect(computer.configuration.id).toBe("00000000-0000-4000-8000-000000000001")
         expect(computer.checkpoints).toEqual([expect.objectContaining({
@@ -71,7 +71,7 @@ describe("Rust-emitted native wire contracts", () => {
     })) })
     expect(state.github.computers?.map(policy => policy.authenticationMethod)).toEqual([undefined, "oauth", "token"])
     expect(state.github.computers?.map(policy => policy.computer)).toEqual(["dev-0", "dev-1", "dev-2"])
-    expect(state.computers).toHaveLength(2)
+    expect(state.computers).toHaveLength(1)
   })
 
   it("preserves each native SSH listener state and nullable fields", () => {

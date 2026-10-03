@@ -113,7 +113,7 @@ export function validateComputerResources(configuration: SetupComputerConfigurat
   if (!errors.cpus && !errors.maxCPUs && configuration.cpus > configuration.maxCPUs) errors.cpus = "CPU limit cannot exceed its ceiling."
   if (!errors.memoryGiB && !errors.maxMemoryGiB && configuration.memoryGiB > configuration.maxMemoryGiB) errors.memoryGiB = "Memory limit cannot exceed its ceiling."
   if (!errors.workspaceStorageGiB && !errors.runtimeStorageGiB && configuration.workspaceStorageGiB + configuration.runtimeStorageGiB > runtimeLimits.storageGiB) {
-    errors.workspaceStorageGiB = `Computer and runtime storage together can't exceed ${number(runtimeLimits.storageGiB)} GiB.`
+    errors.workspaceStorageGiB = `Workspace and runtime storage together can't exceed ${number(runtimeLimits.storageGiB)} GiB.`
   }
   return errors
 }
