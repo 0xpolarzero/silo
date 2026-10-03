@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { formatStorageBytes as formatBytes, type WorkspaceStorageState } from '../model/workspace-storage'
-import { HardDrive, Database, Folder, Gauge, RefreshCw, Sparkles, History, ChevronDown, Check, CircleAlert, Clock, Layers, type LucideIcon } from 'lucide-react'
+import { HardDrive, Database, Folder, Gauge, RefreshCw, History, ChevronDown, Check, CircleAlert, Layers, type LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { dismissOperationToast, errorMessage, showOperationFailure, showOperationProgress, showOperationSuccess } from '@/lib/operation-toast'
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip'
@@ -8,9 +8,15 @@ import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/comp
 type ReclaimEntry = WorkspaceStorageState['history'][number]
 
 function date(at: number) { return new Date(at * 1000).toLocaleString('en', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) }
+function ago(at: number) {
+  const seconds = Math.max(0, Date.now() / 1000 - at)
+  const units: [Intl.RelativeTimeFormatUnit, number][] = [['day', 86400], ['hour', 3600], ['minute', 60]]
+  const [unit, size] = units.find(([, size]) => seconds >= size) ?? ['minute', 60]
+  return seconds < 60 ? 'just now' : new Intl.RelativeTimeFormat('en', { numeric: 'auto' }).format(-Math.floor(seconds / size), unit)
+}
 const reclaimTriggerLabels = new Map([
   ['manual', 'Manual'], ['scheduled', 'Scheduled'], ['beforeStop', 'Before stop'],
-  ['afterStart', 'After start'], ['legacy', 'Previous reclaim'],
+  ['afterStart', 'After start'], ['legacy', 'Earlier free-up'],
 ])
 function trigger(value: string) { return reclaimTriggerLabels.get(value) ?? 'Automatic' }
 
@@ -62,7 +68,7 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
     setReclaiming(reclaimSpace)
     const toastId = `storage-reclaim:${workspaceId}`
     const noticeSandbox = sandboxName ? { id: workspaceId, name: sandboxName } : undefined
-    if (reclaimSpace) showOperationProgress(toastId, { title: 'Reclaiming unused space', step: 'Your files stay available' })
+    if (reclaimSpace) showOperationProgress(toastId, { title: 'Freeing up space', step: 'Your files stay available' })
     try {
       const value = await (reclaimSpace ? reclaim! : read)(workspaceId)
       const current = requests.current.generation === request
@@ -72,12 +78,12 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
       }
       // The operation's notification outlives the panel that started it.
       if (reclaimSpace) {
-        if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: value.lastError, retry: current ? () => void latestLoad.current?.(true) : undefined })
-        else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: `Freed ${where}.`, persist: true, noticeSandbox })
+        if (value.lastError) showOperationFailure(toastId, 'Could not free up space', { noticeSandbox, description: value.lastError, retry: current ? () => void latestLoad.current?.(true) : undefined })
+        else showOperationSuccess(toastId, `Freed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: `Released ${where}.`, persist: true, noticeSandbox })
       }
     } catch (cause) {
       const current = requests.current.generation === request
-      if (reclaimSpace) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: errorMessage(cause), retry: current ? () => void latestLoad.current?.(true) : undefined })
+      if (reclaimSpace) showOperationFailure(toastId, 'Could not free up space', { noticeSandbox, description: errorMessage(cause), retry: current ? () => void latestLoad.current?.(true) : undefined })
       if (current) {
         if (!reclaimSpace) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
         if (reclaimSpace) {
@@ -98,14 +104,14 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
   })
 
   const loading = !storage && busy
-  const guest = (value: number | null | undefined) => running && value != null ? formatBytes(value) : 'Unavailable'
+  const guest = (value: number | null | undefined) => running && value != null ? formatBytes(value) : '—'
   // A disk Silo could not find is unknown, never a misleading 0 B.
   const host = (value: number | null | undefined) => !storage ? '—' : value == null ? 'Unknown' : formatBytes(value)
   const metrics: StorageMetricProps[] = [
-    { icon: HardDrive, label: 'Workspace on disk', value: host(storage?.workspaceHostBytes), help: `Space the workspace disk takes ${where}. Deleted files keep using this space until it is reclaimed.` },
-    { icon: Database, label: 'Runtime on disk', value: host(storage?.runtimeHostBytes), help: 'The sandbox’s operating system and runtime files. Reclaiming space does not shrink it.' },
-    { icon: Folder, label: 'Workspace files', value: guest(storage?.workspaceUsedBytes), help: 'Used inside the sandbox, including filesystem overhead.' },
-    { icon: Gauge, label: 'Workspace capacity', value: guest(storage?.workspaceCapacityBytes), help: `The most the workspace can hold. This is a limit, not space used ${where}.` },
+    { icon: HardDrive, label: 'Workspace on disk', value: host(storage?.workspaceHostBytes), help: `Space the workspace disk takes ${where}. Deleted files keep using this space until it is freed up.` },
+    { icon: Database, label: 'Runtime on disk', value: host(storage?.runtimeHostBytes), help: 'The sandbox’s operating system and runtime files. Freeing up space does not shrink it.' },
+    { icon: Folder, label: 'Workspace files', value: guest(storage?.workspaceUsedBytes), help: running ? 'Used inside the sandbox, including filesystem overhead.' : 'Start the sandbox to measure usage.' },
+    { icon: Gauge, label: 'Workspace capacity', value: guest(storage?.workspaceCapacityBytes), help: running ? `The most the workspace can hold. This is a limit, not space used ${where}.` : 'Start the sandbox to measure capacity.' },
   ]
   const checkpointCount = storage?.checkpointCount ?? 0
   const checkpointMetric: StorageMetricProps = {
@@ -140,10 +146,11 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
 
       <ReclaimControls
         where={where}
+        latest={storage?.history[0]}
+        running={running}
         disabled={busy || disabled || !running || !storage || !reclaim}
         onReclaim={() => void load(true)}
       />
-      {!running && <p className="text-muted-foreground">Start the sandbox to measure workspace usage and reclaim unused space.</p>}
       {loading && <div role="status" aria-label="Reading storage" className="sr-only">Reading storage…</div>}
       {storage?.lastError && !reclaiming && <p className="flex items-start gap-2 text-destructive"><CircleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />{storage.lastError}</p>}
 
@@ -170,35 +177,39 @@ function StorageMetric({ icon: Icon, label, value, help, loading, className }: S
   </div>
 }
 
-function ReclaimControls({ where, disabled, onReclaim }: { where: string; disabled: boolean; onReclaim: () => void }) {
-  return <div className="flex flex-wrap items-start justify-between gap-3">
-    <div className="grid max-w-md gap-0.5 text-[11px] leading-4 text-muted-foreground">
-      <span className="flex items-center gap-1.5 font-medium text-foreground"><Clock aria-hidden="true" className="size-3" />Automatic reclamation enabled</span>
-      <span>Silo reclaims automatically after 7 days of running, or when the sandbox stops once 24 hours have passed. After a failed attempt it waits 24 hours before trying again.</span>
+function ReclaimControls({ where, latest, running, disabled, onReclaim }: { where: string; latest: ReclaimEntry | undefined; running: boolean; disabled: boolean; onReclaim: () => void }) {
+  const result = !latest ? 'Not freed yet'
+    : latest.error ? `Last attempt failed · ${ago(latest.at)}`
+    : latest.reclaimedBytes ? `Last freed ${formatBytes(latest.reclaimedBytes)} · ${ago(latest.at)}`
+    : `Nothing to free · ${ago(latest.at)}`
+  return <div className="flex items-center justify-between gap-3 rounded-md border border-border bg-background/40 p-3">
+    <div className="grid gap-0.5">
+      <span className="font-medium">Unused space</span>
+      <span title={`Releases unused blocks ${where}; files and capacity stay the same. Silo frees space automatically after 7 days of running, or when the sandbox stops once 24 hours have passed, and waits 24 hours after a failed attempt.`} className="text-[11px] leading-4 text-muted-foreground">Freed automatically</span>
     </div>
-    <div className="grid justify-items-end gap-0.5">
-      <Button variant="outline" size="xs" disabled={disabled} onClick={onReclaim}><Sparkles />Reclaim unused space</Button>
-      <span className="text-[11px] leading-4 text-muted-foreground">Releases unused blocks {where}. Files and capacity stay the same.</span>
-    </div>
+    <span className={`ml-auto text-right tabular-nums ${latest?.error ? 'text-destructive/80' : 'text-muted-foreground'}`}>{result}</span>
+    <span title={running ? undefined : 'Start the sandbox first.'}>
+      <Button variant="outline" size="xs" disabled={disabled} onClick={onReclaim}>Free up space</Button>
+    </span>
   </div>
 }
 
 function ReclaimHistory({ history, open, onOpenChange }: { history: ReclaimEntry[]; open: boolean; onOpenChange: (open: boolean) => void }) {
   const listId = useId()
   const latest = history[0]
-  const summary = latest ? `${latest.error ? 'Failed' : `${formatBytes(latest.reclaimedBytes ?? 0)} freed`} · ${date(latest.at)}` : 'No reclaims yet'
+  const summary = latest ? `${latest.error ? 'Failed' : `${formatBytes(latest.reclaimedBytes ?? 0)} freed`} · ${date(latest.at)}` : 'No history yet'
   return <div className="border-t border-border pt-2">
-    <button type="button" aria-label={`Reclaim history, ${history.length} ${history.length === 1 ? 'attempt' : 'attempts'}`} aria-expanded={open} aria-controls={listId} onClick={() => onOpenChange(!open)} className="flex w-full items-center gap-2 py-1 text-muted-foreground hover:text-foreground">
+    <button type="button" aria-label={`History, ${history.length} ${history.length === 1 ? 'attempt' : 'attempts'}`} aria-expanded={open} aria-controls={listId} onClick={() => onOpenChange(!open)} className="flex w-full items-center gap-2 py-1 text-muted-foreground hover:text-foreground">
       <History aria-hidden="true" className="size-3.5" />
-      <span>Reclaim history</span>
+      <span>History</span>
       <span className="rounded bg-muted px-1.5 text-[10px]">{history.length}</span>
       <span className="ml-auto text-[11px]">{summary}</span>
       <ChevronDown aria-hidden="true" className={`size-3 transition-transform ${open ? 'rotate-180' : ''}`} />
     </button>
-    {open && <div id={listId} className="mt-2 max-h-56 overflow-y-auto" aria-label="Reclaim history entries">
+    {open && <div id={listId} className="mt-2 max-h-56 overflow-y-auto" aria-label="History entries">
       {history.length
         ? history.map((entry, index) => <ReclaimHistoryEntry key={`${entry.at}:${index}`} entry={entry} index={index} />)
-        : <p className="py-3 text-muted-foreground">Reclaims will appear here. The latest 50 attempts are retained.</p>}
+        : <p className="py-3 text-muted-foreground">Free-ups will appear here. The latest 50 attempts are retained.</p>}
     </div>}
   </div>
 }
@@ -206,7 +217,7 @@ function ReclaimHistory({ history, open, onOpenChange }: { history: ReclaimEntry
 function ReclaimHistoryEntry({ entry, index }: { entry: ReclaimEntry; index: number }) {
   const [open, setOpen] = useState(false)
   const detailsId = useId()
-  const title = entry.error ? 'Reclaim did not complete' : entry.reclaimedBytes === 0 ? 'No unused space to reclaim' : `${formatBytes(entry.reclaimedBytes ?? 0)} reclaimed`
+  const title = entry.error ? 'Did not complete' : entry.reclaimedBytes === 0 ? 'Nothing to free' : `${formatBytes(entry.reclaimedBytes ?? 0)} freed`
   const details = entry.error ?? 'Completed successfully. Unused blocks were released; workspace files and capacity were preserved.'
   return <div className="border-t border-border/50 py-2.5 pr-2">
     <div className="flex items-center gap-2.5">
@@ -215,7 +226,7 @@ function ReclaimHistoryEntry({ entry, index }: { entry: ReclaimEntry; index: num
         <div>{title}</div>
         <div className="mt-0.5 text-[11px] text-muted-foreground">{trigger(entry.trigger)} · {date(entry.at)}</div>
       </div>
-      <button type="button" aria-label={`Details for reclaim ${index + 1}`} aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(!open)} className="text-[11px] text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">Details</button>
+      <button type="button" aria-label={`Details for free-up ${index + 1}`} aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(!open)} className="text-[11px] text-muted-foreground underline decoration-dotted underline-offset-4 hover:text-foreground">Details</button>
     </div>
     {open && <p id={detailsId} className={`mt-1.5 pl-6 text-[11px] leading-4 ${entry.error ? 'text-destructive' : 'text-muted-foreground'}`}>{details}</p>}
   </div>

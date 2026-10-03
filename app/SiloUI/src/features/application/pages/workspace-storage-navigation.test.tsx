@@ -30,18 +30,18 @@ it.each(["success", "lastError", "rejection"])("settles a reclaim notification a
   const user = userEvent.setup()
   const view = render(<WorkspaceStoragePanel workspaceId="vm-id" sandboxName="dev" running read={read} reclaim={reclaim} />)
   await screen.findByText("2.0 MiB")
-  await user.click(screen.getByRole("button", { name: "Reclaim unused space" }))
+  await user.click(screen.getByRole("button", { name: "Free up space" }))
   expect(reclaim).toHaveBeenCalledExactlyOnceWith("vm-id")
-  expect(showOperationProgress).toHaveBeenCalledWith("storage-reclaim:vm-id", expect.objectContaining({ title: "Reclaiming unused space" }))
+  expect(showOperationProgress).toHaveBeenCalledWith("storage-reclaim:vm-id", expect.objectContaining({ title: "Freeing up space" }))
   view.unmount()
   await act(async () => {
     if (outcome === "rejection") fail(new Error("Trim failed"))
     else finish({ ...storage, lastReclaimedBytes: 1024 ** 2, lastError: outcome === "lastError" ? "Trim failed" : null })
   })
   if (outcome === "success") {
-    expect(showOperationSuccess).toHaveBeenCalledWith("storage-reclaim:vm-id", "Reclaimed 1.0 MiB", expect.objectContaining({ noticeSandbox: { id: "vm-id", name: "dev" } }))
+    expect(showOperationSuccess).toHaveBeenCalledWith("storage-reclaim:vm-id", "Freed 1.0 MiB", expect.objectContaining({ noticeSandbox: { id: "vm-id", name: "dev" } }))
   } else {
-    expect(showOperationFailure).toHaveBeenCalledWith("storage-reclaim:vm-id", "Reclaim failed", expect.objectContaining({ description: "Trim failed" }))
+    expect(showOperationFailure).toHaveBeenCalledWith("storage-reclaim:vm-id", "Could not free up space", expect.objectContaining({ description: "Trim failed" }))
     const options = vi.mocked(showOperationFailure).mock.calls.find(call => call[0] === "storage-reclaim:vm-id")![2]!
     expect(options.retry).toBeUndefined()
     expect(read).toHaveBeenCalledOnce()
