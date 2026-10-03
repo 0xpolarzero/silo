@@ -19,6 +19,7 @@ export const operationKinds = [
   "portPublish",
   "portRemove",
   "shutdown",
+  "machineConfiguration",
   "other",
 ] as const
 export type OperationKind = (typeof operationKinds)[number]
@@ -87,6 +88,7 @@ const SELF_NOTIFIED_KINDS: ReadonlySet<OperationKind> = new Set([
   "push",
   "portPublish",
   "portRemove",
+  "machineConfiguration",
 ])
 
 /** True when an entry already has its own notification and needs no queue toast. */

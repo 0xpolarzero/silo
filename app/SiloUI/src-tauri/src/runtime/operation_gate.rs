@@ -85,6 +85,8 @@ pub enum OperationKind {
     PortRemove,
     /// Stopping local VMs for quit or update.
     Shutdown,
+    /// Adding, changing, deleting, or reordering sandboxes; progress arrives as setup events.
+    MachineConfiguration,
     #[default]
     Other,
 }
@@ -610,7 +612,9 @@ impl OperationGate {
         label: &str,
     ) -> Result<OperationGuard<'_>, GateError> {
         REMOVES.with(|removes| *removes.borrow_mut() = ids.to_vec());
-        let guard = self.computer(label);
+        let guard = self
+            .kind(OperationKind::MachineConfiguration)
+            .computer(label);
         REMOVES.with(|removes| removes.borrow_mut().clear());
         guard
     }
@@ -1856,6 +1860,7 @@ mod tests {
             (OperationKind::PortPublish, "portPublish"),
             (OperationKind::PortRemove, "portRemove"),
             (OperationKind::Shutdown, "shutdown"),
+            (OperationKind::MachineConfiguration, "machineConfiguration"),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), name);
         }
@@ -2187,6 +2192,7 @@ mod contract_tests {
             PortPublish,
             PortRemove,
             Shutdown,
+            MachineConfiguration,
             Other,
         ];
         let entries: Vec<_> = kinds
@@ -2207,7 +2213,7 @@ mod contract_tests {
         let queue = OperationQueue {
             running: entries,
             waiting: vec![OperationEntry {
-                id: 15,
+                id: 16,
                 label: "Waiting contract operation".into(),
                 kind: Lifecycle,
                 vm_id: Some("00000000-0000-4000-8000-000000000002".into()),
