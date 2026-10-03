@@ -7,15 +7,15 @@ until the listener is ready; installation disables navigation and mutation
 commands. Individual busy states disable update checks and export or import.
 The status panel has its own menu; the application menu belongs to the main window.
 
-Native menus own Command-B/Control-B for the sidebar and Command-K/Control-K for the command palette once connected, avoiding a second DOM shortcut handler. Repeated creation requests preserve unfinished forms. Consumed sandbox
+Native menus own Command-B/Control-B for the sidebar and Command-K/Control-K for the command palette once connected, avoiding a second DOM shortcut handler. Repeated creation requests preserve unfinished forms. Consumed computer
 requests are cleared by their owner so returning to a remounted overview cannot
 open another form. Sidebar text follows the existing collapse state.
 
-Category shortcuts follow sidebar order in the Go menu: Command-1 Sandboxes,
+Category shortcuts follow sidebar order in the Go menu: Command-1 Computers,
 2 Files, 3 Logs, 4 Network, 5 Activity, 6 GitHub, 7 Secrets. Linux desktop builds
 use Control instead of Command and dispatch through the same guarded app actions.
-The File menu has New Sandbox… (Command-N) and Import Sandbox…, which opens the
-export-file picker; Export… lives in each local sandbox's own menu.
+The File menu has New Computer… (Command-N) and Import Computer…, which opens the
+export-file picker; Export… lives in each local computer's own menu.
 The shared shortcut badge displays these bindings at the right of expanded
 sidebar rows on hover/focus, or inside tooltips when collapsed. Existing toolbar
 tooltips include their actual bindings; controls without a shortcut have no badge.
@@ -71,15 +71,15 @@ this check did not run a Linux desktop session.
 Linux uses a native window menubar, initially hidden, with a visible Menu button
 in both application and setup toolbars. Bare Alt and F10 reveal and focus the
 menu; Escape restores prior keyboard focus. AltGr and modifier chords do not
-activate the menu. The host owns menu construction, fixed help destinations,
+activate the menu. The native side owns menu construction, fixed help destinations,
 and window/quit actions; the main webview receives guarded navigation commands.
 Only the main window is allowed to invoke the reveal command.
 
 The command palette derives update actions from the current updater snapshot.
 Checks, downloads, retries, installation, and manual installer links use the
 existing updater backend. Commands open General settings so progress and errors
-are visible. Installation shares the card's running-sandbox confirmation,
-including cancellation, and never implies permission to stop VMs merely because
+are visible. Installation shares the card's running-computer confirmation,
+including cancellation, and never implies permission to stop computers merely because
 an update command was selected. Busy or blocked operations are unavailable.
 
 Primary implementation references:
@@ -91,7 +91,7 @@ Primary implementation references:
 - [GTK menu-shell implementation](https://github.com/GNOME/gtk/blob/gtk-3-24/gtk/gtkmenushell.c): `MENU_SHELL_TIMEOUT` suppresses the first release within 500 ms of activation. Outside-click verification must allow that native activation interval to pass.
 
 Earlier verification above describes prior macOS builds. New Linux verification
-is recorded separately; it does not establish live VM health.
+is recorded separately; it does not establish live computer health.
 
 ### Linux verification (2026-09-14)
 

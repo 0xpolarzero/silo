@@ -1,24 +1,24 @@
 # Terminal handoff and status actions
 
 Implemented 2026-09-10. Terminal handoff uses Ghostty’s native-tab API or private
-command files. Local VM sessions target the bundled MicroSandbox interactive
+command files. Local computer sessions target the bundled MicroSandbox interactive
 exec command.
 
 The native action reads the current terminal preference and verifies a local managed
-VM is Running. It launches the bundled runtime with `msb exec NAME --user silo
+computer is Running. It launches the bundled runtime with `msb exec NAME --user silo
 --env USER=silo --env LOGNAME=silo --no-start --workdir /workspace --tty`, using
 the [working account](SiloUI-WORKING-ACCOUNT.md). The launcher explicitly passes
 `MSB_HOME`, `MSB_PATH` and `MSB_LIBKRUNFW_PATH` for the selected runtime; it does
-not use a host-installed `msb`. The runtime selects its default interactive shell.
-`--no-start` protects the race where the VM stops after the initial check. Paths
+not use a device-installed `msb`. The runtime selects its default interactive shell.
+`--no-start` protects the race where the computer stops after the initial check. Paths
 are shell-quoted as single arguments. No GitHub tokens or secret values are written
 to launcher files.
 
-For a sandbox on another computer, the
+For a computer on another device, the
 [terminal adapter](../app/SiloUI/src-tauri/src/terminal.rs) prepares a private
 SSH alias through the owning Silo instance and launches `/usr/bin/ssh -F CONFIG
 -t ALIAS`. The explicit configuration avoids requiring an Include in the user's
-SSH config. See [remote computers](SiloUI-REMOTE-COMPUTERS.md) for ownership and
+SSH config. See [Connections](SiloUI-CONNECTIONS.md) for ownership and
 connection boundaries. The local runtime and PTY evidence below records the
 original 2026-09-10 implementation, not a new remote-terminal qualification.
 

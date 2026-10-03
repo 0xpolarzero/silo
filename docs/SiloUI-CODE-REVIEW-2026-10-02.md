@@ -420,7 +420,7 @@ The index says the current bundled engine is `0.7.2`, while the manifest pins `0
 
 ### R-26. A failed local status subscription leaves download progress stale
 
-**P3; real store/status view reproduced.** Location: [computer-use-bridge.tsx](../app/SiloUI/src/desktop/computer-use-bridge.tsx), lines 104–120; persistent settings containers in [application-app.tsx](../app/SiloUI/src/features/application/application-app.tsx), lines 402–406.
+**P3; real store/status view reproduced.** Location: [computer-use-bridge.tsx](../app/SiloUI/src/desktop/computer-use-bridge.ts), lines 104–120; persistent settings containers in [application-app.tsx](../app/SiloUI/src/features/application/application-app.tsx), lines 402–406.
 
 **Trigger:** registering the local ChatGPT-app download status listener rejects once. The rejection is swallowed and one status read runs. Local status deliberately skips periodic polling, leaving no listener, resubscription, or fallback refresh.
 

@@ -2,17 +2,17 @@
 
 Everything Silo tells the user outside a direct UI response goes through one router,
 `app/SiloUI/src-tauri/src/notifications.rs`. A `Notice` has a category, a stable
-`key`, a title, a body, and optionally the sandbox (`id`, `name`) it is about.
+`key`, a title, a body, and optionally the computer (`id`, `name`) it is about.
 
 ## Ownership
 
 | Owner | Results | Delivery |
 | --- | --- | --- |
 | Frontend | Results of commands it awaits: push, GitHub apply, ports, checkpoints, storage reclaim, log export | Shows its own toast, mirrors to the system with `deliver_notice` |
-| Backend | Sandbox lifecycle (local and remote), export/import, sandbox setup/configuration, Git identity | `notify_native`: the frontend already shows state from the backend |
-| Backend, no other UI owner | Unexpected sandbox changes, startup and update-resume failures | `notify`: in-app toast (`silo://notice`) plus system notification |
+| Backend | Computer lifecycle (local and remote), export/import, computer setup/configuration, Git identity | `notify_native`: the frontend already shows state from the backend |
+| Backend, no other UI owner | Unexpected computer changes, startup and update-resume failures | `notify`: in-app toast (`silo://notice`) plus system notification |
 
-Sandbox setup and Git identity failures are also shown in the setup UI; the backend
+Computer setup and Git identity failures are also shown in the setup UI; the backend
 adds a system notice for when Silo is in the background. A stale-edit rejection is shown
 inline by the editor and never notifies.
 
@@ -34,14 +34,14 @@ inline by the editor and never notifies.
 - Replacement: the `key` is the notification identity (`vm:{id}:lifecycle`,
   `vm:{id}:transfer`, ...). A newer notice with the same key replaces the older one: on
   macOS as the request identifier, on Linux through `replaces_id`.
-- Titles name the sandbox ("Couldn’t start dev", "dev is running"); bodies are one line,
+- Titles name the computer ("Couldn’t start dev", "dev is running"); bodies are one line,
   at most 200 characters.
 - Click routing (macOS): the notification carries the route as user info. The delegate
-  opens the main window at `{"tab":"workspaces","workspace":<name>}`, or
-  `{"tab":"workspaces"}` without a sandbox, through `status_panel::open_main`.
-  Notifications group by thread: sandbox id, else the category name.
-- Clearing: queued and delivered identifiers are tracked per sandbox id. Deleting a
-  sandbox (local `change_machine_configuration`, remote `remote_delete_machine`)
+  opens the main window at `{"tab":"computers","computer":<name>}`, or
+  `{"tab":"computers"}` without a computer, through `status_panel::open_main`.
+  Notifications group by thread: computer id, else the category name.
+- Clearing: queued and delivered identifiers are tracked per computer id. Deleting a
+  computer (local `change_computer_configuration`, remote `remote_delete_computer`)
   invalidates queued deliveries and withdraws in-flight and delivered notifications
   (`removeDeliveredNotificationsWithIdentifiers`, or `CloseNotification`). A delayed
   withdrawal preserves a newer successful submission for the same key.
@@ -58,7 +58,7 @@ not process memory.
 `tauri-plugin-notification` (2.3.0) delivers on desktop through `notify-rust`. Per its
 DeepWiki index (not exercised by us), its ids, `group` and click actions are aimed at
 mobile, and the desktop path exposes no click callback. Silo needs replace-by-identifier,
-thread grouping, click routing to a sandbox, and clearing on macOS, all of which
+thread grouping, click routing to a computer, and clearing on macOS, all of which
 `UNUserNotificationCenter` provides directly, and it already owns the authorization flow
 and delegate there. Silo therefore keeps direct UserNotifications (`objc2-user-notifications`)
 and the freedesktop D-Bus interface, and keeps product policy in the router. Revisit if

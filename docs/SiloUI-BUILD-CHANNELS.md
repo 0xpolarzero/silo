@@ -18,7 +18,7 @@ users' data lives there.
 
 ## One source of truth
 
-`src-tauri/src/channel.rs` derives every host-visible name from the bundle
+`src-tauri/src/channel.rs` derives every device-visible name from the bundle
 identifier embedded in the running binary (`channel::init` runs first in `main`,
 including for the `--remote-bridge`, `--remote-guest` and editor-transport modes
 that run without a window). Only the exact production identifier selects
@@ -44,13 +44,13 @@ configuration and documentation examples remain pinned by channel tests.
 |---|---|---|
 | App data, config, cache, logs, WebView storage | `<app dirs>/org.silo.preview` | `<app dirs>/org.silo.dev` (Tauri keys these by identifier) |
 | Runtime alias dirs `~/.silo/<hash>` | hash of production storage | `~/.silo-dev/<hash>` |
-| Silo private home `~/.silo` (editor workspace files, desktop sockets, remote-management state `desktop-remote/`, control socket) | `~/.silo` | `~/.silo-dev` |
+| Silo private home `~/.silo` (editor workspace files, desktop sockets, Connections state `desktop-remote/`, control socket) | `~/.silo` | `~/.silo-dev` |
 | Keychain: GitHub (`account`, `personal-token`, `runtime-grants`) | `org.silo.Silo.github` | `org.silo.dev.github` |
 | Keychain: secret values | `org.silo.Silo.secrets` | `org.silo.dev.secrets` |
-| Remote-management bridge link | `~/.local/bin/silo-remote` | `~/.local/bin/silo-remote-dev` |
+| Connections bridge link | `~/.local/bin/silo-remote` | `~/.local/bin/silo-remote-dev` |
 | Forced command in an installed remote key | `exec ~/.local/bin/silo-remote --remote-bridge` | `exec ~/.local/bin/silo-remote-dev --remote-bridge` |
 | Remote key comment | `Silo remote management` | `Silo Dev remote management` |
-| SSH aliases for other computers' sandboxes | `silo-remote-<host>-<vm>` | `silo-dev-remote-<host>-<vm>` |
+| SSH aliases for computers on other devices | `silo-remote-<device>-<computer>` | `silo-dev-remote-<device>-<computer>` |
 | SSH config/known_hosts/keys | under the private homes above | under `~/.silo-dev` |
 | `~/.ssh/config` | one `Include` line per private home, so each channel adds its own line | |
 | Native app menus, dialogs, tray labels and shutdown inhibitor | `Silo` | `Silo Dev` |
@@ -61,28 +61,28 @@ configuration and documentation examples remain pinned by channel tests.
 | Updater | release feed | disabled |
 
 Left shared on purpose: the `.silo-backup` archive format (so Dev can import
-Production exports), `~/.ssh/authorized_keys` on a computer being managed (keys
+Production exports), `~/.ssh/authorized_keys` on a device being managed (keys
 are matched by blob), the user's own VS Code/Zed installs, and `~/.ssh/known_hosts`.
 
 Unit tests and the isolation rules assume both channels can run at the same time
-on one computer; they cannot collide on a socket, lock, link, key, or service name.
+on one device; they cannot collide on a socket, lock, link, key, or service name.
 
-## Remote management and identity
+## Connections and identity
 
-Silo Dev always has its own remote-management identity: its own host id, control
-socket, and remote-management switch (off by default). Computers that Dev
-manages, and computers that manage Dev, see it as a separate computer.
+Silo Dev always has its own Connections identity: its own device id, control
+socket, and Connections switch (off by default). Devices that Dev
+manages, and devices that manage Dev, see it as a separate device.
 
-- Dev as the managed computer: enabling remote management links
-  `~/.local/bin/silo-remote-dev`. A production Silo on another computer cannot
+- Dev as the managed device: enabling Connections links
+  `~/.local/bin/silo-remote-dev`. A production Silo on another device cannot
   reach it, because installed keys only run the production bridge. Use a Dev build
   on the controlling side.
 - Dev as the controller with its own key: Dev installs `Silo Dev remote management`
-  keys whose forced command is the dev bridge, so the remote computer needs Silo Dev.
+  keys whose forced command is the dev bridge, so the remote device needs Silo Dev.
 - Dev as the controller with the key copied from production (see below): the key's
-  existing authorized_keys entry on the remote computer runs the production bridge
-  there, so Dev reaches the production Silo on that computer without any re-setup.
-  Driving or changing sandboxes on a remote production Silo is still production
+  existing authorized_keys entry on the remote device runs the production bridge
+  there, so Dev reaches the production Silo on that device without any re-setup.
+  Driving or changing computers on a remote production Silo is still production
   state; automation and tests must not do it.
 
 ## Copying production configuration into Dev
@@ -126,13 +126,13 @@ Copied:
   The OAuth login is not copied unless `--include-github-oauth` is given: GitHub
   rotates refresh tokens, so whichever channel refreshes first invalidates the
   other's copy and logs it out. Connect GitHub in Dev instead, or accept that risk.
-- Secret definitions and values (Keychain duplicate), with no sandbox assignments,
+- Secret definitions and values (Keychain duplicate), with no computer assignments,
   pending work, errors, or activity.
-- Remote computers: the saved list and the client key (`id_ed25519`, `.pub`) that
-  reaches them. Dev keeps or creates its own host id and leaves remote management off.
+- Devices: the saved list and the client key (`id_ed25519`, `.pub`) that
+  reaches them. Dev keeps or creates its own device id and leaves Connections off.
 
-Never copied: sandboxes, VMs, checkpoints, disks, volumes, backups and history, the
-MicroSandbox home and runtime, per-sandbox network/SSH settings, startup-sandbox and
+Never copied: computers, checkpoints, disks, volumes, backups and history, the
+MicroSandbox home and runtime, per-computer network/SSH settings, startup-computer and
 launch-at-login choices, update preferences, derived SSH configs, `~/.ssh`, VS Code
 profiles. Dev recreates editor and SSH integration on first use.
 

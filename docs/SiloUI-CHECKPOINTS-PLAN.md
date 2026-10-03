@@ -18,28 +18,28 @@ retain its experiments and failure evidence as references.
 
 The user accepted:
 
-- Restore rewinds the existing workspace and first creates a recovery checkpoint.
-  Fork creates an independent workspace.
+- Restore rewinds the existing computer and first creates a recovery checkpoint.
+  Fork creates an independent computer.
 - Start with manual checkpoints. The recovery checkpoint before Restore is the
   explicit exception; scheduled and other automatic checkpoints are deferred.
 - A new fork is stopped and requires explicit Start. It must never briefly run
   as a side effect of creation.
-- A fork inherits the source workspace's currently approved secret/GitHub
+- A fork inherits the source computer's currently approved secret/GitHub
   assignments, gets a fresh identity, and has independent assignment changes.
   Historical grants cannot override current revocations.
 
-Upgrade existing VM data once into the new runtime format. Keep the original
+Upgrade existing computer data once into the new runtime format. Keep the original
 data recoverable through conversion and verification, then use the new format
 in normal application paths. The migration can read the old format; Silo does
 not need an ongoing legacy runtime or archive reader. Preserve local/remote
-ownership, native access and supported host platforms in the new format.
+ownership, native access and supported device platforms in the new format.
 
 Portable archives use format v3 and the pinned MicroSandbox snapshot save/load
 API. The snapshot carries the root disk and the Owned `/workspace` disk as one
 runtime checkpoint; Silo does not duplicate workspace files in its own archive
 payload. Export is disk-only and requires guest flush when capturing a running
-VM. Import verifies the archive and loaded snapshot group/member before it
-publishes a new Silo machine identity. The imported machine stays Stopped until
+computer. Import verifies the archive and loaded snapshot group/member before it
+publishes a new Silo computer identity. The imported computer stays Stopped until
 the user explicitly starts it, at which point current host-side assignments
 are applied. Format v2 archives are rejected; no legacy archive reader is
 retained. This is a deliberate archive compatibility break and must be called
@@ -47,17 +47,17 @@ out in release notes.
 
 ## Stopped forks and first start
 
-User-facing state: **Stopped**, with **Start** as the action. The sandbox row
+User-facing state: **Stopped**, with **Start** as the action. The computer row
 does not add a captured-session subtitle. No additional Pause/Resume concept is
 required merely to create a fork.
 
-The implementation must distinguish an ordinary stopped VM from a stopped
-workspace whose next start restores a checkpoint. Shutting down a running child
+The implementation must distinguish an ordinary stopped computer from a stopped
+computer whose next start restores a checkpoint. Shutting down a running child
 after creation would lose its live execution state and allow unwanted work.
-Holding a paused child in RAM would allocate a VM before the requested Start.
+Holding a paused child in RAM would allocate a computer before the requested Start.
 
 The implementation retains an immutable full checkpoint, creates the new Silo
-workspace identity and persists a pending restore reference. Start activates
+computer identity and persists a pending restore reference. Start activates
 the child through upstream restore only when explicitly requested.
 For a stopped source, use disk state and identify that the first start boots
 normally. Forking a running source captures its state while preserving the source.
@@ -76,15 +76,15 @@ stopped state. See that revision's [`restore` command options and flow](https://
 [builder restore methods](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/restore_builder.rs#L166-L195),
 and [restore activation](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/crates/runtime/lib/runner/relay.rs#L1460-L1518).
 
-Represent the stopped workspace state with a durable Silo reference to an
+Represent the stopped computer state with a durable Silo reference to an
 immutable native checkpoint member. Silo checkpoint IDs remain the public
 identity; persist their mapping to a backend-resolvable native snapshot
 reference, and resolve existing records through their saved group/member data.
-Restore changes that selected reference, not guest memory: when a workspace is
+Restore changes that selected reference, not guest memory: when a computer is
 already pending, retain its previous selected reference as the recovery point
 and atomically select the requested member. A current-state Fork from a pending
-workspace points its new stopped child at the same immutable member. Neither
-operation starts a VM or allocates guest RAM. For a live source, capture a
+computer points its new stopped child at the same immutable member. Neither
+operation starts a computer or allocates guest RAM. For a live source, capture a
 checkpoint first; for a pending source, reuse its saved reference. Only explicit
 Start calls upstream full restore (`--cow-mem`) or disk restore. Apply current
 host network and credential policy before that Start activates the guest.
@@ -117,9 +117,9 @@ Required lifecycle rules:
   Resource edits that invalidate a saved memory state require an explicit
   disk-only start decision; never discard memory implicitly.
 
-Current seams: [workspace lifecycle](../app/SiloUI/src-tauri/src/runtime.rs),
+Current seams: [computer lifecycle](../app/SiloUI/src-tauri/src/runtime.rs),
 [frontend source contract](../app/SiloUI/src/features/application/model/application-source.ts),
-[workspace presentation](../app/SiloUI/src/features/sandboxes/model/workspace-presentation.ts),
+[computer presentation](../app/SiloUI/src/features/computers/model/computer-presentation.ts),
 and [lifecycle recovery](../app/SiloUI/src-tauri/src/runtime/lifecycle_recovery.rs).
 Current code includes automatic startup and temporary boot through helpers;
 these require explicit pending-restore guards.
@@ -128,37 +128,37 @@ these require explicit pending-restore guards.
 
 | Action | Proposed behaviour |
 | --- | --- |
-| Create checkpoint | Name an immutable point in this workspace's history. Running VMs capture memory and both owned disks; stopped VMs capture disks. Show the scope clearly. Preserve the source's lifecycle state. |
-| Fork current state | Capture a live source or reuse a pending immutable reference, choose a new name, and create a stopped sibling workspace. No child guest execution until Start. |
+| Create checkpoint | Name an immutable point in this computer's history. Running computers capture memory and both owned disks; stopped computers capture disks. Show the scope clearly. Preserve the source's lifecycle state. |
+| Fork current state | Capture a live source or reuse a pending immutable reference, choose a new name, and create a stopped sibling computer. No child guest execution until Start. |
 | Fork checkpoint | Same stopped-sibling flow using the selected point. Copy current source assignments, never historical grants. |
-| Start pending fork | Resolve current policy, validate compatibility, restore the selected state and open the normal workspace. Reconnect desktop/terminal/LCU sessions as available. |
-| Restore checkpoint | Secure the current state as recovery, then atomically select the target immutable reference. Keep the workspace stopped; explicit Start performs full-memory restore or disk boot under current host policy. |
+| Start pending fork | Resolve current policy, validate compatibility, restore the selected state and open the normal computer. Reconnect desktop/terminal/LCU sessions as available. |
+| Restore checkpoint | Secure the current state as recovery, then atomically select the target immutable reference. Keep the computer stopped; explicit Start performs full-memory restore or disk boot under current host policy. |
 | Export/import | Keep a portable recovery path and existing archive import. Clearly distinguish disk recovery from memory continuation. Use upstream archive mechanisms wherever compatible. |
-| Delete checkpoint/fork | Explain retained dependencies and actual reclaimable space when known. Preserve artifacts still required by other workspaces. |
+| Delete checkpoint/fork | Explain retained dependencies and actual reclaimable space when known. Preserve artifacts still required by other computers. |
 
-Put checkpoint history in the workspace UI, with Create checkpoint, Restore and
+Put checkpoint history in the computer UI, with Create checkpoint, Restore and
 Fork actions. Keep Export/Import discoverable separately from local checkpoint
 history. Show actual operation stages, errors and recovery actions; do not imply
 that a progress percentage establishes a usable checkpoint.
 
 ### Checkpoint action feedback (2026-09-27)
 
-The sandbox row shows an indeterminate progress bar as soon as Create,
+The computer row shows an indeterminate progress bar as soon as Create,
 Restore, or Fork is submitted and keeps it visible until the request settles.
-The sandbox's Checkpoints menu expands the panel inside its existing card;
+The computer's Checkpoints menu expands the panel inside its existing card;
 the panel itself has no redundant outer rounded border or duplicate progress.
 Restore uses the shared inline Cancel/Confirm pattern; its tooltip explains the
 recovery checkpoint and stopped result. Fork names are entered in a small
-popover with Enter-to-submit. The Overview current-state fork dialog and sandbox
+popover with Enter-to-submit. The Overview current-state fork dialog and computer
 row also show progress while a request is pending. The production source keeps
 pending operations visible across refreshes and page changes and rejects duplicate
-requests for the same sandbox, including remote targets.
+requests for the same computer, including remote targets.
 
 Checkpoint commands use the existing five-second lifecycle lock wait. This
 avoids failing immediately when brief background work owns the mutation lock;
 sustained contention still returns Busy. The causal sources are
 [`read_application_state`](../app/SiloUI/src-tauri/src/runtime.rs), which may
-inspect stopped-VM log retention under that lock, and
+inspect stopped-computer log retention under that lock, and
 [`ssh_access::start_monitor`](../app/SiloUI/src-tauri/src/ssh_access.rs), which
 holds it during reconciliation. The
 [`checkpoint commands`](../app/SiloUI/src-tauri/src/runtime/checkpoints.rs)
@@ -174,9 +174,9 @@ Remote status reads use the same snapshot guard. Its
 `SILO_SANDBOX_UPDATE_IN_PROGRESS` sentinel means that a consistent read was
 unavailable: a mutation lock was held before or after the read, metadata changed
 during it, or a durable configuration recovery was pending. The background SSH
-monitor also uses that lock, so the sentinel does not establish that VM settings
+monitor also uses that lock, so the sentinel does not establish that computer settings
 are changing. The controller preserves the previous snapshot and marks that
-computer's rows stale until a successful refresh; its ten-second polling interval
+device's rows stale until a successful refresh; its ten-second polling interval
 can turn a brief collision into a much longer visible busy state. See
 [`refreshComputers`](../app/SiloUI/src/desktop/production-source.ts) and
 [`read_application_snapshot`](../app/SiloUI/src-tauri/src/runtime.rs).
@@ -188,7 +188,7 @@ controller labels deferred reads “Refreshing status” and keeps known Start,
 Stop, Restart, and checkpoint progress visible ahead of that fallback. The retry
 requires an updated owner build; the corrected label also works with older
 owners. This diagnosis follows the code paths and deterministic regressions;
-it does not measure collision frequency on a user's remote computer.
+it does not measure collision frequency on a user's remote device.
 
 The progress/layout follow-up passed 185 frontend tests across the checkpoint
 panel, current-state fork dialog, Overview fork/failure behavior, production
@@ -202,15 +202,15 @@ launched; the running app in the separate `checkpoint-state-build-fu327l8s`
 directory and its VMs were left untouched.
 
 After Restore, the old runtime instance is absent and the selected snapshot
-reference becomes the workspace's authoritative stopped state. Restore can be
+reference becomes the computer's authoritative stopped state. Restore can be
 repeated without Start: preserve the current reference as recovery, then commit
 the new reference in one journaled metadata transition. Current-state Fork from
-this state uses that same selected reference. A pending workspace cannot create
-a new captured memory point without activating a VM; it may create another
+this state uses that same selected reference. A pending computer cannot create
+a new captured memory point without activating a computer; it may create another
 logical checkpoint alias to the selected immutable member. Do not report an
 alias as newly captured data or delete its native member while another Silo
-reference still uses it. A live workspace may capture before retargeting; a
-pending workspace uses the saved immutable reference for recovery.
+reference still uses it. A live computer may capture before retargeting; a
+pending computer uses the saved immutable reference for recovery.
 
 Create, Restore, and Fork remain available while the selected snapshot is
 stopped. Capture code avoids inspecting an absent runtime and verifies the
@@ -218,11 +218,11 @@ selected member before naming it. Each Restore adds a distinct logical recovery
 checkpoint and commits it with the new selection in one atomic record save.
 Older checkpoint IDs remain valid native selectors when no explicit `nativeId`
 is stored. Local and remote user Start actions now use the same
-`explicit_workspace_action_with` path; background startup retains its guard.
+`explicit_computer_action_with` path; background startup retains its guard.
 Current credentials, network policy, and secret assignments apply before guest
-execution. Archive import keeps its new-workspace meaning.
+execution. Archive import keeps its new-computer meaning.
 
-Verification for this change used deterministic data, not live VM operations:
+Verification for this change used deterministic data, not live computer operations:
 
 - `npm --prefix app/SiloUI test -- src/features/application/components/checkpoint-panel.test.tsx src/features/application/components/fork-state-dialog.test.tsx src/features/application/pages/overview-fork.test.tsx src/desktop/production-source.test.ts`: 85 passed.
 - `cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml runtime::checkpoints::tests`: 15 passed, using explicit synthetic GitHub configuration. This covers full-state aliases, repeated Restore and recovery selection, native-ID resolution at explicit Start, failed Start preservation, current-state Fork without activation, runtime collisions, and legacy group migration.
@@ -236,7 +236,7 @@ with `desktop:build` under the separate absolute `CARGO_TARGET_DIR`
 The resulting `release/bundle/macos/Silo.app` passed the build wrapper's signing
 and bundle verification. It was not launched; the existing running release
 bundle and user VMs were left untouched. Tests establish deterministic behavior
-and packaging, not live session continuity or remote-host deployment.
+and packaging, not live session continuity or remote-device deployment.
 
 For v1, retain checkpoints until explicit deletion; show measured usage and fail
 cleanly when storage is insufficient. Do not add an unrequested automatic
@@ -248,19 +248,19 @@ credentials stay on the host. Apply private storage/export handling accordingly.
 
 The Checkpoints panel needs byte sizes, saved references, native children, and
 live lineage positions to explain Delete availability. Empty histories return
-zero bytes without surveying other sandboxes. When all selected native members
+zero bytes without surveying other computers. When all selected native members
 are missing, saved references still determine blockers, but live lineage cannot
 block removal of absent native data and is not surveyed.
 
-Existing members require the complete dependency survey: an unconfigured sandbox
+Existing members require the complete dependency survey: an unconfigured computer
 can build on a selected member, and a child can belong to another group. Do not
-restrict this survey to configured sandboxes or the selected lineage group.
+restrict this survey to configured computers or the selected lineage group.
 Deletion and reclamation retain their complete, fail-closed surveys. No shared
 survey cache is introduced, so capture, Restore, fork, import, and deletion are
 observed on the next read without an invalidation protocol.
 
 Storage's byte-only totals use the record's lineage group, falling back to the
-sandbox name for legacy records. The pinned runtime supports
+computer name for legacy records. The pinned runtime supports
 [`snapshot list --group`](https://github.com/superradcompany/microsandbox/blob/09df3d4b9d832adaede1fb9a198cfc660bfab8cd/crates/cli/lib/commands/snapshot.rs).
 This limits the JSON returned to Silo; upstream still enumerates snapshots before
 filtering. The pinned [`list` JSON](https://github.com/superradcompany/microsandbox/blob/09df3d4b9d832adaede1fb9a198cfc660bfab8cd/crates/cli/lib/commands/list.rs)
@@ -307,11 +307,11 @@ apply the old patch or build a generic runtime abstraction for one backend.
 Create a one-command probe with Silo's actual root and separate workspace disk.
 Establish whether the workspace volume is captured as owned storage by the new
 runtime. It must become a private child disk; binding the same ext4 file to both
-VMs is not a fork. If ownership adoption is needed, qualify it on a copy first.
+computers is not a fork. If ownership adoption is needed, qualify it on a copy first.
 
 Pass criteria: memory-only marker and unsaved editor buffer survive; both disk
 markers survive; source and child diverge independently; a saved checkpoint
-restores after owner and host restart; a pending fork remains inactive until
+restores after owner and device restart; a pending fork remains inactive until
 Start; current grants apply before its first external request. Record guest pause
 time, capture/restore latency, physical storage and resident-memory growth, and
 compare with the current backup baseline. No performance target is claimed met
@@ -328,10 +328,10 @@ hypervisor implementation or a weaker product promise.
 Update [runtime inputs](../app/SiloUI/runtime-inputs.json),
 [preparation](../app/SiloUI/scripts/prepare-microsandbox-runtime.mjs),
 [runtime packaging](SiloUI-RUNTIME-PACKAGING.md) and the retained patch set using
-the qualified candidate. Recheck source hashes, licenses, signing and host floors.
+the qualified candidate. Recheck source hashes, licenses, signing and device floors.
 Implement a one-time, versioned, resumable migration on disposable copies first.
-The upgrade opens into a full-app progress overlay before normal VM recovery or
-automatic startup. Show live stages and safe logs. Convert each old VM to the
+The upgrade opens into a full-app progress overlay before normal computer recovery or
+automatic startup. Show live stages and safe logs. Convert each old computer to the
 qualified new storage format, verify its root and separate workspace data and
 identity, and retain originals until conversion is proven. New application
 paths then read only the new format. Do not assume downgrading the binary
@@ -340,13 +340,13 @@ reverses a data-format upgrade.
 On failure, keep the overlay and journal so Retry resumes safely. Offer logs and
 an issue-report action, but never submit an issue or upload logs without an
 explicit user action. The user can back up their work manually and choose to
-continue after acknowledging that failed VMs were not migrated. Continue must
-enter a usable new-runtime state without presenting failed VMs as migrated or
+continue after acknowledging that failed computers were not migrated. Continue must
+enter a usable new-runtime state without presenting failed computers as migrated or
 deleting the originals. These are accepted product choices; the exact runtime
 conversion commands and archive handling depend on the qualification probe.
 
 Implement one end-to-end manual checkpoint: owner operation, durable metadata,
-progress/error reporting, frontend source and workspace history. Keep runtime
+progress/error reporting, frontend source and computer history. Keep runtime
 capture/storage upstream; Silo owns identity, policy, journaling and presentation.
 Add meaningful behaviour tests as each flow is implemented, starting at this
 seam, then a live test of actual state capture. Build the fixture preview at this
@@ -356,18 +356,18 @@ stage; do not defer all UI work until the backend is finished.
 
 Implement the pending-restore lifecycle and durable artifact retention. Inherit
 assignment references at fork time, not secret values. Before Start, resolve
-those references against the current host store and grants. Source-only later
+those references against the current device store and grants. Source-only later
 assignment changes remain independent; global deletion/provider revocation must
-still deny access. Assign fresh workspace/runtime/viewer identities and endpoints.
+still deny access. Assign fresh computer/runtime/viewer identities and endpoints.
 
 Test app restart, owner disconnect, repeated Start, source deletion, checkpoint
-deletion, current revocation, cross-workspace access and implicit-start paths.
+deletion, current revocation, cross-computer access and implicit-start paths.
 Use an independent recording origin to prove zero child requests before Start.
 Memory and files must continue independently after explicit activation.
 
 ### 4. Add recovery-protected in-place restore
 
-Keep the stable Silo workspace identity while changing its runtime generation.
+Keep the stable Silo computer identity while changing its runtime generation.
 Serialize against lifecycle/configuration and backup operations. Preflight the
 selected artifact, capture the recovery point, stage replacement state, and use
 a durable operation journal to commit routing/metadata consistently. Retain the
@@ -383,7 +383,7 @@ Recovery-point failure must prevent replacement. A crash at any phase must
 identify the original or replacement generation and allow a deterministic retry
 without deleting user state. Preserve current assignments, rotate access sessions
 and invalidate stale viewer/editor endpoints. Test external mounts explicitly;
-do not claim rollback of shared host files or external API effects.
+do not claim rollback of shared device files or external API effects.
 
 Failed full captures must settle the source independently of snapshot cleanup.
 At pinned MicroSandbox revision
@@ -398,16 +398,16 @@ Paused. The
 [CLI force-stop command](https://github.com/superradcompany/microsandbox/blob/09df3d4b9d832adaede1fb9a198cfc660bfab8cd/crates/cli/lib/commands/stop.rs#L76-L88)
 kills the selected runtime; it preserves disks and runtime logs but loses RAM and
 cannot guarantee a clean guest shutdown. Do not release the upstream recovery
-pause directly or delete the VM to recover it.
+pause directly or delete the computer to recover it.
 
 If inspection, resume and stop cannot establish Running, Stopped, Created or
 Crashed, retain the existing in-flight full-capture journal and report the recovery
 failure alongside the capture failure. Ordinary Start/Stop, capture retry and
-launch recovery can then retry settlement for that journal's managed VM identity.
+launch recovery can then retry settlement for that journal's managed computer identity.
 Fixture tests cover errors, timeouts, cancellation, verification failure, failed
 resume, a misleading successful resume response, and failed settlement followed
 by ordinary recovery. These tests do not qualify live guest health; disposable
-Silo Dev VM failure/relaunch verification remains a separate live check.
+Silo Dev computer failure/relaunch verification remains a separate live check.
 
 ### 5. Finish retention, portable recovery and lifecycle integration
 
@@ -421,7 +421,7 @@ Integrate operation recovery with Quit, update and remote-owner behaviour.
 Validate compatible runtime updates and make incompatible memory states explicit,
 including the separately tested disk-only recovery path. Full-state cross-CPU
 migration is not promised. Remote forks initially stay on their source execution
-host; portable transfer remains an export/import operation subject to compatibility.
+device; portable transfer remains an export/import operation subject to compatibility.
 
 Use the existing [backup controller](../app/SiloUI/src-tauri/src/backup_controller.rs),
 [backup recovery](../app/SiloUI/src-tauri/src/backup_controller/recovery.rs),
@@ -695,7 +695,7 @@ Neither the restore arguments nor the imported pending record carry an old
 `GH_TOKEN` value.
 
 Other environment entries accepted by backup validation are portable key/value
-defaults. Import persists them before committing sandbox settings, checks their
+defaults. Import persists them before committing computer settings, checks their
 shape and NUL-free values, and passes them as individual `--env` arguments on
 Start. Forks retain those imported defaults. Current GitHub identity
 reconciliation still owns author/committer settings. Arbitrary environment

@@ -3,19 +3,19 @@
 Silo reclaims blocks that the workspace filesystem has already marked free. It
 does not delete projects, dependencies, caches, or system files. The Storage panel
 reports host allocation separately from guest filesystem usage and capacity.
-Reclamation currently applies to the local VM's ext4 `/workspace` disk, not its
-overlay runtime disk or a VM on another computer.
+Reclamation currently applies to the local computer's ext4 `/workspace` disk, not its
+overlay runtime disk or a computer on another device.
 
 ## Policy
 
-All intervals use persisted Unix timestamps, keyed by the immutable local VM ID.
+All intervals use persisted Unix timestamps, keyed by the immutable local computer ID.
 
 | Trigger | Eligibility |
 | --- | --- |
 | Explicit successful start | Never successfully trimmed, or last success at least 604,800 seconds (7 days) ago |
-| Background check every 60 seconds | Same 7-day rule; running VMs only |
+| Background check every 60 seconds | Same 7-day rule; running computers only |
 | Normal Stop, Restart, or Quit | Last success at least 86,400 seconds (24 hours) ago, or never successfully trimmed |
-| Manual Reclaim unused space | No elapsed-time restriction; VM must be running |
+| Manual Reclaim unused space | No elapsed-time restriction; the computer must be running |
 
 Automatic attempts additionally require at least 86,400 seconds since the last
 attempt. An interrupted or unsupported operation therefore cannot retry on every
@@ -29,16 +29,16 @@ timeout, and the host command deadline is 15 seconds. Smaller remaining budgets
 reduce the nested deadlines; less than four seconds remaining skips the attempt.
 Quit establishes one shared maintenance deadline 15 seconds after Quit begins,
 including any maintenance already in progress. It does not grant 15 seconds per
-VM. Normal VM stop/verification retains its existing separate timeout. These are
+computer. Normal computer stop/verification retains its existing separate timeout. These are
 command execution deadlines, not a guarantee that an unresponsive kernel or
 filesystem syscall can be cancelled instantaneously.
 
 The monitor takes the existing runtime mutation lock without waiting, checks a
-rotating VM order within its budget, and trims at most one VM per tick. Lifecycle
+rotating computer order within its budget, and trims at most one computer per tick. Lifecycle
 maintenance also holds that lock. Trim additionally takes the cross-process Silo
 configuration lock without waiting; conflicts defer maintenance. Failures do not
 veto a normal stop. Durable history preserves the last result and is removed when
-the VM is deleted.
+the computer is deleted.
 
 ## Worker compatibility and boundaries
 
@@ -46,10 +46,10 @@ The pinned runtime advertises `--silo-storage-protocol` version `1`. A successfu
 explicit start records its `runtime_instance_id` in Silo's memory only after the
 runtime passes that check. The instance is the active database run ID and start
 timestamp, with the run PID checked against the handle. Before trimming, Silo
-requires the same instance, matching managed VM ID, and the expected workspace
+requires the same instance, matching managed computer ID, and the expected workspace
 disk mount in both desired and available active configuration. An app attaching
-to an existing VM after relaunch or a VM started outside this app requires a
-restart before trimming. No read or reclaim command automatically boots a VM.
+to an existing computer after relaunch or a computer started outside this app requires a
+restart before trimming. No read or reclaim command automatically boots a computer.
 
 Guest commands independently check that `/workspace` is an ext4 mountpoint.
 Disk allocation uses Unix `st_blocks * 512`; guest usage/capacity comes from
@@ -57,8 +57,8 @@ Disk allocation uses Unix `st_blocks * 512`; guest usage/capacity comes from
 the logical byte count printed by `fstrim`. Concurrent guest writes or APFS clones
 can make this differ from the increase in free space on the physical volume.
 
-The workspace volume is measured as a whole: a fresh VM has one `disk.raw`, a
-full checkpoint rolls it onto qcow2 layers, and a VM restored from a checkpoint
+The workspace volume is measured as a whole: a fresh computer has one `disk.raw`, a
+full checkpoint rolls it onto qcow2 layers, and a computer restored from a checkpoint
 has only sealed layers and a writable qcow2 head. A missing volume is reported
 as unknown, not 0 B. Every layer's open descriptor is checked after success or
 failure. A shortened logical tail is restored to the original length and
@@ -119,7 +119,7 @@ files are different cleanup problems.
 - Build-tool tests cover verified single-crate patch staging and reject unexpected
   dependency identities or lockfile contents.
 
-Compilation and fixture tests do not prove installed-app behavior, remote VM
+Compilation and fixture tests do not prove installed-app behavior, remote computer
 health, or release readiness. Live checks use explicitly named bundles/runtime
 binaries and preserve their results under ignored `target/verification/` output.
 
@@ -154,7 +154,7 @@ build logs remain in the local temporary directory.
 
 The Storage panel uses a responsive grid of host allocation and guest usage measurements. Tooltips explain each metric. Refresh is an icon action; manual reclamation uses the shared indeterminate progress component because the runtime does not report a meaningful completion percentage.
 
-Each sandbox retains its latest 50 reclaim attempts, newest first, in its existing atomic maintenance record. History starts collapsed and scrolls within a bounded area. Entries identify manual, scheduled, after-start and before-stop attempts, with measured reclaimed bytes or the recorded failure. An interrupted attempt retains an incomplete-operation error. Existing records preserve the previous successful reclaim as one legacy entry; older attempts cannot be reconstructed.
+Each computer retains its latest 50 reclaim attempts, newest first, in its existing atomic maintenance record. History starts collapsed and scrolls within a bounded area. Entries identify manual, scheduled, after-start and before-stop attempts, with measured reclaimed bytes or the recorded failure. An interrupted attempt retains an incomplete-operation error. Existing records preserve the previous successful reclaim as one legacy entry; older attempts cannot be reconstructed.
 
 Maintenance records and their history entries retain additional JSON fields through
 load/save, so additive metadata from a newer build does not disable Storage after
@@ -163,4 +163,4 @@ remain untouched. This uses Serde's supported [flattened map](https://serde.rs/a
 instead of [rejecting unknown fields](https://serde.rs/container-attrs.html).
 Fixture regressions cover additional fields, an unfamiliar trigger, save/reload,
 legacy records without history, and rejection of malformed known fields. These
-tests exercise persistence without a live VM.
+tests exercise persistence without a live computer.

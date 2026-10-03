@@ -24,7 +24,7 @@ unverified.
 
 ## Live folder picker
 
-The status picker uses the same validated `list_workspace_directory` command and
+The status picker uses the same validated `list_computer_directory` command and
 bounded directory cache as the main Files screen. The status window has explicit
 read-only command permission. Each navigation loads one level; breadcrumbs reuse
 cached entries while refreshing. Filtering applies to loaded folder names, with
@@ -32,10 +32,10 @@ Load more available when another page exists. Links are not followed.
 
 Initial loads and additional pages show skeletons. Failed refreshes retain existing
 folders and a compact Retry message. Empty and unavailable states are distinct.
-Editor opening requires a running, fresh VM and a successfully listed folder.
+Editor opening requires a running, fresh computer and a successfully listed folder.
 Polling stops on window blur, hidden document, leaving the picker, or unavailable
-VM state. Listing never boots a stopped VM. Preview/test trees are supplied only
-through the fixture loader, with no production fallback to `workspace.files`.
+computer state. Listing never boots a stopped computer. Preview/test trees are supplied only
+through the fixture loader, with no production fallback to `computer.files`.
 
 Manual check: start dev, open Silo’s status item, choose dev’s Open in editor action,
 then browse silo-files-test-express/lib. Breadcrumbs must return to real cached

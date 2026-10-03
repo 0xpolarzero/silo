@@ -5,10 +5,10 @@ instead of acquiring the production operation gate to serialize unrelated tests.
 
 ## Persisted configuration compatibility
 
-The runtime metadata fixture pins the schema-1 VM and SSH field names used before
+The runtime metadata fixture pins the schema-1 computer and SSH field names used before
 desktop configuration was added in `7e7fb3e4`. Deserializing and serializing that
 fixture must preserve its JSON fields and omit an absent desktop. Desktop fixtures
-also pin `startWithSandbox`'s default of true and `builtIn`'s default of false,
+also pin `startWithComputer`'s default of true and `builtIn`'s default of false,
 including omission of the false built-in flag. These tests exercise Serde's
 [missing-field defaults and serialization rules](https://serde.rs/field-attrs.html)
 without the runtime or process-wide state.
@@ -30,13 +30,13 @@ folder change using a flattened map. Their reader retains the 1 MiB limit and
 schema-version check; malformed destinations or archive arrays remain unreadable.
 The temporary-file tests verify that reads leave the saved bytes untouched.
 
-Remote-management settings retain unknown top-level preferences when their known
-fields change. Temporary-file round trips verify the saved identity and host list,
+Connections settings retain unknown top-level preferences when their known
+fields change. Temporary-file round trips verify the saved identity and device list,
 while malformed or absent required fields still fail to load. Existing read/write
 size-limit and directory-sync regressions exercise the same reader and writer.
 
 GitHub settings preserve additive top-level fields when known choices change.
-Round-trip fixtures pin legacy defaults for access, account, grants and workspace
+Round-trip fixtures pin legacy defaults for access, account, grants and computer
 policies, and retain the existing rejection of unsafe policy revisions. The
 isolated serialization harness supplies no HTTP retry floors; native tests take
 the shared state guard because the production writer collects those floors.
@@ -62,7 +62,7 @@ under this guard; it no longer recursively launches its test executable.
 The failed-Quit retry regression completes the admission change synchronously
 under its guard. It no longer leaves a sleeping, unjoined worker that can change
 the next test's shutdown generation. Remote operation registry tests own their
-gates, so unrelated computer operations cannot split their two-VM barrier or
+gates, so unrelated device operations cannot split their two-computer barrier or
 cancel their queued requests.
 
 ## File descriptor isolation
@@ -91,7 +91,7 @@ groups never overlap.
 
 Live tests create their temporary directories under `/tmp` because the runtime's
 control socket needs a short absolute path (104 bytes on macOS). `/tmp` is a small
-tmpfs on many Linux hosts, so set `SILO_TEST_TMP` to a short directory on a larger
+tmpfs on many Linux devices, so set `SILO_TEST_TMP` to a short directory on a larger
 file system (for example `/var/tmp/silo-t`) before running them:
 
 ```sh
@@ -133,7 +133,7 @@ The [ordinary CI workflow](../.github/workflows/ci.yml) uses the same default-th
 command. The [Linux verification workflow](../.github/workflows/linux-verification.yml)
 and [release platform workflow](../.github/workflows/release-platform.yml) explicitly
 use `--test-threads=1`. Linux execution was outside this local qualification.
-These fixture checks do not establish live VM or packaged-app behavior.
+These fixture checks do not establish live computer or packaged-app behavior.
 
 ## Runtime fixtures
 
@@ -181,7 +181,7 @@ patch and its pinned SHA. This changes the runtime preparation cache key, withou
 changing production retention policy.
 
 The built-in desktop and computer-use live tests share `test_support::computer_use_live`
-(one disposable `/tmp` home per test, `e2e-*` sandboxes, a registered published ChatGPT
+(one disposable `/tmp` home per test, `e2e-*` computers, a registered published ChatGPT
 folder). Inputs: `SILO_LIVE_TEST_CONFIRM`, a signed `msb` and libkrunfw (`SILO_TEST_MSB`,
 `SILO_TEST_LIBKRUNFW`), the v4 image directory (`SILO_TEST_GUEST_IMAGE`: manifest.json and
 image.tar.gz) and a published ChatGPT folder (`SILO_TEST_PUBLISHED`; `SILO_LIVE_CHATGPT_ROOT`
@@ -193,12 +193,12 @@ keeps the folder `chatgpt_app::tests::live_download_of_the_pinned_arm64_package`
 | --- | --- |
 | `live_lcu_drives_the_desktop_without_a_model` | Create to ready, `lcu status`/`doctor`, read-only mount, a bare MCP client with no `_meta` reaches X11 through the `js` tool (LCU 0.8.2), LCU's own MCP client drives GNOME Text Editor (typeText, paste, Save As, then window-targeted ctrl+a/BackSpace/per-key typing and ctrl+s, LCU 0.8.3) and a terminal (per-key), with the files verified from outside; also records memory, disk and times |
 | `live_approval_switch_edits_only_the_installed_harnesses` | `auto` adds and `ask` removes exactly LCU's approval entries in Codex and Claude Code (installed from npm; `SILO_LIVE_SKIP_HARNESS_INSTALL=1` skips that phase) |
-| `live_built_in_lifecycle_keeps_the_desktop_and_computer_use` | Restart, stop/start, checkpoint of the running VM, fork and in-place restore each end with the session running, computer use ready, the folder read-only and `lcu doctor` passing |
-| `live_pre_v4_vm_gets_no_mount_no_desktop_and_keeps_its_flows` | A VM from the v3 image (`SILO_TEST_V3_GUEST_IMAGE`) has no mount, no desktop and no helper, and its lifecycle flows work |
-| `live_built_in_computer_use_sets_up_and_survives_export_and_import` | Export and import into a second home with its own folder; the imported VM takes the destination's `ask` |
+| `live_built_in_lifecycle_keeps_the_desktop_and_computer_use` | Restart, stop/start, checkpoint of the running computer, fork and in-place restore each end with the session running, computer use ready, the folder read-only and `lcu doctor` passing |
+| `live_pre_v4_vm_gets_no_mount_no_desktop_and_keeps_its_flows` | A computer from the v3 image (`SILO_TEST_V3_GUEST_IMAGE`) has no mount, no desktop and no helper, and its lifecycle flows work |
+| `live_built_in_computer_use_sets_up_and_survives_export_and_import` | Export and import into a second home with its own folder; the imported computer takes the destination's `ask` |
 | `live_built_in_desktop_boots_repeatedly` | `SILO_BOOT_LOOP_ROUNDS` (default 3) restarts and imports with no desktop failure |
 
-These opt-in tests exercise real disposable VMs with temporary data when run
+These opt-in tests exercise real disposable computers with temporary data when run
 with the required live inputs. Their source and fixture checks alone do not prove
 those workflows passed. A successful live run qualifies only the tested runtime,
 image and scenario; it does not launch the packaged Silo app or establish

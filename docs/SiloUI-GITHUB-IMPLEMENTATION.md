@@ -7,10 +7,10 @@ single current plan.
 ## Behavior and scope
 
 Connect in the browser through the Silo GitHub App, authorize selected/all GitHub
-repositories, return to Silo, and choose selected/all repositories for each VM.
+repositories, return to Silo, and choose selected/all repositories for each computer.
 **All repositories** means all repositories the connected App/user can access,
 including future authorized repositories, never arbitrary private repositories.
-A successful connection enables GitHub access automatically; each VM still needs
+A successful connection enables GitHub access automatically; each computer still needs
 a repository selection. Explicitly disabling access persists until another connection
 or enable action. Default to read-only; **Allow GitHub changes** covers repository Git/API writes.
 Selected mode retains per-repository write controls; all mode has an explicit
@@ -30,7 +30,7 @@ App configuration includes a client ID and client secret; this is not a private
 key. User access/refresh credentials remain in Keychain or Secret Service.
 
 - `github.rs`: external-browser OAuth, S256 PKCE, random state, temporary loopback
-  callback, secure account storage, real installation catalog, durable VM policy,
+  callback, secure account storage, real installation catalog, durable computer policy,
   truthful progress/error events and main-window-only mutations.
 - `github_tokens.rs`: direct code exchange, refresh, restricted-token creation,
   individual-token retirement and whole-authorization revocation. Repository-only
@@ -68,12 +68,12 @@ Invalid remaining selections also detach old grants before reporting the error.
 
 Only changed owner/read/write groups request new credentials. Unchanged scopes
 reuse unexpired tokens. Superseded network results cannot attach to a newer policy.
-Starting a VM and replacing its profile are ordered per VM. Applying a new profile
-closes existing proxy connections without rebooting the VM. A read-token change
+Starting a computer and replacing its profile are ordered per computer. Applying a new profile
+closes existing proxy connections without rebooting the computer. A read-token change
 can briefly pause writes for the same owner while its paired profile is rebuilt.
 Git identity changes do not request tokens or wait for GitHub. The repository
 catalog refreshes every five minutes for all connected, enabled accounts, including
-selected mode and accounts with no VM grants yet. Previously it refreshed only for
+selected mode and accounts with no computer grants yet. Previously it refreshed only for
 All repositories, leaving newly authorized repositories absent from the picker.
 
 Confirmed rate limits honor Retry-After and exhausted x-ratelimit-reset with
@@ -179,7 +179,7 @@ Follow `app/SiloUI/tests/live/README.md`. The native test uses actual production
 operations against three explicit private fixtures: read A, write B, deny C.
 It checks REST/GraphQL boundaries, node-ID mutations, child re-scoping/reset,
 All repositories and individual-token revocation without losing the parent.
-Optional VM execution tests real Git, gh, LFS bytes and live access changes using
+Optional computer execution tests real Git, gh, LFS bytes and live access changes using
 only scoped credentials in the native child process.
 
 Observed with real GitHub on 2026-09-09:
@@ -223,9 +223,9 @@ Host Push against GitHub and Linux hardware still need explicit live checks.
 1. Launch `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app` in normal mode.
 2. Open GitHub and click Connect. Confirm Connecting feedback, authorize through
    GitHub in the external browser and return to the same app window.
-3. Select repositories for a VM; toggle write permission, then switch to All
+3. Select repositories for a computer; toggle write permission, then switch to All
    repositories. Confirm persisted choices and real applying/success states.
-4. Change access while the VM is running. Verify allowed and forbidden Git/gh
+4. Change access while the computer is running. Verify allowed and forbidden Git/gh
    requests and unchanged boot ID; do not infer success from a green card alone.
 5. Reopen onboarding GitHub/review and confirm identical choices, completion and
    compact existing cards. Skipping GitHub must still permit setup completion.
@@ -251,7 +251,7 @@ The full rationale and hostile-case test matrix are in
 ## Connection defaults and empty-policy regression (2026-09-09)
 
 An empty native policy array incorrectly bypassed host-author defaults. Drafts now
-resolve each VM independently: existing policy first, then the actual host Git/jj
+resolve each computer independently: existing policy first, then the actual host Git/jj
 author. No configured author means empty fields with identity application disabled;
 repository access does not depend on inventing an author. Unfinished identity text
 is preserved locally and is not submitted by unrelated repository changes.
@@ -259,7 +259,7 @@ is preserved locally and is not submitted by unrelated repository changes.
 A rejected configuration save now ends local applying feedback, preserves the
 valid repository catalog, and lets the existing Retry action resubmit that intent.
 Stale rejections cannot override newer edits; whole-configuration rejection settles
-all outstanding local VM edits included in that request.
+all outstanding local computer edits included in that request.
 
 Validation: 492 frontend tests across 52 files, 35 focused native GitHub tests,
 lint/type checking, and the configured macOS debug bundle passed. The real app
@@ -362,9 +362,9 @@ The guest-to-host copy in [`host_push.rs`](../app/SiloUI/src-tauri/src/host_push
 previously discarded stderr and mapped every nonzero exit to “Object transfer
 failed or exceeded the available temporary space budget.” That message did not
 establish disk exhaustion. Remote `repository.push` executes this copy on the
-computer hosting the VM, before the host uploads the imported objects to GitHub.
+device hosting the computer, before the device uploads the imported objects to GitHub.
 
-Failures now include the source object, sandbox, process status, copied bytes,
+Failures now include the source object, computer, process status, copied bytes,
 remaining transfer budget, and bounded runtime stderr with sensitive-looking
 words redacted. Only SIGXFSZ establishes the temporary file size limit failure;
 other process failures retain their own diagnostics. These details travel in the
@@ -408,8 +408,8 @@ completion. No packaged app or live `dev-zeronival` push was inspected in this r
 ### Proposed replacement for host-push transfer planning (2026-09-16)
 
 Research only; this replacement is not implemented or benchmarked. Preserve
-explicit host-authorized publishing while the VM's GitHub policy remains
-read-only. Running guest `git push` under temporarily elevated VM-wide policy
+explicit host-authorized publishing while the computer's GitHub policy remains
+read-only. Running guest `git push` under temporarily elevated computer-wide policy
 would change that boundary. Running in the guest also executes its hooks;
 current Host Push intentionally does not execute those hooks on the host.
 
@@ -451,9 +451,9 @@ This supersedes the earlier empty-object filter and proposed replacement above.
 The production path no longer builds full Git bundles, parses LFS dry-run
 output, computes LFS object paths, or copies/hash-checks those objects itself.
 
-1. Authorize the host for the selected GitHub repository; do not elevate the VM's
+1. Authorize the host for the selected GitHub repository; do not elevate the computer's
    GitHub permission. Capture the source branch and commit in a temporary Git ref.
-2. Run bundled host Git `fetch` through a private OpenSSH connection to the VM's
+2. Run bundled host Git `fetch` through a private OpenSSH connection to the computer's
    Git upload-pack service. Keep SSH configuration outside the user's SSH config.
 3. Run standard `git lfs fetch --all` for the captured ref over pure SSH. The
    pinned upstream `git-lfs-transfer` server is installed in an operation-specific
@@ -472,11 +472,11 @@ output, computes LFS object paths, or copies/hash-checks those objects itself.
 The host publishing repository is private and contains only host-created
 configuration. Guest hooks, credential helpers and `.git/config` are never
 imported or executed on the host. This is explicit committed-state publication;
-it does not promise to execute the sandbox's custom pre-push hooks or honor its
+it does not promise to execute the computer's custom pre-push hooks or honor its
 arbitrary push configuration. The final Git push still checks concurrent remote
 updates. Guest changes made after capture do not change the published commit.
 
-The cache is keyed by sandbox, source path and GitHub repository and bounded to
+The cache is keyed by computer, source path and GitHub repository and bounded to
 2 GiB across repositories between operations. Oversized individual caches are
 removed after use; otherwise least-recently-used caches are evicted. A process
 lock excludes simultaneous use/eviction and is inherited by Git so an application
@@ -489,12 +489,12 @@ transfer alone cannot prove publication will succeed.
 `repository.push.start` persists a client operation ID before dispatch and returns
 immediately. `repository.push.status` observes that same job. Lost replies are
 queried before reusing the same ID, and duplicate clicks for a repository return
-the existing job. Old hosts receive an update-required message instead of a
+the existing job. Older devices receive an update-required message instead of a
 fallback to the custom synchronous transfer. The owner process records terminal
 results independently of its SSH observer. The main window and status panel both
 persist dismissals.
 
-A host restart with no recorded terminal result yields `unknown`, not a fabricated
+A device restart with no recorded terminal result yields `unknown`, not a fabricated
 failure or success. The user must check the branch on GitHub and explicitly choose
 “I’ve checked GitHub” before a separate retry. This does not automatically verify
 GitHub. The inherited cache lock prevents reuse while surviving Git children still
@@ -504,8 +504,8 @@ retention changes must reject expired IDs rather than replay them.
 
 Verification uses disposable local repositories, bundled Git/LFS, an upstream
 SSH-server prototype, journal fixtures, and frontend fixtures. It does not claim
-an authenticated GitHub push from a live VM, a two-computer session, or a packaged
-app inspection. The opt-in authenticated VM test continues to invoke the same
+an authenticated GitHub push from a live computer, a two-device session, or a packaged
+app inspection. The opt-in authenticated computer test continues to invoke the same
 production publication function; the obsolete custom binary-copy check was removed.
 
 Final focused verification for the replacement:
@@ -514,7 +514,7 @@ Final focused verification for the replacement:
   with synthetic GitHub configuration: 24 passed; one subprocess helper is ignored
   by the ordinary harness and executed by its parent lock-inheritance test.
 - `cargo test ... editor::tests`: five passed; one opt-in live test skipped.
-- Frontend production-source, remote-computer, application-window and status-panel
+- Frontend production-source, connections, application-window and status-panel
   tests: 183 passed; `npm --prefix app/SiloUI run typecheck` and `lint` passed.
 - `npm --prefix app/SiloUI run test:release`: 33 passed before the additional
   license-permission regression; the final packaging file's three tests passed.
@@ -590,7 +590,7 @@ and enforces the JavaScript boundary. Wrapping would reuse old revision stamps;
 saturation would stop distinguishing changes. An exhausted revision therefore
 returns an error before publishing a new policy. The last safe revision remains
 readable, and a save that changes no choices still succeeds. Reconnection checks
-the next revision before replacing the account credential or detaching VM access.
+the next revision before replacing the account credential or detaching computer access.
 
 Regression fixtures cover unsafe persisted values, exhausted policy edits without
 document mutation, and the last safe increment followed by save, reload, and a

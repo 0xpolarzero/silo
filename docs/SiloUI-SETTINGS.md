@@ -80,7 +80,7 @@ preference only when the session owns the `org.freedesktop.Notifications` D-Bus
 service. The [Desktop Notifications Specification](https://specifications.freedesktop.org/notification/latest-single/)
 defines the service protocol, not a user authorization API; service availability
 does not guarantee that a desktop will display every notification. Producing
-real sandbox notification events is described in
+real computer notification events is described in
 [SiloUI-NOTIFICATIONS.md](SiloUI-NOTIFICATIONS.md). Category choices
 remain saved and hidden or disabled while the parent preference lacks verified
 authorization.
@@ -100,7 +100,7 @@ The Terminal, Code editor, and Browser menus use installed applications in the
 native app. Their existing layout stays the same. Each menu adds `Choose…`, which
 opens a native file picker at `/Applications` on macOS or `/usr/share/applications`
 on Linux. Cancel leaves the selection unchanged. Choosing an application does
-not launch it or implement the sandbox handoff it will eventually configure.
+not launch it or implement the computer handoff it will eventually configure.
 
 On macOS, [NSWorkspace](https://developer.apple.com/documentation/appkit/nsworkspace)
 provides application handlers and default associations. Known terminal IDs keep
@@ -129,7 +129,7 @@ desktop entry's icon through the current
 on the GTK main thread, then decodes and scales it to a 32px PNG with
 [GdkPixbuf](https://docs.gtk.org/gdk-pixbuf/ctor.Pixbuf.new_from_stream_at_scale.html).
 Missing or unreadable icons use a category symbol. Icons are decorative, never
-saved in settings, and never loaded from the host for fixtures.
+saved in settings, and never loaded from the device for fixtures.
 
 Lists refresh when a menu opens and when the main window regains focus. An
 explicit custom choice joins its selected category while it remains available.
@@ -167,7 +167,7 @@ store; `settings:changed` carries saved choices, not the discovered catalog.
 Skipping discovery in the status entry therefore leaves its fallback labels
 (for example, Visual Studio Code) even when the main window resolves Zed.
 The shared resolved preferences feed the main window, command palette, status
-shortcuts, native workspace menu, and folder-picker label.
+shortcuts, native computer menu, and folder-picker label.
 
 Regression verification (2026-09-09): `application-startup.test.tsx` imports the
 actual production entry as the status window. It reproduced the VS Code fallback
@@ -177,7 +177,7 @@ suite passed 170 tests; status/settings/onboarding follow-up checks passed 33
 tests, including native menu and open folder-picker updates. Typecheck and lint
 passed. These are mocked discovery and UI checks, not native app launch evidence.
 That run verified preference propagation. The current native
-[`workspace_action` handler](../app/SiloUI/src-tauri/src/runtime.rs) dispatches
+[`computer_action` handler](../app/SiloUI/src-tauri/src/runtime.rs) dispatches
 `open-editor` and `open-terminal` to their launchers; website actions use
 [`open_network_port`](../app/SiloUI/src-tauri/src/network.rs), which checks the
 endpoint before invoking the chosen browser. See
@@ -185,7 +185,7 @@ endpoint before invoking the chosen browser. See
 [terminal handoff](SiloUI-TERMINAL-HANDOFF.md) for implementation and verification.
 
 Browser previews and tests supply a fixed catalog. The native application uses
-host discovery and the native picker. Both native windows read the catalog to resolve the same
+device discovery and the native picker. Both native windows read the catalog to resolve the same
 installed defaults; only the main window can open the application picker.
 The picker uses the official [Tauri dialog plugin](https://v2.tauri.app/plugin/dialog/)
 behind those commands; the frontend receives no general filesystem permission.
@@ -248,15 +248,15 @@ exists.
 | --- | --- | --- |
 | `theme` | Theme | System |
 | `launchAtLogin` | Last explicitly verified Launch Silo at login result | On; never applied to the OS automatically |
-| `startWorkspacesAtLaunch` | Start sandboxes at launch | Off |
-| `startupWorkspaceIds` | Startup sandboxes | Existing initial `dev` selection, otherwise first sandbox |
+| `startComputersAtLaunch` | Start computers at launch | Off |
+| `startupComputerIds` | Startup computers | Existing initial `dev` selection, otherwise first computer |
 | `terminal` | Terminal | Terminal |
 | `editor` | Code editor | Visual Studio Code |
 | `browser` | Browser | Safari |
 | `reduceMotion` | Reduce motion | Off |
 | `notificationsEnabled` | Silo notification preference | On; effective only with current OS/service authorization |
 | `notifyFailures` | Failures: something you started, or background work, failed | On |
-| `notifyChanges` | Changes: a sandbox changed state without a Silo operation causing it | On |
+| `notifyChanges` | Changes: a computer changed state without a Silo operation causing it | On |
 | `notifyCompletions` | Completions: work that took 3 seconds or longer finished | On |
 
 The legacy `notifyHealth` (read as Changes) and `notifyActions` / `notifyBackup`
@@ -264,18 +264,18 @@ The legacy `notifyHealth` (read as Changes) and `notifyActions` / `notifyBackup`
 saved. See [SiloUI-NOTIFICATIONS.md](SiloUI-NOTIFICATIONS.md).
 
 Defaults are applied in TypeScript and are not written on mount. The startup
-default follows the current sandbox list until the user enables startup or saves
+default follows the current computer list until the user enables startup or saves
 a selection. Enabling startup saves the displayed IDs and the switch value in
 one preference patch, both in General settings and on the setup completion page. An explicit
 `false` or empty startup selection overrides its default. Startup selections use
-stable machine IDs; temporarily missing machines do not delete saved IDs.
+stable computer IDs; temporarily missing computers do not delete saved IDs.
 
-Older settings can contain `startWorkspacesAtLaunch: true` without
-`startupWorkspaceIds`: the switch used to save only its boolean while the UI
+Older settings can contain `startComputersAtLaunch: true` without
+`startupComputerIds`: the switch used to save only its boolean while the UI
 displayed an unsaved default. Native startup resolves that missing field from
-the saved local VM configuration (`dev`, otherwise the first local VM). It does
+the saved local computer configuration (`dev`, otherwise the first local computer). It does
 this only after onboarding is complete and before excluding recovered explicit
-stops. An explicit empty array still starts nothing; remote SSH configurations
+stops. An explicit empty array still starts nothing; remote computers
 are never inferred as launch targets. This compatibility default does not rewrite
 settings on startup.
 
@@ -326,8 +326,8 @@ Linux. Dev uses the corresponding `org.silo.dev` directory. See the official [Ta
 Unknown document and preference fields survive later writes. Revision numbers
 and save errors belong to the running session and are not written to disk.
 
-An onboarding draft contains the current step, saved machine configurations,
-unfinished machine editor, repository selections and push choices, and Git
+An onboarding draft contains the current step, saved computer configurations,
+unfinished computer editor, repository selections and push choices, and Git
 identity input. Edits save immediately, including incomplete text. Application
 choices use shared preferences. Save still validates configuration; Cancel
 discards the current editor draft; successful completion clears recovery data.
@@ -369,8 +369,8 @@ change or flush retries them. Errors are returned in state and logged, with no
 new dialog or banner. The system-integration error dialogs described above are
 the narrow exception. Malformed, unreadable, unsupported-version, or invalid
 saved documents are protected from all writes for that session; valid known
-preferences can still be displayed. Drafts must match the existing machine
-contracts and allow unfinished editor input. Documents are capped at 1 MiB,
+preferences can still be displayed. Drafts must match the existing computer
+configuration contracts and allow unfinished editor input. Documents are capped at 1 MiB,
 drafts at 256 KiB, and startup selections at 256 IDs.
 
 All native Quit paths intercept Tauri's
@@ -399,7 +399,7 @@ Do not use the removed prototype flags as an isolation boundary.
 Historical prototype verification, September 2026. The fixture progress,
 presentation switch, native storage overrides and `Silo Preview.app` commands
 below were removed. They record the original run and are not current launch
-instructions. The current setup adapter waits for real sandbox and GitHub
+instructions. The current setup adapter waits for real computer and GitHub
 acknowledgements; see [setup verification](SiloUI-DEPENDENCIES-BACKUP-TESTING.md#continue-and-the-setup-queue).
 
 On a normal launch, onboarding uses completed sandbox fixture progress, so

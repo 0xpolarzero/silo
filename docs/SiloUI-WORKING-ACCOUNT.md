@@ -1,11 +1,11 @@
-# VM working account
+# Computer working account
 
-Silo VMs use `silo` (UID/GID 1001, home `/home/silo`) for terminal, SSH,
+Silo computers use `silo` (UID/GID 1001, home `/home/silo`) for terminal, SSH,
 editor, repository, file-transfer and desktop work. Passwordless sudo provides
 guest administration. Root remains the runtime initialization and management
-identity. Silo sets the account up after a boot whenever a VM lacks it, which
-also moves VMs from older Silo versions to it; see
-[older VMs](SiloUI-WORKING-ACCOUNT-MIGRATION.md). Silo never falls back to root.
+identity. Silo sets the account up after a boot whenever a computer lacks it, which
+also moves computers from older Silo versions to it; see
+[older computers](SiloUI-WORKING-ACCOUNT-MIGRATION.md). Silo never falls back to root.
 
 ## Single-account verification, 2026-09-21
 
@@ -14,29 +14,29 @@ using synthetic GitHub configuration and local socket access. The desktop
 subset passed again after tightening guest UID/GID validation: 21 passed.
 Guest lifecycle tests passed: 20. `git diff --check` and shell syntax passed.
 These are code and fixture checks; they do not validate an installed app.
-See [older VMs](SiloUI-WORKING-ACCOUNT-MIGRATION.md#history) for the separate
+See [older computers](SiloUI-WORKING-ACCOUNT-MIGRATION.md#history) for the separate
 live migration evidence.
 
 ## Account record and setup
 
 The guest's root-owned `/var/lib/silo/working-account.json` record is the
 account policy. The setup writes it last, and its version, user and home must
-match the supported policy. It lives on the VM's disk, so checkpoints, forks
-and exports carry it. Silo keeps no copy of it on the host.
+match the supported policy. It lives on the computer's disk, so checkpoints, forks
+and exports carry it. Silo keeps no copy of it on the device.
 
 After every boot (start, restart, a temporary boot for a guest command, or a
 restore), Silo checks the record. When it is missing, Silo runs
 `guest/working-account.sh` and `guest/working-account.py` as root. The setup
 verifies the `/workspace` ext4 mount, refuses unrelated UID/GID collisions,
-creates the account and sudo rule (or moves an older VM's homes into it), takes
+creates the account and sudo rule (or moves an older computer's homes into it), takes
 ownership of `/workspace`, and verifies account access before writing the
 record. Each step checks what an interrupted earlier run already did. If the
-setup fails, Silo stops the VM, so a running VM always has the account. A
+setup fails, Silo stops the computer, so a running computer always has the account. A
 record from an unknown policy is never overwritten. The desktop reads the same
 record, and desktop installation does not choose or set up the account.
 
 Guest images from v3 on bundle `sudo`, `python3` and
-`openssh-sftp-server`, so a new VM's account setup needs no network access or
+`openssh-sftp-server`, so a new computer's account setup needs no network access or
 package installation. Only older images that lack them install them with apt.
 The setup never substitutes a root working session. The current
 [desktop installer](../app/SiloUI/src-tauri/guest/setup-desktop.sh) uses Ubuntu
@@ -53,7 +53,7 @@ these v3 results qualify the earlier account-provisioning image.
 built source `a9827c263df3daee28959b2c2073d85c6f980e9d`. Earlier offline
 acceptance used local candidates with different hashes. The published ARM64
 archive has now passed all 13 offline live test groups using the signed packaged
-runtime, with its public archive hash verified. Existing VM startup is unaffected.
+runtime, with its public archive hash verified. Existing computer startup is unaffected.
 
 ## Why runtime initialization remains root
 
@@ -67,8 +67,8 @@ Generated SSH configs and copied commands use the persisted account. Zed and
 Git transport URLs defer to the generated SSH config. Git/jj identity writes
 and verification target the same working account. Updated owners reject older
 remote clients that do not advertise account protocol 1 when preparing a
-VM connection. Update both computers
-before remotely managing unified-account VMs.
+computer connection. Update both devices
+before remotely managing unified-account computers.
 
 ## SFTP runtime fix
 
@@ -85,9 +85,9 @@ Root sessions retain the legacy implementation. Named SSH sessions also set
 `USER` and `LOGNAME`; those variables were absent in the original runtime.
 
 The runtime advertises `--silo-working-account-protocol` version 1. Build
-validation, new-VM creation and unified-account SSH preparation require that
+validation, new-computer creation and unified-account SSH preparation require that
 capability; an incompatible runtime cannot retain or bind a managed listener
-for a unified VM. This change stays in
+for a unified computer. This change stays in
 the existing vendor patch and retains the other bundled runtime integrations.
 
 ## Desktop and preservation evidence
@@ -98,22 +98,22 @@ were unchanged afterwards. Xvnc, Xfce and the window manager ran as `silo`;
 no `silo-desktop` account was created. Desktop shutdown preserved an unrelated
 job owned by the same UID. Reinstallation preserved VNC configuration and
 password hashes. Existing conflicting configuration is rejected before package
-installation on unified VMs.
+installation on unified computers.
 
 A headed ARM64 Chromium 153 test rendered a page without `--no-sandbox`.
 `chrome://sandbox` reported PID/network namespaces and seccomp-BPF/TSYNC
 enabled. This proves the tested browser/runtime combination, not arbitrary
-browser packages or every supported host architecture.
+browser packages or every supported device architecture.
 
 Reproduction: `scripts/test-working-account-live.py` is an opt-in disposable
-VM test for production account provisioning, exec/SSH identity, SFTP/SCP
+computer test for production account provisioning, exec/SSH identity, SFTP/SCP
 ownership, permission failures, missing-helper behavior and restart persistence.
 It accepts the exact runtime, library, guest-image and evidence paths. It never
 opens the user's normal runtime home. Native account/recovery/backup tests and
 `scripts/test_desktop_service.py` cover required policy validation and desktop behavior.
 
 Private logs and disposable probes belong under ignored
-`src-tauri/target/verification/working-account/`. No user VM, credential or
+`src-tauri/target/verification/working-account/`. No user computer, credential or
 project was used for the live acceptance tests. Cross-architecture and packaged
 UI verification must be reported separately from these ARM64 guest results.
 

@@ -2,7 +2,7 @@
 
 ## Problem and root cause
 
-ZCode 3.11.2 connects to a Silo sandbox over SSH, but its provider request fails
+ZCode 3.11.2 connects to a Silo computer over SSH, but its provider request fails
 with `MODEL_TLS_VALIDATION_FAILED`, caused by `SELF_SIGNED_CERT_IN_CHAIN`.
 The server inherits `NODE_EXTRA_CA_CERTS=/.msb/tls/ca.pem`. Its real environment
 sanitizer removes that variable before spawning the agent. It retains the path
@@ -28,9 +28,9 @@ reconnection evaluates the current policy. No domain list is learned from TLS
 failures, and certificate verification is never disabled.
 
 This is a Silo-specific runtime policy, implemented in the existing vendor patch
-and pinned through `runtime-inputs.json`. It also covers existing saved VM
+and pinned through `runtime-inputs.json`. It also covers existing saved computer
 configurations when they next start with the updated runtime. It does not
-implicitly restart running VMs.
+implicitly restart running computers.
 
 ### Why this fix
 
@@ -39,14 +39,14 @@ bug. The fast test verifies that candidate. Silo does not own ZCode's server,
 should not rewrite installed third-party bundles, and cannot force arbitrary
 clients to retain CA environment variables or accept interception.
 
-Silo needs interception to inject host-held credentials. Intercepting unrelated
+Silo needs interception to inject device-held credentials. Intercepting unrelated
 traffic adds a trust requirement without providing that capability. Limiting
 interception to secret destinations fixes the general compatibility issue without
 hardcoding `*.z.ai` or requiring users to configure exceptions. It is consistent
 with Silo's existing policy of forwarding public placeholders unchanged to
 unrelated hosts (see `SiloUI-AGENT-PLACEHOLDER-STALL.md`).
 
-A client using a secret assigned to its provider still needs to trust the sandbox
+A client using a secret assigned to its provider still needs to trust the computer's
 CA. That case cannot safely be solved by silently bypassing secret injection.
 This change intentionally stops HTTP inspection of encrypted requests to
 non-secret destinations; network policy there is enforced using the existing
@@ -72,7 +72,7 @@ handshakes with a generated local CA. It checks original failure, two trust
 propagation candidates, tool trust, broker-credential exclusion, and explicit CA
 replacement. It makes no provider calls and requires no account credentials.
 
-The live test creates an isolated MicroSandbox VM using the bundled Ubuntu 24.04
+The live test creates an isolated MicroSandbox computer using the bundled Ubuntu 24.04
 image, TLS interception enabled, empty bypass list, and a synthetic GitHub secret
 restricted to the production GitHub hosts. It connects through `msb ssh serve`,
 starts Linux Node 22.16.0, and executes those same server builders, spawn statement,
@@ -80,14 +80,14 @@ and actual provider transport. It sends unauthenticated requests to api.z.ai and
 api.github.com. Any HTTP response proves TLS succeeded; no model completion is
 requested. The baseline must reproduce the exact cause chain. The fixed runtime
 must preserve ordinary provider TLS while still intercepting GitHub. Moving the
-secret to api.z.ai and then removing it must update both routes without VM restart.
+secret to api.z.ai and then removing it must update both routes without a computer restart.
 
-This exercises the real VM, SSH listener, runtime TLS proxy, Linux Node, child
+This exercises the real computer, SSH listener, runtime TLS proxy, Linux Node, child
 launch boundary, and provider transport. The complete ZCode desktop/server
 protocol, OAuth, and model turn are not launched. Coverage settings, workspace
 identity, and process-group inputs are test fixtures. The tool passthrough blob
 is supplied explicitly because its attachment point is outside the provided
-server excerpt. Live verification on this Apple Silicon host uses Linux ARM64;
+server excerpt. Live verification on this Apple Silicon device uses Linux ARM64;
 the original incident used Linux x64. These are the remaining fidelity limits.
 
 ## Verified results, 2026-09-15
@@ -164,8 +164,8 @@ SILO_RUN_ZCODE_TLS_LIVE=1 python3 app/SiloUI/scripts/test-zcode-tls-live.py \
 ```
 
 Use `--expect broken` with the previous runtime for the failure reproduction.
-The test never accesses existing Silo VM state. It keeps failure evidence,
-gracefully stops its VM, and removes successful disposable VM state. It requires
+The test never accesses existing Silo computer state. It keeps failure evidence,
+gracefully stops its computer, and removes successful disposable computer state. It requires
 hypervisor and network access and is deliberately outside ordinary unit tests.
 
 Apply the runtime patch to the pinned source before running Rust regressions:

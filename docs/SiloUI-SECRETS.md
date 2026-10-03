@@ -1,8 +1,8 @@
 # Secrets
 
-Silo stores general secret values in the host credential store (macOS Keychain or
+Silo stores general secret values in the device credential store (macOS Keychain or
 Linux Secret Service). `secrets.json` contains names, immutable value references,
-VM assignments, allowed hosts, pending updates, safe failures, and bounded activity
+computer assignments, allowed hosts, pending updates, safe failures, and bounded activity
 history. Values are never returned in application snapshots. The editor sends a
 value only when adding or replacing one, then discards its draft on successful save.
 
@@ -13,35 +13,35 @@ fallback. A value is stored before its reference is published. Superseded values
 are pruned after reconciliation.
 
 Remove deletes the credential-store value and removes the secret from the list
-before returning, without waiting for any sandbox. Future starts resolve the
+before returning, without waiting for any computer. Future starts resolve the
 current assignments and receive no removed value. Silo records possible access
-by each affected sandbox in an internal `pendingRevocations` journal containing
-only the sandbox name, secret name, secret ID, and immutable value generation.
+by each affected computer in an internal `pendingRevocations` journal containing
+only the computer name, secret name, secret ID, and immutable value generation.
 A credential-store deletion failure remains retryable and excludes that secret
 from future boot material; it does not report successful removal.
 
-State refreshes retry pending revocations in the background on the sandbox's owner
-computer, including for remote rows. A busy, transitional, paused, or unreadable
-sandbox keeps its record. A running sandbox clears it only after both durable and
+State refreshes retry pending revocations in the background on the computer's owner
+device, including for remote rows. A busy, transitional, paused, or unreadable
+computer keeps its record. A running computer clears it only after both durable and
 active runtime configuration confirm that the name is absent. Missing, deleted,
-stopped, or crashed sandboxes clear it without a live update. A verified restart
-with the current assignments also clears it. Pending sandboxes show “May still
+stopped, or crashed computers clear it without a live update. A verified restart
+with the current assignments also clears it. Pending computers show “May still
 have access to GITHUB_TOKEN until it restarts” and offer Restart through the
-existing lifecycle controls. Unreachable sandboxes never disable Edit or Remove.
+existing lifecycle controls. Unreachable computers never disable Edit or Remove.
 
 Revocation sends only the removed name to the runtime and does not read remaining
 secret values. Re-adding a name creates a new secret ID and value generation.
-Under the VM gate, a retry rechecks current assignments and never removes a name
+Under the computer gate, a retry rechecks current assignments and never removes a name
 assigned to a replacement. A verified live replacement clears earlier records;
 a deferred replacement keeps the warning until restart. Each completion clears
 only its own records, preserving later removals of the same name. Secret updates
-also resolve current material after acquiring the VM gate so an older queued
+also resolve current material after acquiring the computer gate so an older queued
 update cannot restore a value removed while it waited.
 
 MicroSandbox receives host environment source references, not inline stored values.
 The guest sees `$MSB_NAME` through its named environment variable. Existing values
-and domain restrictions update live; adding a new variable on a running VM waits
-for the next boot. Silo never restarts a VM implicitly. Runtime configuration is
+and domain restrictions update live; adding a new variable on a running computer waits
+for the next boot. Silo never restarts a computer implicitly. Runtime configuration is
 checked after updates, including source reference, allowed hosts, placeholder, and
 TLS requirement. The bundled runtime patch closes active proxy connections after
 secret policy changes. Already delivered requests cannot be recalled.
@@ -57,7 +57,7 @@ Changing or removing a secret updates the interception scope live and closes
 existing proxy connections so their next connection uses the current policy.
 This is a Silo-specific behavior of the bundled runtime; it does not disable
 certificate verification or learn exceptions from failed TLS handshakes. Clients
-connecting to secret destinations must still trust the sandbox CA. See the
+connecting to secret destinations must still trust the computer's CA. See the
 [ZCode TLS investigation](SiloUI-ZCODE-TLS-INVESTIGATION.md) for the regression
 and design rationale.
 
@@ -83,11 +83,11 @@ requires explicit acknowledgement that any HTTPS server could receive the value.
 Guest output may contain sensitive user data; generic logging is not a guarantee
 of redacting arbitrary data echoed by external services.
 
-Silo backup archives do not include the host credential store. A restored VM must
-use the host's current secret assignments, not recover secret values from its disk.
+Silo backup archives do not include the device credential store. A restored computer must
+use the device's current secret assignments, not recover secret values from its disk.
 Checkpoint restores follow the same rule for GitHub access: the restore command
-uses the profile assigned to the target workspace before the guest resumes. The
-source workspace's cached grants and credentials held by historical checkpoint
+uses the profile assigned to the target computer before the guest resumes. The
+source computer's cached grants and credentials held by historical checkpoint
 memory are not used. If the target has no current GitHub profile, restore starts
 without GitHub access.
 
@@ -107,24 +107,24 @@ without GitHub access.
 
 ## Manual checks
 
-Use disposable values and VMs. Never use a real credential for an echo-service test.
+Use disposable values and computers. Never use a real credential for an echo-service test.
 
-1. Add a secret to a stopped VM; verify its name and domains, then relaunch Silo.
-2. Start the VM; inspect its environment and durable runtime config. Only the
+1. Add a secret to a stopped computer; verify its name and domains, then relaunch Silo.
+2. Start the computer; inspect its environment and durable runtime config. Only the
    placeholder and host source reference should appear.
 3. Send an HTTPS request to an allowed test server and verify substitution there;
    send the placeholder to a different server and verify blocking.
-4. Rotate the value, change domains, and remove access while the VM runs. Verify
+4. Rotate the value, change domains, and remove access while the computer runs. Verify
    the new policy on new and previously open connections, without changing boot ID.
-5. Add another secret while running. Only that secret should show the affected VM
+5. Add another secret while running. Only that secret should show the affected computer
    as requiring restart; rotating the first secret must not add a restart notice.
 6. Restart, then verify the new variable and cleared pending state.
 7. Deny credential-store access and retry: preserve edits, show the unlock message,
    and do not repeatedly prompt in the background.
-8. Make a running VM unreadable or transitional, then remove its secret. Verify
-   the list and credential-store value disappear immediately, the sandbox warns
+8. Make a running computer unreadable or transitional, then remove its secret. Verify
+   the list and credential-store value disappear immediately, the computer warns
    about possible access, and background refresh clears the warning after confirmed
-   revocation. Restart, stop, and deletion must also clear that sandbox's record.
+   revocation. Restart, stop, and deletion must also clear that computer's record.
 9. Re-add the same secret name while an old revocation is pending. Confirm the old
    retry never removes the replacement value, including when updates overlap.
 10. Verify the warning and Restart action on a remote row through its owner;
@@ -158,8 +158,8 @@ cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml \
   -- --ignored --test-threads=1
 ```
 
-It uses a temporary VM, disposable values, Ubuntu packages, and public HTTPS echo
-endpoints. It never reads Silo's user credentials or modifies the user's VM.
+It uses a temporary computer, disposable values, Ubuntu packages, and public HTTPS echo
+endpoints. It never reads Silo's user credentials or modifies the user's computers.
 
 ## Verification on 2026-09-25
 

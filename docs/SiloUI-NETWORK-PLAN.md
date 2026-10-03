@@ -1,8 +1,8 @@
 # Network implementation
 
-Silo connects TCP development services to local loopback ports. The local VM
-implementation below was verified on 2026-09-10. Remote VM services now use
-[SSH tunnels through their owning computer](SiloUI-REMOTE-COMPUTERS.md). UDP
+Silo connects TCP development services to local loopback ports. The local computer
+implementation below was verified on 2026-09-10. Remote computer services now use
+[SSH tunnels through their owning device](SiloUI-CONNECTIONS.md). UDP
 management, traffic inspection, and firewall editing are not implemented.
 
 ## Runtime and state
@@ -21,22 +21,22 @@ reachability. Listening or publishing alone does not mark a service reachable.
 Desired mappings are saved atomically in the runtime metadata directory's
 `network.json`. Failed removals remain recorded until confirmed; successful
 removals are pruned. Start/restart reapplies desired mappings after releasing the
-GitHub revision lock. Stopped VMs stay stopped. Existing VMs need one restart to
+GitHub revision lock. Stopped computers stay stopped. Existing computers need one restart to
 load the extended runtime; subsequent port changes are live.
 
 Guest checks run outside the mutation lock. Observations recheck both settings
 and published endpoints before reporting success, so a concurrent change cannot
-publish an old reachable endpoint. Work is bounded and VM reads run in batches
+publish an old reachable endpoint. Work is bounded and computer reads run in batches
 of three. No extra Silo proxy or database is introduced.
 
 ## UI
 
 Network retains cached rows during five-second refreshes and uses skeletons for
-the first load. Add port chooses a VM, guest port, optional local port, and HTTP,
+the first load. Add port chooses a computer, guest port, optional local port, and HTTP,
 HTTPS, or TCP. Adding a port exposes a service; it does not start a service.
-Discovered services show VM only. Their + action connects immediately with an
+Discovered services show the computer only. Their + action connects immediately with an
 automatic local port and HTTP as the initial protocol. Edit changes the protocol
-or local port with Save/Cancel; sandbox and guest port stay fixed. The response
+or local port with Save/Cancel; computer and guest port stay fixed. The response
 includes configuredHostPort separately from the actual endpoint so editing the
 protocol preserves Automatic or an explicit local override. Addresses use actual host ports.
 Waiting, not exposed, and unknown states remain distinct. Errors stay compact;
@@ -46,9 +46,9 @@ Browser actions use the current browser setting and recheck the endpoint before
 opening it. Status-bar Open site shares this state. The status window can read
 and open ports but cannot change mappings. Fixtures remain in preview/test code.
 
-### Sandbox hostnames and Safari
+### Computer hostnames and Safari
 
-Published websites use a per-sandbox `.localhost` hostname. Silo passes this
+Published websites use a per-computer `.localhost` hostname. Silo passes this
 hostname unchanged to the selected browser. Safari resolves these names
 automatically on macOS 26 onward; Silo also supports macOS 14 and 15, where
 users should select Chrome or Firefox. The existing **Copy 127.0.0.1 address**

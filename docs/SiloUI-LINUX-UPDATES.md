@@ -24,11 +24,11 @@ does not work. **View installers on GitHub** opens the release page, where
 The **Update** action in Silo refreshes package information and requests system
 authentication before upgrading and restarting. For updates started outside Silo,
 quit Silo before applying the system update. Closing its window is not Quit.
-Quitting stops local VMs; remote VMs keep running. The installer refuses to
+Quitting stops local computers; computers on other devices keep running. The installer refuses to
 replace a running packaged Silo or its runtime, names the blocking process, and
-never kills either. Short-lived remote-management relays (`silo-ui
---remote-bridge` started by SSH from another computer, and `--remote-guest`
-editor connections) hold no VM or app state, so they do not block an update.
+never kills either. Short-lived Connections relays (`silo-ui
+--remote-bridge` started by SSH from another device, and `--remote-guest`
+editor connections) hold no computer or app state, so they do not block an update.
 New package versions also refuse startup while installation is in progress.
 The first migration from an older version cannot enforce that startup guard in
 old code, so keep Silo closed during this first installation.
@@ -80,7 +80,7 @@ Infrastructure setup:
 4. Merge the workflow, run **Publish Silo system updates**, and verify its Pages
    deployment before publishing an installer that enrolls users.
 5. After every application release, confirm the APT workflow succeeds and an
-   enrolled test machine sees the new candidate through `apt-cache policy silo`.
+   enrolled test device sees the new candidate through `apt-cache policy silo`.
 
 The pinned public key fingerprint is
 `D870CA15D275FDB538DDC5516F36347AE839F67A`; it expires 12 September 2029.
@@ -113,7 +113,7 @@ SILO_APT_LIFECYCLE_TEST=1 python3 -m unittest discover -s app/SiloUI/scripts -p 
 It covers enrollment, opt-out, a running process refusing replacement without
 being killed, successful APT installation, administrator edits, source deletion,
 and cleanup. These tests exercise real APT/dpkg with fixtures. They do not prove
-Xubuntu's graphical updater, native VM health, or a production release upgrade.
+Xubuntu's graphical updater, native computer health, or a production release upgrade.
 
 ## Local evidence, 13 September 2026
 

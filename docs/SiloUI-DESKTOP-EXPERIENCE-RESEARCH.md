@@ -13,7 +13,7 @@ and agent pausing are outside the agreed scope.
 Research date: 2026-09-27. Coordinated research by the parent agent and three
 Luna researchers covering streaming, session platforms, and UX. This is a
 proposal supported by primary sources, not an implementation or benchmark.
-No running Silo instance, VM, or user data was changed.
+No running Silo instance, computer, or user data was changed.
 
 ## Recommendation
 
@@ -21,7 +21,7 @@ No running Silo instance, VM, or user data was changed.
 display and an adaptive remote viewer. Qualify Selkies 2.0 as the lead remote
 streaming candidate, and GNOME Remote Desktop with FreeRDP as the main
 Wayland-native alternative.** The product should choose its delivery mechanism;
-users should choose the workspace and task.
+users should choose the computer and task.
 
 The strongest local reference is Apple's supported Linux VM display on Mac;
 QEMU with virtio-gpu and native SPICE clients supplies the cross-platform
@@ -40,9 +40,9 @@ below would move the finish line from a working desktop to a technology demo.
 ## What "best" means for this feature
 
 Assumed primary workload: a person or agent uses a browser, editor, file
-manager and occasional desktop-only Linux application in a named workspace,
-on local Mac/Linux or a remote computer. Both ARM64 and x86-64 matter. A GPU
-is a separate supported profile, not an implicit property of every VM.
+manager and occasional desktop-only Linux application in a named computer,
+on local Mac/Linux or a remote device. Both ARM64 and x86-64 matter. A GPU
+is a separate supported profile, not an implicit property of every computer.
 
 The decision order is:
 
@@ -69,7 +69,7 @@ tiling animations and a codec badge do not establish demand.
 | Route | Complete candidate | Why it earns a trial | Boundary that must be proved |
 | --- | --- | --- | --- |
 | Local Mac | Apple Virtualization + a Linux desktop on its virtual display + `VZVirtualMachineView` | Official framebuffer, input, resize, clipboard and audio building blocks; no network video stream required | Requires Apple's VM runtime; no claim of guest 3D acceleration, lower total cost, or arbitrary checkpoint compatibility |
-| Local Linux, or one runtime family across hosts | QEMU/KVM or QEMU/HVF + virtio-gpu + native display/SPICE; spice-gtk on Linux, CocoaSpice on Mac | Maintained VM/display ecosystem and reusable native clients | Device, renderer, guest-tool, packaging and client versions form one qualified combination; GPU mode is conditional |
+| Local Linux, or one runtime family across devices | QEMU/KVM or QEMU/HVF + virtio-gpu + native display/SPICE; spice-gtk on Linux, CocoaSpice on Mac | Maintained VM/display ecosystem and reusable native clients | Device, renderer, guest-tool, packaging and client versions form one qualified combination; GPU mode is conditional |
 | Remote browser experience | Existing Xorg session + Selkies 2.0 native package + supported browser client | Rich display/media/input channels, CPU paths, optional WebRTC, documented chroma negotiation | Prove reconnect, input, text quality and resource use; its native existing-Wayland capture documentation is inconsistent |
 | Modern Wayland desktop | GNOME 50/51 + GNOME Remote Desktop + native FreeRDP | Compositor-integrated capture/input, RDP client ecosystem and maintained headless modes | Sharing an existing seat and creating a headless login are different modes; select one and prove session identity |
 | Commercial remote workstation | Supported Linux X11 server + Amazon DCV + Web Client SDK or vendor native client | Rich documented desktop channels and an official embedded web SDK | Off-EC2 licensing, restricted supported ARM server configurations, no Linux Wayland; native features are not Web SDK features |
@@ -150,23 +150,23 @@ claiming native-local and remote views can share that seat. Existing-Xorg
 attachment is the clearer documented initial seam.
 
 Keep the desktop recognizable and configured: readable scale, useful fonts,
-file manager, browser, terminal and a workspace shortcut. Ship neither a
+file manager, browser, terminal and a computer shortcut. Ship neither a
 custom desktop shell nor a theme distribution as the feature's core value.
 
 ## The experience to build
 
 The main surface is the application content. A small toolbar identifies the
-workspace, connection state, controller and audio; display, input and transfer
+computer, connection state, controller and audio; display, input and transfer
 details live in a menu. Do not expose protocols, encoder names or bitrate
 sliders in the normal opening flow.
 
 | Moment | Desired behavior | Proof required |
 | --- | --- | --- |
 | Open | One action opens the existing desktop, or starts it with an explicit progress state | First usable frame and input readiness, not merely an open socket |
-| Read and resize | Match guest pixels and logical scale to the actual host display; retain text clarity after motion | Thin colored text, mixed DPI, fractional scale, accurate pointer geometry |
+| Read and resize | Match guest pixels and logical scale to the actual device display; retain text clarity after motion | Thin colored text, mixed DPI, fractional scale, accurate pointer geometry |
 | Type | Respect layout, composition and application shortcut meaning | AZERTY, AltGr, dead keys, CJK IME, terminal Ctrl-C and GTK/Qt/browser editors |
 | Move files | Drop a file into a named guest destination; show completion and reveal it there | Unicode paths, hashes, cancellation and interruption; file transfer is not always a native app drag |
-| Leave | Closing the view keeps applications running while the VM remains alive | Unsaved editor buffer, app process and terminal job survive viewer close/crash |
+| Leave | Closing the view keeps applications running while the computer remains alive | Unsaved editor buffer, app process and terminal job survive viewer close/crash |
 | Reconnect | Preserve the last frame with a clear stale/disconnected state; reconnect to the same session | No buffered stale clicks, repeated keystrokes or surprise new desktop |
 | Delegate | Show who controls; the user's delegated task starts authorized control | Supported agent and human see the same session, geometry and current state |
 | Take over | One visible action revokes agent input, releases held keys/buttons, acknowledges handoff, then admits human input | No late event from an in-flight supported agent action after ownership changes |
@@ -181,32 +181,32 @@ directions must be explicit and failures visible; microphone and camera require
 the user's activation. Let the controlling viewer own desktop resize; an
 observer should scale its view instead of rearranging the controller's windows.
 
-The creative opportunity is **a workspace that a person and agent can hand
+The creative opportunity is **a computer that a person and agent can hand
 back and forth without setup or state loss**. An optional application launcher
-can focus installed Linux apps in that workspace. Add actual host-native app
+can focus installed Linux apps in that computer. Add actual device-native app
 windows only after Xpra or another maintained implementation proves they can
 refer to that same session. A cropped stream is not a native app window, and a
-second login is not the same workspace.
+second login is not the same computer.
 
 Pixels also do not carry an accessibility tree. Use supported guest semantic
 interfaces for agent actions and accessibility where available, and identify
 pixel-only behavior honestly. A Silo control lease can govern its supported
-agent adapters; it cannot prevent arbitrary privileged software inside the VM
+agent adapters; it cannot prevent arbitrary privileged software inside the computer
 from injecting input. Do not overstate that guarantee.
 
 ## Reliability belongs in session ownership
 
-The VM/session supervisor owns the compositor and application lifetime. The
+The computer/session supervisor owns the compositor and application lifetime. The
 viewer attaches and detaches; it does not start a replacement desktop on every
 retry. Keep transport recovery separate from session creation and explicit
 desktop stop. A server that embeds its display server can still terminate apps
 when that server crashes; test that boundary instead of assuming separation.
 
-Viewer reconnect, VM suspend, application session recovery and durable VM
-checkpoint are four different promises. State which one is supported. A host
+Viewer reconnect, VM suspend, application session recovery and durable computer
+checkpoint are four different promises. State which one is supported. A device
 restart does not preserve unsaved application memory merely because disk files
 persist. If checkpoints remain part of the product contract, test every new
-graphics/audio/device configuration through capture, host restart and restore.
+graphics/audio/device configuration through capture, device restart and restore.
 
 No new proprietary network protocol is justified by this research. Use the
 selected upstream client's transport/authentication mechanisms and an
@@ -268,7 +268,7 @@ it cannot meet the normal target.
 These sample sizes screen candidates; they do not establish a production
 failure rate or release readiness. Use staged elimination: one working instance of each complete route, then the
 full matrix only for finalists. Include cold start, reconnect, viewer crash,
-stream-service restart, compositor failure and VM reboot as distinct tests.
+stream-service restart, compositor failure and computer reboot as distinct tests.
 A compositor crash can destroy applications; the UX must report that honestly.
 No silent desktop restart or fabricated session recovery is acceptable.
 

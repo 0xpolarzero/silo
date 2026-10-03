@@ -33,13 +33,13 @@ exempt from library constraints.
 
 The real runtime test copied Silo's optimized `msb` and bundled engine into an
 isolated temporary directory. With the exact engine hash constrained, it created
-and booted a one-CPU, 512 MB VM from Silo's bundled image, executed a guest command,
+and booted a one-CPU, 512 MB computer from Silo's bundled image, executed a guest command,
 and stopped. An alternate engine path was rejected with an explicit library-load
 constraint error. Replacing the actual engine path with a different library using
 the original signing identifier also failed. Restoring the approved engine allowed
-the VM to boot and execute again. The disposable VM was stopped afterward.
+the computer to boot and execute again. The disposable computer was stopped afterward.
 
-The original Silo app, its running `dev` sandbox, and release signing settings
+The original Silo app, its running `dev` computer, and release signing settings
 were not changed by these experiments. Replacement libraries only print a test
 marker; they contain no malicious payload. Initializer markers use unbuffered
 output so a process crash cannot conceal buffered output.
@@ -60,9 +60,9 @@ run only the library probes. The command requires macOS 14+, Python and Xcode
 command-line tools; runtime testing also requires Apple Silicon virtualization.
 It does not change system security settings or the supplied app bundle.
 
-The recorded run passed all 11 library cases and the optional real-VM checks.
+The recorded run passed all 11 library cases and the optional real-computer checks.
 `results.json` and individual command logs are retained under that ignored output
-directory. The unique VM home was stopped and removed. The associated initial
+directory. The unique computer home was stopped and removed. The associated initial
 tamper experiment's crash report confirmed `CODESIGNING`, `Invalid Page`; raw
 system crash reports are not copied into the repository. Tampering is reported
 separately from a library-constraint rejection because page signature enforcement
@@ -86,7 +86,7 @@ remains a separate release acceptance check.
 
 The final local 0.1.1 DMG was mounted read-only and passed bundle verification.
 Its unmodified bundled helper and engine imported the bundled guest image,
-created and started an isolated VM, executed a marker, and stopped successfully.
+created and started an isolated computer, executed a marker, and stopped successfully.
 This checks the packaged runtime on macOS 26.5; it does not test Gatekeeper
 first-launch behavior or the user’s update interaction.
 
@@ -98,7 +98,7 @@ first-launch behavior or the user’s update interaction.
   Silo's signed updater supplies a separate trusted delivery check.
 - This does not detect compromised code that we intentionally approve and ship.
 - macOS 14 introduced these APIs. Both the minimum supported major version and
-  the current host passed the full suite. Do not silently relax the rule if an OS
+  the current device passed the full suite. Do not silently relax the rule if an OS
   rejects it.
 - Generate the approved hash from the final signed engine. Sign the helper with
   `--enforce-constraint-validity`; require the constraint, hardened runtime and

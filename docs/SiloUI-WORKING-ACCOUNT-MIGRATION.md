@@ -1,13 +1,13 @@
-# Older VMs and the silo account
+# Older computers and the silo account
 
-VMs created by Silo before the [silo working account](SiloUI-WORKING-ACCOUNT.md)
+Computers created by Silo before the [silo working account](SiloUI-WORKING-ACCOUNT.md)
 keep agent files under root, and some have a separate `silo-desktop` account.
 Silo moves them to the `silo` account automatically the next time it starts
 them. There is nothing to run by hand.
 
 ## At the first start
 
-After every boot, Silo checks the VM's account record,
+After every boot, Silo checks the computer's account record,
 `/var/lib/silo/working-account.json`. When it is missing, Silo runs the guest
 setup as root (`app/SiloUI/src-tauri/guest/working-account.sh` and
 `working-account.py`), and the operation queue shows "Setting up the silo
@@ -39,17 +39,17 @@ one transaction. A subprocess fixture with a real file-size limit proves that
 an interrupted service write preserves the installed service and a fresh
 process can retry setup. Separate tests inject file and directory sync errors.
 
-A new VM takes the same path with an empty `/root`. Each step checks what an
+A new computer takes the same path with an empty `/root`. Each step checks what an
 earlier run already did. Start retries interrupted setup; home conflicts require
-resolution first. If setup fails, Silo stops the VM and shows the reason. A record
+resolution first. If setup fails, Silo stops the computer and shows the reason. A record
 this Silo does not recognise, for example from a newer Silo, is never
 overwritten: the start fails and asks for an update.
 
-The first start of a large VM can take minutes, mostly for `/workspace`
-ownership. Copying home folders fills the VM's memory with file cache; if the
-host runs out of memory and the VM is killed, Silo says so.
+The first start of a large computer can take minutes, mostly for `/workspace`
+ownership. Copying home folders fills the computer's memory with file cache; if the
+device runs out of memory and the computer is killed, Silo says so.
 
-The record lives on the VM's disk, so a checkpoint, fork or export taken before
+The record lives on the computer's disk, so a checkpoint, fork or export taken before
 the move is set up the same way at its first start.
 
 ## Nothing is deleted
@@ -59,7 +59,7 @@ move as expected can be copied from them with `sudo`. Agent session histories
 are copied unchanged, so a history that names an old absolute working directory
 is not rewritten. The `silo-desktop` service name and `/var/lib/silo-desktop`
 keep their names; they are not separate login accounts. Custom account
-arrangements and host-shared workspace mounts are not supported.
+arrangements and device-shared mounts are not supported.
 
 Older Silo versions recorded the account in a runtime label,
 `silo.working-account=1`. Silo no longer reads or writes it; existing labels are
@@ -102,9 +102,9 @@ existing launcher relocation rules without scanning unrelated destination files.
 ## Verification
 
 Rust tests in `working_account.rs` cover the check, the setup command, the
-setup's own failure reasons, other failures with their Details, a VM that
+setup's own failure reasons, other failures with their Details, a computer that
 crashes during setup, and records written by every earlier Silo. A `runtime.rs`
-test drives a fake runtime through a start, a failed setup that stops the VM, a
+test drives a fake runtime through a start, a failed setup that stops the computer, a
 temporary boot and a restore. The guest copy rules have Python tests:
 
 ```sh
@@ -118,7 +118,7 @@ These tests passed on Python 3.12.9 on macOS; the revised conflict policy has no
 been qualified in a live Ubuntu guest.
 
 `app/SiloUI/scripts/test-working-account-live.py` is the opt-in live test in a
-disposable VM. It covers missing tools, a UID collision, copied root files, an
+disposable computer. It covers missing tools, a UID collision, copied root files, an
 interrupted setup, a malformed record, and the account's exec, SSH, SFTP and Git
 behaviour.
 
