@@ -4,7 +4,7 @@ import { lifecycleGuard, type LifecyclePrompt } from "@/features/application/mod
 import { workspaceTarget } from "@/features/application/model/connections"
 import { DeviceBadge } from "@/features/sandboxes/components/device-badge"
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
-import { CircleAlert, Code, GitBranch, Loader2, Monitor, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
+import { CircleAlert, Code, GitBranch, Loader2, Monitor, Play, Power, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
 
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { SiloMark } from "@/components/silo-mark"
@@ -204,7 +204,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
   const target = workspaceTarget(workspace)
               const availability = workspaceAvailability(workspace, source)
               const pending = confirmation?.workspace === target ? confirmation : null
-              const pendingSecrets = machine.kind === "vm" && !workspace.device ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
+              const pendingSecrets = !workspace.device ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
               const activity = source.activities.find((item) => item.category === "sandbox" && item.workspace === target && item.status === "running")
               const review = workspace.state === "failed" || workspace.attention?.level === "error"
               // A failed Start leaves the sandbox "Stopped": show the failure instead of a neutral row.
@@ -213,12 +213,11 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
               return <SandboxListItem key={machine.id} aria-label={machine.name} aria-busy={availability.busy || undefined}>
                 <SandboxListRow
                   name={machine.name}
-                  kind={machine.kind}
                   kindBadge={workspace.device ? <DeviceBadge device={workspace.device} /> : undefined}
                   iconState={lifecycle?.error ? "error" : workspaceIconState(workspace)}
                   tone={workspace.freshness === "stale" ? "warning" : lifecycle?.error ? "error" : workspaceRowTone(workspace)}
                   icon={availability.busy ? <span className="relative shrink-0">
-                    <ListRowIcon>{machine.kind === "vm" ? <Monitor className="size-3.5" /> : <Server className="size-3.5" />}</ListRowIcon>
+                    <ListRowIcon><Monitor className="size-3.5" /></ListRowIcon>
                     <span className="absolute -top-1 -right-1 grid size-3.5 place-items-center rounded-full bg-background"><Loader2 className="size-2.5 animate-spin" aria-hidden="true" /></span>
                   </span> : undefined}
                   detail={<span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">

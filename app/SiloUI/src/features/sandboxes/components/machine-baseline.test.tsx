@@ -2,16 +2,16 @@ import { render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import type { SetupVirtualMachineConfiguration } from "@/contracts/silo"
+import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import { MachineList } from "./machine-list"
 
-const machine = productionMachineDefaults[0] as SetupVirtualMachineConfiguration
+const machine = productionMachineDefaults[0] as SetupMachineConfiguration
 
 describe("remote saves use the editing baseline", () => {
   it("sends the values the editor opened with as the expected state", async () => {
     const commit = vi.fn().mockResolvedValue(undefined)
-    const list = (machines: SetupVirtualMachineConfiguration[]) => <TooltipProvider><MachineList machines={machines} onMachinesChange={vi.fn()} onCommitMachine={commit}
+    const list = (machines: SetupMachineConfiguration[]) => <TooltipProvider><MachineList machines={machines} onMachinesChange={vi.fn()} onCommitMachine={commit}
       getDeviceId={() => "office"} isMachineCreated={() => true} isMachineRunning={() => false}
       getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>
     const { rerender } = render(list([machine]))

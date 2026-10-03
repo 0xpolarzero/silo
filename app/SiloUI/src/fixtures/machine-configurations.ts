@@ -1,10 +1,9 @@
-import type { SetupVirtualMachineConfiguration } from "@/contracts/silo"
+import type { SetupMachineConfiguration } from "@/contracts/silo"
 
 // Multiple machines for previews and interaction tests only.
-export const fixtureMachineDefaults: readonly SetupVirtualMachineConfiguration[] = [
+export const fixtureMachineDefaults: readonly SetupMachineConfiguration[] = [
   {
     id: "00000000-0000-4000-8000-000000000001",
-    kind: "vm",
     name: "dev",
     cpus: 8,
     maxCPUs: 12,
@@ -15,7 +14,6 @@ export const fixtureMachineDefaults: readonly SetupVirtualMachineConfiguration[]
   },
   {
     id: "00000000-0000-4000-8000-000000000002",
-    kind: "vm",
     name: "playgrounds",
     cpus: 4,
     maxCPUs: 12,
@@ -26,7 +24,6 @@ export const fixtureMachineDefaults: readonly SetupVirtualMachineConfiguration[]
   },
   {
     id: "00000000-0000-4000-8000-000000000003",
-    kind: "vm",
     name: "personal",
     cpus: 6,
     maxCPUs: 12,

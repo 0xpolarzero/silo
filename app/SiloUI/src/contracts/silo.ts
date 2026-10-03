@@ -38,7 +38,7 @@ const desktopConfigurationSchema = z.object({
   builtIn: z.boolean().optional(),
 }).strict()
 
-export const setupWorkspaceConfigurationSchema = z.object({
+export const setupMachineConfigurationSchema = z.object({
   id: z.uuid(),
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
   cpus: z.number().int().min(1).max(255),
@@ -53,24 +53,6 @@ export const setupWorkspaceConfigurationSchema = z.object({
 }).refine((workspace) => workspace.memoryGiB <= workspace.maxMemoryGiB, {
   message: "memoryGiB must not exceed maxMemoryGiB",
 })
-
-export const setupVirtualMachineConfigurationSchema = setupWorkspaceConfigurationSchema.extend({
-  kind: z.literal("vm"),
-}).strict()
-
-export const setupSSHMachineConfigurationSchema = z.object({
-  id: z.uuid(),
-  kind: z.literal("ssh"),
-  name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
-  host: z.string().trim().min(1).max(253).regex(/^\S+$/),
-  user: z.string().trim().min(1).max(64).regex(/^[a-zA-Z_][a-zA-Z0-9._-]*$/),
-  port: z.number().int().min(1).max(65_535),
-}).strict()
-
-export const setupMachineConfigurationSchema = z.discriminatedUnion("kind", [
-  setupVirtualMachineConfigurationSchema,
-  setupSSHMachineConfigurationSchema,
-])
 
 export const setupMachineConfigurationRequestSchema = z.object({
   schemaVersion: z.literal(1),
@@ -100,7 +82,7 @@ export const siloBootstrapStateSchema = z.object({
   updatedAt: z.number(),
   lastError: z.string().optional(),
   completedPhases: z.array(siloBootstrapPhaseSchema),
-  workspaceConfigurations: z.array(setupWorkspaceConfigurationSchema).optional(),
+  workspaceConfigurations: z.array(setupMachineConfigurationSchema).optional(),
   phaseDurations: z.record(z.string(), z.number().nonnegative()),
 }).strict()
 
@@ -175,8 +157,6 @@ export type SiloPreflightCheck = z.infer<typeof siloPreflightCheckSchema>
 export type SiloBootstrapConfiguration = z.infer<typeof siloBootstrapConfigurationSchema>
 export type SetupMachineConfiguration = z.infer<typeof setupMachineConfigurationSchema>
 export type SetupMachineConfigurationRequest = z.infer<typeof setupMachineConfigurationRequestSchema>
-export type SetupSSHMachineConfiguration = z.infer<typeof setupSSHMachineConfigurationSchema>
-export type SetupVirtualMachineConfiguration = z.infer<typeof setupVirtualMachineConfigurationSchema>
 export type SiloProgressEvent = z.infer<typeof siloProgressEventSchema>
 export type SiloBootstrapResult = z.infer<typeof siloBootstrapResultSchema>
 export type SiloProtocolError = z.infer<typeof siloProtocolErrorSchema>

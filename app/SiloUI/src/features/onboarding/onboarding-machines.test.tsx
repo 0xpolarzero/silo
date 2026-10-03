@@ -84,50 +84,13 @@ it("adds, cancels, and saves a virtual machine through the typed configuration a
   expect(saveMachineConfiguration.mock.lastCall?.[0]).toMatchObject({
     schemaVersion: 1,
     machines: [
-      { kind: "vm", name: "dev" },
-      { kind: "vm", name: "playgrounds" },
-      { kind: "vm", name: "personal" },
-      { kind: "vm", name: "build", cpus: 4, maxCPUs: 12, memoryGiB: 32, maxMemoryGiB: 48, workspaceStorageGiB: 120, runtimeStorageGiB: 100 },
+      { name: "dev" },
+      { name: "playgrounds" },
+      { name: "personal" },
+      { name: "build", cpus: 4, maxCPUs: 12, memoryGiB: 32, maxMemoryGiB: 48, workspaceStorageGiB: 120, runtimeStorageGiB: 100 },
     ],
   })
   expect(screen.getByRole("list", { name: "Configured sandboxes" })).toHaveTextContent("build")
-})
-
-
-it("adds, validates, cancels, and saves an SSH machine without claiming a connection", async () => {
-  const { user, saveMachineConfiguration } = await renderMachineScenario()
-
-  await user.click(machinePanel().getByRole("button", { name: "Add" }))
-  await user.click(within(screen.getByRole("menu", { name: "Add sandbox" })).getByRole("menuitem", { name: "Connect an SSH host…" }))
-  expect(machineEditor().getByRole("textbox", { name: "SSH host name" })).toHaveValue("remote-1")
-  expect(machineEditor().getByRole("spinbutton", { name: "SSH port" })).toHaveValue(22)
-  await user.click(machineEditor().getByRole("button", { name: "Create" }))
-  expect(screen.getByText("Enter an SSH host.")).toBeVisible()
-  expect(screen.getByText("Enter an SSH user.")).toBeVisible()
-  expect(saveMachineConfiguration).not.toHaveBeenCalled()
-  await user.click(machineEditor().getByRole("button", { name: "Cancel" }))
-  expect(screen.queryByDisplayValue("remote-1")).not.toBeInTheDocument()
-
-  await user.click(machinePanel().getByRole("button", { name: "Add" }))
-  await user.click(within(screen.getByRole("menu", { name: "Add sandbox" })).getByRole("menuitem", { name: "Connect an SSH host…" }))
-  await user.clear(machineEditor().getByRole("textbox", { name: "SSH host name" }))
-  await user.type(machineEditor().getByRole("textbox", { name: "SSH host name" }), "staging")
-  await user.type(machineEditor().getByRole("textbox", { name: "SSH host" }), "staging.example.com")
-  await user.type(machineEditor().getByRole("textbox", { name: "SSH user" }), "deploy")
-  await user.clear(machineEditor().getByRole("spinbutton", { name: "SSH port" }))
-  await user.type(machineEditor().getByRole("spinbutton", { name: "SSH port" }), "2222")
-  await user.click(machineEditor().getByRole("button", { name: "Create" }))
-
-  expect(saveMachineConfiguration.mock.lastCall?.[0].machines.at(-1)).toMatchObject({
-    kind: "ssh",
-    name: "staging",
-    host: "staging.example.com",
-    user: "deploy",
-    port: 2222,
-  })
-  const panel = within(screen.getByRole("tabpanel"))
-  expect(panel.getByText("deploy@staging.example.com:2222")).toBeVisible()
-  expect(panel.queryByText(/connected/i)).not.toBeInTheDocument()
 })
 
 it("restores an existing VM exactly on Cancel and persists a valid edit on Save", async () => {
@@ -382,14 +345,12 @@ it("reports the machine capacity in the draft instead of throwing across the act
   expect(saveMachineConfiguration).not.toHaveBeenCalled()
 })
 
-it("mirrors final machine order and kind in Review while preserving activity collapse", async () => {
+it("mirrors final machine order in Review while preserving activity collapse", async () => {
   const { user } = await renderMachineScenario()
   await user.click(machinePanel().getByRole("button", { name: "Add" }))
-  await user.click(within(screen.getByRole("menu", { name: "Add sandbox" })).getByRole("menuitem", { name: "Connect an SSH host…" }))
-  await user.clear(machineEditor().getByRole("textbox", { name: "SSH host name" }))
-  await user.type(machineEditor().getByRole("textbox", { name: "SSH host name" }), "remote")
-  await user.type(machineEditor().getByRole("textbox", { name: "SSH host" }), "remote.example.com")
-  await user.type(machineEditor().getByRole("textbox", { name: "SSH user" }), "ops")
+  await user.click(within(screen.getByRole("menu", { name: "Add sandbox" })).getByRole("menuitem", { name: "New sandbox" }))
+  await user.clear(machineEditor().getByRole("textbox", { name: "Sandbox name" }))
+  await user.type(machineEditor().getByRole("textbox", { name: "Sandbox name" }), "remote")
   await user.click(machineEditor().getByRole("button", { name: "Create" }))
   await user.click(configuredSandboxes().getByRole("button", { name: "Reorder remote" }))
   await user.keyboard("{ArrowUp}{ArrowUp}{ArrowUp}")
@@ -404,15 +365,14 @@ it("mirrors final machine order and kind in Review while preserving activity col
   const review = screen.getByRole("list", { name: "Sandboxes" })
   const rows = within(review).getAllByRole("listitem")
   const expected = [
-    ["remote", "SSH host", "ops@remote.example.com:22"],
-    ["dev", "vm", "CPUs: 8 · Memory: 32 GiB"],
-    ["playgrounds", "vm", "CPUs: 4 · Memory: 32 GiB"],
-    ["personal", "vm", "CPUs: 6 · Memory: 16 GiB"],
+    ["remote", "CPUs: 8 · Memory: 32 GiB"],
+    ["dev", "CPUs: 8 · Memory: 32 GiB"],
+    ["playgrounds", "CPUs: 4 · Memory: 32 GiB"],
+    ["personal", "CPUs: 6 · Memory: 16 GiB"],
   ]
   expect(rows).toHaveLength(expected.length)
-  expected.forEach(([name, kind, detail], index) => {
+  expected.forEach(([name, detail], index) => {
     expect(within(rows[index]).getByText(name)).toBeVisible()
-    expect(within(rows[index]).getByText(kind)).toBeVisible()
     expect(rows[index]).toHaveTextContent(detail)
   })
   await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))

@@ -619,7 +619,7 @@ describe("remote management response ordering", () => {
 describe("remote machine mutation response ordering", () => {
   it.each(["edit", "delete", "add"] as const)("preserves a sibling's newer lifecycle result after a late remote %s", async kind => {
     const initial = structuredClone(source)
-    initial.workspaces = initial.workspaces.filter(row => row.machine.kind === "vm").slice(0, 2).map(row => ({ ...row, state: "running" }))
+    initial.workspaces = initial.workspaces.slice(0, 2).map(row => ({ ...row, state: "running" }))
     const [a, b] = initial.workspaces
     const late = deferred<unknown>()
     let reads = 0
@@ -660,7 +660,7 @@ describe("remote machine mutation response ordering", () => {
 describe("SSH save response ordering", () => {
   it.each([false, true])("preserves independent sibling SSH saves when responses finish in reverse order (remote=%s)", async remote => {
     const initial = structuredClone(source)
-    initial.workspaces = initial.workspaces.filter(row => row.machine.kind === "vm").slice(0, 2)
+    initial.workspaces = initial.workspaces.slice(0, 2)
     const target = (workspace: typeof initial.workspaces[number]) => remote ? `silo-remote:office:${workspace.machine.id}` : workspace.machine.name
     const rows = initial.workspaces.map(workspace => ({ workspace: target(workspace), enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, deviceName: "Laptop", addresses: [] }))
     const older = deferred<unknown>()
@@ -693,7 +693,7 @@ describe("SSH save response ordering", () => {
 describe("checkpoint response ordering", () => {
   it.each(["capture", "fork"] as const)("preserves a newer sibling lifecycle result after a late %s response", async kind => {
     const initial = structuredClone(source)
-    initial.workspaces = initial.workspaces.filter(row => row.machine.kind === "vm").slice(0, 2).map(row => ({ ...row, state: "running" }))
+    initial.workspaces = initial.workspaces.slice(0, 2).map(row => ({ ...row, state: "running" }))
     const [a, b] = initial.workspaces
     const pending = deferred<unknown>()
     let reads = 0
@@ -1071,7 +1071,7 @@ describe("native state validation", () => {
 
   it("rejects local state whose shown fields are malformed (H-17)", () => {
     expect(() => parseApplicationSource({ ...structuredClone(source), runtimeRepair: { status: "needed" } })).toThrow()
-    expect(() => parseApplicationSource({ ...structuredClone(source), workspaces: [{ ...structuredClone(source.workspaces[0]), machine: { id: "x", kind: "vm", name: "dev" } }] })).toThrow()
+    expect(() => parseApplicationSource({ ...structuredClone(source), workspaces: [{ ...structuredClone(source.workspaces[0]), machine: { id: "x", name: "dev" } }] })).toThrow()
   })
 })
 

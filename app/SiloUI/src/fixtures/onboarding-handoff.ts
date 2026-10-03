@@ -10,11 +10,10 @@ export function applicationPreviewAfterSetup(request: OnboardingCompletionReques
     ...base,
     workspaces: request.machineConfiguration.machines.map((machine) => ({
       machine: { ...machine },
-      purpose: machine.kind === "ssh" ? "Remote sandbox" : "Local sandbox",
+      purpose: "Local sandbox",
       state: "stopped",
       stateDetail: "Ready",
       freshness: "fresh",
-      host: machine.kind === "ssh" ? machine.host : `${machine.name}.silo.test`,
       repositories: [],
       files: [],
       ports: [],

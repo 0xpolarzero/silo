@@ -151,7 +151,7 @@ export function MachineList({ devices, getDeviceId, onCommitMachine, onDeleteMac
   const openRequestedVM = useEffectEvent((id: number) => {
     if (!interactionDisabled) {
       if (editor) setEditorFocusRequest(id)
-      else startAdd("vm")
+      else startAdd()
     }
     onNewSandboxRequestHandled?.(id)
   })
@@ -253,16 +253,15 @@ export function MachineList({ devices, getDeviceId, onCommitMachine, onDeleteMac
     reorder(id, targetIndex)
   }
 
-  const sandboxCount = machines.filter(machine => machine.kind === "vm").length
-  const remoteCount = machines.filter(machine => machine.kind === "vm" && getDeviceId?.(machine)).length
-  const sshHostCount = machines.length - sandboxCount
+  const sandboxCount = machines.length
+  const remoteCount = machines.filter(machine => getDeviceId?.(machine)).length
 
   return (
     <>
       <div role="group" aria-labelledby={headingId} className="flex h-full min-h-0 flex-col">
         <ListHeader
           heading={<h3 id={headingId} className={listHeadingClassName}>Sandboxes</h3>}
-          subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this device · {remoteCount} on other devices · {sshHostCount} {sshHostCount === 1 ? "SSH host" : "SSH hosts"}</>}
+          subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this device · {remoteCount} on other devices</>}
           actions={(importPopover ?? ((node: ReactNode) => node))(<DropdownMenu.Root open={addOpen} onOpenChange={setAddOpen}>
             <DropdownMenu.Trigger asChild>
               <Button ref={addButton} type="button" variant="outline" size="xs" disabled={interactionDisabled}>
@@ -277,8 +276,8 @@ export function MachineList({ devices, getDeviceId, onCommitMachine, onDeleteMac
               }
               addSelected.current = null
             }} className="silo-portal z-50 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
-              <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "editor"; startAdd("vm") }}>New sandbox</DropdownMenu.Item>
-              <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = onConnectDevice ? "external" : "editor"; if (onConnectDevice) onConnectDevice(); else startAdd("ssh") }}>{onConnectDevice ? "Connect device…" : "Connect an SSH host…"}</DropdownMenu.Item>
+              <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "editor"; startAdd() }}>New sandbox</DropdownMenu.Item>
+              {onConnectDevice && <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "external"; onConnectDevice() }}>Connect device…</DropdownMenu.Item>}
               {onImportSandbox && <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "external"; onImportSandbox() }}>Import sandbox…</DropdownMenu.Item>}
             </DropdownMenu.Content></DropdownMenu.Portal>
           </DropdownMenu.Root>)}
@@ -287,7 +286,7 @@ export function MachineList({ devices, getDeviceId, onCommitMachine, onDeleteMac
         <SandboxList label="Configured sandboxes" className="max-h-full min-h-0" data-testid="machine-list">
             {displayMachines.map((machine) => {
               const isEditing = editor?.draft.id === machine.id
-              const runningVM = machine.kind === "vm" && Boolean(isMachineRunning?.(machine))
+              const runningVM = Boolean(isMachineRunning?.(machine))
               // Starting or stopping VMs can be neither edited nor deleted until they settle.
               const busyReason = getMachineBusyReason?.(machine)
               const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : busyReason
@@ -307,13 +306,12 @@ export function MachineList({ devices, getDeviceId, onCommitMachine, onDeleteMac
                   onDrop={(event) => drop(event, machine, Boolean(presentation?.suppressInteractions))}
                 >
                   {isEditing && editor ? (
-                    <MachineEditor key={`${editor.draft.id}:${editorResetToken}`} saving={committing} blockedReason={saveBlockedReason} editorHeader={devices && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={deviceId} disabled={Boolean(editor.originalID) || committing} onChange={event => setDeviceId(event.target.value)}><option value="">This device</option>{devices.map(device => <option key={device.id} value={device.id} disabled={!device.connected}>{device.name}{!device.connected ? " (offline)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} capacity={getDeviceCapacity?.(deviceId)} deviceName={devices?.find(device => device.id === deviceId)?.name} deviceId={deviceId} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} baselineMachine={editorBaseline ?? undefined} conflict={editorConflict} review={editorReview} machines={getDeviceId ? machines.filter(machine => (getDeviceId(machine) ?? "") === deviceId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} onReview={reviewConflict} onDiscard={() => setEditor(null)} />
+                    <MachineEditor key={`${editor.draft.id}:${editorResetToken}`} saving={committing} blockedReason={saveBlockedReason} editorHeader={devices ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={deviceId} disabled={Boolean(editor.originalID) || committing} onChange={event => setDeviceId(event.target.value)}><option value="">This device</option>{devices.map(device => <option key={device.id} value={device.id} disabled={!device.connected}>{device.name}{!device.connected ? " (offline)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} capacity={getDeviceCapacity?.(deviceId)} deviceName={devices?.find(device => device.id === deviceId)?.name} deviceId={deviceId} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && isMachineRunning?.(machine))} editor={editor} baselineMachine={editorBaseline ?? undefined} conflict={editorConflict} review={editorReview} machines={getDeviceId ? machines.filter(machine => (getDeviceId(machine) ?? "") === deviceId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} onReview={reviewConflict} onDiscard={() => setEditor(null)} />
                   ) : (
                     <SandboxListRow
                       name={machine.name}
-                      kind={machine.kind}
                       onOpen={onOpenMachine && presentation?.openable !== false ? () => onOpenMachine(machine) : undefined}
-                      remote={Boolean(getDeviceId?.(machine)) || machine.kind === "ssh"}
+                      remote={Boolean(getDeviceId?.(machine))}
                       kindBadge={presentation?.kindBadge}
                       badge={presentation?.badge}
                       iconState={presentation?.iconState}
@@ -345,7 +343,6 @@ export function MachineList({ devices, getDeviceId, onCommitMachine, onDeleteMac
                       actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu ref={node => { if (node) editorTriggers.current.set(machine.id, node); else editorTriggers.current.delete(machine.id) }} label={`More actions for ${machine.name}`} popovers={{
                         ...presentation.popovers,
                         delete: close => <DeleteSandboxBody
-                          kind={machine.kind}
                           displayName={deletionName}
                           details={presentation.deleteDetails}
                           onClose={close}
@@ -375,10 +372,10 @@ export function MachineList({ devices, getDeviceId, onCommitMachine, onDeleteMac
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
                         <SandboxAction ref={node => { if (node) editorTriggers.current.set(machine.id, node); else editorTriggers.current.delete(machine.id) }} label={`Edit ${machine.name}`} tooltip={busyReason} disabled={interactionDisabled || Boolean(busyReason)} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
-                        <SandboxAction tooltip={machine.kind === "vm" ? "Create a new empty sandbox with the same settings." : "Create a new SSH host connection with the same settings."} label={`Duplicate settings for ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
+                        <SandboxAction tooltip="Create a new empty sandbox with the same settings." label={`Duplicate settings for ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
                           <CopyPlus />
                         </SandboxAction>
-                        <ConfirmPopover align="end" tone="destructive" title={deleteSandboxTitle(deletionName)} description={deleteSandboxDescription(machine.kind)} confirmLabel="Delete permanently" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
+                        <ConfirmPopover align="end" tone="destructive" title={deleteSandboxTitle(deletionName)} description={deleteSandboxDescription()} confirmLabel="Delete permanently" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
                           <Button type="button" variant="ghost" size="icon-xs" aria-label={`Delete ${deletionName}`} disabled={interactionDisabled || runningVM || Boolean(busyReason)}>
                             <Trash2 />
                           </Button>

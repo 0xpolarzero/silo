@@ -6,7 +6,7 @@ import type { ApplicationActions, ApplicationWorkspace } from "../model/applicat
 import { OverviewPage } from "./overview-page"
 
 function localVm(source: ReturnType<typeof applicationSourceForScenario>, name: string): ApplicationWorkspace {
-  return source.workspaces.find(item => item.machine.kind === "vm" && !item.device && item.machine.name === name)!
+  return source.workspaces.find(item => !item.device && item.machine.name === name)!
 }
 
 it("rejects a current-state fork name that another sandbox on this device already uses", async () => {

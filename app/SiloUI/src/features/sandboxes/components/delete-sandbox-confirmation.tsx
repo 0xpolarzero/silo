@@ -19,8 +19,7 @@ export interface DeleteSandboxDetails {
  * (destructive) or Cancel. With `exportFirst`, "Export, then delete" deletes only after a
  * verified export.
  */
-export function DeleteSandboxBody({ kind, displayName, details = {}, onDelete, onClose }: {
-  kind: string
+export function DeleteSandboxBody({ displayName, details = {}, onDelete, onClose }: {
   /** "dev", or "dev on Office" for a remote sandbox. */
   displayName: string
   details?: DeleteSandboxDetails
@@ -50,7 +49,7 @@ export function DeleteSandboxBody({ kind, displayName, details = {}, onDelete, o
   const remove = <Button type="button" variant="destructive" size="sm" aria-describedby={`${titleId} ${descriptionId}`} autoFocus data-popover-initial-focus="" onClick={() => run(onDelete)}>Delete permanently</Button>
   return <div className="grid gap-2">
     <p id={titleId} className="font-medium">{deleteSandboxTitle(displayName)}</p>
-    <div id={descriptionId} className="text-muted-foreground">{deleteSandboxDescription(kind, checkpoints, size)}</div>
+    <div id={descriptionId} className="text-muted-foreground">{deleteSandboxDescription(checkpoints, size)}</div>
     {/* Three choices do not fit one row of the popover, so they stack full width like a macOS alert. */}
     {exportFirst
       ? <div className="grid gap-1.5 pt-1">

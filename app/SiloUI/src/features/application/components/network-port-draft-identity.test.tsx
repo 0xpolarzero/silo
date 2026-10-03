@@ -29,7 +29,7 @@ describe("network port draft sandbox identity", () => {
 
   it("allows explicitly selecting a different sandbox for a new port", async () => {
     const source = structuredClone(applicationSourceForScenario("running"))
-    const workspaces = source.workspaces.filter(workspace => workspace.machine.kind === "vm" && !workspace.device).map(workspace => ({ ...workspace, state: "running" as const }))
+    const workspaces = source.workspaces.filter(workspace => !workspace.device).map(workspace => ({ ...workspace, state: "running" as const }))
     const save = vi.fn().mockResolvedValue(undefined)
     const actions = createApplicationActionsMock({ saveNetworkPort: save })
     render(<NetworkPage workspaces={workspaces} network={{ workspaces: [] }} browser="Firefox" actions={actions} active={false} />)

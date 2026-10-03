@@ -8,7 +8,7 @@ import { MachineList } from "./machine-list"
 import { SandboxListRow } from "./sandbox-list"
 
 it("exposes the sandbox's management and runtime controls as named groups", () => {
-  render(<SandboxListRow name="dev" kind="vm" detail="Stopped"
+  render(<SandboxListRow name="dev" detail="Stopped"
     hoverActions={<button type="button">Edit dev</button>}
     actions={<button type="button">Start dev</button>} />)
   expect(within(screen.getByRole("group", { name: "Manage dev" })).getByRole("button", { name: "Edit dev" })).toBeVisible()
@@ -41,7 +41,6 @@ it("exposes the focusable device badge as a named note with connection context",
 
 it("names the focusable read-only disk groups and keeps their values available", async () => {
   const machine = productionMachineDefaults[0]
-  if (machine.kind !== "vm") throw new Error("Expected a sandbox fixture")
   const user = userEvent.setup()
   render(<TooltipProvider><MachineList machines={[machine]} onMachinesChange={vi.fn()} isMachineCreated={() => true} /></TooltipProvider>)
   await user.click(screen.getByRole("button", { name: `Edit ${machine.name}` }))

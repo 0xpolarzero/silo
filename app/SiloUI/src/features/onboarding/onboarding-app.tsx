@@ -192,7 +192,7 @@ export function OnboardingApp({
     const projectedSource = source.setupQueue ? {
       ...source,
       machineConfigurations: machines,
-      bootstrapConfiguration: { ...source.bootstrapConfiguration, workspaces: machines.flatMap((machine) => machine.kind === "vm" ? [{ name: machine.name, cpu: machine.cpus, cpuCeiling: machine.maxCPUs, memoryGiB: machine.memoryGiB, memoryCeilingGiB: machine.maxMemoryGiB, workspaceStorageGiB: machine.workspaceStorageGiB, runtimeStorageGiB: machine.runtimeStorageGiB }] : []) },
+      bootstrapConfiguration: { ...source.bootstrapConfiguration, workspaces: machines.map((machine) => ({ name: machine.name, cpu: machine.cpus, cpuCeiling: machine.maxCPUs, memoryGiB: machine.memoryGiB, memoryCeilingGiB: machine.maxMemoryGiB, workspaceStorageGiB: machine.workspaceStorageGiB, runtimeStorageGiB: machine.runtimeStorageGiB })) },
     } : source
     return projectOnboarding(projectedSource, githubConnectionState)
   }, [githubConnectionState, source, machines])
@@ -490,7 +490,7 @@ export function OnboardingApp({
     : null
   const machineWorkspaceViews = machines.map((machine): WorkspaceView => (
     viewModel.workspaceProgress.workspaces.find(({ name }) => name === machine.name)
-      ?? { name: machine.name, status: "waiting", detail: machine.kind === "ssh" ? "Remote via SSH" : "Waiting" }
+      ?? { name: machine.name, status: "waiting", detail: "Waiting" }
   ))
   return (
     <OnboardingShell

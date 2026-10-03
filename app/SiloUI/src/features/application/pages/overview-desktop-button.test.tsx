@@ -17,10 +17,8 @@ function setup(desktop: boolean) {
   source.activities = []
   const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
   Object.assign(dev, { state: "stopped", freshness: "fresh", attention: undefined, lifecycleAction: undefined })
-  if (dev.machine.kind === "vm") {
-    if (desktop) dev.machine.desktop = { startWithSandbox: true }
-    else delete dev.machine.desktop
-  }
+  if (desktop) dev.machine.desktop = { startWithSandbox: true }
+  else delete dev.machine.desktop
   const openDesktop = vi.fn()
   const actions = { openDesktop, readWorkspaceStorage: vi.fn(() => new Promise(() => {})) } as unknown as ApplicationActions
   render(<OverviewPage source={source} actions={actions} backup={backup} onExportSandbox={vi.fn()} onMachinesChange={vi.fn()} />)

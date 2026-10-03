@@ -80,9 +80,8 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
     const name = workspace.device ? `${workspace.machine.name} on ${workspace.device.name}` : workspace.machine.name
     const sandboxKeywords = workspace.device ? [workspace.machine.name, workspace.device.name] : [name]
     const availability = workspaceAvailability(workspace, source)
-    const vm = workspace.machine.kind === "vm"
     commands.push({ id: `${id}:page`, label: `Open ${name}`, icon: Boxes, group: "Sandboxes", keywords: [...sandboxKeywords, "sandbox", "details"], run: () => navigate({ workspace: id }) })
-    if (vm) commands.push({ id: `${id}:checkpoints`, label: `Open ${name} checkpoints`, icon: History, group: "Sandboxes", keywords: [...sandboxKeywords, "checkpoints", "restore", "snapshot"], run: () => navigate({ workspace: id, sandboxTab: "checkpoints" }) })
+    commands.push({ id: `${id}:checkpoints`, label: `Open ${name} checkpoints`, icon: History, group: "Sandboxes", keywords: [...sandboxKeywords, "checkpoints", "restore", "snapshot"], run: () => navigate({ workspace: id, sandboxTab: "checkpoints" }) })
     for (const { section, label, icon, keywords } of workspaceSections) {
       commands.push({
         id: `${id}:${section}`, label: `Open ${name} ${label.toLowerCase()}`, icon, group: "Sandboxes",
@@ -100,14 +99,14 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
     }
     // Fork and Delete open the sandbox page's own popovers; they follow the page's ⋯ menu rules.
     const changing = source.sandboxConfigurationOperation !== null || availability.busy || workspace.freshness === "stale"
-    if (vm && actions.forkCheckpoint && onSandboxRequest && !changing) {
+    if (actions.forkCheckpoint && onSandboxRequest && !changing) {
       commands.push({ id: `${id}:fork`, label: `Fork ${name}…`, icon: GitFork, group: "Actions", keywords: [...sandboxKeywords, "fork", "copy", "clone"], opensPanel: true, run: () => onSandboxRequest(id, "fork") })
     }
-    if (vm && !workspace.device && onExportSandbox && !changing) {
+    if (!workspace.device && onExportSandbox && !changing) {
       commands.push({ id: `${id}:export`, label: `Export ${name}…`, icon: Download, group: "Actions", keywords: [...sandboxKeywords, "export", "backup", "archive"], run: () => onExportSandbox(workspace.machine.name) })
     }
     const offline = Boolean(workspace.device && !workspace.device.connected)
-    if (onSandboxRequest && source.sandboxConfigurationOperation === null && !availability.busy && !offline && !(vm && workspace.state === "running")) {
+    if (onSandboxRequest && source.sandboxConfigurationOperation === null && !availability.busy && !offline && workspace.state !== "running") {
       commands.push({ id: `${id}:delete`, label: `Delete ${name}…`, icon: Trash2, group: "Actions", keywords: [...sandboxKeywords, "delete", "remove"], opensPanel: true, run: () => onSandboxRequest(id, "delete") })
     }
     const lifecycle: { action: LifecycleAction; label: string; icon: LucideIcon; available: boolean }[] = [

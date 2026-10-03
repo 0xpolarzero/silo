@@ -1,4 +1,4 @@
-import { ChevronRight, Code, Cpu, GitBranch, Globe, KeyRound, Monitor, Play, Plus, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
+import { ChevronRight, Code, Cpu, GitBranch, Globe, KeyRound, Monitor, Play, Plus, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
 import { useId, type MouseEvent, type ReactNode } from "react"
 
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
@@ -105,7 +105,7 @@ function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess
   onOpenSsh?: () => void
 }) {
   const { machine } = workspace
-  const location = workspace.device ? workspace.device.name : machine.kind === "vm" ? "VM" : "SSH host"
+  const location = workspace.device ? workspace.device.name : "VM"
   return <span>
     <WorkspaceStatus workspace={workspace} source={source} readOnly={readOnly} onCancel={onCancel} />
     <Sep />{location}
@@ -154,7 +154,7 @@ function AddAction({ label, disabled, onClick }: { label: string; disabled?: boo
  * Only local sandboxes support secrets, so remote and SSH sandboxes stay read-only. */
 function SecretsSection({ workspace, source, actions, onNavigate }: { workspace: ApplicationWorkspace; source: ApplicationSource; actions: ApplicationActions; onNavigate?: (route: ApplicationInitialRoute) => void }) {
   const { machine } = workspace
-  const canManage = machine.kind === "vm" && !workspace.device
+  const canManage = !workspace.device
   const manager = useSecretsManager({ source, onSaveSecret: actions.saveSecret, onRemoveSecret: actions.removeSecret, onRetrySecret: actions.retrySecret })
   // Secret assignments name local sandboxes, so a remote or SSH sandbox never lists them.
   const sandboxSecrets = canManage ? source.secrets.filter(secret => secret.workspaces.includes(machine.name)) : []
@@ -275,23 +275,20 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
 
 function OverviewTab({ workspace, source, actions, active, onEdit, onNavigate, computerUse }: { computerUse?: ReactNode; workspace: ApplicationWorkspace; source: ApplicationSource; actions: ApplicationActions; active: boolean; onEdit?: () => void; onNavigate?: (route: ApplicationInitialRoute) => void }) {
   const { machine } = workspace
-  const isVm = machine.kind === "vm"
   const repositories = workspace.repositories ?? []
   const extraGithub = (workspace.githubRepositories ?? []).filter(name => !repositories.some(repo => repo.path.endsWith(name)))
   const hasRepositories = repositories.length > 0 || extraGithub.length > 0
 
-  const resourceTitle = isVm
-    ? `CPUs: ${machine.cpus} · Memory: ${machine.memoryGiB} GiB · Disk: ${machine.workspaceStorageGiB} GiB`
-    : `${machine.user}@${machine.host}:${machine.port}`
+  const resourceTitle = `CPUs: ${machine.cpus} · Memory: ${machine.memoryGiB} GiB · Disk: ${machine.workspaceStorageGiB} GiB`
 
   return <div className="grid gap-5">
     <Section label="Resources">
       <ListCard>
         <ListRow
-          icon={<ListRowIcon aria-hidden="true">{isVm ? <Cpu className="size-3.5" /> : <Server className="size-3.5" />}</ListRowIcon>}
+          icon={<ListRowIcon aria-hidden="true"><Cpu className="size-3.5" /></ListRowIcon>}
           title={resourceTitle}
-          detail={isVm ? "Allocated to this sandbox" : "SSH host connection"}
-          actions={isVm && onEdit ? <Button type="button" variant="outline" size="xs" onClick={onEdit}>Edit</Button> : undefined}
+          detail="Allocated to this sandbox"
+          actions={onEdit ? <Button type="button" variant="outline" size="xs" onClick={onEdit}>Edit</Button> : undefined}
         />
       </ListCard>
     </Section>
@@ -381,18 +378,17 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const menuActions = [...controls.menuActions, ...editMenuActions]
 
   const access = source.sshAccess?.workspaces.find(row => row.workspace === target)
-  const sshAvailable = machine.kind === "vm" && Boolean(source.sshAccess || actions.refreshSshAccess)
+  const sshAvailable = Boolean(source.sshAccess || actions.refreshSshAccess)
   const sshStale = Boolean((source.sshAccessError && !workspace.device) || workspace.device?.connected === false || workspace.freshness === "stale")
-  const pendingSecrets = machine.kind === "vm" && !workspace.device
+  const pendingSecrets = !workspace.device
     ? source.secrets.filter(secret => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(secret => secret.name)
     : []
 
-  const showCheckpoints = machine.kind === "vm"
-  const showStorage = machine.kind === "vm" && !workspace.device && Boolean(actions.readWorkspaceStorage)
+  const showStorage = !workspace.device && Boolean(actions.readWorkspaceStorage)
   const showAccess = sshAvailable
   const tabs: { value: SandboxDetailTab; label: string; visible: boolean }[] = [
     { value: "overview", label: "Overview", visible: true },
-    { value: "checkpoints", label: "Checkpoints", visible: showCheckpoints },
+    { value: "checkpoints", label: "Checkpoints", visible: true },
     { value: "storage", label: "Storage", visible: showStorage },
     { value: "access", label: "SSH", visible: showAccess },
   ]
@@ -400,7 +396,6 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const menuPopovers: MenuPopovers = {
     ...controls.popovers,
     delete: close => <DeleteSandboxBody
-      kind={machine.kind}
       displayName={displayName}
       details={controls.deleteDetails}
       onClose={close}
@@ -458,10 +453,10 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
                 capacity={editing.deviceId ? undefined : deviceCapacityFrom(source.deviceCapacity)}
                 deviceName={workspace.device?.name}
                 deviceId={editing.deviceId}
-                editorHeader={editingContext?.devices && editing.editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.deviceId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setDeviceId(event.target.value)}><option value="">This device</option>{editingContext.devices.map(device => <option key={device.id} value={device.id} disabled={!device.connected}>{device.name}{!device.connected ? " (offline)" : ""}</option>)}</select></label> : undefined}
+                editorHeader={editingContext?.devices ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.deviceId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setDeviceId(event.target.value)}><option value="">This device</option>{editingContext.devices.map(device => <option key={device.id} value={device.id} disabled={!device.connected}>{device.name}{!device.connected ? " (offline)" : ""}</option>)}</select></label> : undefined}
                 focusRequest={editing.editorFocusRequest}
                 created={Boolean(editing.editor.originalID && editingContext?.isMachineCreated?.(machine))}
-                running={Boolean(editing.editor.originalID && machine.kind === "vm" && editingContext?.isMachineRunning?.(machine))}
+                running={Boolean(editing.editor.originalID && editingContext?.isMachineRunning?.(machine))}
                 editor={editing.editor}
                 baselineMachine={editing.editorBaseline ?? undefined}
                 conflict={editing.editorConflict}
@@ -485,10 +480,10 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="pt-4">
-            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview" && controls.pageActive !== false} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} computerUse={machine.kind === "vm" && machine.desktop ? <ComputerUseSection key={target} workspace={target} active={activeTab === "overview" && controls.pageActive !== false} /> : undefined} /></TabsContent>
-            {showCheckpoints && <TabsContent value="checkpoints">
+            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview" && controls.pageActive !== false} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} computerUse={machine.desktop ? <ComputerUseSection key={target} workspace={target} active={activeTab === "overview" && controls.pageActive !== false} /> : undefined} /></TabsContent>
+            <TabsContent value="checkpoints">
               <CheckpointPanel workspace={workspace} target={target} actions={actions} takenNames={sandboxNamesOnDevice(source.workspaces, workspace.device?.id)} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.device?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
-            </TabsContent>}
+            </TabsContent>
             {showStorage && actions.readWorkspaceStorage && <TabsContent value="storage">
               <WorkspaceStoragePanel key={machine.id} workspaceId={machine.id} sandboxName={machine.name} deviceName={workspace.device?.name} running={state === "running"} disabled={controls.configurationLocked || controls.workspaceOperationBusy} read={actions.readWorkspaceStorage} reclaim={actions.reclaimWorkspaceStorage} />
             </TabsContent>}

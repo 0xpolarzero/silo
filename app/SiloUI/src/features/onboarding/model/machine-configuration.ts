@@ -1,8 +1,4 @@
-import type {
-  SetupMachineConfiguration,
-  SetupSSHMachineConfiguration,
-  SetupVirtualMachineConfiguration,
-} from "@/contracts/silo"
+import type { SetupMachineConfiguration } from "@/contracts/silo"
 import {
   setupMachineConfigurationSchema,
   setupMachineConfigurationRequestSchema,
@@ -21,10 +17,9 @@ export function machineCapacityError(machineCount: number, originalID?: string):
 }
 
 // Fresh onboarding offers one dev VM; creation waits for Continue.
-export const productionMachineDefaults: readonly SetupVirtualMachineConfiguration[] = [
+export const productionMachineDefaults: readonly SetupMachineConfiguration[] = [
   {
     id: "00000000-0000-4000-8000-000000000001",
-    kind: "vm",
     name: "dev",
     cpus: 8,
     maxCPUs: 12,
@@ -52,26 +47,12 @@ export function nextMachineName(base: string, machines: readonly SetupMachineCon
   return candidate
 }
 
-export function newVirtualMachine(machines: readonly SetupMachineConfiguration[]): SetupVirtualMachineConfiguration {
+export function newVirtualMachine(machines: readonly SetupMachineConfiguration[]): SetupMachineConfiguration {
   const names = new Set(machines.map(({ name }) => name.toLowerCase()))
   let number = machines.length + 1
   while (names.has(`workspace-${number}`)) number += 1
   const template = productionMachineDefaults[0]
   return { ...template, id: createMachineID(), name: `workspace-${number}` }
-}
-
-export function newSSHMachine(machines: readonly SetupMachineConfiguration[]): SetupSSHMachineConfiguration {
-  const names = new Set(machines.map(({ name }) => name.toLowerCase()))
-  let number = 1
-  while (names.has(`remote-${number}`)) number += 1
-  return {
-    id: createMachineID(),
-    kind: "ssh",
-    name: `remote-${number}`,
-    host: "",
-    user: "",
-    port: 22,
-  }
 }
 
 export function duplicateMachine(
@@ -85,13 +66,12 @@ export function duplicateMachine(
   }
 }
 
-export type MachineValidationErrors = Partial<Record<"form" | "name" | "cpus" | "maxCPUs" | "memoryGiB" | "maxMemoryGiB" | "workspaceStorageGiB" | "runtimeStorageGiB" | "host" | "user" | "port", string>>
+export type MachineValidationErrors = Partial<Record<"form" | "name" | "cpus" | "maxCPUs" | "memoryGiB" | "maxMemoryGiB" | "workspaceStorageGiB" | "runtimeStorageGiB", string>>
 
 function isMachineValidationField(field: unknown): field is Exclude<keyof MachineValidationErrors, "form"> {
   return field === "name" || field === "cpus" || field === "maxCPUs"
     || field === "memoryGiB" || field === "maxMemoryGiB"
     || field === "workspaceStorageGiB" || field === "runtimeStorageGiB"
-    || field === "host" || field === "user" || field === "port"
 }
 
 export function validateSandboxName(name: string): string | undefined {
@@ -118,14 +98,8 @@ export function validateMachine(
   }
   const nameError = validateSandboxName(machine.name)
   if (nameError) errors.name = nameError
-  if (machine.kind === "vm") {
-    if (machine.cpus > machine.maxCPUs) errors.cpus = "CPU limit cannot exceed its ceiling."
-    if (machine.memoryGiB > machine.maxMemoryGiB) errors.memoryGiB = "Memory limit cannot exceed its ceiling."
-  } else {
-    if (!machine.host.trim()) errors.host = "Enter an SSH host."
-    if (!machine.user.trim()) errors.user = "Enter an SSH user."
-    if (!Number.isInteger(machine.port) || machine.port < 1 || machine.port > 65_535) errors.port = "Enter a port from 1 to 65535."
-  }
+  if (machine.cpus > machine.maxCPUs) errors.cpus = "CPU limit cannot exceed its ceiling."
+  if (machine.memoryGiB > machine.maxMemoryGiB) errors.memoryGiB = "Memory limit cannot exceed its ceiling."
   return errors
 }
 

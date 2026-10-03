@@ -6,7 +6,6 @@ import type { SetupMachineConfiguration } from "@/contracts/silo"
 import {
   configurationRequest,
   duplicateMachine,
-  newSSHMachine,
   newVirtualMachine,
 } from "@/features/onboarding/model/machine-configuration"
 import { isStaleConfigurationError } from "@/features/application/model/machine-change"
@@ -161,14 +160,14 @@ export function useMachineEditing({
     })
   }
 
-  function startAdd(kind: SetupMachineConfiguration["kind"]) {
+  function startAdd() {
     if (disabled) return
     beginOperation()
     captureBaseline()
     setDeviceId("")
     setEditor({
       // New sandboxes start on this device, so fit the defaults to it.
-      draft: kind === "vm" ? fitMachineToCapacity(newVirtualMachine(machines), getDeviceCapacity?.("")) : newSSHMachine(machines),
+      draft: fitMachineToCapacity(newVirtualMachine(machines), getDeviceCapacity?.("")),
       insertAt: machines.length,
     })
   }
@@ -267,7 +266,7 @@ export function useMachineEditing({
   }
 
   async function remove(machine: SetupMachineConfiguration) {
-    if (disabled || (machine.kind === "vm" && isMachineRunning?.(machine))) return
+    if (disabled || (isMachineRunning?.(machine))) return
     const busy = busyReason(machine)
     if (busy) { showActionFailure(`Could not delete ${machine.name}`, busy, undefined, { native: false }); return }
     beginOperation()
@@ -301,7 +300,7 @@ export function useMachineEditing({
   /** Confirmed deletion (from the shared delete popover): deletes, then reports the outcome in a notification. */
   async function deleteWithNotice(machine: SetupMachineConfiguration): Promise<boolean> {
     // The popover may have been opened while the sandbox was stopped; never delete a running VM.
-    if (machine.kind === "vm" && isMachineRunning?.(machine)) {
+    if (isMachineRunning?.(machine)) {
       showActionFailure(`Could not delete ${machine.name}`, "Stop the sandbox before deleting it.", undefined, { native: false })
       return false
     }

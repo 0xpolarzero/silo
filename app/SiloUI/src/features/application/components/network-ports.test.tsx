@@ -10,7 +10,7 @@ import { OverviewPage } from "../pages/overview-page"
 function openSandboxPage(active: boolean, refreshNetwork: ApplicationActions["refreshNetwork"]) {
   const source = structuredClone(applicationSourceForScenario("complete"))
   source.devices = []
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
+  const workspace = source.workspaces.find(item => !item.device)!
   workspace.state = "running"
   workspace.freshness = "fresh"
   source.network = { workspaces: [{ workspace: workspaceTarget(workspace), error: null, ports: [] }] }
@@ -41,7 +41,7 @@ it("names each remote device in the port form's sandbox selector", async () => {
   const { NetworkPortForm } = await import("./network-ports")
   const { useNetworkPorts } = await import("./network-ports-state")
   const source = structuredClone(applicationSourceForScenario("running"))
-  const local = source.workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.device)!
+  const local = source.workspaces.find(workspace => !workspace.device)!
   const remote = { ...local, machine: { ...local.machine, id: "silo-remote:office:vm" }, device: { id: "office", name: "Office Mac", address: "user@office", connected: true, vmId: "vm" } }
   function Form() {
     const controller = useNetworkPorts({ workspaces: [local, remote], actions: {} as ApplicationActions, active: false })

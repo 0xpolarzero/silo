@@ -235,7 +235,6 @@ const stressRunningSource = {
   ...runningSource,
   machineConfigurations: stressBootstrapConfiguration.workspaces.map((workspace, index) => ({
     id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
-    kind: "vm" as const,
     name: workspace.name,
     cpus: workspace.cpu,
     maxCPUs: workspace.cpuCeiling,

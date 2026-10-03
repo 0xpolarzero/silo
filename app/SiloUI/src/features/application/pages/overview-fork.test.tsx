@@ -15,7 +15,7 @@ it("closes the fork popover at once and continues current-state fork progress in
   const forkCheckpoint = vi.fn(() => new Promise<void>(resolve => { finishFork = resolve }))
   const actions = { forkCheckpoint } as unknown as ApplicationActions
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const user = userEvent.setup()
   const view = render(<><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /><Toaster /></>)
 
@@ -47,7 +47,7 @@ it("allows current-state Fork for a pending restored sandbox without starting it
   const startWorkspace = vi.fn()
   const actions = { forkCheckpoint, startWorkspace } as unknown as ApplicationActions
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   workspace.state = "stopped"
   workspace.stateDetail = "Ready to start from checkpoint"
   workspace.pendingCheckpointRestore = { checkpointId: "saved-point", sourceWorkspace: "dev", state: "full" }
@@ -65,7 +65,7 @@ it("allows current-state Fork for a pending restored sandbox without starting it
 
 it("shows persisted checkpoint progress and locks the workspace row after remount", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   workspace.checkpointOperation = { kind: "capture", status: "running", stage: "Capturing VM state" }
   render(<OverviewPage source={source} actions={{ forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
 
@@ -83,7 +83,7 @@ it("opens the Checkpoints tab from the Overview menu and drives fork, restore, a
   const restoreCheckpoint = vi.fn().mockResolvedValue(undefined)
   const actions = { createCheckpoint, forkCheckpoint, restoreCheckpoint } as unknown as ApplicationActions
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   workspace.checkpoints = [{ id: "checkpoint-1", name: "Before deploy", createdAt: "2026-09-25T10:00:00.000Z", scope: "full", reason: "manual" }] satisfies NonNullable<ApplicationWorkspace["checkpoints"]>
   const user = userEvent.setup()
   render(<><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /><Toaster /></>)
@@ -118,7 +118,7 @@ it("opens the Checkpoints tab from the Overview menu and drives fork, restore, a
 it("dismisses a sandbox's notifications when it is deleted and announces the deletion", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   source.devices = []
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
+  const workspace = source.workspaces.find(item => !item.device)!
   workspace.state = "stopped"
   const { showOperationSuccess } = await import("@/lib/operation-toast")
   const actions = { forkCheckpoint: vi.fn() } as unknown as ApplicationActions
@@ -142,7 +142,7 @@ it("dismisses a sandbox's notifications when it is deleted and announces the del
 it("moves Cancel for a running checkpoint capture into its progress notification", async () => {
   const { runCheckpointOperation, syncCheckpointProgress } = await import("../model/checkpoint-operation-toast")
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
+  const workspace = source.workspaces.find(item => !item.device)!
   const cancel = vi.fn()
   render(<Toaster />)
   let finish!: () => void

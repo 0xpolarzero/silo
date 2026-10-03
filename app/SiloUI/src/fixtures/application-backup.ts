@@ -22,7 +22,7 @@ export function initialBackupArchive(source: ApplicationSource): BackupArchive {
     completedLabel: source.backup.completedLabel,
     size: source.backup.compressedSize,
     destination: source.backup.destination,
-    sandboxes: source.workspaces.filter(({ machine }) => machine.kind === "vm").map(({ machine }) => machine.name),
+    sandboxes: source.workspaces.map(({ machine }) => machine.name),
   }
 }
 

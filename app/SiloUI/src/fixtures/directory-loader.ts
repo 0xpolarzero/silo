@@ -9,7 +9,7 @@ export function fixtureDirectoryLoader(workspaces: ApplicationWorkspace[]): Dire
   return async (workspace, path, offset, snapshotId) => {
     const parts = path.slice("/workspace/".length).split("/")
     if (new TextEncoder().encode(path).length > 4096 || path.includes("\0") || (path !== "/workspace" && (!path.startsWith("/workspace/") || parts.some(part => !part || part === "." || part === ".."))) || !Number.isInteger(offset) || offset < 0 || offset > 20_000 || offset % 200 !== 0) throw "Invalid folder request."
-    const owner = workspaces.find(item => workspaceTarget(item) === workspace && item.machine.kind === "vm")
+    const owner = workspaces.find(item => workspaceTarget(item) === workspace)
     if (!owner) throw "Sandbox no longer exists."
     if (owner.state !== "running") throw "Start this VM to browse its files."
     let snapshot = snapshotId ? snapshots.get(snapshotId) : undefined

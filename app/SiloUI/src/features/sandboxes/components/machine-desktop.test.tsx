@@ -4,12 +4,12 @@ import { describe, expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
-import type { SetupVirtualMachineConfiguration } from "@/contracts/silo"
+import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { setupMachineConfigurationRequestSchema } from "@/contracts/silo"
 import { MachineList } from "./machine-list"
 
 const machine = productionMachineDefaults[0]
-function editor(draft: SetupVirtualMachineConfiguration, created: boolean) {
+function editor(draft: SetupMachineConfiguration, created: boolean) {
   const save = vi.fn()
   render(<TooltipProvider><MachineList machines={created ? [draft] : []} onMachinesChange={save}
     isMachineCreated={() => created} isMachineRunning={() => created}

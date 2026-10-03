@@ -15,7 +15,7 @@ it("opens the Add menu with the keyboard and navigates its items", async () => {
   expect(screen.getByRole("menu", { name: "Add sandbox" })).toBeVisible()
   await waitFor(() => expect(screen.getByRole("menuitem", { name: "New sandbox" })).toHaveFocus())
   await user.keyboard("{ArrowDown}")
-  expect(screen.getByRole("menuitem", { name: "Connect an SSH host…" })).toHaveFocus()
+  expect(screen.getByRole("menuitem", { name: "Import sandbox…" })).toHaveFocus()
   await user.keyboard("{End}")
   expect(screen.getByRole("menuitem", { name: "Import sandbox…" })).toHaveFocus()
   await user.keyboard("{Home}{Escape}")

@@ -4,13 +4,13 @@ import { expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { Toaster } from "@/components/ui/sonner"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
-import type { SetupVirtualMachineConfiguration } from "@/contracts/silo"
+import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { MachineList } from "./machine-list"
 
 const machine = productionMachineDefaults[0]
 const staleError = new Error("This sandbox changed while your edit was waiting. Review it and try again.")
 
-async function openEditor(machines: readonly SetupVirtualMachineConfiguration[], props: Record<string, unknown> = {}) {
+async function openEditor(machines: readonly SetupMachineConfiguration[], props: Record<string, unknown> = {}) {
   const view = render(<TooltipProvider><MachineList machines={machines} onMachinesChange={vi.fn()}
     isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} {...props} /></TooltipProvider>)
   const user = userEvent.setup()
@@ -100,7 +100,7 @@ it("keeps the edit's original baseline when another sandbox is deleted", async (
   const { user, view } = await openEditor([machine, second], props)
   await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   const latest = { ...machine, maxMemoryGiB: 64 }
-  const renderMachines = (machines: SetupVirtualMachineConfiguration[]) => <TooltipProvider><MachineList machines={machines} onMachinesChange={vi.fn()}
+  const renderMachines = (machines: SetupMachineConfiguration[]) => <TooltipProvider><MachineList machines={machines} onMachinesChange={vi.fn()}
     isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} {...props} /></TooltipProvider>
   view.rerender(renderMachines([latest, second]))
   await user.click(screen.getByRole("button", { name: "More actions for second" }))

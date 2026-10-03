@@ -56,7 +56,6 @@ describe("Rust-emitted native wire contracts", () => {
           id: "contract-lifecycle-1", category: "sandbox", status: "completed", tone: "danger",
           diagnostic: "Runtime startup failed.", workspace: "dev",
         })
-        expect(state.workspaces[1]).toMatchObject({ machine: { kind: "ssh" }, freshness: "stale", attention: { level: "warning" } })
         expect(state.runtimeRepair).toBeNull()
         expect(state.sandboxConfigurationOperation).toBeNull()
       }

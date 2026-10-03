@@ -1113,7 +1113,7 @@ describe("production application bridge", () => {
     await store.initialize()
     const committed = source.workspaces.filter(({ device }) => !device).map(({ machine }) => machine)
     const first = committed[0]
-    const edited = first.kind === "vm" ? { ...first, cpus: first.cpus === 1 ? 2 : 1 } : first
+    const edited = { ...first, cpus: first.cpus === 1 ? 2 : 1 }
     await store.configureMachines({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })
     expect(store.getSnapshot().source?.github.deviceIdentity).toEqual(deviceIdentity)
     currentIdentity = undefined
@@ -1147,7 +1147,7 @@ describe("production application bridge", () => {
     const unsubscribe = store.subscribe(() => observed.push(store.getSnapshot().source?.workspaces[0].logs.length ?? -1))
     const committed = initial.workspaces.filter(({ device }) => !device).map(({ machine }) => machine)
     const first = committed[0]
-    const edited = first.kind === "vm" ? { ...first, cpus: first.cpus === 1 ? 2 : 1 } : first
+    const edited = { ...first, cpus: first.cpus === 1 ? 2 : 1 }
     await store.configureMachines({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })
     expect(observed).not.toContain(0)
     expect(store.getSnapshot().source?.workspaces[0].logs).toEqual([oldLog, newLog])
@@ -1192,7 +1192,6 @@ describe("production application bridge", () => {
     await store.initialize()
     const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.device).map(({ machine }) => machine)
     const original = committed[0]
-    if (original.kind !== "vm") throw new Error("The fixture's first machine is expected to be a VM.")
     const edited = { ...original, cpus: original.cpus === 1 ? 2 : 1 }
     await expect(store.configureMachines({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })).rejects.toThrow("Verification failed")
     store.applicationActions.retryMachineConfiguration("dev")
@@ -1216,7 +1215,6 @@ describe("production application bridge", () => {
     await store.initialize()
     const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.device).map(({ machine }) => machine)
     const original = committed[0]
-    if (original.kind !== "vm") throw new Error("The fixture's first machine is expected to be a VM.")
     const edited = { ...original, cpus: original.cpus === 1 ? 2 : 1 }
     store.applicationActions.saveMachineConfiguration({ schemaVersion: 1, machines: [edited, ...committed.slice(1)] })
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("change_machine_configuration", {
@@ -1239,7 +1237,6 @@ describe("production application bridge", () => {
     await store.initialize()
     const committed = store.getSnapshot().source!.workspaces.filter((workspace) => !workspace.device).map(({ machine }) => machine)
     const original = committed[0]
-    if (original.kind !== "vm") throw new Error("The fixture's first machine is expected to be a VM.")
     // The user opened the editor while maxCPUs was 99; the live committed snapshot never
     // held that value. The save must send the baseline, not the current committed config.
     const baselineEntry = { ...original, maxCPUs: 99 }

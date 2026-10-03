@@ -18,7 +18,7 @@ describe("onboarding source boundary", () => {
     const actions = { connectGitHub: vi.fn(), saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn(), submitStep: vi.fn() }
     const source = { ...onboardingScenarios.complete, machineConfigurations: [], bootstrapConfiguration: { ...onboardingScenarios.complete.bootstrapConfiguration, workspaces: [] }, progressEvents: [], bootstrapResult: null, setupQueue: [{ id: "workspaceRun" as const, status: "idle" as const }, { id: "workspaceVerify" as const, status: "idle" as const }] }
     await act(async () => { render(<SettingsProvider store={settings}><OnboardingApp source={source} actions={actions} githubConnectionState="disconnected" completed={false} /></SettingsProvider>) })
-    expect(screen.getByText(`0 of ${machines.filter(({ kind }) => kind === "vm").length * 2} operations complete`)).toBeVisible()
+    expect(screen.getByText(`0 of ${machines.length * 2} operations complete`)).toBeVisible()
     expect(screen.getByText("Continue to create sandboxes")).toBeVisible()
     expect(actions.submitStep).not.toHaveBeenCalled()
   })

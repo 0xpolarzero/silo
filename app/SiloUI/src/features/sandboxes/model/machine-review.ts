@@ -21,7 +21,7 @@ const fieldLabels = new Map([
   ["name", "Name"], ["cpus", "CPUs"], ["maxCPUs", "CPUs ceiling"],
   ["memoryGiB", "Memory"], ["maxMemoryGiB", "Memory ceiling"],
   ["workspaceStorageGiB", "Workspace disk"], ["runtimeStorageGiB", "Runtime disk"],
-  ["desktop", "Linux desktop"], ["host", "SSH host"], ["user", "SSH user"], ["port", "SSH port"],
+  ["desktop", "Linux desktop"],
 ])
 
 /** The editor's label for a configuration field. */
@@ -46,7 +46,6 @@ function fieldValue(field: string, value: unknown): string {
  * both values for review.
  */
 export function rebaseMachineDraft(opened: SetupMachineConfiguration, latest: SetupMachineConfiguration, draft: SetupMachineConfiguration): { draft: SetupMachineConfiguration; review: MachineReview } {
-  if (opened.kind !== latest.kind || draft.kind !== latest.kind) return { draft: structuredClone(latest), review: { conflicts: [], adopted: divergentMachineFields(opened, latest).map(machineFieldLabel) } }
   const fields = new Set([...Object.keys(opened), ...Object.keys(latest), ...Object.keys(draft)])
   const edited = new Set(divergentMachineFields(opened, draft))
   const changedElsewhere = new Set(divergentMachineFields(opened, latest))

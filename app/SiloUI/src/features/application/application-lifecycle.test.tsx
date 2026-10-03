@@ -33,7 +33,7 @@ it("sorts attention first without letting health order rewrite configuration ord
   const [dev, playgrounds, personal] = source.workspaces
   source.workspaces = [
     { ...dev, machine: { ...dev.machine, name: "normal" }, state: "running", stateDetail: "Running for 2h 18m", attention: undefined },
-    { ...playgrounds, machine: { id: playgrounds.machine.id, kind: "ssh", name: "warning", host: "warning.example.com", user: "silo", port: 22 }, state: "stopped", stateDetail: "Waiting for verification", attention: { level: "warning", message: "Storage is almost full." } },
+    { ...playgrounds, machine: { ...playgrounds.machine, name: "warning" }, state: "stopped", stateDetail: "Waiting for verification", attention: { level: "warning", message: "Storage is almost full." } },
     { ...personal, machine: { ...personal.machine, name: "error" }, state: "failed", stateDetail: "Start failed 3m ago", attention: { level: "warning", message: "Candidate networking did not become ready." } },
   ]
   const { actions, user } = renderApplication("running", source)
@@ -47,7 +47,6 @@ it("sorts attention first without letting health order rewrite configuration ord
   expect(rows[2].querySelector("[data-sandbox-icon-state='normal']")).toBeVisible()
   expect(within(rows[0]).getByRole("img", { name: "error status" })).toBeVisible()
   expect(within(rows[1]).getByRole("img", { name: "warning status" })).toBeVisible()
-  expect(rows[1]).toHaveTextContent("SSH host")
   expect(rows[0]).toHaveTextContent("Failed")
   expect(rows[1]).toHaveTextContent("Stopped")
   expect(rows[2]).toHaveTextContent("Running")
@@ -234,7 +233,7 @@ it("starts a new sandbox as an in-card configuration operation", async () => {
   expect(within(scratchRow).getByRole("status")).toHaveTextContent("Preparing sandbox configuration.")
   expect(within(scratchRow).queryByText("Stopped")).not.toBeInTheDocument()
   expect(actions.saveMachineConfiguration).toHaveBeenCalledWith(expect.objectContaining({
-    machines: expect.arrayContaining([expect.objectContaining({ name: "scratch", kind: "vm" })]),
+    machines: expect.arrayContaining([expect.objectContaining({ name: "scratch" })]),
   }), expect.anything())
 })
 
@@ -357,21 +356,6 @@ it("explains pending secrets on keyboard focus and uses next-start wording for a
   expect(label).toHaveFocus()
   expect(await screen.findByRole("tooltip")).toHaveTextContent("Start dev to apply secret changes: DATABASE_URL.")
   expect(overview.queryByRole("note", { name: "Restart required for dev" })).not.toBeInTheDocument()
-})
-
-
-it("does not show a VM secret restart label on an SSH machine", () => {
-  const source = structuredClone(applicationSourceForScenario("running"))
-  source.workspaces[0].machine = {
-    id: source.workspaces[0].machine.id,
-    kind: "ssh",
-    name: "dev",
-    host: "remote.example.test",
-    user: "developer",
-    port: 22,
-  }
-  renderApplication("running", source)
-  expect(within(appPanel("Sandboxes")).queryByRole("note")).not.toBeInTheDocument()
 })
 
 

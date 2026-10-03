@@ -159,7 +159,7 @@ it("offers the real device connection flow during production sandbox setup", asy
   const onConnectDevice = vi.fn()
   render(<WorkspacesStep machines={fixtureMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} onConnectDevice={onConnectDevice} />)
   await user.click(screen.getByRole("button", { name: "Add" }))
-  expect(screen.queryByRole("menuitem", { name: "Connect an SSH host…" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("menuitem", { name: "Connect device…" })).not.toBeInTheDocument()
   await user.click(screen.getByRole("menuitem", { name: "Connect device…" }))
   expect(onConnectDevice).toHaveBeenCalledOnce()
 })

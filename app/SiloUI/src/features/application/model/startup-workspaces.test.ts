@@ -13,10 +13,3 @@ it("never picks a sandbox on another device as the default startup sandbox", () 
   expect(defaultStartupWorkspaceIds([remoteDev])).toEqual([])
   expect(startupWorkspaceCandidates([remoteDev, playgrounds]).map(({ machine }) => machine.id)).toEqual([playgrounds.machine.id])
 })
-
-it("excludes legacy SSH entries from the launch selection (D-20)", () => {
-  const [dev, , personal] = structuredClone(applicationSourceForScenario("running").workspaces)
-  const ssh = { ...dev, machine: { kind: "ssh" as const, id: "ssh-id", name: "dev", host: "example.test", user: "me", port: 22 } }
-  expect(startupWorkspaceCandidates([ssh, personal])).toEqual([personal])
-  expect(defaultStartupWorkspaceIds([ssh, personal])).toEqual([personal.machine.id])
-})

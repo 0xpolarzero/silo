@@ -30,7 +30,6 @@ it("stops refreshing the sandbox page's ports while the Sandboxes page is hidden
 it("stops computer-use reads while the sandbox page is hidden and refreshes on return", async () => {
   const source = structuredClone(applicationSourceForScenario("running"))
   const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
-  if (dev.machine.kind !== "vm") throw new Error("Expected a VM fixture")
   dev.machine.desktop = { startWithSandbox: true }
   const read = vi.fn(async () => fixtureDesktopState("ready"))
   const bridge = createComputerUseBridge({ ...createFixtureComputerUseBackend("ready", "ready"), readDesktopState: read })

@@ -110,7 +110,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     await attempt()
   }
 
-  const localWorkspaces = workspaces.filter(workspace => workspace.machine.kind === "vm")
+  const localWorkspaces = workspaces
   const loading = Boolean(refreshNetwork) && localWorkspaces.some(workspace => !network?.workspaces.some(item => item.workspace === workspaceTarget(workspace)))
   const rows = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))

@@ -26,7 +26,7 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
   const [errors, setErrors] = useState<SecretValidationErrors>({})
   const formRef = useRef<HTMLFormElement>(null)
   const id = useId()
-  const workspaces = source.workspaces.filter(w => !w.device).filter(({ machine }) => machine.kind === "vm")
+  const workspaces = source.workspaces.filter(w => !w.device)
   const title = secret ? `Edit ${secret.name}` : "Add secret"
   const settingsChanged = Boolean(secret && baseline && (
     secret.workspaces.length !== baseline.workspaces.length || !secret.workspaces.every(name => baseline.workspaces.includes(name))

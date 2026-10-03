@@ -8,7 +8,7 @@ import type { ApplicationActions, ApplicationWorkspace } from "@/features/applic
 import { CheckpointPanel } from "./checkpoint-panel"
 
 const workspace = {
-  machine: { id: "vm-dev", name: "dev", kind: "vm" },
+  machine: { id: "vm-dev", name: "dev" },
   checkpoints: [
     { id: "point-1", name: "Before refactor", createdAt: "2026-09-25T10:00:00Z", scope: "full", reason: "manual" },
     { id: "point-2", name: "Disk snapshot", createdAt: "2026-09-24T10:00:00Z", scope: "disk", reason: "manual" },

@@ -48,7 +48,7 @@ it("keeps the existing VM list and shows remote ownership through a focusable ba
 
 it("disables remote lifecycle operations while preserving last-known rows when the device is unavailable", () => {
   const { remote } = setup(false)
-  expect(screen.getByText("4 sandboxes · 3 on this device · 1 on other devices · 0 SSH hosts")).toBeVisible()
+  expect(screen.getByText("4 sandboxes · 3 on this device · 1 on other devices")).toBeVisible()
   const row = within(screen.getByLabelText(/Sandbox on Office Mac/).closest("li")!)
   expect(row.getByText("Offline · last known status")).toBeVisible()
   expect(row.getByRole("button", { name: `Stop ${remote.machine.name}` })).toBeDisabled()
@@ -61,7 +61,7 @@ it("creates a VM on the selected device without rewriting the local inventory", 
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")
   await user.click(screen.getByRole("button", { name: "Create" }))
-  expect(actions.saveRemoteMachine).toHaveBeenCalledWith("office", expect.objectContaining({ kind: "vm" }), undefined)
+  expect(actions.saveRemoteMachine).toHaveBeenCalledWith("office", expect.objectContaining({ name: expect.any(String) }), undefined)
   expect(onMachinesChange).not.toHaveBeenCalled()
 })
 
@@ -93,12 +93,12 @@ it("removes the last VM from a remote device and can create from an empty list",
   await user.click(within((await screen.findByText(`Delete ${remote.machine.name} on Office Mac permanently?`)).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete permanently" }))
   await waitFor(() => expect(actions.deleteRemoteMachine).toHaveBeenCalledWith("office", remote.machine))
   view.rerender(<OverviewPage source={{ ...source, workspaces: [] }} actions={actions} onMachinesChange={onMachinesChange} />)
-  expect(screen.getByText("0 sandboxes · 0 on this device · 0 on other devices · 0 SSH hosts")).toBeVisible()
+  expect(screen.getByText("0 sandboxes · 0 on this device · 0 on other devices")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")
   await user.click(screen.getByRole("button", { name: "Create" }))
-  expect(actions.saveRemoteMachine).toHaveBeenCalledWith("office", expect.objectContaining({ kind: "vm" }), undefined)
+  expect(actions.saveRemoteMachine).toHaveBeenCalledWith("office", expect.objectContaining({ name: expect.any(String) }), undefined)
 })
 
 it("permits removing the last local VM without affecting connected devices", async () => {

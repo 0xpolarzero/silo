@@ -22,7 +22,7 @@ function setup(source: ApplicationSource, quitRequest?: number) {
 
 function withStates(states: ApplicationSource["workspaces"][number]["state"][]) {
   const base = applicationSourceForScenario("complete")
-  const template = base.workspaces.find((workspace) => !workspace.device && workspace.machine.kind === "vm")!
+  const template = base.workspaces.find((workspace) => !workspace.device)!
   const workspaces = states.map((state, index) => ({ ...template, state, device: undefined, machine: { ...template.machine, id: `vm-${index}`, name: `box-${index}` } }))
   return { ...base, activities: [], workspaces }
 }

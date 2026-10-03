@@ -60,7 +60,7 @@ export function ApplicationLoading({ machines, statusPanel = false }: { machines
     <span role="status" className="sr-only">Loading sandbox state</span>
     <div className="shrink-0 px-2 pt-2" />
     <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">{machines.length ? <ListCard className="border-0"><ol aria-label="Sandboxes" className="divide-y">
-      {machines.map((machine) => <SandboxListItem key={machine.id}><SandboxListRow name={machine.name} kind={machine.kind} detail={detail} actions={<LoadingControls />} /></SandboxListItem>)}
+      {machines.map((machine) => <SandboxListItem key={machine.id}><SandboxListRow name={machine.name} detail={detail} actions={<LoadingControls />} /></SandboxListItem>)}
     </ol></ListCard> : <div className="grid justify-items-center gap-1.5 py-8 text-center"><ListRowIcon><Monitor className="size-3.5" /></ListRowIcon><p className="text-[13px] font-medium">Loading sandboxes…</p></div>}</div>
   </StatusPanelFrame>
   return <ApplicationShell activeTab="workspaces" workspaceSection="overview" settingsSection="general"

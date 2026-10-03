@@ -14,7 +14,7 @@ afterEach(() => { toast.dismiss() })
 function withCheckpoint() {
   const source = structuredClone(applicationSourceForScenario("complete"))
   source.devices = []
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
+  const workspace = source.workspaces.find(item => !item.device)!
   workspace.checkpoints = [{ id: "checkpoint-1", name: "Before deploy", createdAt: "2026-09-25T10:00:00.000Z", scope: "full", reason: "manual" }] satisfies NonNullable<ApplicationWorkspace["checkpoints"]>
   return { source, workspace }
 }

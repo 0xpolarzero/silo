@@ -12,7 +12,7 @@ function pendingWorkspace(workspace: ApplicationWorkspace): ApplicationWorkspace
   return {
     machine: workspace.machine, device: workspace.device, purpose: "Local MicroSandbox",
     state: "stopped", stateDetail: "Ready to start from checkpoint", freshness: "fresh", settling: false,
-    canDismissError: false, host: workspace.device ? workspace.host : "127.0.0.1",
+    canDismissError: false,
     repositories: [], files: [], ports: [], logs: [], githubRepositories: workspace.githubRepositories,
     secretNames: workspace.secretNames, pendingSecretRevocations: [], checkpoints: [],
     checkpointOperation: null, unfinishedRestore: null,
@@ -40,8 +40,8 @@ export function useApplicationFixture(source: ApplicationSource) {
 
   const onRestoreComplete = useCallback((targetName: string) => {
     setWorkspaces((current) => {
-      const sourceWorkspace = current.find(({ machine }) => machine.kind === "vm")
-      if (!sourceWorkspace || sourceWorkspace.machine.kind !== "vm" || current.some(({ machine }) => machine.name === targetName)) return current
+      const sourceWorkspace = current[0]
+      if (!sourceWorkspace || current.some(({ machine }) => machine.name === targetName)) return current
       return [...current, {
         ...sourceWorkspace,
         machine: { ...sourceWorkspace.machine, id: crypto.randomUUID(), name: targetName },
@@ -62,7 +62,7 @@ export function useApplicationFixture(source: ApplicationSource) {
       const code = character.codePointAt(0)!
       return code < 32 || (code >= 127 && code <= 159)
     })) throw "Checkpoint name must contain 1 to 80 printable characters."
-    const selected = workspaces.find((workspace) => workspaceTarget(workspace) === target && workspace.machine.kind === "vm")
+    const selected = workspaces.find((workspace) => workspaceTarget(workspace) === target)
     if (!selected) throw "This workspace is not a local VM."
     const point = fixtureCheckpoint(selected, label, "manual")
     if (selected.pendingCheckpointRestore) checkpointMembers.current.set(point.id, selected.pendingCheckpointRestore.checkpointId)
@@ -72,7 +72,7 @@ export function useApplicationFixture(source: ApplicationSource) {
   }, [workspaces])
   const forkCheckpoint = useCallback(async (target: string, checkpointId: string | null, newName: string) => {
     const selected = workspaces.find((workspace) => workspaceTarget(workspace) === target)
-    if (!selected || selected.machine.kind !== "vm") throw "The source workspace is not a local VM."
+    if (!selected) throw "The source workspace is not a local VM."
     if (workspaces.some((workspace) => workspace.device?.id === selected.device?.id && workspace.machine.name === newName)) throw "The fork name is already in use or the workspace limit was reached."
     const pending = checkpointId === null ? selected.pendingCheckpointRestore : undefined
     const captured = checkpointId === null && !pending ? fixtureCheckpoint(selected, "Fork point", "manual") : undefined
@@ -90,7 +90,7 @@ export function useApplicationFixture(source: ApplicationSource) {
       : workspace), child])
   }, [workspaces])
   const restoreCheckpoint = useCallback(async (target: string, checkpointId: string) => {
-    const selected = workspaces.find((workspace) => workspaceTarget(workspace) === target && workspace.machine.kind === "vm")
+    const selected = workspaces.find((workspace) => workspaceTarget(workspace) === target)
     if (!selected) throw "This workspace is not a local VM."
     const point = selected.checkpoints?.find((checkpoint) => checkpoint.id === checkpointId)
     if (!point) throw "The selected checkpoint no longer exists."
@@ -102,7 +102,7 @@ export function useApplicationFixture(source: ApplicationSource) {
   }, [workspaces])
 
   const deleteCheckpoint = useCallback(async (target: string, checkpointId: string) => {
-    setWorkspaces((current) => current.map((workspace) => workspace.machine.kind === "vm" && workspace.machine.name === target
+    setWorkspaces((current) => current.map((workspace) => workspace.machine.name === target
       ? { ...workspace, checkpoints: (workspace.checkpoints ?? []).filter((point) => point.id !== checkpointId) }
       : workspace))
   }, [])

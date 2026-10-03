@@ -110,7 +110,7 @@ it("shows failures without claiming recovery and permits retry", async () => {
 
 it("opens storage from a local sandbox menu and sends its managed ID", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const read = vi.fn().mockResolvedValue(storage)
   const actions = { readWorkspaceStorage: read, reclaimWorkspaceStorage: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
@@ -123,7 +123,7 @@ it("opens storage from a local sandbox menu and sends its managed ID", async () 
 
 it("does not offer storage reclamation on remote devices", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   workspace.device = { id: "remote", vmId: workspace.machine.id, name: "Other device", address: "other.test", connected: true }
   const read = vi.fn()
   const user = userEvent.setup()

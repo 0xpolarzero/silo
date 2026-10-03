@@ -1,4 +1,4 @@
-import type { SetupVirtualMachineConfiguration } from "@/contracts/silo"
+import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { supportedCPUs, supportedMemoryGiB, type MachineValidationErrors } from "@/features/onboarding/model/machine-configuration"
 
 /**
@@ -73,7 +73,7 @@ function largestPresetAtMost(value: number, presets: readonly number[]) {
  * limits no more than half of it (snapped down to a preset) so the host keeps headroom.
  * Defaults a device can already run are unchanged.
  */
-export function fitMachineToCapacity(machine: SetupVirtualMachineConfiguration, capacity: DeviceCapacity | undefined): SetupVirtualMachineConfiguration {
+export function fitMachineToCapacity(machine: SetupMachineConfiguration, capacity: DeviceCapacity | undefined): SetupMachineConfiguration {
   if (!capacity) return machine
   const maximums = resourceMaximums(capacity)
   const maxCPUs = Math.min(machine.maxCPUs, maximums.cpus)
@@ -94,7 +94,7 @@ export function fitMachineToCapacity(machine: SetupVirtualMachineConfiguration, 
  * messages ("Too small: expected number to be >=1") for these fields and, when the
  * device's capacity is known, reject ceilings the runtime would refuse.
  */
-export function validateMachineResources(machine: SetupVirtualMachineConfiguration, capacity?: DeviceCapacity, deviceName = "This device"): MachineValidationErrors {
+export function validateMachineResources(machine: SetupMachineConfiguration, capacity?: DeviceCapacity, deviceName = "This device"): MachineValidationErrors {
   const errors: MachineValidationErrors = {}
   const range = (field: ResourceField, maximum: number, unit: string) => {
     if (!wholeNumberIn(machine[field], maximum)) errors[field] = `Enter a whole number of ${unit} from 1 to ${number(maximum)}.`

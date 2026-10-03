@@ -89,7 +89,7 @@ describe("SecretsPage", () => {
     render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={vi.fn()} />)
     await user.click(screen.getByRole("button", { name: "Add secret" }))
     await user.click(screen.getByRole("combobox", { name: "Add sandbox" }))
-    expect(screen.getAllByRole("option").map(option => option.textContent)).toEqual(source.workspaces.filter(workspace => !workspace.device && workspace.machine.kind === "vm").map(workspace => workspace.machine.name))
+    expect(screen.getAllByRole("option").map(option => option.textContent)).toEqual(source.workspaces.filter(workspace => !workspace.device).map(workspace => workspace.machine.name))
     expect(screen.queryByRole("option", { name: "remote-only" })).not.toBeInTheDocument()
   })
 

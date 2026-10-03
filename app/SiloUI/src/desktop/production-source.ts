@@ -121,15 +121,12 @@ const logShape = z.object({ line: z.string(), occurredAt: z.string() })
 const attentionShape = z.object({ level: tolerantEnum(["warning", "error"], "warning"), message: z.string() })
 
 // Fields from a newer Silo pass through untouched, so editing never drops them.
-const machineShape = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("vm"), id: z.string().min(1), name: z.string().min(1),
-    cpus: z.number().int().positive(), maxCPUs: z.number().int().positive(), memoryGiB: z.number().int().positive(), maxMemoryGiB: z.number().int().positive(),
-    workspaceStorageGiB: z.number().int().positive(), runtimeStorageGiB: z.number().int().positive(),
-    desktop: z.object({ startWithSandbox: z.boolean(), builtIn: z.boolean().optional() }).optional(),
-  }).passthrough(),
-  z.object({ kind: z.literal("ssh"), id: z.string().min(1), name: z.string().min(1), host: z.string().min(1), user: z.string().min(1), port: z.number().int().min(1).max(65535) }).passthrough(),
-])
+const machineShape = z.object({
+  id: z.string().min(1), name: z.string().min(1),
+  cpus: z.number().int().positive(), maxCPUs: z.number().int().positive(), memoryGiB: z.number().int().positive(), maxMemoryGiB: z.number().int().positive(),
+  workspaceStorageGiB: z.number().int().positive(), runtimeStorageGiB: z.number().int().positive(),
+  desktop: z.object({ startWithSandbox: z.boolean(), builtIn: z.boolean().optional() }).optional(),
+}).passthrough()
 
 const workspaceShape = z.object({
   machine: machineShape,
@@ -142,7 +139,6 @@ const workspaceShape = z.object({
   lifecycleFailureDiagnostic: z.string().optional(),
   attention: attentionShape.nullish().transform(value => value ?? undefined),
   freshness: tolerantEnum(["fresh", "stale"], "stale"),
-  host: z.string(),
   repositories: tolerantArray(repositoryShape), files: tolerantArray(fileEntryShape), ports: tolerantArray(workspacePortShape), logs: tolerantArray(logShape),
   githubRepositories: z.array(z.string()), secretNames: z.array(z.string()),
   pendingSecretRevocations: z.array(z.string()).optional(),
@@ -155,13 +151,7 @@ const workspaceShape = z.object({
   ? { ...workspace, state: workspace.state as (typeof workspaceStates)[number] }
   : { ...workspace, state: "stopped" as const, freshness: "stale" as const, attention: workspace.attention ?? { level: "warning" as const, message: "This version of Silo cannot show this sandbox's current state. Update Silo to see it." } })
 
-/** Workspaces of a machine kind this version does not know (a newer Silo) are left out rather than rejecting the list. */
-const workspacesShape = z.array(z.unknown())
-  .transform(items => items.filter(item => {
-    const kind = (item as { machine?: { kind?: unknown } } | null)?.machine?.kind
-    return kind === "vm" || kind === "ssh"
-  }))
-  .pipe(z.array(workspaceShape))
+const workspacesShape = z.array(workspaceShape)
 
 const activityShape = z.object({
   id: z.string().min(1),
@@ -451,7 +441,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const cached = sshAccess?.workspaces.filter(row => workspaceOwner(row.workspace) === deviceId) ?? []
     const workspaces = deviceId ? remoteSnapshots.get(deviceId)?.workspaces ?? [] : snapshot.source?.workspaces.filter(w => !w.device) ?? []
     const rows = new Map(cached.map(row => [row.workspace, row]))
-    for (const workspace of workspaces.filter(w => w.machine.kind === "vm")) {
+    for (const workspace of workspaces) {
       const target = deviceId ? remoteWorkspaceTarget(deviceId, workspace.machine.id) : workspace.machine.name
       if (!rows.has(target)) rows.set(target, { workspace: target, enabled: false, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "error", message, fingerprint: null, deviceName, addresses: [] })
     }
@@ -511,7 +501,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function unavailableNetworkRows(owner: string, error: string): NetworkState["workspaces"] {
     const rows = new Map((network?.workspaces.filter(row => workspaceOwner(row.workspace) === owner) ?? []).map(row => [row.workspace, row]))
     const workspaces = owner ? remoteSnapshots.get(owner)?.workspaces ?? [] : snapshot.source?.workspaces ?? []
-    for (const workspace of workspaces.filter(w => w.machine.kind === "vm")) {
+    for (const workspace of workspaces) {
       const target = owner ? remoteWorkspaceTarget(owner, workspace.machine.id) : workspace.machine.name
       if (!rows.has(target)) rows.set(target, { workspace: target, ports: [], error })
     }
@@ -697,8 +687,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     for (const device of devices) {
       const owner = remoteSnapshots.get(device.id)
       if (!owner) continue
-      const vms = new Map(owner.workspaces.filter(workspace => workspace.machine.kind === "vm").map(workspace => [workspace.machine.name, workspace]))
-      const sshNames = new Set(owner.workspaces.filter(workspace => workspace.machine.kind === "ssh").map(workspace => workspace.machine.name))
+      const vms = new Map(owner.workspaces.map(workspace => [workspace.machine.name, workspace]))
       const slow = slowDevices.has(device.id)
       for (const workspace of vms.values()) {
         const target = remoteWorkspaceTarget(device.id, workspace.machine.id)
@@ -716,7 +705,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         if (workspace) pushes.push({ ...push, workspace: remoteWorkspaceTarget(device.id, workspace.machine.id) })
       }
       for (const activity of owner.activities) {
-        if (activity.workspace && sshNames.has(activity.workspace)) continue
         activities.push({ ...activity,
           id: `silo-remote-activity:${encodeURIComponent(device.id)}:${encodeURIComponent(activity.id)}`,
           detail: `${device.name}: ${activity.detail}`,
@@ -1588,11 +1576,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   async function checkpointAction(command: string, target: string, arguments_: Record<string, unknown>) {
     const remote = parseRemoteWorkspaceTarget(target)
-    const localWorkspace = remote ? undefined : snapshot.source?.workspaces.find(item => !item.device && item.machine.kind === "vm" && (item.machine.name === target || item.machine.id === target))
+    const localWorkspace = remote ? undefined : snapshot.source?.workspaces.find(item => !item.device && (item.machine.name === target || item.machine.id === target))
     if (!remote && !localWorkspace) throw new Error("This sandbox is unavailable. Refresh and try again.")
     const checkpointTarget = remote ? remoteWorkspaceTarget(remote.deviceId, remote.vmId) : workspaceTarget(localWorkspace!)
     const ownerWorkspace = remote
-      ? remoteSnapshots.get(remote.deviceId)?.workspaces.find(item => item.machine.kind === "vm" && item.machine.id === remote.vmId)
+      ? remoteSnapshots.get(remote.deviceId)?.workspaces.find(item => item.machine.id === remote.vmId)
       : localWorkspace
     if (pendingCheckpointOperations.has(checkpointTarget) || ownerWorkspace?.checkpointOperation?.status === "running") {
       throw new Error("A checkpoint operation is already running for this sandbox.")

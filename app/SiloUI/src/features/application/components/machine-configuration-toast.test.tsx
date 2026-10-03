@@ -19,7 +19,7 @@ afterEach(() => { toast.dismiss() })
 
 const baseSource = structuredClone(applicationSourceForScenario("complete"))
 const existing = baseSource.workspaces.filter(workspace => !workspace.device)
-const template = existing.find(workspace => workspace.machine.kind === "vm")!
+const template = existing[0]!
 
 function created(): ApplicationWorkspace {
   const workspace = structuredClone(template)

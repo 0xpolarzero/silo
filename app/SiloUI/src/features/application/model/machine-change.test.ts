@@ -5,7 +5,6 @@ import type { SetupMachineConfiguration } from "@/contracts/silo"
 
 function vm(id: string, name: string, overrides: Partial<SetupMachineConfiguration> = {}): SetupMachineConfiguration {
   return {
-    kind: "vm",
     id: `00000000-0000-4000-8000-0000000000${id}`,
     name,
     cpus: 2,
@@ -41,7 +40,7 @@ describe("deriveMachineChanges", () => {
   })
 
   it("ignores field-order differences and returns an empty list for a no-op", () => {
-    const reordered = { name: "dev", kind: "vm" as const, id: a.id, maxCPUs: 4, cpus: 2, runtimeStorageGiB: 10, memoryGiB: 2, workspaceStorageGiB: 10, maxMemoryGiB: 4 }
+    const reordered = { name: "dev", id: a.id, maxCPUs: 4, cpus: 2, runtimeStorageGiB: 10, memoryGiB: 2, workspaceStorageGiB: 10, maxMemoryGiB: 4 }
     expect(deriveMachineChanges([a, b], [reordered as SetupMachineConfiguration, b])).toEqual([])
   })
 

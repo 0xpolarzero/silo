@@ -7,7 +7,7 @@ import type { OnboardingCompletionRequest } from "@/features/onboarding/model/on
 const request: OnboardingCompletionRequest = {
   machineConfiguration: { schemaVersion: 1, machines: [
     { ...fixtureMachineDefaults[0], name: "build" },
-    { id: "remote-test", kind: "ssh", name: "remote", host: "example.test", user: "dev", port: 2222 },
+    { ...fixtureMachineDefaults[1], name: "remote" },
   ] },
   applications: { terminal: "Warp", editor: "Zed", browser: "Firefox" },
   github: { connectionState: "connected", workspaces: [
@@ -23,7 +23,6 @@ describe("setup preview handoff", () => {
     expect(app.preferences).toMatchObject(request.applications)
     expect(app.github.workspaces).toEqual(request.github.workspaces)
     expect(app.workspaces[0].githubRepositories).toEqual(["acme/design-system"])
-    expect(app.workspaces[1].host).toBe("example.test")
     expect(app.secrets).toEqual([])
     expect(app.backup.lastArchive).toBe("")
     expect(app.backup.destination).toBe("")

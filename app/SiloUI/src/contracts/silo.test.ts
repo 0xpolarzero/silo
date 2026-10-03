@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest"
 import {
   githubWorkspacePolicySchema,
   setupMachineConfigurationRequestSchema,
-  setupWorkspaceConfigurationSchema,
+  setupMachineConfigurationSchema,
   siloProgressEventSchema,
 } from "@/contracts/silo"
 import { onboardingSourceSchema } from "@/features/onboarding/model/onboarding-source"
@@ -58,7 +58,7 @@ describe("Silo contract fixtures", () => {
   })
 
   it("enforces the native workspace and repository invariants", () => {
-    expect(() => setupWorkspaceConfigurationSchema.parse({
+    expect(() => setupMachineConfigurationSchema.parse({
       ...onboardingScenarios.complete.bootstrapState.workspaceConfigurations?.[0],
       cpus: 12,
       maxCPUs: 4,
@@ -73,23 +73,12 @@ describe("Silo contract fixtures", () => {
     })).toThrow("Repository sandboxes must match the sandbox access policy.")
   })
 
-  it("keeps the machine host-boundary request discriminated, ordered, and strict", () => {
+  it("keeps the computer request ordered and strict", () => {
     const request = setupMachineConfigurationRequestSchema.parse({
       schemaVersion: 1,
-      machines: [
-        fixtureMachineDefaults[1],
-        {
-          id: "00000000-0000-4000-8000-000000000100",
-          kind: "ssh",
-          name: "remote",
-          host: "remote.example.com",
-          user: "developer",
-          port: 22,
-        },
-      ],
+      machines: [fixtureMachineDefaults[1], fixtureMachineDefaults[0]],
     })
-    expect(request.machines.map(({ name }) => name)).toEqual(["playgrounds", "remote"])
-    expect(request.machines.map(({ kind }) => kind)).toEqual(["vm", "ssh"])
+    expect(request.machines.map(({ name }) => name)).toEqual(["playgrounds", "dev"])
     expect(() => setupMachineConfigurationRequestSchema.parse({
       ...request,
       machines: [{ ...request.machines[1], ignoredCredential: "secret" }],

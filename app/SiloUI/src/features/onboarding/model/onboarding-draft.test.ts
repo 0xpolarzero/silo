@@ -26,7 +26,7 @@ describe("onboarding recovery validation", () => {
 
   it("keeps incomplete editor values without weakening saved machine validation", () => {
     const input = { ...draft, unfinishedMachineEditor: {
-      draft: { id: crypto.randomUUID(), kind: "ssh", name: "", host: "", user: "not yet valid", port: 0 },
+      draft: { ...fixtureMachineDefaults[0], id: crypto.randomUUID(), name: "Not yet valid", cpus: 0 },
       insertAt: 3,
     } }
     expect(onboardingDraftSchema.parse(input)).toEqual(input)

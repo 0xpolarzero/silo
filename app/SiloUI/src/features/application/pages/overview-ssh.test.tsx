@@ -10,7 +10,7 @@ import { NetworkPage } from "./network-page"
 
 it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "192.168.1.42", keys: [], state: "listening", message: null, fingerprint: null, deviceName: "Ada Mac", addresses: ["127.0.0.1", "192.168.1.42"] }] }
   const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
@@ -42,7 +42,7 @@ it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", asy
 
 it("opens the sandbox's SSH tab from the SSH badge in the list and on the sandbox page", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "10.211.55.2", keys: [], state: "error", message: "The selected network address is unavailable. Choose an active interface.", fingerprint: null, deviceName: "Ada Mac", addresses: ["127.0.0.1"] }] }
   const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
@@ -57,7 +57,7 @@ it("opens the sandbox's SSH tab from the SSH badge in the list and on the sandbo
 
 it("opens the SSH tab from the sandbox menu, after Storage", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), readWorkspaceStorage: vi.fn().mockResolvedValue(null), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)

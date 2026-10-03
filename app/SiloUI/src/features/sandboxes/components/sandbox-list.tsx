@@ -29,7 +29,7 @@ export function SandboxListItem({ className, ...props }: ComponentProps<"li">) {
   return <li className={cn("min-w-0 bg-background", className)} {...props} />
 }
 
-function SandboxIcon({ kind, state, remote }: { kind: "vm" | "ssh"; state: SandboxIconState; remote: boolean }) {
+function SandboxIcon({ state, remote }: { state: SandboxIconState; remote: boolean }) {
   return (
     <ListRowIcon
       className={cn(
@@ -45,7 +45,7 @@ function SandboxIcon({ kind, state, remote }: { kind: "vm" | "ssh"; state: Sandb
       ) : state === "warning" ? (
         <TriangleAlert className="size-3.5" aria-hidden="true" />
       ) : (
-        <ConnectionIcon kind={kind} network={remote} label={kind === "vm" ? `${remote ? "Remote" : "Local"} VM` : "SSH host"} />
+        <ConnectionIcon kind="vm" network={remote} label={`${remote ? "Remote" : "Local"} VM`} />
       )}
     </ListRowIcon>
   )
@@ -53,7 +53,6 @@ function SandboxIcon({ kind, state, remote }: { kind: "vm" | "ssh"; state: Sandb
 
 export function SandboxListRow({
   name,
-  kind,
   remote = false,
   badge,
   kindBadge,
@@ -69,7 +68,6 @@ export function SandboxListRow({
   onOpen,
 }: {
   name: string
-  kind: "vm" | "ssh"
   remote?: boolean
   badge?: ReactNode
   kindBadge?: ReactNode
@@ -98,13 +96,13 @@ export function SandboxListRow({
       )}
       data-sandbox-row-tone={tone}
       leading={leading}
-      icon={icon ?? <SandboxIcon kind={kind} state={iconState} remote={remote} />}
+      icon={icon ?? <SandboxIcon state={iconState} remote={remote} />}
       title={
         <>
           {onOpen
             ? <button type="button" aria-label={`Open ${name}`} title={name} onClick={onOpen} className="min-w-0 cursor-pointer truncate rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">{name}</button>
             : <span className="truncate" title={name}>{name}</span>}
-          {kindBadge ?? <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">{kind === "ssh" ? "SSH host" : kind}</span>}
+          {kindBadge}
           {badge}
         </>
       }

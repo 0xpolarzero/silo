@@ -31,7 +31,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   const key = directoryKey(target, path)
   const subscribe = useCallback((listener: () => void) => store.subscribe(key, listener), [store, key])
   const snapshot = useSyncExternalStore(subscribe, () => store.getSnapshot(key))
-  const available = workspace.machine.kind === "vm" && workspace.state === "running" && workspace.freshness === "fresh"
+  const available = workspace.state === "running" && workspace.freshness === "fresh"
   useEffect(() => {
     if (!available) { store.invalidateWorkspace(target); return }
     let focused = true
@@ -67,7 +67,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   }, [store, available, target, path, key])
   const folders = snapshot.entries?.filter((entry) => entry.kind === "folder") ?? []
   const filtered = folders.filter((entry) => entry.name.toLowerCase().includes(query.trim().toLowerCase()))
-  const unavailable = workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this sandbox to browse its files." : "Files will be available when this sandbox is running."
+  const unavailable = workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this sandbox to browse its files." : "Files will be available when this sandbox is running."
 
   function navigate(next: string[]) {
     setSegments(next)

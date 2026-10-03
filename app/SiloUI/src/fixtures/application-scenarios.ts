@@ -1,4 +1,4 @@
-import type { SetupVirtualMachineConfiguration, SiloProgressEvent } from "@/contracts/silo"
+import type { SetupMachineConfiguration, SiloProgressEvent } from "@/contracts/silo"
 import type {
   ApplicationGitHubWorkspacePolicy,
   ApplicationSource,
@@ -81,7 +81,6 @@ const baseWorkspaces: ApplicationWorkspace[] = [
     state: "running",
     stateDetail: "Running for 2h 18m",
     freshness: "fresh",
-    host: "dev.silo.test",
     repositories: [
       { path: "acme/silo", branch: "main", ahead: 2, behind: 0, dirty: true, repository: "acme/silo", head: "4f1c2d9e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d" },
       { path: "acme/design-system", branch: "next", ahead: 0, behind: 1, dirty: false, repository: "acme/design-system", head: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b" },
@@ -117,7 +116,6 @@ const baseWorkspaces: ApplicationWorkspace[] = [
     state: "stopped",
     stateDetail: "Stopped yesterday",
     freshness: "fresh",
-    host: "playgrounds.silo.test",
     repositories: [{ path: "acme/platform-tools", branch: "main", ahead: 0, behind: 0, dirty: false, repository: "acme/platform-tools", head: "1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c" }],
     files: [
       { name: "experiments", kind: "folder", children: [{ name: "typescript", kind: "folder" }, { name: "rust", kind: "folder" }] },
@@ -135,7 +133,6 @@ const baseWorkspaces: ApplicationWorkspace[] = [
     state: "stopped",
     stateDetail: "Stopped 4 days ago",
     freshness: "fresh",
-    host: "personal.silo.test",
     repositories: [{ path: "taylor/docs-site", branch: "main", ahead: 0, behind: 0, dirty: false, repository: "taylor/docs-site", head: "c0ffee00c0ffee00c0ffee00c0ffee00c0ffee00" }],
     files: [
       { name: "docs-site", kind: "folder", children: [{ name: "content", kind: "folder" }, { name: "public", kind: "folder" }] },
@@ -200,7 +197,7 @@ function workspacesForFixtureMode(workspaces: ApplicationWorkspace[], mode?: Wor
   }))
 }
 
-const scratchMachine: SetupVirtualMachineConfiguration = {
+const scratchMachine: SetupMachineConfiguration = {
   ...devMachine,
   id: "00000000-0000-4000-8000-000000000004",
   name: "scratch",

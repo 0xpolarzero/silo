@@ -9,7 +9,7 @@ function remoteRunningSource() {
   source.runtimeRepair = null
   source.sandboxConfigurationOperation = null
   source.activities = []
-  const local = source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
+  const local = source.workspaces.find(item => !item.device)!
   const remote = structuredClone(local)
   remote.machine = { ...remote.machine, id: `${local.machine.id}-office` }
   remote.device = { id: "office", vmId: "vm-office", name: "Office", address: "office.test", connected: true }

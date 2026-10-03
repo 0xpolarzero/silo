@@ -77,7 +77,7 @@ export function withDevicesFixture(source: ApplicationSource): ApplicationSource
 export function withComputerUseFixture(source: ApplicationSource, name: ComputerUseFixtureName): ApplicationSource {
   return {
     ...source,
-    workspaces: source.workspaces.map((workspace, index) => index === 0 && workspace.machine.kind === "vm"
+    workspaces: source.workspaces.map((workspace, index) => index === 0
       ? { ...workspace, machine: { ...workspace.machine, desktop: name === "pre-v4" ? { startWithSandbox: true } : { startWithSandbox: true, builtIn: true } } }
       : workspace),
   }

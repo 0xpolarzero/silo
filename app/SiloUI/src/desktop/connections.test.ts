@@ -26,7 +26,6 @@ describe("remote device ownership", () => {
     remote.workspaces = [remote.workspaces[0]]
     local.workspaces[0].logs = [{ line: "Local VM log", occurredAt: "now" }]
     remote.workspaces[0].logs = [{ line: "Remote VM log", occurredAt: "now" }]
-    remote.workspaces.push({ ...remote.workspaces[0], machine: { id: "00000000-0000-4000-8000-000000000099", kind: "ssh", name: "legacy-ssh", host: "legacy.example", user: "developer", port: 22 } })
     const device = { id: "office", name: "Office Mac", address: "developer@office" }
     const invoke = nativeBridgeMock({
       ...initializationHandlers(),
@@ -42,7 +41,6 @@ describe("remote device ownership", () => {
     try {
       await store.initialize()
       const target = remoteWorkspaceTarget(device.id, remote.workspaces[0].machine.id)
-      expect(store.getSnapshot().source!.workspaces.some(workspace => workspace.machine.name === "legacy-ssh")).toBe(false)
       const names = store.getSnapshot().source!.workspaces.filter(workspace => workspace.machine.name === remote.workspaces[0].machine.name)
       expect(names).toHaveLength(2)
       expect(names[0].machine.id).not.toBe(names[1].machine.id)

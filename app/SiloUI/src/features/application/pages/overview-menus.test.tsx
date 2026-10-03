@@ -18,7 +18,7 @@ function localSource(change: (workspace: ApplicationWorkspace, source: Applicati
   source.activities = []
   const dev = source.workspaces.find(({ machine }) => machine.name === "dev")!
   Object.assign(dev, { state: "stopped", freshness: "fresh", attention: undefined, lifecycleAction: undefined })
-  if (dev.machine.kind === "vm") delete dev.machine.desktop
+  delete dev.machine.desktop
   change(dev, source)
   return source
 }

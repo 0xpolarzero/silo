@@ -83,7 +83,6 @@ function emptyWorkspace(machine: SetupMachineConfiguration): ApplicationWorkspac
     state: "stopped",
     stateDetail: "Not configured",
     freshness: "fresh",
-    host: machine.kind === "ssh" ? machine.host : `${machine.name}.silo.test`,
     repositories: [],
     files: [],
     ports: [],
@@ -392,7 +391,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     if (device) return device.busy ? `${device.name} is updating. Wait before changing ${machine.name}.` : device.connected ? undefined : `${device.name} is offline. Reconnect to it before changing ${machine.name}.`
     if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
     const notice = source.resourceNotice
-    if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
+    if (!isNew || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
     return `Not enough storage to create ${machine.name}. About ${notice.requiredGB} GiB is needed on ${notice.volume}; ${notice.availableGB} GiB is available. No sandbox was created.`
   }
   const isMachineCreated = (machine: SetupMachineConfiguration) => committedWorkspaces.has(machine.id)
@@ -432,14 +431,14 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     const readStorage = actions.readWorkspaceStorage
     return {
       checkpoints: workspace.checkpoints?.length,
-      readSize: machine.kind === "vm" && !workspace.device && readStorage
+      readSize: !workspace.device && readStorage
         ? async () => {
             const storage = await readStorage(machine.id)
             return storage.workspaceHostBytes === null || storage.runtimeHostBytes === null
               ? null : storage.workspaceHostBytes + storage.runtimeHostBytes
           }
         : undefined,
-      exportFirst: machine.kind === "vm" && !workspace.device && exportSandbox
+      exportFirst: !workspace.device && exportSandbox
         ? async () => {
             try {
               if (!await exportSandbox(machine.name)) return false
@@ -464,7 +463,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
   /** The Open Linux desktop icon of a sandbox's list row and page, absent without a desktop. */
   function desktopAction(workspace: ApplicationWorkspace): { disabled: boolean; onClick: () => void } | undefined {
     const { machine } = workspace
-    if (machine.kind !== "vm" || !machine.desktop || !actions.openDesktop) return undefined
+    if (!machine.desktop || !actions.openDesktop) return undefined
     const target = workspaceTarget(workspace)
     const availability = workspaceAvailability(workspace, source)
     return { disabled: configurationLocked || availability.busy || Boolean(workspace.device && workspace.freshness === "stale"), onClick: () => { void actions.openDesktop!(target) } }
@@ -476,7 +475,6 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
     const { machine } = workspace
     const availability = workspaceAvailability(workspace, source)
     const stale = workspace.freshness === "stale"
-    const vm = machine.kind === "vm"
     const local = !workspace.device
     const restartCheck = guard.check(workspace, "restart")
     const restartPrompt = restartCheck.kind === "confirm" && availability.canRestart && !readOnly ? restartCheck.prompt : undefined
@@ -485,12 +483,12 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
         ? { label: "Restart…", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, popover: "restart" }
         : { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guard.request(workspace, "restart") },
       // Checkpoints, Storage and SSH open the page's tabs, which disable their own actions as needed.
-      ...(vm ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
-      ...(vm && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: forkDisabled(workspace), popover: "fork" }] : []),
-      ...(vm && local && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, onSelect: () => openSandbox(machine.id, "storage") }] : []),
+      { label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, onSelect: () => openSandbox(machine.id, "checkpoints") },
+      ...(actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: forkDisabled(workspace), popover: "fork" }] : []),
+      ...(local && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, onSelect: () => openSandbox(machine.id, "storage") }] : []),
       // Shown whenever the page shows its SSH tab.
-      ...(vm && (source.sshAccess || actions.refreshSshAccess) ? [{ label: "SSH", icon: KeyRound, accessibleLabel: `SSH for ${machine.name}`, onSelect: () => openSandbox(machine.id, "access") }] : []),
-      ...(vm && local && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || availability.busy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
+      ...((source.sshAccess || actions.refreshSshAccess) ? [{ label: "SSH", icon: KeyRound, accessibleLabel: `SSH for ${machine.name}`, onSelect: () => openSandbox(machine.id, "access") }] : []),
+      ...(local && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || availability.busy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
     ]
     const popovers: MenuPopovers = { ...forkPopovers(workspace) }
     if (restartPrompt) popovers.restart = close => <ConfirmBody tone={restartPrompt.tone} title={restartPrompt.title} description={restartPrompt.description} confirmLabel={restartPrompt.confirmLabel} onClose={close} onConfirm={lifecycleLater(workspace, "restart", true)} />
@@ -678,7 +676,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
               getRowPresentation={(machine) => {
                 const workspace = workspaces.get(machine.id)
                 const state = workspace?.state ?? "stopped"
-                const pendingSecrets = machine.kind === "vm" && !workspace?.device
+                const pendingSecrets = !workspace?.device
                   ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map((secret) => secret.name)
                   : []
                 const badge = pendingSecrets.length > 0

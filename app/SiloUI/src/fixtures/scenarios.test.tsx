@@ -8,7 +8,7 @@ import { onboardingScenarios, scenarioFromSearch, scenarioNames } from "@/fixtur
 describe("onboarding scenario coherence", () => {
   it.each(scenarioNames)("keeps configuration and progress machines aligned in %s", (name) => {
     const source = onboardingScenarios[name]
-    const machines = source.machineConfigurations.filter((machine) => machine.kind === "vm")
+    const machines = source.machineConfigurations
     const names = machines.map((machine) => machine.name)
     expect(source.bootstrapConfiguration.workspaces.map((workspace) => workspace.name)).toEqual(names)
     expect(source.bootstrapConfiguration.workspaces).toEqual(machines.map((machine) => ({

@@ -99,7 +99,6 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, workspace
             return <SandboxListItem key={machine.id} aria-busy={state === "working"}>
               <SandboxListRow
                 name={machine.name}
-                kind={machine.kind}
                 leading={<span className="w-5 shrink-0 text-center font-mono text-[10px] tabular-nums text-muted-foreground">{index + 1}</span>}
                 tone={state === "failed" ? "error" : state === "working" ? "starting" : state === "ready" ? "running" : "stopped"}
                 iconState={state === "failed" ? "error" : "normal"}

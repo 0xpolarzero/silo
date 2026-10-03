@@ -14,7 +14,7 @@ export function workspaceIconState(workspace?: ApplicationWorkspace): SandboxIco
  * establish whether a resource edit needs confirmation to stop the VM.
  */
 export function sandboxBusyReason(workspace?: ApplicationWorkspace): string | undefined {
-  if (!workspace || workspace.machine.kind !== "vm") return undefined
+  if (!workspace) return undefined
   if (workspace.checkpointOperation?.status === "running") return "Wait for the checkpoint to finish."
   const action = workspace.lifecycleAction === "dismiss-error" ? undefined : workspace.lifecycleAction
   if (workspace.state === "starting" || action === "start") return `Wait until ${workspace.machine.name} finishes starting.`

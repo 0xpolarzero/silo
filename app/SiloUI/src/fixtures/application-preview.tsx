@@ -60,7 +60,7 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
 function FixtureApplicationPreview({ source, actions, backupPreviewMode, initialRoute, unseenResult }: Parameters<typeof ApplicationPreview>[0]) {
   const fixture = useApplicationFixture(source)
   const [sshSettings, setSshSettings] = useState(() => new Map<string, SshAccessRequest>())
-  const sshAccess = { workspaces: fixture.source.workspaces.filter(w => w.machine.kind === "vm").map((w, index): SshAccessWorkspace => {
+  const sshAccess = { workspaces: fixture.source.workspaces.map((w, index): SshAccessWorkspace => {
     const target = workspaceTarget(w)
     const seeded = fixture.source.sshAccess?.workspaces.find(access => access.workspace === target)
     const settings = sshSettings.get(target) ?? seeded ?? { workspace: target, enabled: index === 0, port: 2222 + index, bindAddress: "127.0.0.1", keys: [] }

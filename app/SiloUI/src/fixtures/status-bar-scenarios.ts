@@ -21,7 +21,6 @@ export function statusBarSourceForFixture(source: ApplicationSource, mode?: Stat
         ...names.map((name, index): ApplicationWorkspace => ({
           ...template,
           machine: { ...template.machine, id: `00000000-0000-4000-8000-${String(index + 10).padStart(12, "0")}`, name },
-          host: `${name}.silo.test`,
           state: "stopped",
           stateDetail: "Stopped",
           attention: undefined,

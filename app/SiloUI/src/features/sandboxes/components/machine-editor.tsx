@@ -1,6 +1,6 @@
 import { parseRemoteWorkspaceTarget } from "@/features/application/model/connections"
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
-import { Monitor, Server, Square } from "lucide-react"
+import { Monitor, Square } from "lucide-react"
 
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { restoreFocus } from "@/lib/focus"
@@ -9,7 +9,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Checkbox } from "@/components/ui/checkbox"
 import { Switch } from "@/components/ui/switch"
 import { Input } from "@/components/ui/input"
-import type { SetupMachineConfiguration, SetupVirtualMachineConfiguration } from "@/contracts/silo"
+import type { SetupMachineConfiguration } from "@/contracts/silo"
 import {
   machineCapacityError,
   supportedCPUs,
@@ -135,7 +135,6 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   const [errors, setErrors] = useState<MachineValidationErrors>({})
   const firstField = useRef<HTMLInputElement>(null)
   const container = useRef<HTMLDivElement>(null)
-  const portErrorId = useId()
   const blockedReasonId = useId()
   // Bumped by each failed Save so focus moves to the first invalid field once it renders.
   const [failedValidation, setFailedValidation] = useState(0)
@@ -147,20 +146,20 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   const divergent = Boolean(baselineMachine && original && !sameMachineConfiguration(baselineMachine, original))
   const changedFields = divergent && baselineMachine && original ? divergentMachineFields(baselineMachine, original) : []
   // A VM whose desktop is built into its image always starts it; only older VMs are configured here.
-  const builtInDesktop = created && original?.kind === "vm" && original.desktop?.builtIn === true
+  const builtInDesktop = created && original?.desktop?.builtIn === true
   const computerUse = useComputerUseBridge()
   // A new sandbox gets the built-in desktop only if the device it runs on can provide it.
   // This device follows the build; another device is asked, because it may run an
   // older Silo (and guest image) without computer use.
-  const remoteOwner = !created && draft.kind === "vm" && deviceId ? deviceId : undefined
+  const remoteOwner = !created && deviceId ? deviceId : undefined
   const ownerApp = useChatGptApp(remoteOwner && computerUse ? computerUse.chatGptFor(remoteOwner) : undefined)
   const ownerName = deviceName ?? "that device"
   const newVmSupport: "yes" | "no" | "checking" = !computerUse ? "no"
     : !remoteOwner ? "yes"
     : ownerApp.status ? (ownerApp.status.state === "unknown" ? "no" : "yes")
     : ownerApp.loadError ? "no" : "checking"
-  const builtInNewVm = !created && draft.kind === "vm" && newVmSupport === "yes"
-  const startsWithSandbox = draft.kind === "vm" && draft.desktop?.startWithSandbox === false
+  const builtInNewVm = !created && newVmSupport === "yes"
+  const startsWithSandbox = draft.desktop?.startWithSandbox === false
   // Computer use needs the session running: a new built-in sandbox always starts it, so a
   // duplicate or saved draft that chose to start it by hand is corrected.
   useEffect(() => {
@@ -171,9 +170,9 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [builtInNewVm, startsWithSandbox])
-  const desktopInstalled = created && original?.kind === "vm" && Boolean(original.desktop)
-  const desktopOnlyChange = original?.kind === "vm" && draft.kind === "vm"
-    && JSON.stringify(original.desktop) !== JSON.stringify(draft.desktop)
+  const desktopInstalled = created && Boolean(original?.desktop)
+  const desktopOnlyChange = Boolean(original)
+    && JSON.stringify(original?.desktop) !== JSON.stringify(draft.desktop)
     && JSON.stringify({ ...original, desktop: undefined }) === JSON.stringify({ ...draft, desktop: undefined })
   const requiresStop = running && !desktopOnlyChange
   const [confirmingStop, setConfirmingStop] = useState(false)
@@ -228,11 +227,9 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   function save(stopConfirmed = false) {
     const nativeId = (id: string) => parseRemoteWorkspaceTarget(id)?.vmId ?? id
     const nextErrors = validateMachine({ ...draft, id: nativeId(draft.id) }, machines.map(machine => ({ ...machine, id: nativeId(machine.id) })), editor.originalID ? nativeId(editor.originalID) : undefined)
-    if (draft.kind === "vm") {
-      // Resource fields get readable range messages instead of the contract schema's.
-      for (const field of resourceFields) delete nextErrors[field]
-      Object.assign(nextErrors, validateMachineResources(draft, capacity, deviceName))
-    }
+    // Resource fields get readable range messages instead of the contract schema's.
+    for (const field of resourceFields) delete nextErrors[field]
+    Object.assign(nextErrors, validateMachineResources(draft, capacity, deviceName))
     const capacityError = machineCapacityError(machines.length, editor.originalID)
     if (capacityError) nextErrors.form = capacityError
     setErrors(nextErrors)
@@ -242,15 +239,14 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
     }
     // Stopping a running sandbox is always confirmed first (decision 8).
     else if (requiresStop && !stopConfirmed) setConfirmingStop(true)
-    else onSave(builtInNewVm && startsWithSandbox && draft.kind === "vm" ? { ...draft, desktop: { startWithSandbox: true } } : draft)
+    else onSave(builtInNewVm && startsWithSandbox ? { ...draft, desktop: { startWithSandbox: true } } : draft)
   }
 
   return (
     <div ref={container} className="grid min-w-0 gap-3 p-3" data-testid={`machine-editor-${draft.id}`}>
       <div className="flex min-w-0 items-center gap-2">
-        {draft.kind === "vm" ? <Monitor className="size-4 shrink-0" aria-hidden="true" /> : <Server className="size-4 shrink-0" aria-hidden="true" />}
-        <span className="min-w-0 flex-1 text-xs font-semibold">{draft.kind === "vm" ? "Sandbox details" : "SSH host details"}</span>
-        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{draft.kind === "ssh" ? "SSH host" : draft.kind}</span>
+        <Monitor className="size-4 shrink-0" aria-hidden="true" />
+        <span className="min-w-0 flex-1 text-xs font-semibold">Computer details</span>
       </div>
 
       {editorHeader}
@@ -286,7 +282,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
       <TextField
         firstField
         inputRef={firstField}
-        label={draft.kind === "vm" ? "Sandbox name" : "SSH host name"}
+        label="Computer name"
         value={draft.name}
         readOnly={created}
         className={created ? "opacity-60" : undefined}
@@ -296,42 +292,20 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         onChange={(event) => update({ name: event.target.value })}
       />
 
-      {created && draft.kind === "vm" && <p className="text-[11px] text-muted-foreground">Existing sandboxes cannot be renamed or have their disks resized. To use a different disk size, create a new sandbox and transfer your data.</p>}
-      {editor.displayAfterID && <p className="text-[11px] text-muted-foreground">{draft.kind === "vm" ? "Creates a new empty sandbox with the same settings. Files are not included." : "Creates a new SSH host connection with the same settings."}</p>}
+      {created && <p className="text-[11px] text-muted-foreground">Existing sandboxes cannot be renamed or have their disks resized. To use a different disk size, create a new sandbox and transfer your data.</p>}
+      {editor.displayAfterID && <p className="text-[11px] text-muted-foreground">Creates a new empty computer with the same settings. Files are not included.</p>}
 
-      {draft.kind === "vm" ? (
-        <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
-          <p className="col-span-full text-[11px] text-muted-foreground">CPUs and Memory set the startup allocation; ceilings set the maximum. The Workspace disk holds /workspace; the Runtime disk holds the operating system and installed applications.</p>
-          <SelectField custom label="CPUs" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="CPUs ceiling" value={draft.maxCPUs} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom readOnly={created} label="Workspace disk" value={draft.workspaceStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom readOnly={created} label="Runtime disk" value={draft.runtimeStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-        </div>
-      ) : (
-        <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem]">
-          <TextField label="SSH host" value={draft.host} error={errors.host} autoComplete="off" placeholder="server.example.com" onChange={(event) => update({ host: event.target.value })} />
-          <TextField label="SSH user" value={draft.user} error={errors.user} autoComplete="username" placeholder="developer" onChange={(event) => update({ user: event.target.value })} />
-          <label className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
-            SSH port
-            <Input technical
-              aria-label="SSH port"
-              aria-invalid={Boolean(errors.port)}
-              aria-describedby={errors.port ? portErrorId : undefined}
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={65_535}
-              value={draft.port}
-              onChange={(event) => update({ port: Number(event.target.value) })}
-            />
-            {errors.port && <span id={portErrorId} className="text-destructive">{errors.port}</span>}
-          </label>
-        </div>
-      )}
+      <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
+        <p className="col-span-full text-[11px] text-muted-foreground">CPUs and Memory set the startup allocation; ceilings set the maximum. The Workspace disk holds /workspace; the Runtime disk holds the operating system and installed applications.</p>
+        <SelectField custom label="CPUs" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupMachineConfiguration>)} />
+        <SelectField custom label="CPUs ceiling" value={draft.maxCPUs} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupMachineConfiguration>)} />
+        <SelectField custom label="Memory" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupMachineConfiguration>)} />
+        <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupMachineConfiguration>)} />
+        <SelectField custom readOnly={created} label="Workspace disk" value={draft.workspaceStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupMachineConfiguration>)} />
+        <SelectField custom readOnly={created} label="Runtime disk" value={draft.runtimeStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupMachineConfiguration>)} />
+      </div>
 
-      {draft.kind === "vm" && !builtInDesktop && !builtInNewVm && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
+      {!builtInDesktop && !builtInNewVm && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
         {!created && computerUse && remoteOwner && (newVmSupport === "no"
           ? <p className="text-[11px] text-muted-foreground">Update Silo on {ownerName} for built-in computer use. Until then, the optional Linux desktop is available.</p>
           : newVmSupport === "checking" ? <p role="status" className="text-[11px] text-muted-foreground">Checking {ownerName}…</p> : null)}

@@ -13,7 +13,7 @@ function localVmSource() {
 }
 
 function localVm(source: ApplicationSource): ApplicationWorkspace {
-  return source.workspaces.find(item => item.machine.kind === "vm" && !item.device)!
+  return source.workspaces.find(item => !item.device)!
 }
 
 async function openDetail(source: ApplicationSource, actions: Partial<ApplicationActions> = {}, workspace = localVm(source)) {
@@ -87,7 +87,7 @@ it.each([false, true])("clears the overview row revocation warning and Restart a
 
 it("opens a sandbox detail page from the row body and returns to the list from the breadcrumb", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ openTerminal: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
 
@@ -108,7 +108,7 @@ it("opens a sandbox detail page from the row body and returns to the list from t
 
 it("opens the Checkpoints tab directly from the row menu", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ createCheckpoint: vi.fn(), forkCheckpoint: vi.fn(), restoreCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
 
@@ -120,7 +120,7 @@ it("opens the Checkpoints tab directly from the row menu", async () => {
 
 it("hides Storage and SSH access tabs for a remote sandbox without those capabilities", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   workspace.device = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ readWorkspaceStorage: vi.fn(), forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
@@ -131,7 +131,7 @@ it("hides Storage and SSH access tabs for a remote sandbox without those capabil
 
 it("summarizes resources, repositories, and secrets on the Overview tab", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
 
@@ -143,7 +143,7 @@ it("summarizes resources, repositories, and secrets on the Overview tab", async 
 
 it("jumps from Overview sections to Files, Network, and Secrets scoped to the sandbox", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const onNavigate = vi.fn()
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} onNavigate={onNavigate} />)
@@ -162,7 +162,7 @@ it("jumps from Overview sections to Files, Network, and Secrets scoped to the sa
 
 it("opens the sandbox editor in place on the detail page without leaving it", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
 
@@ -181,7 +181,7 @@ it("opens the sandbox editor in place on the detail page without leaving it", as
 
 it("opens the editor in place from the Resources Edit button", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
 
@@ -192,7 +192,7 @@ it("opens the editor in place from the Resources Edit button", async () => {
 
 it("commits an in-place edit with a baseline and returns to the overview tab", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const onMachinesChange = vi.fn()
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={onMachinesChange} />)
@@ -215,7 +215,7 @@ it("commits an in-place edit with a baseline and returns to the overview tab", a
 
 it("cancels an in-place edit without committing", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const onMachinesChange = vi.fn()
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={onMachinesChange} />)
@@ -231,7 +231,7 @@ it("cancels an in-place edit without committing", async () => {
 
 it("shows the stale-edit conflict review in place when a save is rejected", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const onMachinesChange = vi.fn().mockRejectedValue(new Error("This sandbox changed while your edit was waiting. Review it and try again."))
   // A defined saveRemoteMachine routes the commit through the awaited path, which keeps the
   // editor open on a stale rejection (the optimistic list path closes it immediately).
@@ -366,8 +366,8 @@ it("confirms before removing a port from the Overview tab", async () => {
 it("confirms a delete in a popover on the detail page and returns to the list", async () => {
   const source = localVmSource()
   // A stopped VM so Delete is allowed.
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm" && item.state !== "running")
-    ?? source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces.find(item => item.state !== "running")
+    ?? source.workspaces[0]!
   workspace.state = "stopped"
   const onMachinesChange = vi.fn()
   const user = userEvent.setup()
@@ -390,7 +390,7 @@ it("confirms a delete in a popover on the detail page and returns to the list", 
 
 it("shows a destructive Delete confirmation from the detail ⋯ menu and Fork still opens its own popover", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   workspace.state = "stopped"
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
@@ -412,7 +412,7 @@ it("shows a destructive Delete confirmation from the detail ⋯ menu and Fork st
 
 it("does not bring a closed fork popover back when returning to the list", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
@@ -430,7 +430,7 @@ it("does not bring a closed fork popover back when returning to the list", async
 
 it("does not carry an open fork popover from the detail page to the list", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   const user = userEvent.setup()
   render(<OverviewPage source={source} actions={{ forkCheckpoint: vi.fn() } as unknown as ApplicationActions} onMachinesChange={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
@@ -443,7 +443,7 @@ it("does not carry an open fork popover from the detail page to the list", async
 
 it("confirms a delete from the list row ⋯ menu with the same popover as the detail page", async () => {
   const source = localVmSource()
-  const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
+  const workspace = source.workspaces[0]!
   workspace.state = "stopped"
   const onMachinesChange = vi.fn()
   const user = userEvent.setup()
@@ -461,7 +461,7 @@ it("confirms a delete from the list row ⋯ menu with the same popover as the de
 
 it("resets per-sandbox edit state when the page switches to another sandbox", async () => {
   const source = localVmSource()
-  const [first, second] = source.workspaces.filter(item => item.machine.kind === "vm" && !item.device)
+  const [first, second] = source.workspaces.filter(item => !item.device)
   const user = userEvent.setup()
   const props = { source, actions: {} as ApplicationActions, onMachinesChange: vi.fn(), onOpenSandbox: vi.fn(), onCloseSandbox: vi.fn() }
   const { rerender } = render(<OverviewPage {...props} selectedSandboxId={first.machine.id} />)

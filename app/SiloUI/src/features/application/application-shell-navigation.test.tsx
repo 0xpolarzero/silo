@@ -413,7 +413,7 @@ it("opens on the nested sandbox Overview with compact navigation", () => {
   expect(overview.queryByRole("heading", { name: "All sandboxes" })).not.toBeInTheDocument()
   expect(overview.queryByText(/Updated just now/)).not.toBeInTheDocument()
   expect(overview.getByRole("heading", { name: "Sandboxes" })).toBeVisible()
-  expect(overview.getByText("3 sandboxes · 3 on this device · 0 on other devices · 0 SSH hosts")).toBeVisible()
+  expect(overview.getByText("3 sandboxes · 3 on this device · 0 on other devices")).toBeVisible()
   expect(overview.getByRole("button", { name: "Add" })).toBeVisible()
   const sandboxList = overview.getByRole("list", { name: "Configured sandboxes" })
   expect(sandboxList).toBeVisible()

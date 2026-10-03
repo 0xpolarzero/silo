@@ -98,7 +98,7 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
     return <Unavailable message={message} checks={failures} checking={checking} retry={current.loading ? undefined : retryChecks} />
   }
   const remoteOnly = Boolean(current.source.devices?.length)
-    && !current.source.workspaces.some(workspace => !workspace.device && workspace.machine.kind === "vm")
+    && !current.source.workspaces.some(workspace => !workspace.device)
   const localRuntimeFailures = remoteOnly ? [] : failures
   // Connected devices stay usable while this device's sandboxes update; say why
   // the local ones are missing.

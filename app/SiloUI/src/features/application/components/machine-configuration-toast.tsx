@@ -46,7 +46,7 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
       tracked.current.pending = computerUsePending(operation)
       // The backend adds the built-in desktop to a new sandbox on a v4 image, so neither the request nor a lagging
       // snapshot may carry it. The request and the setup steps it reports are what is known while it is created.
-      tracked.current.desktop ||= description.creating.length === 1 && (operation.candidate.machines.some(machine => machine.name === description.creating[0] && machine.kind === "vm" && Boolean(machine.desktop))
+      tracked.current.desktop ||= description.creating.length === 1 && (operation.candidate.machines.some(machine => machine.name === description.creating[0] && Boolean(machine.desktop))
         || operation.progressEvents.some(event => event.step === "desktop-installation" || event.step?.startsWith("chatgpt-app-") || event.step === "computer-use-setup" || event.step === "computer-use-pending"))
       if (!show) return
       tracked.current.shown = true
@@ -87,7 +87,7 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
     showOperationSuccess(TOAST_ID, single ? `Created ${first.machine.name}` : `Created ${created.length} sandboxes`, {
       persist: true,
       sandbox: created.map(workspace => workspace.machine.name),
-      description: single && computerUse && first.machine.kind === "vm" && (first.machine.desktop || finished.desktop)
+      description: single && computerUse && (first.machine.desktop || finished.desktop)
         ? createElement("div", { className: "grid gap-1.5" },
           finished.pending ? createElement("p", { className: "text-xs text-muted-foreground" }, "Computer use will finish setting up at first start.") : null,
           createElement(CreatedSandboxApprovalSwitch, { workspace: workspaceTarget(first) }))

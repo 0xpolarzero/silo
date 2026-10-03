@@ -20,7 +20,7 @@ function Host({ source }: { source: ApplicationSource }) {
 
 it.each(["failed", "succeeded"] as const)("removes a remote %s push notification on deletion while preserving a same-named device's notification", async (status) => {
   const source = structuredClone(applicationSourceForScenario("complete"))
-  const local = source.workspaces.find(workspace => workspace.machine.kind === "vm")!
+  const local = source.workspaces[0]!
   const remote = {
     ...structuredClone(local),
     machine: { ...local.machine, id: remoteWorkspaceTarget("office", "remote-vm") },

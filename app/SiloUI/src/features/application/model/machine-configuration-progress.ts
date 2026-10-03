@@ -126,7 +126,7 @@ export function describeConfiguration(operation: SandboxConfigurationOperation, 
     progress = Math.min(1, latest.downloadedBytes / latest.totalBytes)
   } else if (kind === "creating" && creating.length === 1 && !UNMEASURED_STEPS.has(latest?.step ?? "")) {
     // The backend adds the built-in desktop to new sandboxes on a v4 image, so it can be absent from the request.
-    const desktop = (creating[0].kind === "vm" && creating[0].desktop) || operation.progressEvents.some(event => event.step === "desktop-installation" || event.step?.startsWith("chatgpt-app-") || event.step === "computer-use-setup")
+    const desktop = (creating[0].desktop) || operation.progressEvents.some(event => event.step === "desktop-installation" || event.step?.startsWith("chatgpt-app-") || event.step === "computer-use-setup")
     const total = desktop ? 6 : 4
     progress = Math.max(0.04, Math.min(creationStage(latest?.step, latest?.fraction, Boolean(desktop)), total - 1) / total)
   }

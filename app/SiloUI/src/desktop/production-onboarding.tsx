@@ -15,7 +15,7 @@ import { useSettings } from "@/features/preferences/settings-store"
 function bootstrapConfiguration(machines: readonly SetupMachineConfiguration[]): SiloBootstrapConfiguration {
   return {
     schemaVersion: 1,
-    workspaces: machines.flatMap((machine) => machine.kind === "vm" ? [{
+    workspaces: machines.map((machine) => ({
       name: machine.name,
       cpu: machine.cpus,
       cpuCeiling: machine.maxCPUs,
@@ -23,7 +23,7 @@ function bootstrapConfiguration(machines: readonly SetupMachineConfiguration[]):
       memoryCeilingGiB: machine.maxMemoryGiB,
       workspaceStorageGiB: machine.workspaceStorageGiB,
       runtimeStorageGiB: machine.runtimeStorageGiB,
-    }] : []),
+    })),
   }
 }
 
