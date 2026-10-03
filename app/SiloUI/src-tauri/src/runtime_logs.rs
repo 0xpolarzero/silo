@@ -2018,21 +2018,36 @@ mod tests {
     fn follow_refuses_to_clone_redaction_state_beyond_the_shared_budget() {
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("exec.log"), unterminated_sessions(5)).unwrap();
-        let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
-        let token = first.snapshot.unwrap();
-        let (_, snapshot) = cache().lock().unwrap().remove(&token).unwrap();
-        let mut previous = std::sync::Arc::try_unwrap(snapshot).ok().unwrap();
-        assert!(previous.redaction.bytes > 0);
+        let (path, segment) = files(directory.path()).unwrap().remove(0);
+        let filter = match_everything();
+        let mut redaction = Redaction::default();
+        let mut index = Index::default();
+        let consumed = scan(
+            &path,
+            &segment,
+            0,
+            &mut redaction,
+            |offset, id, decoded, _, redaction| {
+                index.add(segment.inode, offset, id, decoded, &filter, redaction)
+            },
+        )
+        .unwrap();
+        assert!(redaction.bytes > 0);
         // A clone of this state alone exceeds the shared budget, so the result does not
         // depend on what parallel tests hold in the process-wide cache.
-        previous.redaction.bytes = INDEX_BUDGET + 1;
-        let available = files(directory.path()).unwrap();
-        let filter = Filter {
-            since: None,
-            until: None,
-            needle: String::new(),
-            source: None,
+        redaction.bytes = INDEX_BUDGET + 1;
+        let previous = Cached {
+            binding: String::new(),
+            files: vec![Indexed {
+                segment,
+                consumed,
+                complete: Summary::default(),
+            }],
+            records: index.sorted(),
+            redaction,
+            summary: Summary::default(),
         };
+        let available = files(directory.path()).unwrap();
         let result = follow_index(&previous, &available, &filter);
         assert_eq!(result.err().as_deref(), Some(TOO_MANY_MATCHES));
     }
