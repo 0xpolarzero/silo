@@ -29,6 +29,8 @@ export function sandboxBusyReason(workspace?: ApplicationWorkspace): string | un
 export function workspaceRowTone(workspace?: ApplicationWorkspace): SandboxRowTone {
   if (workspace?.state === "failed" || workspace?.attention?.level === "error") return "error"
   if (workspace?.attention?.level === "warning") return "warning"
+  // A start in progress reads as starting even while the reported state is still stopped.
+  if (workspace?.lifecycleAction === "start" || workspace?.lifecycleAction === "restart") return "starting"
   return workspace?.state ?? "stopped"
 }
 

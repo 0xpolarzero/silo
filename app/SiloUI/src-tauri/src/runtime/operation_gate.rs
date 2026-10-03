@@ -292,9 +292,17 @@ pub(crate) struct Kinded<'a> {
     gate: &'a OperationGate,
     kind: OperationKind,
     retry_after: Option<u64>,
+    hidden: bool,
 }
 
 impl<'a> Kinded<'a> {
+    /// Keep this operation out of the published queue snapshot while it waits and runs. It
+    /// still takes its turn and excludes conflicting work; only its visibility differs.
+    pub(crate) fn hidden(mut self) -> Self {
+        self.hidden = true;
+        self
+    }
+
     /// Retry only while this remains the latest lifecycle request on its VM.
     pub(crate) fn retry_after(mut self, request: Option<u64>) -> Self {
         self.retry_after = request;
@@ -334,6 +342,7 @@ impl<'a> Kinded<'a> {
             key,
             None,
             self.retry_after,
+            self.hidden,
         )
     }
 
@@ -352,6 +361,7 @@ impl<'a> Kinded<'a> {
             None,
             Some(keep_waiting),
             self.retry_after,
+            self.hidden,
         )
     }
 }
@@ -519,6 +529,7 @@ impl OperationGate {
             gate: self,
             kind,
             retry_after: None,
+            hidden: false,
         }
     }
 
@@ -661,7 +672,16 @@ impl OperationGate {
         label: &str,
         key: Option<String>,
     ) -> Result<OperationGuard<'_>, GateError> {
-        self.acquire_inner(scope, vm_name, OperationKind::Other, label, key, None, None)
+        self.acquire_inner(
+            scope,
+            vm_name,
+            OperationKind::Other,
+            label,
+            key,
+            None,
+            None,
+            false,
+        )
     }
 
     /// Wait for a turn while `keep_waiting` returns true; otherwise leave the queue
@@ -681,9 +701,11 @@ impl OperationGate {
             None,
             Some(keep_waiting),
             None,
+            false,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn acquire_inner(
         &self,
         scope: Scope,
@@ -693,6 +715,7 @@ impl OperationGate {
         key: Option<String>,
         keep_waiting: Option<&dyn Fn() -> bool>,
         retry_after: Option<u64>,
+        hidden: bool,
     ) -> Result<OperationGuard<'_>, GateError> {
         if HELD.with(Cell::get) > 0 {
             return Err(GateError::Nested);
@@ -710,8 +733,9 @@ impl OperationGate {
         }
         let mut entry = state.entry(scope, vm_name, kind, label, key);
         entry.removes = REMOVES.with(|removes| std::mem::take(&mut *removes.borrow_mut()));
+        entry.hidden = hidden;
         let id = entry.id;
-        state.touch(&entry.scope, false);
+        state.touch(&entry.scope, hidden);
         state.waiting.push_back(entry);
         drop(state);
         self.notify();
@@ -772,7 +796,7 @@ impl OperationGate {
                 entry.since_ms = now_ms();
                 entry.admitted = entry.since;
                 let token = entry.cancel.clone();
-                state.touch(&entry.scope, false);
+                state.touch(&entry.scope, entry.hidden);
                 state.running.push(entry);
                 break token;
             }
@@ -1738,6 +1762,36 @@ mod tests {
         );
         drop(housekeeping);
         waiter.join().unwrap();
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn a_hidden_queued_operation_never_surfaces_while_waiting_or_running() {
+        let gate = leak();
+        let first = gate.vm("id-a", "a", "Starting a").unwrap();
+        let hidden = thread::spawn(move || {
+            let turn = gate
+                .kind(OperationKind::Other)
+                .hidden()
+                .vm("id-a", "a", "Setting up computer use in a")
+                .unwrap();
+            // Running, it still holds the VM's turn but is not published.
+            assert!(gate.snapshot().running.is_empty());
+            drop(turn);
+        });
+        // Waiting behind the visible start, it is held out of the published queue too.
+        thread::sleep(Duration::from_millis(100));
+        let queue = gate.snapshot();
+        assert_eq!(queue.running.len(), 1);
+        assert!(queue.waiting.is_empty(), "{queue:?}");
+        // A visible operation queued behind it explains the wait generically.
+        let behind = thread::spawn(move || drop(gate.vm("id-a", "a", "Stopping a").unwrap()));
+        wait_until(gate, |queue| {
+            queue.waiting.len() == 1 && queue.waiting[0].blocked_by_hidden
+        });
+        drop(first);
+        hidden.join().unwrap();
+        behind.join().unwrap();
         assert!(gate.is_idle());
     }
 

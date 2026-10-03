@@ -1096,11 +1096,14 @@ fn run_msb_with_progress(
         };
         let guard = lock_vm_runtime(&access, boot_wait, &operation_name(args))?;
         if args[0] != "exec" {
+            lifecycle_step(LifecycleStep::Boot);
             let result = run_msb_process(paths, args, timeout, report);
             drop(guard);
             if result.is_ok() {
+                lifecycle_step(LifecycleStep::Network);
                 crate::network::reconcile_started(paths, workspace);
                 crate::ssh_access::reconcile(paths);
+                lifecycle_step(LifecycleStep::Account);
             }
             return result.and_then(|output| prepare_booted(paths, workspace).map(|()| output));
         }
@@ -1221,6 +1224,50 @@ fn prepare_booted(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeEr
         let _ = crate::computer_use::after_boot(std::sync::Arc::new(Booted), paths, workspace);
     }
     prepared
+}
+
+/// Where a start is, reported while the operation gate is held so the UI can follow it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LifecycleStep {
+    /// The VM is booting.
+    Boot,
+    /// The VM is up; published ports and SSH access are being connected.
+    Network,
+    /// The VM's working account is being checked.
+    Account,
+}
+
+impl LifecycleStep {
+    fn id(self) -> &'static str {
+        match self {
+            Self::Boot => "boot",
+            Self::Network => "network",
+            Self::Account => "account",
+        }
+    }
+}
+
+type LifecycleSink = std::rc::Rc<dyn Fn(LifecycleStep)>;
+
+thread_local! {
+    /// Receiver of start progress for the lifecycle command running on this thread.
+    static LIFECYCLE_SINK: std::cell::RefCell<Option<LifecycleSink>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Report start progress to this thread's lifecycle command, if one is listening.
+fn lifecycle_step(step: LifecycleStep) {
+    let sink = LIFECYCLE_SINK.with(|sink| sink.borrow().clone());
+    if let Some(sink) = sink {
+        sink(step);
+    }
+}
+
+/// Run `work` with `sink` receiving the start progress it reports on this thread.
+fn with_lifecycle_sink<T>(sink: LifecycleSink, work: impl FnOnce() -> T) -> T {
+    let previous = LIFECYCLE_SINK.with(|slot| slot.replace(Some(sink)));
+    let result = work();
+    LIFECYCLE_SINK.with(|slot| *slot.borrow_mut() = previous);
+    result
 }
 
 thread_local! {
@@ -3220,7 +3267,24 @@ pub async fn workspace_action(
             // action, and this VM's row keeps its last state until the post-release event
             // below (D-18), so an in-gate refresh in every window would be wasted.
             let resources = host_resources()?;
-            explicit_workspace_action_with(&ProcessRunner, &paths, &resources, &action, machine.name())
+            // The gate is held, so no state event follows until it is released. Progress goes
+            // out as its own event, and the first step after the boot refreshes the state so
+            // the row leaves "stopped" as soon as the VM is up.
+            let sink: LifecycleSink = {
+                let (app, vm_id, action) = (app.clone(), vm_id.clone(), action.clone());
+                std::rc::Rc::new(move |step| {
+                    let _ = app.emit(
+                        "silo://lifecycle-progress",
+                        json!({"vmId": vm_id, "action": action, "step": step.id()}),
+                    );
+                    if step == LifecycleStep::Network {
+                        let _ = app.emit("silo://application-state-changed", ());
+                    }
+                })
+            };
+            with_lifecycle_sink(sink, || {
+                explicit_workspace_action_with(&ProcessRunner, &paths, &resources, &action, machine.name())
+            })
         };
         // Start/stop/restart are idempotent, so transient failures retry automatically.
         // Other lifecycle actions run once.
@@ -6859,6 +6923,36 @@ chown -R root:root /workspace"#,
                 "{failure}: missing post-boot warning"
             );
         }
+    }
+
+    #[test]
+    fn a_start_reports_its_steps_in_order() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_lifecycle_msb(&paths, "never");
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let recorder = seen.clone();
+        let sink: LifecycleSink = std::rc::Rc::new(move |step| recorder.borrow_mut().push(step));
+        let result = with_lifecycle_sink(sink, || {
+            run_msb_with_progress(
+                &paths,
+                &["start".into(), "cleanup".into()],
+                Duration::from_secs(20),
+                &|_| {},
+            )
+        });
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                LifecycleStep::Boot,
+                LifecycleStep::Network,
+                LifecycleStep::Account
+            ]
+        );
+        // Without a listener (every other caller) reporting is a no-op.
+        lifecycle_step(LifecycleStep::Boot);
     }
 
     #[test]
