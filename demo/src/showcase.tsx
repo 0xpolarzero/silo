@@ -22,7 +22,7 @@ function ProductShot({ view, label, className }: { view: 'overview' | 'files' | 
   return <section ref={shot} className={`showcase-shot ${className}`} aria-label={label}>
     <span className="showcase-shot-label">{label}</span>
     <div className="showcase-product">
-      <SettingsProvider initialSettings={showcaseSource.preferences}>
+      <SettingsProvider initialSettings={{ ...showcaseSource.preferences, alphaNoticeDismissed: true }}>
         <ApplicationPreview source={showcaseSource} initialRoute={view === 'github' ? { tab: 'github' } : { tab: 'computers', computerSection: view }} actions={{ listComputerDirectory: showcaseDirectoryLoader }} />
       </SettingsProvider>
     </div>
