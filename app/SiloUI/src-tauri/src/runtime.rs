@@ -20,7 +20,6 @@ pub(crate) mod storage;
 pub(crate) mod update_recovery;
 use crate::bridge_error::{BridgeError, ErrorCode};
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
 use serde_json::json;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
