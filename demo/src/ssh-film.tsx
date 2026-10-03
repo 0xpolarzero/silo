@@ -191,13 +191,13 @@ function TwoComputers({ frame, zoom }: { frame: number; zoom: number }) {
           </header>
           <div className="ssh-host-content">
             <div className="ssh-host-heading">
-              Sandboxes<span>1 running</span>
+              Computers<span>1 running</span>
             </div>
             <div className={`ssh-physical-vm ${working ? "working" : ""}`}>
               <div className="ssh-physical-vm-heading">
                 <Box size={29} />
                 <strong>demo</strong>
-                <span>VM</span>
+                <span>Linux</span>
                 <i /> Running
               </div>
               <div className="ssh-remote-repo">
@@ -312,7 +312,7 @@ function Agent({ frame }: { frame: number }) {
           </span>
           {!settings && (
             <span className="ssh-connection">
-              <i /> SSH · Office Mac / demo VM <ChevronDown size={14} />
+              <i /> SSH · Office Mac / demo <ChevronDown size={14} />
             </span>
           )}
         </header>
@@ -337,7 +337,7 @@ function Agent({ frame }: { frame: number }) {
               <label>
                 Name
                 <div className={frame < t.address ? "focus" : ""}>
-                  {typed("Office Mac / demo VM", frame, t.name, 1.6) || (
+                  {typed("Office Mac / demo", frame, t.name, 1.6) || (
                     <em>Connection name</em>
                   )}
                 </div>
@@ -395,7 +395,7 @@ function Agent({ frame }: { frame: number }) {
         {folder && (
           <div className="ssh-folder-picker">
             <h1>Open a project</h1>
-            <p>Choose a folder on Office Mac / demo VM.</p>
+            <p>Choose a folder on Office Mac / demo.</p>
             <div className="ssh-folder-path">
               <Globe size={17} />
               <span>/workspace</span>
@@ -433,7 +433,7 @@ function Agent({ frame }: { frame: number }) {
               <div className="ssh-submitted">
                 <div>Explore this codebase</div>
                 <p>
-                  <span className="ssh-thinking" /> Working in demo VM…
+                  <span className="ssh-thinking" /> Working in demo…
                 </p>
               </div>
             )}

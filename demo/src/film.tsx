@@ -64,7 +64,7 @@ function Site({ changed = false }: { changed?: boolean }) {
           hello-silo
         </span>
         <span>
-          Built in a sandbox <span className="tiny-dot" />
+          Built in a computer <span className="tiny-dot" />
         </span>
       </div>
       <div className="site-body">
@@ -246,7 +246,7 @@ function Terminal({ frame }: { frame: number }) {
 }
 function ProductStage({ id, frame }: { id: SceneId; frame: number }) {
   const page =
-    id === "enable" ? "computers" : (id as "connect" | "network" | "files");
+    id === "enable" ? "connections" : (id as "connect" | "network" | "files");
   if (id === "network" && frame >= 220)
     return (
       <>
@@ -264,7 +264,7 @@ function ProductStage({ id, frame }: { id: SceneId; frame: number }) {
   return (
     <>
       <DeviceTag owner={id === "enable"}>
-        {id === "enable" ? "Allow remote management" : undefined}
+        {id === "enable" ? "Allow connections from other devices" : undefined}
       </DeviceTag>
       <div className={`app-stage ${close ? "close-shot" : "wide-shot"}`}>
         <div className="app-scale">
@@ -456,11 +456,11 @@ export function Film() {
     github: "GitHub access",
     secrets: "Secret destinations",
     backup: "Backup",
-    enable: "Remote management",
+    enable: "Allow connections",
     connect: "Connect Office Mac",
     terminal: "Run the project",
-    files: "Open the VM repo in Zed",
-    edit: "Edit the VM. See it live.",
+    files: "Open the computer’s repo in Zed",
+    edit: "Edit on the computer. See it live.",
     network:
       source < 35
         ? "Discover listening ports"
@@ -499,7 +499,7 @@ export function Film() {
           <DeviceTag />
           <div className="live-workspace">
             <div>
-              <div className="live-pane-label">Zed · demo VM on Office Mac</div>
+              <div className="live-pane-label">Zed · demo on Office Mac</div>
               <Editor frame={source} compact />
             </div>
             <div>

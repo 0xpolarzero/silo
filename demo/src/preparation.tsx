@@ -20,16 +20,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SiloMark } from "@/components/silo-mark";
 import type { BackupController } from "@/features/application/model/backup-source";
-import { actions, demo, demoMachine, noop, sourceFor } from "./fixtures";
+import { actions, demo, demoConfiguration, noop, sourceFor } from "./fixtures";
 import { typed } from "./timeline";
 
 export const ownerSource = () => ({
   ...sourceFor({ connected: false }),
-  workspaces: [
+  computers: [
     {
       ...demo,
-      machine: demoMachine,
-      computer: undefined,
+      configuration: demoConfiguration,
+      device: undefined,
       state: "stopped" as const,
       stateDetail: "Stopped",
     },
@@ -41,7 +41,7 @@ const archive = {
   completedLabel: "Just now",
   size: "1.2 GB",
   destination: "/Users/developer/Backups",
-  sandboxes: ["demo"],
+  computers: ["demo"],
 };
 function backupFor(frame: number): BackupController {
   const done = frame >= 130;
@@ -67,7 +67,7 @@ function backupFor(frame: number): BackupController {
               progress: Math.min(98, Math.max(2, (frame - 30) * 1.05)),
               phases: [
                 {
-                  title: "Export sandbox disks",
+                  title: "Export computer disks",
                   detail: "demo · stopped",
                   tone:
                     frame >= 80 ? ("succeeded" as const) : ("running" as const),
@@ -176,10 +176,10 @@ export function Preparation({
     account: "alex",
     accessEnabled: true,
     repositoryCatalog: ["acme/hello-silo", "acme/internal-tools"],
-    hostIdentity: { name: "Alex", email: "alex@example.com" },
-    workspaces: [
+    deviceIdentity: { name: "Alex", email: "alex@example.com" },
+    computers: [
       {
-        workspace: "demo",
+        computer: "demo",
         repositoryMode: "selected",
         allRepositoriesAllowChanges: false,
         identity: { name: "Alex", email: "alex@example.com", apply: true },
@@ -194,7 +194,7 @@ export function Preparation({
     {
       id: "demo-token",
       name: "SERVICE_TOKEN",
-      workspaces: ["demo"],
+      computers: ["demo"],
       allowedDomains: [
         page === "secrets" && frame < 110
           ? typed("api.example.com", frame, 15, 3)
@@ -208,13 +208,13 @@ export function Preparation({
       <SettingsProvider initialSettings={source.preferences}>
         <TooltipProvider>
           <ApplicationShell
-            activeTab={page === "backup" ? "workspaces" : page}
-            workspaceSection="overview"
+            activeTab={page === "backup" ? "computers" : page}
+            computerSection="overview"
             settingsSection="general"
             systemIssueStatus={null}
-            workspaceAttention={{ errors: 0, warnings: 0 }}
+            computerAttention={{ errors: 0, warnings: 0 }}
             onTabChange={noop}
-            onWorkspaceSectionChange={noop}
+            onComputerSectionChange={noop}
             onSettingsSectionChange={noop}
             canGoBack={false}
             canGoForward={false}
@@ -227,9 +227,9 @@ export function Preparation({
             ) : page === "secrets" ? (
               <RecordedSecret key={frame} source={source} frame={frame} />
             ) : (
-              // Backup moved to per-sandbox Export on the sandbox page's checkpoints tab.
+              // Export is on the computer page's checkpoints tab.
               <OverviewPage readOnly active={false} source={source} actions={actions} backup={backupFor(frame)}
-                onMachinesChange={noop} selectedSandboxId="demo" sandboxTab="checkpoints" />
+                onConfigurationsChange={noop} selectedComputerId={demoConfiguration.id} computerTab="checkpoints" />
             )}
           </ApplicationShell>
         </TooltipProvider>
@@ -248,10 +248,10 @@ export function NativeDesktop({
 }) {
   const source = owner
     ? ownerSource()
-    : { ...sourceFor({ created: true }), workspaces: [demo] };
+    : { ...sourceFor({ created: true }), computers: [demo] };
   if (owner)
-    source.workspaces[0] = {
-      ...source.workspaces[0],
+    source.computers[0] = {
+      ...source.computers[0],
       state: frame < 45 ? "stopped" : frame < 80 ? "starting" : "running",
       stateDetail: frame < 80 ? "Starting services" : "Running",
     };
@@ -289,13 +289,13 @@ export function NativeDesktop({
               <SettingsProvider initialSettings={source.preferences}>
                 <TooltipProvider>
                   <ApplicationShell
-                    activeTab="workspaces"
-                    workspaceSection="overview"
+                    activeTab="computers"
+                    computerSection="overview"
                     settingsSection="general"
                     systemIssueStatus={null}
-                    workspaceAttention={{ errors: 0, warnings: 0 }}
+                    computerAttention={{ errors: 0, warnings: 0 }}
                     onTabChange={noop}
-                    onWorkspaceSectionChange={noop}
+                    onComputerSectionChange={noop}
                     onSettingsSectionChange={noop}
                     canGoBack={false}
                     canGoForward={false}
@@ -306,7 +306,7 @@ export function NativeDesktop({
                     <OverviewPage
                       source={source}
                       actions={actions}
-                      onMachinesChange={noop}
+                      onConfigurationsChange={noop}
                     />
                   </ApplicationShell>
                 </TooltipProvider>
@@ -347,8 +347,8 @@ export function NativeDesktop({
             <div className="notification-heading">
               Silo <span>now</span>
             </div>
-            <strong>Sandbox status changed</strong>
-            <p>demo: Running. Open Silo to review sandbox status.</p>
+            <strong>Computer status changed</strong>
+            <p>demo: Running. Open Silo to review computer status.</p>
           </div>
         </div>
       )}
@@ -397,10 +397,10 @@ export function RemoteHandoff({ frame }: { frame: number }) {
           ? "Running"
           : "Stopped",
   } as typeof demo;
-  const laptop = { ...sourceFor({ created: true }), workspaces: [remote] };
+  const laptop = { ...sourceFor({ created: true }), computers: [remote] };
   const owner = {
     ...ownerSource(),
-    workspaces: [{ ...remote, machine: demoMachine, computer: undefined }],
+    computers: [{ ...remote, configuration: demoConfiguration, device: undefined }],
   };
   const statusActions = {
     ...actions,
@@ -485,8 +485,8 @@ export function RemoteHandoff({ frame }: { frame: number }) {
                 >
                   <SiloMark style={{ width: 30, height: 30 }} />
                   <div>
-                    <strong>Sandbox status changed</strong>
-                    <p>demo: Running. Open Silo to review sandbox status.</p>
+                    <strong>Computer status changed</strong>
+                    <p>demo: Running. Open Silo to review computer status.</p>
                   </div>
                 </div>
               )}
@@ -499,7 +499,7 @@ export function RemoteHandoff({ frame }: { frame: number }) {
         className="handoff-link"
         style={{ opacity: Math.min(1, Math.max(0, (frame - 42) / 8)) }}
       >
-        <span>Start sandbox</span>
+        <span>Start computer</span>
         <div>
           <i
             style={{

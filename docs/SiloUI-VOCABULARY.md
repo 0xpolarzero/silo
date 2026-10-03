@@ -37,6 +37,7 @@ installations and other programs read. They do not change.
 | `~/.silo/desktop-remote/` and the remote target id `silo-remote:<deviceId>:<computerId>` | Production path; the target id is an opaque key already stored in settings and editor URIs. |
 | MicroSandbox CLI, API and JSON terms: `sandbox`, `--sandbox`, `ListedSandbox`, `InspectedSandbox`, `msbhome/sandboxes/<name>/`, snapshot names | MicroSandbox's own vocabulary. Only the adapter that calls `msb` uses it. |
 | MicroSandbox labels `silo.managed`, `silo.machine-id`, `silo.workspace-storage-gib`, `silo.runtime-storage-gib`, `silo.github-protocol`, `silo.restore-attempt`, and the patched flag `--expected-machine-id` | Stored in every existing computer's MicroSandbox database and matched by the vendored patches. |
+| `<folder>.code-workspace` and the fallback `workspace.code-workspace` in the editor folder of the private state folder | VS Code's own workspace file; its settings belong to the file name existing installations already use. |
 | The `/workspace` mount and `owned-volumes/workspace_<hash>` | Guest path and MicroSandbox layout derived from it. |
 | `<name>-<hash>.localhost` published-site origins | Changing an origin discards browser state for published sites. |
 

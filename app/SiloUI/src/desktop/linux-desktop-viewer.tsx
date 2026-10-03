@@ -43,7 +43,7 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
           : state?.lcuState === "ready" ? `LCU ready${state.lcuAgents?.length ? ` · ${state.lcuAgents.join(", ")}` : ""}`
             : null
   const problem = error ?? menuError
-  const actionLabel = updateRequired ? "Update desktop" : state?.state === "vm-stopped" ? state.autoStart ? "Start computer" : "Start computer and desktop" : state?.state === "failed" ? "Restart desktop" : "Start desktop"
+  const actionLabel = updateRequired ? "Update desktop" : state?.state === "computer-stopped" ? state.autoStart ? "Start computer" : "Start computer and desktop" : state?.state === "failed" ? "Restart desktop" : "Start desktop"
   const primaryAction: DesktopAction = updateRequired ? "update-streamer" : state?.state === "failed" ? "restart" : "start"
   return <TooltipProvider><main className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
@@ -58,11 +58,11 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
           <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" /><span className="truncate" title={problem ?? undefined}>{problem}</span>
           {error && <Button size="xs" variant="ghost" disabled={busy} onClick={onRetry}>Reconnect</Button>}
         </div>}
-        {state?.installed && state.state !== "vm-stopped" && lcuStatus && <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+        {state?.installed && state.state !== "computer-stopped" && lcuStatus && <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
           <span role={state.lcuState === "installing" ? "status" : undefined} title={state.lcuReason ?? undefined} className="truncate">{lcuStatus}</span>
           {running && state.lcuState !== "ready" && state.lcuState !== "installing" && <Button size="xs" variant="ghost" disabled={busy} aria-label="Set up LCU" onClick={() => onAction("setup-lcu")}>Set up LCU</Button>}
         </div>}
-        {state?.installed && state.state !== "vm-stopped" && computerUse?.state === "failed" && <div role="alert" className="flex min-w-0 items-center gap-1 text-xs text-destructive">
+        {state?.installed && state.state !== "computer-stopped" && computerUse?.state === "failed" && <div role="alert" className="flex min-w-0 items-center gap-1 text-xs text-destructive">
           <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" />
           <span className="truncate" title={computerUse.reason ?? undefined}>{downloadFailed ? "ChatGPT download failed. Retry from the computer's page." : "Computer use setup failed"}</span>
           {running && !downloadFailed && <Button size="xs" variant="ghost" disabled={busy} onClick={() => onAction("setup-computer-use")}>Try again</Button>}
@@ -83,7 +83,7 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
     </section> : <div className="grid min-h-0 flex-1 place-items-center p-6 text-center" aria-busy={busy}>
       <div className="grid max-w-sm justify-items-center gap-3">
         <Monitor aria-hidden="true" className="size-8 text-muted-foreground" />
-        <p className="text-sm">{busy || state?.state === "starting" ? "Connecting to desktop…" : !state ? "Desktop unavailable" : state.state === "uninstalled" ? computerUse ? "Desktop unavailable" : "Desktop is not installed" : state.state === "failed" ? "Desktop needs attention" : state.state === "vm-stopped" ? "Computer is stopped" : "Desktop is stopped"}</p>
+        <p className="text-sm">{busy || state?.state === "starting" ? "Connecting to desktop…" : !state ? "Desktop unavailable" : state.state === "uninstalled" ? computerUse ? "Desktop unavailable" : "Desktop is not installed" : state.state === "failed" ? "Desktop needs attention" : state.state === "computer-stopped" ? "Computer is stopped" : "Desktop is stopped"}</p>
         {state && state.state !== "uninstalled" && state.state !== "starting" && <Button disabled={busy} size="sm" onClick={() => onAction(primaryAction)}>{actionLabel}</Button>}
         {updateAvailable && !updateRequired && <Button disabled={busy} size="sm" variant="ghost" onClick={() => onAction("update-streamer")}>Update desktop</Button>}
         {state?.state === "uninstalled" && !computerUse && <p className="text-xs text-muted-foreground">Choose Add Linux desktop in the computer’s actions menu.</p>}

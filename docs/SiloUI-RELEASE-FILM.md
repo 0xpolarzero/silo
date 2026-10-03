@@ -2,7 +2,7 @@
 
 `SiloRelease` is a 59-second, 1920×1080, 30 fps release composition in
 [`demo/`](../demo/). It leads with agent computer use, then shows local and
-remote sandboxes, familiar tools, SSH agent handoff, scoped access, local export,
+remote computers, familiar tools, SSH agent handoff, scoped access, local export,
 and a browser preview. It replaces the website's original v11 tour and covers
 every feature category with a chapter destination.
 The film is silent, matching the existing [demo direction](SiloUI-DEMO-SCRIPT.md).
@@ -12,14 +12,14 @@ The original `SiloDemo` and `SiloSshDemo` compositions remain available.
 
 | Time | Scene and copy | Visual evidence |
 | --- | --- | --- |
-| 0–3s | “A computer. For your agents.” | Silo mark and kinetic typography; “Linux sandboxes on the computers you own.” |
+| 0–3s | “A computer. For your agents.” | Silo mark and kinetic typography; “Linux computers on the devices you own.” |
 | 3–11s | “A desktop they can use.” | Illustrated agent observes a Linux desktop, clicks a project-creation button, and checks its result inside the production Silo viewer. |
-| 11–16s | “Your computers. One place.” | Production overview with local and remote fixture sandboxes; an SSH connection diagram. |
+| 11–16s | “Your devices. One place.” | Production overview with local and remote fixture computers; an SSH connection diagram. |
 | 16–21s | “Your tools. Your flow.” | Production Files view, illustrated Zed edit and save, and a development-server command. |
 | 21–32s | “Your agents. Connected.” | Production SSH controls enable local/network access, copy the address, and show Save key file. An illustrated client connects using that address and key, then reads a remote project. |
 | 32–37s | “The right repositories. You decide.” | Production GitHub view; OAuth repository selection and read-only defaults. |
-| 37–42s | “The right credentials. In scope.” | Production Secrets view with a fixture token assigned to a sandbox and HTTPS domain. |
-| 42–47s | “Keep a copy. Keep going.” | Production sandbox page for local stopped web, on its Checkpoints tab where Export saves the sandbox to an export file; shows capture and verification, then success. |
+| 37–42s | “The right credentials. In scope.” | Production Secrets view with a fixture token assigned to a computer and HTTPS domain. |
+| 42–47s | “Keep a copy. Keep going.” | Production computer page for local stopped web, on its Checkpoints tab where Export saves the computer to an export file; shows capture and verification, then success. |
 | 47–54s | “Build there. Open here.” | Production Network view followed by an illustrated browser using a forwarded local address. |
 | 54–59s | “Give your agents a space of their own.” | Silo identity, website address, macOS/Linux availability, and MIT license. |
 
@@ -35,17 +35,17 @@ production components. Their data and state changes are deterministic fixtures.
 Guest desktop content, agent session, editor, terminal, browser, and computer
 diagram are illustrations. The desktop scene explicitly says “Illustrated agent
 session”; its successful task is an example, not a recorded agent benchmark.
-Rendering does not call a VM, SSH, credential store, agent, or external service.
+Rendering does not call a computer, SSH, credential store, agent, or external service.
 
 | Claim | Repository source and boundary |
 | --- | --- |
-| Linux VMs on owned computers | [README](../README.md). Local macOS/Linux and remote SSH management are supported; the film makes no boot-speed claim. |
-| Agent desktop tools | [Luda integration](SiloUI-LUDA.md) (since removed; LCU replaces it). Adding the optional desktop installed tools and skills for supported guest agents. Users install and sign in to the agents themselves; ordinary host SSH does not inherit guest MCP configuration. |
+| Linux computers on owned devices | [README](../README.md). Local macOS/Linux and remote SSH management are supported; the film makes no boot-speed claim. |
+| Agent desktop tools | [Luda integration](SiloUI-LUDA.md) (since removed; LCU replaces it). Adding the optional desktop installed tools and skills for supported guest agents. Users install and sign in to the agents themselves; ordinary device SSH does not inherit guest MCP configuration. |
 | Local and remote management | [Remote computers](SiloUI-CONNECTIONS.md). The owner runs Silo and accepts SSH. Connections do not synchronize credentials or migrate computers. |
 | Editor and terminal workflow | [Editor handoff](SiloUI-EDITOR-HANDOFF.md), [terminal handoff](SiloUI-TERMINAL-HANDOFF.md), and [Files](SiloUI-FILES.md). The edit and terminal output are illustrative, not native application recordings. |
 | Repository selection and read-only defaults | [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md). The copy explicitly names OAuth; [personal tokens](SiloUI-GITHUB-PERSONAL-TOKENS.md) use their full permissions. |
-| Sandbox and HTTPS-domain credential scope | [Secrets](SiloUI-SECRETS.md). Allowed servers receive the real value; the film does not claim credentials can never be revealed. |
-| SSH handoff | [Production SSH controls](../app/SiloUI/src/features/application/pages/ssh-access-panel.tsx) and [remote computers](SiloUI-CONNECTIONS.md). Key handoff and client are illustrations; the computers already have a network route. No host-agent MCP inheritance is implied. |
+| Computer and HTTPS-domain credential scope | [Secrets](SiloUI-SECRETS.md). Allowed servers receive the real value; the film does not claim credentials can never be revealed. |
+| SSH handoff | [Production SSH controls](../app/SiloUI/src/features/application/pages/ssh-access-panel.tsx) and [remote computers](SiloUI-CONNECTIONS.md). Key handoff and client are illustrations; the devices already have a network route. No device-agent MCP inheritance is implied. |
 | Local export | [Production export controller](../app/SiloUI/src-tauri/src/backup_controller.rs), [computer export and import](../app/SiloUI/src/features/application/components/computer-transfer.tsx) and [checkpoints](../app/SiloUI/src/features/application/components/checkpoint-panel.tsx). Uses the current native indeterminate Capture and verify phase and export file naming convention. The stopped local computer remains stopped; elapsed time is compressed. Restore is described, not simulated as completed. |
 | Development-server preview | [README setup](../README.md#start-working) and [production Network page](../app/SiloUI/src/features/application/pages/network-page.tsx). Discovering a port and connecting it are separate steps; a local address requires forwarding. |
 | Availability and license | [README installation](../README.md#install) and [LICENSE](../LICENSE). Platform requirements remain in the installation guide. |
@@ -76,7 +76,7 @@ Before delivery, run the timeline tests and typecheck, inspect the stills for
 legibility and clipping, then inspect the encoded video for dimensions, frame
 rate, duration, absent audio, and transition continuity. Timeline tests cover
 contiguous scenes and observation/action/result order. Rendering proves fixture
-presentation, not live VM health, agent reliability, two-computer operation, or
+presentation, not live computer health, agent reliability, two-device operation, or
 release readiness. Record completed verification separately from this plan.
 
 The existing Remotion renderer is reused. Primary references checked on
@@ -92,7 +92,7 @@ frame selection and image output. The implementation is
 - `npm --prefix demo run stills:release` and `npm --prefix demo run render:release` completed. Inspected the scene stills, intermediate desktop states, secret editor, and port connection before browser reveal. Chromium required execution outside the macOS filesystem sandbox.
 - `ffprobe` confirmed H.264, 1920×1080, 30 fps, 1,620 frames, exactly 54 seconds, 4,254,180 bytes, and no audio stream. The encoded video reports full-range 4:2:0 (`yuvj420p`). Its report is saved as `demo/out/release/ffprobe-54s.json`.
 - `ffmpeg -hide_banner -v warning -i demo/out/release/silo-release.mp4 -f null -` decoded the complete file without warnings or errors. Inspected an encoded contact sheet in the output directory.
-- No packaged Silo bundle or live VM was used. These checks establish the film's rendering and fixture presentation only.
+- No packaged Silo bundle or live computer was used. These checks establish the film's rendering and fixture presentation only.
 
 ## Website replacement verification, 2026-09-27
 

@@ -40,11 +40,11 @@ variables, account, cookies, or analytics are required by the site.
 - `demo.html` and `src/demo/`: an isolated, lazy-loaded React iframe using the
   actual Silo sidebar, navigation history, and production pages. Sample files,
   logs, repositories, secrets, computers, and backups come from bundled fixtures.
-  The overview includes local VMs and a VM on Office Mac with expandable local
+  The overview includes local computers and a computer on Office Mac with expandable local
   and network SSH access. The 680px embed fits both expanded sidebar groups.
   Sidebar navigation, collapse/hover transitions, the production command palette,
-  SSH disclosures, sandbox action menus, and sample storage/history inspection
-  work. Commands navigate pages and sandbox views; native action commands are
+  SSH disclosures, computer action menus, and sample storage/history inspection
+  work. Commands navigate pages and computer views; native action commands are
   omitted. The shared overview read-only mode disables mutations, clipboard
   actions, native launches, and reordering; other
   pages use a disabled fieldset and captured interaction events. Mutation adapters also reject
@@ -76,7 +76,7 @@ variables, account, cookies, or analytics are required by the site.
 The Silo views in the demo and film use production components with inert sample
 data. The film's agent sessions, guest desktop, editor, terminal, browser content,
 and computer diagrams are illustrations. The backup sequence compresses waiting
-time. Playback never touches native APIs, credentials, or live VMs.
+time. Playback never touches native APIs, credentials, or live computers.
 
 ### Film chapters
 
@@ -114,7 +114,7 @@ video playback, Escape dismissal, focus restoration, architecture selection,
 and macOS installation disclosure. No horizontal page overflow was found.
 The interactive embed was also checked on desktop and at 390px and 320px,
 including collapsed sidebar navigation and page overflow.
-These checks validate website behavior and fixture presentation, not live VM
+These checks validate website behavior and fixture presentation, not live computer
 operation or native package installation.
 
 See [design research](../docs/SiloUI-LANDING-REFERENCES.md) for the approved direction.
@@ -174,7 +174,7 @@ across all ten visible navigation icons when toggling sidebar collapse.
 Copy `scripts/capture.html` to `website/capture.html`, start the website dev
 server, and open `/capture.html` or `/capture.html?theme=dark`. The harness
 imports the same production components and inert fixtures as the demo. It
-shows the default glass material even when the capture host has reduced
+shows the default glass material even when the capture device has reduced
 transparency enabled; the shipped demo uses the website background instead, disables blur for reduced
 transparency, and uses opaque surfaces for increased contrast.
 Capture Overview, Overview with personal’s SSH disclosure expanded (tools),
@@ -184,4 +184,4 @@ Remove the temporary root capture file afterward; it is not a build entry.
 
 Theme verification covers System changes, explicit choices, persistence,
 blocked storage, and synchronization between documents. Screenshot checks
-use fixture data, not live VMs or credentials.
+use fixture data, not live computers or credentials.

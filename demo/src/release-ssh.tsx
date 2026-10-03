@@ -3,6 +3,7 @@ import { continueRender, delayRender, Easing, interpolate } from 'remotion';
 import { Check, FileKey2, Folder, Laptop, Monitor, MousePointer2, Terminal } from 'lucide-react';
 import { SshAccessRow } from '@/features/application/pages/ssh-access-panel';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { computerTarget } from '@/features/application/model/connections';
 import { showcaseSource } from './showcase-fixtures';
 import { releaseSshAt } from './release-timeline';
 
@@ -15,7 +16,7 @@ export function ReleaseSsh({ frame }: { frame: number }) {
   const state = releaseSshAt(frame);
   const surface = useRef<HTMLDivElement>(null);
   const [pointer, setPointer] = useState<{ x: number; y: number } | null>(null);
-  const workspace = showcaseSource.workspaces[2];
+  const computer = showcaseSource.computers[2];
   // Fresh production controls per action phase make arbitrary/reverse seeks exact.
   const phase = state.keySaved ? 'saved' : state.keyMenu ? 'menu' : state.copied ? 'copied' : state.network ? 'network' : state.local ? 'local' : 'off';
   useLayoutEffect(() => {
@@ -25,7 +26,7 @@ export function ReleaseSsh({ frame }: { frame: number }) {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async () => undefined } });
     const tick = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
     async function stage() {
-      const toggle = surface.current?.querySelector<HTMLButtonElement>('[aria-label="SSH controls for lab"]');
+      const toggle = surface.current?.querySelector<HTMLButtonElement>('[aria-label="SSH access controls for lab"]');
       if (toggle?.getAttribute('aria-expanded') === 'false') toggle.click();
       await tick();
       if (cancelled) return;
@@ -34,7 +35,7 @@ export function ReleaseSsh({ frame }: { frame: number }) {
       await tick();
       if (cancelled) return;
       const selector = phase === 'off' ? '[role="switch"][aria-label="Allow SSH from Studio Mac"]'
-        : phase === 'local' ? '[role="switch"][aria-label="Allow SSH from other computers"]'
+        : phase === 'local' ? '[role="switch"][aria-label="Allow SSH from other devices"]'
         : phase === 'menu' ? '[aria-label="Save network SSH key file"]'
         : '[aria-label="Copy network SSH address"], [aria-label="SSH address copied"]';
       const target = document.querySelector<HTMLElement>(selector)?.getBoundingClientRect();
@@ -55,12 +56,12 @@ export function ReleaseSsh({ frame }: { frame: number }) {
 
   const prompt = 'Review this project.'.slice(0, Math.max(0, Math.floor((frame - 248) / 1.6)));
   return <div className="r-ssh-scene">
-    <div className="r-ssh-owner"><Monitor size={25} /><strong>Studio Mac</strong><span>lab · Linux sandbox</span></div>
+    <div className="r-ssh-owner"><Monitor size={25} /><strong>Studio Mac</strong><span>lab · Linux computer</span></div>
     <div className="r-ssh-source" ref={surface}>
       <div className="r-ssh-source-label">SILO / SSH ACCESS</div>
       <div className="r-ssh-production" key={phase}><TooltipProvider>
-        <SshAccessRow workspace={workspace} stale={false} save={noop} connection={async () => null}
-          access={{ workspace: workspace.machine.id, computerName: 'Studio Mac', enabled: state.local, bindAddress: state.network ? '192.168.1.42' : '127.0.0.1', port: 2222, addresses: ['192.168.1.42'], keys: [], state: state.local ? 'listening' : 'disabled', message: null, fingerprint: null }} />
+        <SshAccessRow computer={computer} stale={false} save={noop} connection={async () => null}
+          access={{ computer: computerTarget(computer), deviceName: 'Studio Mac', enabled: state.local, bindAddress: state.network ? '192.168.1.42' : '127.0.0.1', port: 2222, addresses: ['192.168.1.42'], keys: [], state: state.local ? 'listening' : 'disabled', message: null, fingerprint: null }} />
       </TooltipProvider></div>
     </div>
     {pointer && frame < 150 && <div className="r-ssh-pointer" style={{ left: pointer.x, top: pointer.y }}><MousePointer2 size={31} fill="#f6f2e9" stroke="#202c29" strokeWidth={1.7} /></div>}
@@ -70,7 +71,7 @@ export function ReleaseSsh({ frame }: { frame: number }) {
     <div className="r-ssh-client" style={{ opacity: move(frame, 156, 24), transform: `translateY(${move(frame, 156, 36, 60, 0)}px)` }}>
       <div className="r-native-title"><span><Laptop size={16} />Your laptop · Agent client</span><span>−　□　×</span></div>
       <div className="r-ssh-client-body"><span className="r-mono-label">ILLUSTRATED AGENT CLIENT</span>
-        <h2>Connect to your sandbox</h2>
+        <h2>Connect to your computer</h2>
         <label>SSH address</label><div className="r-ssh-field">root@192.168.1.42:2222</div>
         <label>Identity file</label><div className="r-ssh-field"><FileKey2 size={17} />lab-ssh-key <Check size={17} /></div>
         <div className={`r-ssh-connect ${state.connected ? 'is-connected' : ''}`}>{state.connected ? <><Check size={18} />Connected to lab</> : state.connecting ? 'Connecting…' : 'Connect'}</div>

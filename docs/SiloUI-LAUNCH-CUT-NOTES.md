@@ -7,13 +7,13 @@ is the independent [54-second launch cut](../artifacts/silo-launch-cut/README.md
 
 | Film claim | Primary product source | Scope preserved in the film |
 | --- | --- | --- |
-| Linux sandboxes on your computers | [README](../README.md) | Virtual machines, not containers; macOS and Linux hosts |
-| Local and remote sandboxes in one app | [Connections model](../app/SiloUI/src/features/application/model/connections.ts) and README | Remote connection uses SSH; no claim that remote credentials are centrally managed |
+| Linux computers on your devices | [README](../README.md) | Virtual machines, not containers; macOS and Linux devices |
+| Local and remote computers in one app | [Connections model](../app/SiloUI/src/features/application/model/connections.ts) and README | Remote connection uses SSH; no claim that remote credentials are centrally managed |
 | Familiar editors, terminals, local ports | [Overview](../app/SiloUI/src/features/application/pages/overview-page.tsx), [Network](../app/SiloUI/src/features/application/pages/network-page.tsx), README | Uses existing editor and terminal integrations and local port connections |
 | An agent can use a Linux desktop | [Luda integration](SiloUI-LUDA.md) (since removed; LCU replaces it) | Optional desktop; supported agents must be installed and signed in by the user; example is labeled an illustration |
 | Selected repositories, read-only by default | README and [GitHub access editor](../app/SiloUI/src/features/github/components/github-access-editor.tsx) | Shows OAuth policies; does not generalize this restriction to full-permission personal tokens |
-| Credentials scoped by sandbox and HTTPS domain | [Secrets](SiloUI-SECRETS.md) | Does not claim secret values can never be disclosed, or that local signing keys are supported |
-| Export local disks; restore as new sandboxes | README and the since-removed [Backup page](https://github.com/0xpolarzero/silo/blob/5ce177022e714329903cbf754f98dcce93c7e582/app/SiloUI/src/features/application/pages/backup-page.tsx) | No claim of remote backup management or rollback of a running machine |
+| Credentials scoped by computer and HTTPS domain | [Secrets](SiloUI-SECRETS.md) | Does not claim secret values can never be disclosed, or that local signing keys are supported |
+| Export local disks; restore as new computers | README and the since-removed [Backup page](https://github.com/0xpolarzero/silo/blob/5ce177022e714329903cbf754f98dcce93c7e582/app/SiloUI/src/features/application/pages/backup-page.tsx) | No claim of remote backup management or rollback of a running computer |
 
 The film uses Playwright for fixture capture, the installed `@napi-rs/canvas`
 package for motion graphics, and FFmpeg for H.264/AAC mastering. These tools
@@ -26,7 +26,7 @@ animation. Sources and outputs live in `artifacts/silo-launch-cut/`; large gener
 media is ignored by Git.
 
 Verification covers media rendering, composition, duration, stream format, frame
-count, full-file decoding, and audio levels. It does not verify live VM health,
+count, full-file decoding, and audio levels. It does not verify live computer health,
 agent compatibility, an installed app, or release readiness.
 
 Final verification passed: FFprobe counted 3,240 H.264 frames at 1920 × 1080,

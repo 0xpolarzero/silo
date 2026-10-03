@@ -3,16 +3,17 @@ import { delayRender, continueRender } from "remotion";
 import { ApplicationShell } from "@/features/application/components/application-shell";
 import { OverviewPage } from "@/features/application/pages/overview-page";
 import {
-  ConnectComputerForm,
-  RemoteComputersSettings,
-} from "@/features/application/components/remote-computers-settings";
+  ConnectDeviceForm,
+  ConnectionsSettings,
+} from "@/features/application/components/connections-settings";
 import { NetworkPage } from "@/features/application/pages/network-page";
 import { SettingsProvider } from "@/features/preferences/settings-store";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { computerTarget } from "@/features/application/model/connections";
 import { actions, demo, noop, office, sourceFor } from "./fixtures";
 import { sshTiming } from "./ssh-timeline";
 import { pastedAddress } from "./timeline";
-import { WorkspacesPage } from "@/features/application/pages/workspaces-page";
+import { ComputersPage } from "@/features/application/pages/computers-page";
 import { createDirectoryStore } from "@/features/application/model/directory-store";
 const directoryStore = createDirectoryStore(async () => ({
   snapshotId: "demo-files",
@@ -26,7 +27,7 @@ const directoryStore = createDirectoryStore(async () => ({
   nextOffset: null,
 }));
 
-type Page = "ssh" | "overview" | "computers" | "connect" | "network" | "files";
+type Page = "ssh" | "overview" | "connections" | "connect" | "network" | "files";
 export function Product({ page, frame }: { page: Page; frame: number }) {
   const surface = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -61,17 +62,17 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
   const source = sourceFor({
     connected,
     created,
-    enabled: page === "computers" && frame >= 90,
+    enabled: page === "connections" && frame >= 90,
     starting: page === "connect",
     portConnected: page !== "network" || frame >= 110,
   });
   if (page === "ssh") {
-    source.workspaces = [demo];
+    source.computers = [demo];
     source.sshAccess = {
-      workspaces: [
+      computers: [
         {
-          workspace: demo.machine.id,
-          computerName: "Office Mac",
+          computer: computerTarget(demo),
+          deviceName: "Office Mac",
           enabled: frame >= sshTiming.local,
           port: 2222,
           bindAddress:
@@ -94,14 +95,14 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
         }
       : actions;
   if (page === "network" && frame < 35 && source.network)
-    source.network.workspaces[0].ports = [];
+    source.network.computers[0].ports = [];
   const section = page === "network" || page === "files" ? page : "overview";
   let body: ReactNode;
-  if (page === "computers")
+  if (page === "connections")
     body = (
       <div className="p-6">
-        <RemoteComputersSettings
-          source={{ ...source, remoteComputers: [], workspaces: [] }}
+        <ConnectionsSettings
+          source={{ ...source, devices: [], computers: [] }}
           actions={actions}
         />
       </div>
@@ -114,11 +115,11 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
     );
   else if (page === "files")
     body = (
-      <WorkspacesPage
+      <ComputersPage
         source={source}
         section="files"
         onSectionChange={noop}
-        workspaces={[
+        computers={[
           {
             ...demo,
             repositories: [
@@ -138,11 +139,11 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
         directoryStore={directoryStore}
         active={true}
         activities={[]}
-        selectedWorkspaceIds={new Set()}
+        selectedComputerIds={new Set()}
         logQuery=""
         repositoryPushOperations={[]}
         networkActions={actions}
-        onWorkspaceFilterChange={noop}
+        onComputerFilterChange={noop}
         onLogQueryChange={noop}
         onPushRepository={noop}
         onDismissRepositoryPush={noop}
@@ -153,7 +154,7 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
       <div className="p-6">
         <h2 className="mb-4 text-xs font-medium">Network</h2>
         <NetworkPage
-          workspaces={[demo]}
+          computers={[demo]}
           browser="Safari"
           network={source.network}
           actions={actions}
@@ -166,7 +167,7 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
       <OverviewPage
         source={source}
         actions={pageActions}
-        onMachinesChange={noop}
+        onConfigurationsChange={noop}
       />
     );
   return (
@@ -174,14 +175,14 @@ export function Product({ page, frame }: { page: Page; frame: number }) {
       <SettingsProvider initialSettings={source.preferences}>
         <TooltipProvider>
           <ApplicationShell
-            key={page === "computers" ? "settings" : "workspaces"}
-            activeTab={page === "computers" ? "settings" : "workspaces"}
-            workspaceSection={section}
-            settingsSection="computers"
+            key={page === "connections" ? "settings" : "computers"}
+            activeTab={page === "connections" ? "settings" : "computers"}
+            computerSection={section}
+            settingsSection="connections"
             systemIssueStatus={null}
-            workspaceAttention={{ errors: 0, warnings: 0 }}
+            computerAttention={{ errors: 0, warnings: 0 }}
             onTabChange={noop}
-            onWorkspaceSectionChange={noop}
+            onComputerSectionChange={noop}
             onSettingsSectionChange={noop}
             canGoBack={false}
             canGoForward={false}
@@ -202,7 +203,7 @@ function RecordedConnection({ frame }: { frame: number }) {
   useLayoutEffect(() => {
     const handle = delayRender("Set production connection field");
     const input = root.current?.querySelector<HTMLInputElement>(
-      '[aria-label="Computer address"]',
+      '[aria-label="Device address"]',
     );
     if (input) {
       Object.getOwnPropertyDescriptor(
@@ -225,7 +226,7 @@ function RecordedConnection({ frame }: { frame: number }) {
   }, [frame]);
   return (
     <div ref={root}>
-      <ConnectComputerForm
+      <ConnectDeviceForm
         connect={() => new Promise<void>(() => {})}
         onClose={noop}
       />

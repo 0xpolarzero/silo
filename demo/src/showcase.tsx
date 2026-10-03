@@ -16,14 +16,14 @@ function ProductShot({ view, label, className }: { view: 'overview' | 'files' | 
   const shot = useRef<HTMLElement>(null)
   useEffect(() => {
     if (view !== 'overview') return
-    const button = shot.current?.querySelector<HTMLButtonElement>('button[aria-label="SSH controls for lab"]')
+    const button = shot.current?.querySelector<HTMLButtonElement>('button[aria-label="SSH access controls for lab"]')
     if (button?.getAttribute('aria-expanded') === 'false') button.click()
   }, [view])
   return <section ref={shot} className={`showcase-shot ${className}`} aria-label={label}>
     <span className="showcase-shot-label">{label}</span>
     <div className="showcase-product">
       <SettingsProvider initialSettings={showcaseSource.preferences}>
-        <ApplicationPreview source={showcaseSource} initialRoute={view === 'github' ? { tab: 'github' } : { tab: 'workspaces', workspaceSection: view }} actions={{ listWorkspaceDirectory: showcaseDirectoryLoader }} />
+        <ApplicationPreview source={showcaseSource} initialRoute={view === 'github' ? { tab: 'github' } : { tab: 'computers', computerSection: view }} actions={{ listComputerDirectory: showcaseDirectoryLoader }} />
       </SettingsProvider>
     </div>
   </section>
@@ -42,11 +42,11 @@ export function Showcase() {
         <div className="showcase-brand"><SiloMark aria-hidden="true" /><span>Silo</span></div>
         <span className="showcase-eyebrow">Available on macOS and Linux</span>
         <h1>Give your agents<br/>a computer<br/><span>of their own.</span></h1>
-        <p>Linux VMs running locally or remotely,<br/>with a desktop and computer use.</p>
+        <p>Linux computers running locally or remotely,<br/>with a desktop and computer use.</p>
       </header>
       <ShowcaseDesktop />
-      <ProductShot view="overview" label="Manage local and remote sandboxes" className="showcase-overview" />
-      <ProductShot view="github" label="Set fine-grained GitHub permissions per sandbox" className="showcase-github" />
+      <ProductShot view="overview" label="Manage local and remote computers" className="showcase-overview" />
+      <ProductShot view="github" label="Set fine-grained GitHub permissions per computer" className="showcase-github" />
     </div></div>
     {!capture && <footer className="showcase-tools" aria-label="Showcase controls">
       <span>GitHub hero · Draft 03</span>

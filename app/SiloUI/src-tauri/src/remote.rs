@@ -137,6 +137,7 @@ fn read_config() -> Result<Config, String> {
 }
 fn read_config_in(dir: &Path) -> Result<Config, String> {
     use std::os::unix::fs::OpenOptionsExt;
+    crate::runtime_migration::vocabulary::convert_connections_settings(dir)?;
     match fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
@@ -2123,6 +2124,27 @@ fn connection_open(stream: &UnixStream) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn earlier_connections_settings_are_converted_when_read_before_the_application_starts() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        fs::write(
+            &path,
+            r#"{"hostId":"own-id","enabled":true,"hosts":[{"id":"studio-id","name":"Studio","address":"studio.example"}],"extra":1}"#,
+        )
+        .unwrap();
+        let config = read_config_in(directory.path()).unwrap();
+        assert_eq!(config.device_id, "own-id");
+        assert_eq!(config.devices[0].name, "Studio");
+        let saved: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(saved["deviceId"], "own-id");
+        assert!(saved.get("hostId").is_none() && saved.get("hosts").is_none());
+        assert_eq!(saved["extra"], 1);
+        assert_eq!(
+            read_config_in(directory.path()).unwrap().device_id,
+            "own-id"
+        );
+    }
     #[test]
     fn migrated_connections_settings_load() {
         let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();

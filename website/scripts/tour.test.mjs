@@ -30,7 +30,7 @@ const categoryScenes = new Map([
   ["Watch the development server demonstration", "preview"],
   ["Watch the GitHub access demonstration", "github"],
   ["Watch the secrets demonstration", "secrets"],
-  ["Watch the sandbox export and import demonstration", "backup"],
+  ["Watch the computer export and import demonstration", "backup"],
 ]);
 const seconds = (timestamp) => timestamp.split(":").reduce((total, part) => total * 60 + Number(part), 0);
 

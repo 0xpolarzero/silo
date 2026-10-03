@@ -1,10 +1,10 @@
 import type {
   ApplicationActions,
   ApplicationSource,
-  ApplicationWorkspace,
+  ApplicationComputer,
 } from "@/features/application/model/application-source";
-import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers";
-import { fixtureMachineDefaults } from "@/fixtures/machine-configurations";
+import { remoteComputerTarget } from "@/features/application/model/connections";
+import { fixtureComputerDefaults } from "@/fixtures/computer-configurations";
 
 export const noop = () => undefined;
 const resolved = async () => undefined;
@@ -13,20 +13,20 @@ export const actions: ApplicationActions = {
   saveSecret: noop,
   removeSecret: noop,
   retryRuntimeChecks: noop,
-  saveMachineConfiguration: noop,
-  retryMachineConfiguration: noop,
-  dismissMachineConfigurationError: noop,
+  saveComputerConfiguration: noop,
+  retryComputerConfiguration: noop,
+  dismissComputerConfigurationError: noop,
   pushRepository: noop,
-  startWorkspace: noop,
-  stopWorkspace: noop,
-  dismissWorkspaceError: noop,
-  restartWorkspace: noop,
+  startComputer: noop,
+  stopComputer: noop,
+  dismissComputerError: noop,
+  restartComputer: noop,
   openTerminal: noop,
   openEditor: noop,
-  connectComputer: resolved,
-  removeComputer: resolved,
-  setRemoteManagement: resolved,
-  saveRemoteMachine: resolved,
+  connectDevice: resolved,
+  removeDevice: resolved,
+  setConnectionsEnabled: resolved,
+  saveRemoteComputer: resolved,
   saveNetworkPort: resolved,
   openNetworkPort: resolved,
   removeNetworkPort: resolved,
@@ -37,8 +37,8 @@ export const office = {
   address: "developer@office-mac.local",
   connected: true,
 };
-export const demoMachine = {
-  ...fixtureMachineDefaults[0],
+export const demoConfiguration = {
+  ...fixtureComputerDefaults[0],
   id: "00000000-0000-4000-8000-000000000010",
   name: "demo",
   cpus: 4,
@@ -48,24 +48,19 @@ export const demoMachine = {
   workspaceStorageGiB: 40,
   runtimeStorageGiB: 20,
 };
-export const target = remoteWorkspaceTarget(office.id, demoMachine.id);
-function workspace(
+export const target = remoteComputerTarget(office.id, demoConfiguration.id);
+function computer(
   name: string,
   remote: boolean,
   id: string,
-): ApplicationWorkspace {
+): ApplicationComputer {
   return {
-    machine: {
-      ...demoMachine,
-      name,
-      id: remote ? remoteWorkspaceTarget(office.id, id) : id,
-    },
-    ...(remote ? { computer: { ...office, vmId: id } } : {}),
+    configuration: { ...demoConfiguration, name, id },
+    ...(remote ? { device: { ...office, computerId: id } } : {}),
     purpose: remote ? "Development on Office Mac" : "Local development",
     state: "running",
     stateDetail: "Running",
     freshness: "fresh",
-    host: `${name}.silo.test`,
     repositories: [],
     files: [],
     ports: [],
@@ -74,17 +69,17 @@ function workspace(
     secretNames: [],
   };
 }
-export const local = workspace(
+export const local = computer(
   "personal",
   false,
   "00000000-0000-4000-8000-000000000011",
 );
-export const remote = workspace(
+export const remote = computer(
   "web",
   true,
   "00000000-0000-4000-8000-000000000012",
 );
-export const demo = workspace("demo", true, demoMachine.id);
+export const demo = computer("demo", true, demoConfiguration.id);
 export function sourceFor({
   connected = true,
   created = false,
@@ -93,14 +88,14 @@ export function sourceFor({
   portConnected = true,
 } = {}): ApplicationSource {
   return {
-    remoteComputers: connected ? [office] : [],
-    remoteManagement: {
+    devices: connected ? [office] : [],
+    connections: {
       enabled,
-      hostId: "local-host",
+      deviceId: "local-device",
       name: enabled ? office.name : "My laptop",
       address: office.address,
     },
-    workspaces: [
+    computers: [
       local,
 
       ...(created
@@ -115,9 +110,9 @@ export function sourceFor({
     ],
     runtimeRepair: null,
     activities: [],
-    sandboxConfigurationOperation: null,
+    computerConfigurationOperation: null,
     repositoryPushOperations: [],
-    github: { state: "disconnected", workspaces: [] },
+    github: { state: "disconnected", computers: [] },
     secrets: [],
     backup: {
       lastArchive: "",
@@ -130,13 +125,13 @@ export function sourceFor({
       editor: "Zed",
       browser: "Safari",
       launchAtLogin: false,
-      startWorkspacesAtLaunch: false,
+      startComputersAtLaunch: false,
       reduceMotion: true,
     },
     network: {
-      workspaces: [
+      computers: [
         {
-          workspace: target,
+          computer: target,
           error: null,
           ports: [
             {

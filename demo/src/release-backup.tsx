@@ -14,17 +14,17 @@ const archive: BackupArchive = {
   completedLabel: 'Just now',
   size: '1.2 GB',
   destination: '/Users/developer/Backups',
-  sandboxes: ['web'],
+  computers: ['web'],
 };
 
-// Backup operates on local VMs. The showcase's remote lab must never appear as
-// a backup target, and this stopped sandbox does not imply a stop/restart cycle.
+// Export operates on local computers. The showcase's remote lab must never appear as
+// an export target, and this stopped computer does not imply a stop/restart cycle.
 const source: ApplicationSource = {
   ...showcaseSource,
-  remoteComputers: [],
-  workspaces: showcaseSource.workspaces
-    .filter(({ computer, machine }) => !computer && machine.name === 'web')
-    .map(workspace => ({ ...workspace, state: 'stopped', stateDetail: 'Stopped' })),
+  devices: [],
+  computers: showcaseSource.computers
+    .filter(({ device, configuration }) => !device && configuration.name === 'web')
+    .map(computer => ({ ...computer, state: 'stopped', stateDetail: 'Stopped' })),
   backup: { lastArchive: '', completedLabel: '', compressedSize: '', destination: archive.destination },
 };
 
@@ -79,13 +79,13 @@ export function ReleaseBackup({ frame }: { frame: number }) {
     <SettingsProvider initialSettings={source.preferences}>
       <TooltipProvider>
         <ApplicationShell
-          activeTab="workspaces"
-          workspaceSection="overview"
+          activeTab="computers"
+          computerSection="overview"
           settingsSection="general"
           systemIssueStatus={null}
-          workspaceAttention={{ errors: 0, warnings: 0 }}
+          computerAttention={{ errors: 0, warnings: 0 }}
           onTabChange={noop}
-          onWorkspaceSectionChange={noop}
+          onComputerSectionChange={noop}
           onSettingsSectionChange={noop}
           canGoBack={false}
           canGoForward={false}
@@ -93,9 +93,9 @@ export function ReleaseBackup({ frame }: { frame: number }) {
           onGoForward={noop}
           reduceMotion
         >
-          {/* Backup moved to per-sandbox Export on the sandbox page's checkpoints tab. */}
+          {/* Export is on the computer page's checkpoints tab. */}
           <OverviewPage readOnly active={false} source={source} actions={applicationActions} backup={backupAt(frame)}
-            onMachinesChange={noop} selectedSandboxId="web" sandboxTab="checkpoints" />
+            onConfigurationsChange={noop} selectedComputerId={source.computers[0].configuration.id} computerTab="checkpoints" />
         </ApplicationShell>
       </TooltipProvider>
     </SettingsProvider>

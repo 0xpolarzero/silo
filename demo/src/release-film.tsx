@@ -8,6 +8,7 @@ import { showcaseSource, showcaseDirectoryLoader } from './showcase-fixtures';
 import { agentTaskAt, releaseScenes } from './release-timeline';
 import { ReleaseBackup } from './release-backup';
 import { ReleaseSsh } from './release-ssh';
+import { computerTarget } from '@/features/application/model/connections';
 import './release-style.css';
 
 const clamp = { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' } as const;
@@ -20,7 +21,7 @@ function Brand({ large = false }: { large?: boolean }) {
   return <div className={`r-brand ${large ? 'r-brand-large' : ''}`}><SiloMark /><span>Silo</span></div>;
 }
 
-function Frame({ children, index, label, light = false, note = 'SILO / LINUX SANDBOXES' }: { children: ReactNode; index?: string; label?: string; light?: boolean; note?: string }) {
+function Frame({ children, index, label, light = false, note = 'SILO / LINUX COMPUTERS' }: { children: ReactNode; index?: string; label?: string; light?: boolean; note?: string }) {
   return <AbsoluteFill className={`r-frame ${light ? 'r-light' : ''}`}>
     <div className="r-grid" />
     <div className="r-top"><Brand /><span>{label ?? 'A SPACE OF THEIR OWN'}</span></div>
@@ -62,22 +63,22 @@ function ProductWindow({ page, width = 1180, height = 580, style, frame = 0 }: {
   }, [page, portConnected, width, height]);
   const source = {
     ...showcaseSource,
-    secrets: [{ id: 'package-token', name: 'PACKAGE_TOKEN', workspaces: ['web'], allowedDomains: ['registry.npmjs.org'], state: 'active' as const }],
-    ...(page === 'network' ? { network: { workspaces: [{ workspace: showcaseSource.workspaces[2].machine.id, error: null, ports: [{ port: 5173, hostPort: portConnected ? 53124 : null, scheme: 'http' as const, state: portConnected ? 'reachable' as const : 'unpublished' as const, configured: portConnected }] }] } } : {}),
+    secrets: [{ id: 'package-token', name: 'PACKAGE_TOKEN', computers: ['web'], allowedDomains: ['registry.npmjs.org'], state: 'active' as const }],
+    ...(page === 'network' ? { network: { computers: [{ computer: computerTarget(showcaseSource.computers[2]), error: null, ports: [{ port: 5173, hostPort: portConnected ? 53124 : null, scheme: 'http' as const, state: portConnected ? 'reachable' as const : 'unpublished' as const, configured: portConnected }] }] } } : {}),
   };
   return <div ref={surface} className="r-product" style={{ width, height, ...style }}>
-    <ApplicationPreview key={`${page}-${editSecret}`} source={source} initialRoute={page === 'github' || page === 'secrets' ? { tab: page } : { tab: 'workspaces', workspaceSection: page }} actions={{ listWorkspaceDirectory: showcaseDirectoryLoader }} />
+    <ApplicationPreview key={`${page}-${editSecret}`} source={source} initialRoute={page === 'github' || page === 'secrets' ? { tab: page } : { tab: 'computers', computerSection: page }} actions={{ listComputerDirectory: showcaseDirectoryLoader }} />
     {page === 'network' && pointer && frame >= 18 && frame < 105 && <Cursor x={move(frame, 18, 24, pointer.x - 130, pointer.x)} y={move(frame, 18, 24, pointer.y + 100, pointer.y)} click={frame >= 94 ? linear(frame, 94, 11) : frame >= 62 && frame < 78 ? linear(frame, 62, 16) : 0} />}
   </div>;
 }
 
 function Opening() {
   const f = useCurrentFrame();
-  return <Frame label="INTRODUCING SILO" note="YOUR HARDWARE. YOUR WORKSPACE.">
+  return <Frame label="INTRODUCING SILO" note="YOUR HARDWARE. YOUR COMPUTERS.">
     <div className="r-opening-title">
       <div style={copyStyle(f, 5)}>A computer.</div>
       <div style={copyStyle(f, 20)}>For your <em>agents.</em></div>
-      <p style={copyStyle(f, 45)}>Linux sandboxes on the computers you own.</p>
+      <p style={copyStyle(f, 45)}>Linux computers on the devices you own.</p>
     </div>
     <div className="r-orbit" style={{ opacity: move(f, 0, 25), transform: `translateY(${move(f, 0, 40, 50, 0)}px) scale(${move(f, 0, 60, .86, 1)})` }}>
       <svg viewBox="0 0 500 500"><g fill="none" strokeWidth="18" strokeLinecap="round">
@@ -137,20 +138,20 @@ function DesktopScene() {
 function ComputersScene() {
   const f = useCurrentFrame();
   return <Frame index="02 / 08" label="LOCAL + REMOTE">
-    <Heading frame={f}>Your computers. <em>One place.</em></Heading>
+    <Heading frame={f}>Your devices. <em>One place.</em></Heading>
     <div className="r-computer-map">
-      <div className="r-host" style={copyStyle(f, 12)}><Laptop size={38} strokeWidth={1.3} /><div><strong>This computer</strong><span>web · services</span></div><i /></div>
+      <div className="r-host" style={copyStyle(f, 12)}><Laptop size={38} strokeWidth={1.3} /><div><strong>This device</strong><span>web · services</span></div><i /></div>
       <div className="r-link"><span style={{ height: `${move(f, 35, 45, 0, 100)}%` }} /><b style={copyStyle(f, 52)}>SSH</b></div>
       <div className="r-host r-remote-host" style={copyStyle(f, 60)}><Monitor size={38} strokeWidth={1.3} /><div><strong>Studio Mac</strong><span>lab</span></div><i /></div>
-      <p style={copyStyle(f, 92)}>Start, stop, and manage<br/>local and remote sandboxes.</p>
+      <p style={copyStyle(f, 92)}>Start, stop, and manage<br/>local and remote computers.</p>
     </div>
     <div className="r-fleet-stage" style={{ opacity: move(f, 9, 24), transform: `translateX(${move(f, 9, 40, 120, 0)}px)` }}><ProductWindow page="overview" width={1040} height={530} /></div>
-    <div className="r-fleet-footnote" style={copyStyle(f, 115)}><span className="r-live-dot" />3 sandboxes. 2 computers. All yours.</div>
+    <div className="r-fleet-footnote" style={copyStyle(f, 115)}><span className="r-live-dot" />3 computers. 2 devices. All yours.</div>
   </Frame>;
 }
 
 function Editor({ frame }: { frame: number }) {
-  const typed = 'Made in my sandbox.'.slice(0, Math.max(0, Math.floor((frame - 55) / 2)));
+  const typed = 'Made on my computer.'.slice(0, Math.max(0, Math.floor((frame - 55) / 2)));
   return <div className="r-editor">
     <div className="r-native-title">Zed — web-app<span>−　□　×</span></div>
     <div className="r-editor-tab"><Code2 size={16} /> App.tsx <span>src / App.tsx</span></div>
@@ -177,7 +178,7 @@ function AccessScene({ secrets = false }: { secrets?: boolean }) {
   return <Frame index={secrets ? '06 / 08' : '05 / 08'} label="ACCESS YOU CONTROL">
     <div className="r-access-copy"><div className="r-icon-box" style={copyStyle(f)}>{secrets ? <KeyRound size={34} strokeWidth={1.4} /> : <GitBranch size={34} strokeWidth={1.4} />}</div>
       <h1 style={copyStyle(f, 5)}>{secrets ? <>The right<br/>credentials.<br/><em>In scope.</em></> : <>The right<br/>repositories.<br/><em>You decide.</em></>}</h1>
-      <p style={copyStyle(f, 22)}>{secrets ? <>Choose the sandboxes and<br/>HTTPS domains each secret can use.</> : <>Choose repositories per sandbox.<br/>Read-only by default with OAuth.</>}</p>
+      <p style={copyStyle(f, 22)}>{secrets ? <>Choose the computers and<br/>HTTPS domains each secret can use.</> : <>Choose repositories per computer.<br/>Read-only by default with OAuth.</>}</p>
     </div>
     <div className={`r-access-stage ${secrets ? 'r-secrets-stage' : ''}`} style={{ opacity: move(f, 0, 20), transform: `translateX(${move(f, 0, 36, 90, 0)}px)` }}><ProductWindow page={secrets ? 'secrets' : 'github'} width={1060} height={670} frame={f} /></div>
     <div className="r-access-detail" style={copyStyle(f, 55)}>{secrets ? <><KeyRound size={20} /><span>PACKAGE_TOKEN</span><ArrowRight size={18} /><strong>registry.npmjs.org</strong></> : <><ShieldCheck size={23} /><span>example/design-system</span><strong>Read-only</strong></>}</div>
@@ -186,7 +187,7 @@ function AccessScene({ secrets = false }: { secrets?: boolean }) {
 
 function SshScene() {
   const f = useCurrentFrame();
-  return <Frame index="04 / 08" label="SSH TO YOUR SANDBOX" note="ILLUSTRATED CLIENT · EXISTING NETWORK ROUTE REQUIRED">
+  return <Frame index="04 / 08" label="SSH TO YOUR COMPUTER" note="ILLUSTRATED CLIENT · EXISTING NETWORK ROUTE REQUIRED">
     <Heading frame={f}>Your agents. <em>Connected.</em></Heading>
     <ReleaseSsh frame={f} />
   </Frame>;
@@ -194,10 +195,10 @@ function SshScene() {
 
 function BackupScene() {
   const f = useCurrentFrame();
-  return <Frame index="07 / 08" label="BACKUP + RESTORE" note="TIME-COMPRESSED EXAMPLE · LOCAL SANDBOX BACKUP">
+  return <Frame index="07 / 08" label="BACKUP + RESTORE" note="TIME-COMPRESSED EXAMPLE · LOCAL COMPUTER BACKUP">
     <div className="r-access-copy"><div className="r-icon-box" style={copyStyle(f)}><Archive size={34} strokeWidth={1.4} /></div>
       <h1 style={copyStyle(f, 5)}>Keep a copy.<br/><em>Keep going.</em></h1>
-      <p style={copyStyle(f, 22)}>Back up local sandboxes.<br/>Restore as a new sandbox.</p>
+      <p style={copyStyle(f, 22)}>Back up local computers.<br/>Restore as a new computer.</p>
     </div>
     <div className="r-access-stage" style={{ opacity: move(f, 0, 20), transform: `translateX(${move(f, 0, 36, 90, 0)}px)` }}><ReleaseBackup frame={f} /></div>
     <div className="r-access-detail" style={copyStyle(f, 105)}><Archive size={22} /><span>web · managed disks + settings</span><Check size={21} /></div>
@@ -224,7 +225,7 @@ function Closing() {
     <div className="r-close-lockup" style={copyStyle(f, 5)}><Brand large /></div>
     <div className="r-close-title" style={copyStyle(f, 15)}>Give your agents<br/><em>a space of their own.</em></div>
     <div className="r-close-cta" style={copyStyle(f, 32)}><span>silo.polarzero.xyz</span><ArrowRight size={35} strokeWidth={1.5} /></div>
-    <div className="r-close-tags" style={copyStyle(f, 45)}><span><Monitor size={19} />Linux VMs</span><span><MousePointer2 size={19} />Agent desktops</span><span><KeyRound size={19} />Scoped access</span></div>
+    <div className="r-close-tags" style={copyStyle(f, 45)}><span><Monitor size={19} />Linux computers</span><span><MousePointer2 size={19} />Agent desktops</span><span><KeyRound size={19} />Scoped access</span></div>
   </Frame>;
 }
 

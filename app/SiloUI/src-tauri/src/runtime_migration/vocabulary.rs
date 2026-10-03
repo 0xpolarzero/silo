@@ -231,6 +231,22 @@ pub(super) fn run_in(
     save_record(&locations.app_data, before_write)
 }
 
+/// Converts `config.json` in a `desktop-remote` folder in place, for the modes that read
+/// it before the application runs the full conversion (`--remote-guest`, `--remote-bridge`).
+/// Does nothing for a file that is already current, missing, or not a regular file of a size
+/// any build writes. It does not write the record, so the full conversion still runs.
+pub(crate) fn convert_connections_settings(directory: &Path) -> Result<(), String> {
+    let path = directory.join("config.json");
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() && metadata.len() <= MAX_DOCUMENT_BYTES => {}
+        _ => return Ok(()),
+    }
+    convert_file(
+        &Target::in_place(directory, path, convert::connections),
+        &|_| Ok(()),
+    )
+}
+
 /// Converts the storage folder `storage` in place. The storage migration calls this on
 /// the copy it stages and on a clean generation left by an earlier attempt, neither of
 /// which is read before it. Safe to repeat.

@@ -20,7 +20,7 @@ beforeEach(() => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 it("opens a stopped computer viewer without starting the computer and only starts after the user's action", async () => {
-  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: false, state: "vm-stopped" }
+  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: false, state: "computer-stopped" }
     : command === "desktop_action" ? { installed: true, autoStart: false, state: "running" } : undefined)
   const user = userEvent.setup()
   render(<NativeLinuxDesktopViewer computer="owner/vm-id" name="dev · Remote" />)
@@ -61,7 +61,7 @@ it("hides an obsolete attachment error when the computer stops", async () => {
   let stopped = false
   invoke.mockImplementation(async command => {
     if (command === "read_desktop_state") return {
-      installed: true, autoStart: true, state: stopped ? "vm-stopped" : "running",
+      installed: true, autoStart: true, state: stopped ? "computer-stopped" : "running",
     }
     if (command === "desktop_viewer_attach") throw new Error("Desktop connection unavailable")
   })
@@ -84,7 +84,7 @@ it("backs off failed desktop health reads, resets after recovery, and stops on c
   invoke.mockImplementation(async command => {
     if (command === "read_desktop_state") {
       if (!reachable) throw new Error("Device disconnected")
-      return { installed: true, autoStart: true, state: "vm-stopped" }
+      return { installed: true, autoStart: true, state: "computer-stopped" }
     }
   })
   const reads = () => invoke.mock.calls.filter(([command]) => command === "read_desktop_state").length
@@ -373,7 +373,7 @@ it("runs explicit LCU setup in a live session even when its display stream faile
 it("pauses viewer health polling when hidden and refreshes once on return", async () => {
   vi.useFakeTimers()
   const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
-  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "vm-stopped" } : undefined)
+  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "computer-stopped" } : undefined)
   const view = render(<NativeLinuxDesktopViewer computer="dev" name="dev" />)
   const reads = () => invoke.mock.calls.filter(([command]) => command === "read_desktop_state")
   try {

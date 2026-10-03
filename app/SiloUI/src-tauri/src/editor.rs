@@ -243,7 +243,7 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
     let file = directory.join(format!(
         "{}.code-workspace",
         if folder.is_empty() {
-            "computer"
+            "workspace"
         } else {
             folder
         }

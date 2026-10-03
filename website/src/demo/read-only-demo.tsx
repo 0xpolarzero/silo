@@ -5,12 +5,12 @@ import { ApplicationShell } from '@/features/application/components/application-
 import { useApplicationNavigation } from '@/features/application/model/use-application-navigation';
 import { createDirectoryStore } from '@/features/application/model/directory-store';
 import { OverviewPage } from '@/features/application/pages/overview-page';
-import { WorkspacesPage } from '@/features/application/pages/workspaces-page';
+import { ComputersPage } from '@/features/application/pages/computers-page';
 import { GitHubPage } from '@/features/application/pages/github-page';
 import { SecretsPage } from '@/features/application/pages/secrets-page';
 import { GeneralPage } from '@/features/application/pages/general-page';
 import { NotificationsPage } from '@/features/application/pages/notifications-page';
-import { RemoteComputersSettings } from '@/features/application/components/remote-computers-settings';
+import { ConnectionsSettings } from '@/features/application/components/connections-settings';
 import { SettingsProvider, createMemorySettingsStore } from '@/features/preferences/settings-store';
 import { ApplicationCatalogProvider } from '@/features/preferences/application-catalog';
 import { SystemIntegrationProvider } from '@/features/preferences/system-integrations-store';
@@ -37,28 +37,28 @@ export function ReadOnlyDemo() {
 
 function DemoPages() {
   const navigation = useApplicationNavigation(false);
-  const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<Set<string>>(new Set());
+  const [selectedComputerIds, setSelectedComputerIds] = useState<Set<string>>(new Set());
   const commands = applicationCommands(demoSource, demoActions, route => {
-    setSelectedWorkspaceIds(new Set(route.workspace ? [route.workspace] : []));
-    if (route.workspaceSection) navigation.selectWorkspaceSection(route.workspaceSection);
+    setSelectedComputerIds(new Set(route.computer ? [route.computer] : []));
+    if (route.computerSection) navigation.selectComputerSection(route.computerSection);
     else if (route.settingsSection) navigation.selectSettingsSection(route.settingsSection);
     else if (route.tab) navigation.selectTab(route.tab);
   }).filter(command => command.group !== 'Actions');
-  const [directoryStore] = useState(() => createDirectoryStore(demoActions.listWorkspaceDirectory));
-  const overview = navigation.tab === 'workspaces' && navigation.workspaceSection === 'overview';
+  const [directoryStore] = useState(() => createDirectoryStore(demoActions.listComputerDirectory));
+  const overview = navigation.tab === 'computers' && navigation.computerSection === 'overview';
   let page: ReactNode;
-  if (navigation.tab === 'workspaces') {
-    page = navigation.workspaceSection === 'overview'
-      ? <OverviewPage readOnly source={demoSource} actions={demoActions} onMachinesChange={readOnlyOperation} />
-      : <WorkspacesPage
+  if (navigation.tab === 'computers') {
+    page = navigation.computerSection === 'overview'
+      ? <OverviewPage readOnly source={demoSource} actions={demoActions} onConfigurationsChange={readOnlyOperation} />
+      : <ComputersPage
           source={demoSource}
-          section={navigation.workspaceSection} onSectionChange={navigation.selectWorkspaceSection}
-          workspaces={demoSource.workspaces} activities={demoSource.activities}
+          section={navigation.computerSection} onSectionChange={navigation.selectComputerSection}
+          computers={demoSource.computers} activities={demoSource.activities}
           network={demoSource.network} networkActions={demoActions}
           editor={demoSource.preferences.editor} browser={demoSource.preferences.browser}
-          directoryStore={directoryStore} active selectedWorkspaceIds={selectedWorkspaceIds}
+          directoryStore={directoryStore} active selectedComputerIds={selectedComputerIds}
           logQuery="" repositoryPushOperations={[]}
-          onOpenEditor={readOnlyOperation} onWorkspaceFilterChange={readOnlyOperation}
+          onOpenEditor={readOnlyOperation} onComputerFilterChange={readOnlyOperation}
           onLogQueryChange={readOnlyOperation} onPushRepository={readOnlyOperation}
           onDismissRepositoryPush={readOnlyOperation}
         />;
@@ -66,8 +66,8 @@ function DemoPages() {
     page = <GitHubPage source={demoSource} actions={demoActions} />;
   } else if (navigation.tab === 'secrets') {
     page = <SecretsPage source={demoSource} onSaveSecret={readOnlyOperation} onRemoveSecret={readOnlyOperation} />;
-  } else if (navigation.settingsSection === 'computers') {
-    page = <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><RemoteComputersSettings source={demoSource} actions={demoActions} /></div>;
+  } else if (navigation.settingsSection === 'connections') {
+    page = <div className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><ConnectionsSettings source={demoSource} actions={demoActions} /></div>;
   } else if (navigation.settingsSection === 'notifications') {
     page = <NotificationsPage />;
   } else {
@@ -76,11 +76,11 @@ function DemoPages() {
   }
   return <div className="demo-app">
     <ApplicationShell
-      activeTab={navigation.tab} workspaceSection={navigation.workspaceSection}
+      activeTab={navigation.tab} computerSection={navigation.computerSection}
       settingsSection={navigation.settingsSection} systemIssueStatus={null}
-      workspaceAttention={{ errors: 0, warnings: 0 }}
+      computerAttention={{ errors: 0, warnings: 0 }}
       defaultSettingsMenuOpen
-      onTabChange={navigation.selectTab} onWorkspaceSectionChange={navigation.selectWorkspaceSection}
+      onTabChange={navigation.selectTab} onComputerSectionChange={navigation.selectComputerSection}
       onSettingsSectionChange={navigation.selectSettingsSection}
       canGoBack={navigation.canGoBack} canGoForward={navigation.canGoForward}
       onGoBack={navigation.goBack} onGoForward={navigation.goForward}

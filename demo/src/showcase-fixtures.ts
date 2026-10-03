@@ -1,6 +1,6 @@
 import { applicationSourceForScenario } from '@/fixtures/application-scenarios'
 import { fixtureDirectoryLoader } from '@/fixtures/directory-loader'
-import { remoteWorkspaceTarget, workspaceTarget } from '@/features/application/model/remote-computers'
+import { computerTarget } from '@/features/application/model/connections'
 import type { ApplicationFileEntry, ApplicationSource } from '@/features/application/model/application-source'
 
 const folder = (name: string, names: string[]): ApplicationFileEntry => ({ name, kind: 'folder', children: names.map(name => ({ name, kind: name.includes('.') ? 'file' : 'folder' })) })
@@ -8,10 +8,10 @@ const base = applicationSourceForScenario('complete')
 const studio = { id: 'studio', name: 'Studio Mac', address: 'developer@studio.local', connected: true }
 export const showcaseSource: ApplicationSource = {
   ...base,
-  remoteComputers: [studio],
+  devices: [studio],
   secrets: base.secrets.map(secret => ({ ...secret, state: 'active' })),
   preferences: { ...base.preferences, editor: 'Zed', terminal: 'Ghostty', reduceMotion: true },
-  workspaces: base.workspaces.map((workspace, index) => {
+  computers: base.computers.map((computer, index) => {
     const remote = index === 2
     const name = ['web', 'services', 'lab'][index]
     const repositories = [
@@ -24,30 +24,28 @@ export const showcaseSource: ApplicationSource = {
       [folder('api', ['src', 'migrations', 'Cargo.toml']), { name: 'compose.yaml', kind: 'file' as const }],
       [folder('experiments', ['notebooks', 'datasets', 'pyproject.toml'])],
     ][index]
-    return { ...workspace, machine: { ...workspace.machine, name, id: remote ? remoteWorkspaceTarget(studio.id, workspace.machine.id) : workspace.machine.id },
-      ...(remote ? { computer: { ...studio, vmId: workspace.machine.id } } : {}),
+    return { ...computer, configuration: { ...computer.configuration, name },
+      ...(remote ? { device: { ...studio, computerId: computer.configuration.id } } : {}),
       state: 'running' as const, stateDetail: 'Running', freshness: 'fresh' as const, repositories, files, attention: undefined,
     }
   }),
 }
-// The stock fixture loader keys local workspaces by name; map remote targets too.
-export const showcaseDirectoryLoader = fixtureDirectoryLoader(showcaseSource.workspaces.map(workspace => ({ ...workspace, machine: { ...workspace.machine, name: workspaceTarget(workspace) } })))
+export const showcaseDirectoryLoader = fixtureDirectoryLoader(showcaseSource.computers)
 
-// Match the GitHub policies to the showcase's renamed local sandboxes.
 showcaseSource.github = {
   ...showcaseSource.github,
   account: 'demo-user',
-  hostIdentity: { name: 'Demo User', email: 'demo@example.com' },
-  workspaces: [
-    { workspace: 'web', identity: { name: 'Demo User', email: 'demo@example.com', apply: true }, repositories: [{ repository: 'example/web-app', allowPushes: true }, { repository: 'example/design-system', allowPushes: false }] },
-    { workspace: 'services', identity: { name: 'Demo User', email: 'demo@example.com', apply: true }, repositories: [{ repository: 'example/api', allowPushes: true }] },
+  deviceIdentity: { name: 'Demo User', email: 'demo@example.com' },
+  computers: [
+    { computer: 'web', identity: { name: 'Demo User', email: 'demo@example.com', apply: true }, repositories: [{ repository: 'example/web-app', allowPushes: true }, { repository: 'example/design-system', allowPushes: false }] },
+    { computer: 'services', identity: { name: 'Demo User', email: 'demo@example.com', apply: true }, repositories: [{ repository: 'example/api', allowPushes: true }] },
   ],
 }
 
-showcaseSource.sshAccess = { workspaces: showcaseSource.workspaces.map(workspace => ({
-  workspace: workspaceTarget(workspace), enabled: true, port: 2222,
-  bindAddress: workspace.computer ? '192.168.1.42' : '127.0.0.1', keys: [],
+showcaseSource.sshAccess = { computers: showcaseSource.computers.map(computer => ({
+  computer: computerTarget(computer), enabled: true, port: 2222,
+  bindAddress: computer.device ? '192.168.1.42' : '127.0.0.1', keys: [],
   state: 'listening', message: null, fingerprint: null,
-  computerName: workspace.computer?.name ?? 'This computer',
+  deviceName: computer.device?.name ?? 'This device',
   addresses: ['127.0.0.1', '192.168.1.42'],
 })) }

@@ -58,7 +58,7 @@ export const linuxDesktopStateSchema = z.object({
   installed: z.boolean(),
   version: z.string().nullish().catch(null),
   streamerVersion: z.string().nullish().catch(null),
-  state: z.enum(["running", "starting", "stopped", "failed", "uninstalled", "vm-stopped"]),
+  state: z.enum(["running", "starting", "stopped", "failed", "uninstalled", "computer-stopped"]),
   autoStart: z.boolean(),
   backend: z.enum(["kasm", "selkies"]).nullish(),
   sessionState: desktopSessionStateSchema.nullish(),
@@ -87,7 +87,7 @@ export function parseLinuxDesktopState(value: unknown): LinuxDesktopState {
   // legacy special states while deriving desktop health from the X session.
   return {
     ...status,
-    state: status.state === "uninstalled" || status.state === "vm-stopped"
+    state: status.state === "uninstalled" || status.state === "computer-stopped"
       ? status.state
       : status.sessionState ?? status.state,
   }
