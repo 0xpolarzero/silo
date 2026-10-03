@@ -24,6 +24,10 @@
     "message": "Display text may change."
   },
   {
+    "code": "incompatible_version",
+    "message": "Display text may change."
+  },
+  {
     "code": "internal",
     "message": "Display text may change."
   }

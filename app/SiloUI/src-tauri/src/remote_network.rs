@@ -232,7 +232,7 @@ fn read(app: &AppHandle, device: &str) -> Result<Value, BridgeError> {
         }
         Err(error) => {
             if error.code != ErrorCode::UnsupportedRemoteOperation {
-                remote::close_after_failed_poll(device, &error.message);
+                remote::close_after_failed_poll(device, &error);
             }
             return Err(error);
         }

@@ -1,5 +1,5 @@
 //! App-lifetime Connections. SSH only transports framed requests to the running owner.
-use crate::bridge_error::{BridgeError, ErrorCode};
+use crate::bridge_error::{BridgeError, ErrorCode, LEGACY_INCOMPATIBLE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -525,7 +525,12 @@ fn error_reply(error: &BridgeError) -> Value {
         ErrorCode::UnsupportedRemoteOperation => UNSUPPORTED,
         _ => &error.message,
     };
-    json!({"error":legacy,"code":error.code,"message":error.message})
+    let mut reply = json!({"error":legacy,"code":error.code,"message":error.message});
+    if error.code == ErrorCode::IncompatibleVersion {
+        reply["version"] = json!(VERSION);
+        reply["appVersion"] = json!(env!("CARGO_PKG_VERSION"));
+    }
+    reply
 }
 
 fn write_reply(mut writer: impl Write, value: &Value) -> Result<(), String> {
@@ -1195,6 +1200,21 @@ pub(crate) fn device_capabilities(
     Ok(names)
 }
 
+/// Names the device to update when the other device refuses this one's protocol version.
+/// A reply without a version comes from a device older than version 4.
+fn name_version_mismatch(error: BridgeError, device: &str) -> BridgeError {
+    if error.code != ErrorCode::IncompatibleVersion {
+        return error;
+    }
+    let newer = error.peer_version.is_some_and(|version| version > VERSION);
+    let message = if newer {
+        format!("{device} runs a newer version of Silo. Update Silo on this device.")
+    } else {
+        format!("{device} runs an older version of Silo. Update Silo on {device}.")
+    };
+    BridgeError { message, ..error }
+}
+
 pub(crate) fn call_remote_typed(
     _app: &AppHandle,
     device_id: &str,
@@ -1214,12 +1234,14 @@ pub(crate) fn call_remote_typed(
         json!({"version":VERSION,"deviceId":device.id,"method":method,"params":params});
     let deadline = Instant::now() + request_timeout(&request);
     if access(method) != Some(Access::Change) {
-        return exchange(&device.address, &request, deadline).map_err(Failure::error);
+        return exchange(&device.address, &request, deadline)
+            .map_err(|failure| name_version_mismatch(failure.error(), &device.name));
     }
     request["operationId"] = json!(uuid::Uuid::new_v4().to_string());
     send_change(&mut request, deadline, &RETRY_DELAYS, |request| {
         exchange(&device.address, request, deadline)
     })
+    .map_err(|error| name_version_mismatch(error, &device.name))
 }
 /// Sends a change, and after a lost connection sends it again with the same
 /// `operationId`, so the other device attaches the retry to the change it already
@@ -1319,16 +1341,29 @@ pub async fn remote_checkpoint_action(
     .map_err(|_| "Silo could not finish the checkpoint action on the remote device. Reconnect to it and refresh the computer before retrying.".to_string())?
 }
 
+/// The handshake reply of an address not yet saved, which can only be named by its address.
+fn handshake_result(address: &str, reply: Result<Value, Failure>) -> Result<Value, String> {
+    let result =
+        reply.map_err(|failure| name_version_mismatch(failure.error(), address).message)?;
+    if result["version"].as_u64() != Some(VERSION as u64) {
+        let peer = result["version"]
+            .as_u64()
+            .and_then(|version| u32::try_from(version).ok());
+        let mismatch = BridgeError::incompatible_version(LEGACY_INCOMPATIBLE, peer);
+        return Err(name_version_mismatch(mismatch, address).message);
+    }
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn connect_device(address: String, replace: Option<bool>) -> Result<Device, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let address = address.trim().to_owned();
         let handshake = json!({"version": VERSION, "method": "handshake", "params": {"sshKey": silo_public_key()}});
-        let result = exchange(&address, &handshake, Instant::now() + request_timeout(&handshake))
-            .map_err(Failure::message)?;
-        if result["version"].as_u64() != Some(VERSION as u64) {
-            return Err("Silo versions are incompatible. Update Silo on both devices.".into());
-        }
+        let result = handshake_result(
+            &address,
+            exchange(&address, &handshake, Instant::now() + request_timeout(&handshake)),
+        )?;
         let id = result["deviceId"]
             .as_str()
             .filter(|id| uuid::Uuid::parse_str(id).is_ok())
@@ -1403,7 +1438,7 @@ pub async fn device_snapshot(
         match &result {
             Ok(_) => poll_succeeded(&device_id),
             Err(error) if error.code == ErrorCode::UpdateInProgress => {}
-            Err(error) => close_after_failed_poll(&device_id, &error.message),
+            Err(error) => close_after_failed_poll(&device_id, error),
         }
         result
     })
@@ -1433,23 +1468,23 @@ pub(crate) enum PollFailure {
     Revoked,
 }
 /// Errors that mean the saved device is not the one answering or no longer admits this one.
-fn revoked(error: &str) -> bool {
-    [
-        "This address now belongs to a different Silo device",
-        "Connections are turned off",
-        "Silo versions are incompatible",
-        "This device is no longer connected.",
-        AUTHENTICATION_FAILED,
-        "The other device's SSH host key changed",
-        "Host key verification failed",
-    ]
-    .iter()
-    .any(|marker| error.starts_with(marker))
+fn revoked(error: &BridgeError) -> bool {
+    error.code == ErrorCode::IncompatibleVersion
+        || [
+            "This address now belongs to a different Silo device",
+            "Connections are turned off",
+            "This device is no longer connected.",
+            AUTHENTICATION_FAILED,
+            "The other device's SSH host key changed",
+            "Host key verification failed",
+        ]
+        .iter()
+        .any(|marker| error.message.starts_with(marker))
 }
 pub(crate) fn poll_succeeded(device: &str) {
     crate::sync::lock_or_recover(&HEALTH, "remote device health").remove(device);
 }
-pub(crate) fn poll_failed(device: &str, error: &str) -> PollFailure {
+pub(crate) fn poll_failed(device: &str, error: &BridgeError) -> PollFailure {
     let mut health = crate::sync::lock_or_recover(&HEALTH, "remote device health");
     let entry = health.entry(device.to_owned()).or_insert(Health {
         failures: 0,
@@ -1457,7 +1492,7 @@ pub(crate) fn poll_failed(device: &str, error: &str) -> PollFailure {
         at: Instant::now(),
     });
     entry.failures += 1;
-    entry.last_error = error.to_owned();
+    entry.last_error = error.message.clone();
     entry.at = Instant::now();
     if revoked(error) {
         PollFailure::Revoked
@@ -1483,7 +1518,7 @@ fn offline_at(device: &str, now: Instant) -> Option<String> {
 }
 /// Applies a failed poll: one blip closes nothing; repeated failures close live tunnels
 /// (reopened on the same local ports later) and desktop viewers; a revoked device loses all.
-pub(crate) fn close_after_failed_poll(device: &str, error: &str) {
+pub(crate) fn close_after_failed_poll(device: &str, error: &BridgeError) {
     match poll_failed(device, error) {
         PollFailure::Transient => {}
         PollFailure::Disconnected => {
@@ -1767,7 +1802,8 @@ pub(crate) fn run_remote_stream(
             &json!({"version":VERSION,"deviceId":device.id,"method":method,"params":params}),
         )?;
         let reply = read_reply(&mut output)?;
-        decode_reply(&reply).map_err(Failure::message)?;
+        decode_reply(&reply)
+            .map_err(|failure| name_version_mismatch(failure.error(), &device.name).message)?;
         thread::spawn(move || {
             let _ = std::io::copy(&mut std::io::stdin().lock(), &mut input);
         });
@@ -1919,10 +1955,10 @@ pub(crate) fn ensure_connections_enabled() -> Result<(), String> {
     Ok(())
 }
 
-fn authorize(request: &Value) -> Result<Config, String> {
+fn authorize(request: &Value) -> Result<Config, BridgeError> {
     authorize_in(&directory()?, request)
 }
-fn authorize_in(dir: &Path, request: &Value) -> Result<Config, String> {
+fn authorize_in(dir: &Path, request: &Value) -> Result<Config, BridgeError> {
     let config = {
         let _guard = config_lock();
         read_config_in(dir)?
@@ -1931,13 +1967,22 @@ fn authorize_in(dir: &Path, request: &Value) -> Result<Config, String> {
     Ok(config)
 }
 
-fn validate_authorization(config: &Config, request: &Value) -> Result<(), String> {
+fn validate_authorization(config: &Config, request: &Value) -> Result<(), BridgeError> {
     if !config.enabled {
         return Err("Connections are turned off on this device.".into());
     }
     crate::runtime::shutdown::ensure_accepting_operations()?;
     if request["version"].as_u64() != Some(VERSION as u64) {
-        return Err("Silo versions are incompatible. Update Silo on both devices.".into());
+        // A device older than version 4 prints this reply as is.
+        let message = if request["version"]
+            .as_u64()
+            .is_some_and(|version| version > VERSION as u64)
+        {
+            "This device runs an older version of Silo. Update Silo on this device."
+        } else {
+            "This device runs a newer version of Silo. Update Silo on the device that is connecting."
+        };
+        return Err(BridgeError::incompatible_version(message, Some(VERSION)));
     }
     if request["method"] != "handshake" && request["deviceId"].as_str() != Some(&config.device_id) {
         return Err(
@@ -3550,17 +3595,21 @@ mod health_tests {
     fn one_failed_poll_closes_nothing_and_repeated_failures_disconnect() {
         let _test_state = crate::test_support::global_state();
         let device = uuid::Uuid::new_v4().to_string();
-        let blip =
+        let text =
             "The SSH connection timed out. Check that the other device is awake and reachable.";
+        let blip = &BridgeError::from(text);
         assert_eq!(poll_failed(&device, blip), PollFailure::Transient);
         assert_eq!(
-            poll_failed(&device, "This device has too many active Silo connections."),
+            poll_failed(
+                &device,
+                &"This device has too many active Silo connections.".into()
+            ),
             PollFailure::Transient
         );
         assert_eq!(offline(&device), None);
         assert_eq!(poll_failed(&device, blip), PollFailure::Disconnected);
         // Reads answer from the last error for a short while instead of reconnecting.
-        assert_eq!(offline(&device).as_deref(), Some(blip));
+        assert_eq!(offline(&device).as_deref(), Some(text));
         assert_eq!(offline_at(&device, Instant::now() + OFFLINE_FOR), None);
         poll_succeeded(&device);
         assert_eq!(offline(&device), None);
@@ -3574,15 +3623,112 @@ mod health_tests {
         for error in [
             "This address now belongs to a different Silo device. Reconnect it explicitly.",
             "Connections are turned off on this device.",
-            "Silo versions are incompatible. Update Silo on both devices.",
             "This device is no longer connected.",
             AUTHENTICATION_FAILED,
             "The other device's SSH host key changed. Verify the device before trusting its new key (Host key verification failed).",
         ] {
             let device = uuid::Uuid::new_v4().to_string();
-            assert_eq!(poll_failed(&device, error), PollFailure::Revoked, "{error}");
+            assert_eq!(
+                poll_failed(&device, &error.into()),
+                PollFailure::Revoked,
+                "{error}"
+            );
             poll_succeeded(&device);
         }
+    }
+
+    #[test]
+    fn a_version_mismatch_closes_everything_whatever_its_text() {
+        let _test_state = crate::test_support::global_state();
+        let named = name_version_mismatch(
+            BridgeError::incompatible_version("ignored", Some(VERSION + 1)),
+            "Studio",
+        );
+        for error in [
+            named,
+            BridgeError::new(ErrorCode::IncompatibleVersion, "Any other wording."),
+            BridgeError::from_remote_reply(&json!({"error":LEGACY_INCOMPATIBLE})).unwrap(),
+        ] {
+            let device = uuid::Uuid::new_v4().to_string();
+            assert_eq!(poll_failed(&device, &error), PollFailure::Revoked);
+            poll_succeeded(&device);
+        }
+        let device = uuid::Uuid::new_v4().to_string();
+        let unrelated = BridgeError::from("Studio runs an older version of Silo.");
+        assert_eq!(poll_failed(&device, &unrelated), PollFailure::Transient);
+        poll_succeeded(&device);
+    }
+
+    #[test]
+    fn the_requester_names_the_device_to_update() {
+        let older = |reply: Value| {
+            name_version_mismatch(BridgeError::from_remote_reply(&reply).unwrap(), "Studio")
+        };
+        let lower = older(
+            json!({"error":"x","code":"incompatible_version","message":"x","version":VERSION - 1}),
+        );
+        assert_eq!(lower.code, ErrorCode::IncompatibleVersion);
+        assert_eq!(
+            lower.message,
+            "Studio runs an older version of Silo. Update Silo on Studio."
+        );
+        let legacy = older(json!({"error":LEGACY_INCOMPATIBLE}));
+        assert_eq!(legacy.code, ErrorCode::IncompatibleVersion);
+        assert_eq!(
+            legacy.message,
+            "Studio runs an older version of Silo. Update Silo on Studio."
+        );
+        let higher = older(
+            json!({"error":"x","code":"incompatible_version","message":"x","version":VERSION + 1}),
+        );
+        assert_eq!(
+            higher.message,
+            "Studio runs a newer version of Silo. Update Silo on this device."
+        );
+        let other = BridgeError::new(ErrorCode::Busy, "Busy.");
+        assert_eq!(name_version_mismatch(other.clone(), "Studio"), other);
+    }
+
+    #[test]
+    fn a_new_connection_names_the_address_in_a_version_mismatch() {
+        let address = "me@studio.local";
+        let refused = |reply: Value| {
+            let failure = Failure::Reported(BridgeError::from_remote_reply(&reply).unwrap());
+            handshake_result(address, Err(failure)).unwrap_err()
+        };
+        assert_eq!(
+            refused(json!({"error":LEGACY_INCOMPATIBLE})),
+            "me@studio.local runs an older version of Silo. Update Silo on me@studio.local."
+        );
+        assert_eq!(
+            refused(
+                json!({"error":"x","code":"incompatible_version","message":"x","version":VERSION + 1})
+            ),
+            "me@studio.local runs a newer version of Silo. Update Silo on this device."
+        );
+        assert_eq!(
+            handshake_result(address, Ok(json!({"version":VERSION + 1}))).unwrap_err(),
+            "me@studio.local runs a newer version of Silo. Update Silo on this device."
+        );
+        assert_eq!(
+            handshake_result(address, Ok(json!({"version":3}))).unwrap_err(),
+            "me@studio.local runs an older version of Silo. Update Silo on me@studio.local."
+        );
+        assert!(handshake_result(address, Ok(json!({"version":VERSION}))).is_ok());
+    }
+
+    #[test]
+    fn the_responder_reply_carries_its_versions() {
+        let stale = BridgeError::incompatible_version("Update.", Some(VERSION));
+        let reply = error_reply(&stale);
+        assert_eq!(reply["code"], json!("incompatible_version"));
+        assert_eq!(reply["version"], json!(VERSION));
+        assert_eq!(reply["appVersion"], json!(env!("CARGO_PKG_VERSION")));
+        let decoded = BridgeError::from_remote_reply(&reply).unwrap();
+        assert_eq!(decoded.peer_version, Some(VERSION));
+        assert!(error_reply(&BridgeError::from("x"))
+            .get("version")
+            .is_none());
     }
 }
 
@@ -4479,7 +4625,7 @@ mod dispatch_tests {
         assert!(refuse(&other).contains("different Silo device"));
         let mut stale = request(&config, "runtime.action");
         stale["version"] = json!(VERSION - 1);
-        assert!(refuse(&stale).contains("incompatible"));
+        assert!(refuse(&stale).contains("newer version of Silo"));
         for id in [json!("not-a-uuid"), Value::Null, json!(7)] {
             let mut change = request(&config, "checkpoint.restore");
             change["operationId"] = id;
@@ -4758,21 +4904,35 @@ mod ssh_authorization_tests {
             validate_authorization(&config, &request).unwrap();
             config.enabled = false;
             assert_eq!(
-                validate_authorization(&config, &request).unwrap_err(),
+                validate_authorization(&config, &request)
+                    .unwrap_err()
+                    .message,
                 "Connections are turned off on this device."
             );
             config.enabled = true;
             let mut changed = request.clone();
             changed["deviceId"] = json!(uuid::Uuid::new_v4().to_string());
             assert_eq!(
-                validate_authorization(&config, &changed).unwrap_err(),
+                validate_authorization(&config, &changed)
+                    .unwrap_err()
+                    .message,
                 "This address now belongs to a different Silo device. Reconnect it explicitly."
             );
             changed = request;
             changed["version"] = json!(VERSION + 1);
+            let newer = validate_authorization(&config, &changed).unwrap_err();
+            assert_eq!(newer.code, ErrorCode::IncompatibleVersion);
+            assert_eq!(newer.peer_version, Some(VERSION));
             assert_eq!(
-                validate_authorization(&config, &changed).unwrap_err(),
-                "Silo versions are incompatible. Update Silo on both devices."
+                newer.message,
+                "This device runs an older version of Silo. Update Silo on this device."
+            );
+            changed["version"] = json!(VERSION - 1);
+            let older = validate_authorization(&config, &changed).unwrap_err();
+            assert_eq!(older.code, ErrorCode::IncompatibleVersion);
+            assert_eq!(
+                older.message,
+                "This device runs a newer version of Silo. Update Silo on the device that is connecting."
             );
         }
     }
