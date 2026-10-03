@@ -1007,14 +1007,12 @@ impl Preempt {
                 while !flag.load(Ordering::SeqCst) {
                     // A queued deletion of this VM names it only in its targets.
                     let blocked = gate.removal_queued(&id)
-                        || gate.snapshot().waiting.iter().any(|entry| {
-                            !entry.label.starts_with(SYNC_LABEL)
-                                && match entry.kind {
-                                    // Quit or update: computer-wide, whatever VM it names.
-                                    OperationKind::Shutdown => true,
-                                    _ => false,
-                                }
-                        })
+                        // Quit or update: computer-wide, whatever VM it names.
+                        || gate
+                            .snapshot()
+                            .waiting
+                            .iter()
+                            .any(|entry| entry.kind == OperationKind::Shutdown)
                         || gate
                             .waiting_lifecycle_keys(&id)
                             .iter()
@@ -1151,8 +1149,11 @@ fn apply_once(
     trigger: Trigger,
 ) -> bool {
     let deadline = std::time::Instant::now() + GATE_WAIT;
+    // The apply is routine background work after every boot: it holds the VM's turn for
+    // correctness but stays out of the queue UI. A failure surfaces in the sandbox panel.
     let Ok(turn) = gate
         .kind(runtime::operation_gate::OperationKind::Other)
+        .hidden()
         .acquire_while(
             runtime::operation_gate::Scope::Vm { id: id.to_owned() },
             Some(name.to_owned()),

@@ -1,3 +1,4 @@
+import { isLifecycleStep, type LifecycleStep } from "@/features/application/model/lifecycle-progress"
 import { bridgeErrorMessage, hasBridgeErrorCode } from "@/contracts/bridge-error"
 import { defaultSettings, settingSchemas } from "@/features/preferences/model/settings"
 import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
@@ -434,6 +435,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   /** Pushes whose status could not be confirmed; shown as "unknown" until dismissed or reported by their host. */
   const unconfirmedPushes = new Map<string, ApplicationSource["repositoryPushOperations"][number]>()
   const pendingLifecycle = new Map<string, "start" | "stop" | "restart" | "dismiss-error">()
+  const lifecycleSteps = new Map<string, LifecycleStep>()
   const workspaceFailures = new Map<string, { machineId: string; action: string; message: string; cancelled: boolean }>()
   let pendingBackupOperation = false
   let localBackupOperation: BackupOperation | null = null
@@ -752,6 +754,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         return { ...current,
           ...(failure?.machineId === workspace.machine.id && { lifecycleFailure: failure.message, lifecycleFailureAction: failure.action as "start" | "stop" | "restart" | "dismiss-error", lifecycleFailureCancelled: failure.cancelled }),
           ...(action && { lifecycleAction: action }),
+          ...(action && lifecycleSteps.has(workspace.machine.id) && { lifecycleStep: lifecycleSteps.get(workspace.machine.id) }),
         }
       }),
     } }
@@ -1098,6 +1101,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           acceptingSetup = true
           if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
         }],
+        ["silo://lifecycle-progress", (event) => {
+          const payload = event?.payload as { vmId?: unknown; action?: unknown; step?: unknown } | undefined
+          if (typeof payload?.vmId !== "string" || !isLifecycleStep(payload.step) || pendingLifecycle.get(payload.vmId) !== payload.action) return
+          lifecycleSteps.set(payload.vmId, payload.step)
+          publish({ ...snapshot })
+        }],
         ["silo://machine-configuration-progress", (event) => {
           const parsed = siloProgressEventSchema.safeParse(event?.payload)
           if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
@@ -1207,6 +1216,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (lifecycle) {
       workspaceFailures.delete(machineId)
       pendingLifecycle.set(machineId, action)
+      lifecycleSteps.delete(machineId)
       publish({ ...snapshot })
     }
     void native.invoke<unknown>(remote && lifecycle ? "remote_workspace_action" : "workspace_action", remote && lifecycle ? { ...remote, action, name: remoteDisplayName(name), ...extras } : { action, name, ...extras })
@@ -1225,7 +1235,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
             (remote ? row.machine.id === remote.vmId : workspaceTarget(row) === name) ? target ?? row : row) }
         }
         if (lifecycle || workspaceFailures.get(machineId)?.action === action) workspaceFailures.delete(machineId)
-        if (lifecycle && pendingLifecycle.get(machineId) === action) pendingLifecycle.delete(machineId)
+        if (lifecycle && pendingLifecycle.get(machineId) === action) { pendingLifecycle.delete(machineId); lifecycleSteps.delete(machineId) }
         if (remote) {
           bumpRemote(remote.hostId)
           remoteSnapshots.set(remote.hostId, source)
@@ -1247,7 +1257,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       })
       .finally(() => {
         pendingWorkspaceActions.delete(key)
-        if (lifecycle && pendingLifecycle.get(machineId) === action) pendingLifecycle.delete(machineId)
+        if (lifecycle && pendingLifecycle.get(machineId) === action) { pendingLifecycle.delete(machineId); lifecycleSteps.delete(machineId) }
         publish({ ...snapshot })
       })
   }

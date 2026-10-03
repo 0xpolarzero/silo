@@ -4,6 +4,7 @@ import { ErrorDetails } from "@/components/error-details"
 import { dismissOperationToast, showOperationFailure, showOperationNotice, showOperationProgress } from "@/lib/operation-toast"
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace } from "./application-source"
 import { lifecycleGuard } from "./lifecycle-guard"
+import { startStepProgress } from "./lifecycle-progress"
 import { cancelledActionLabel, emptyOperationQueue, waitingOperationForVm, waitingStatusText } from "./operation-queue"
 
 const LIFECYCLE_TOAST_DELAY_MS = 800
@@ -39,13 +40,19 @@ export function useLifecycleToasts(source: ApplicationSource, actions: Applicati
       const name = workspace.machine.name
       const title = action === "restart" ? `Restarting ${name}` : action === "stop" ? `Stopping ${name}` : `Starting ${name}`
       const waiting = !workspace.computer ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, workspace.machine.id) : undefined
-      const step = waiting && source.operationQueue ? waitingStatusText(source.operationQueue, waiting) : action === "restart" ? "Restarting…" : action === "stop" ? "Stopping…" : "Starting…"
+      const starting = action === "start" || action === "restart"
+      // Remote computers report no steps, so their start keeps the plain text.
+      const reported = starting && !workspace.computer ? startStepProgress(workspace.lifecycleStep) : undefined
+      const step = waiting && source.operationQueue ? waitingStatusText(source.operationQueue, waiting) : reported ? reported.step : action === "restart" ? "Restarting…" : action === "stop" ? "Stopping…" : "Starting…"
+      const progress = waiting ? undefined : reported?.progress
       const existing = tracked.get(key)
       const entry = existing ?? { shown: false, startedAt: Date.now(), show: () => {} } as { timer?: number; shown: boolean; startedAt: number; show: () => void }
-      entry.show = () => showOperationProgress(id, { title, step, startedAt: entry.startedAt, sandbox: name })
+      entry.show = () => showOperationProgress(id, { title, step, progress, startedAt: entry.startedAt, sandbox: name })
       if (!existing) {
         tracked.set(key, entry)
-        entry.timer = window.setTimeout(() => { entry.shown = true; entry.timer = undefined; entry.show() }, LIFECYCLE_TOAST_DELAY_MS)
+        // A start always takes a while, so its toast is immediate; a stop that is instant never flashes.
+        if (starting) { entry.shown = true; entry.show() }
+        else entry.timer = window.setTimeout(() => { entry.shown = true; entry.timer = undefined; entry.show() }, LIFECYCLE_TOAST_DELAY_MS)
       } else if (entry.shown) entry.show()
     }
     for (const [key, entry] of tracked) {

@@ -116,19 +116,26 @@ it("shows a lifecycle progress notification only for actions slower than the deb
     const view = render(page(source, actions))
 
     // An instant action never flashes a notification.
-    workspace.lifecycleAction = "start"
+    workspace.lifecycleAction = "stop"
     view.rerender(page(source, actions))
     delete workspace.lifecycleAction
     view.rerender(page(source, actions))
     await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
-    expect(screen.queryByText("Starting dev")).toBeNull()
+    expect(screen.queryByText("Stopping dev")).toBeNull()
 
+    workspace.lifecycleAction = "stop"
+    view.rerender(page(source, actions))
+    expect(screen.queryByText("Stopping dev")).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(900) })
+    expect(await screen.findByText("Stopping dev")).toBeVisible()
+
+    delete workspace.lifecycleAction
+    view.rerender(page(source, actions))
+    await waitFor(() => expect(screen.queryByText("Stopping dev")).toBeNull())
+    // A start is never instant, so its notification appears at once.
     workspace.lifecycleAction = "start"
     view.rerender(page(source, actions))
-    expect(screen.queryByText("Starting dev")).toBeNull()
-    await act(async () => { await vi.advanceTimersByTimeAsync(900) })
     expect(await screen.findByText("Starting dev")).toBeVisible()
-
     delete workspace.lifecycleAction
     view.rerender(page(source, actions))
     await waitFor(() => expect(screen.queryByText("Starting dev")).toBeNull())

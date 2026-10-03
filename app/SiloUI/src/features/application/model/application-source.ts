@@ -1,3 +1,4 @@
+import type { LifecycleStep } from "./lifecycle-progress"
 import type { OperationQueue } from "./operation-queue"
 import type { WorkspaceStorageState } from "./workspace-storage"
 import type { CheckpointUsage, PendingCheckpointRestore, UnfinishedRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
@@ -174,6 +175,8 @@ export interface ApplicationWorkspace {
    * failing. Rendered as a neutral, retryable state instead of an error. */
   lifecycleFailureCancelled?: boolean
   lifecycleAction?: "start" | "stop" | "restart" | "dismiss-error"
+  /** Where a pending start or restart is, once the backend reports it. */
+  lifecycleStep?: LifecycleStep
   attention?: {
     level: "warning" | "error"
     message: string
