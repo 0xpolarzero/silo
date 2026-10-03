@@ -75,8 +75,8 @@ describe("describeConfiguration", () => {
   })
 })
 
-function Harness({ current, workspaces, onOpen }: { current: SandboxConfigurationOperation | null; workspaces: ApplicationWorkspace[]; onOpen?: (id: string) => void }) {
-  const bridge = createComputerUseBridge(createFixtureComputerUseBackend("ready", "idle"))
+function Harness({ current, workspaces, onOpen, computerUse = "ready" }: { current: SandboxConfigurationOperation | null; workspaces: ApplicationWorkspace[]; onOpen?: (id: string) => void; computerUse?: "ready" | "unavailable" }) {
+  const bridge = createComputerUseBridge(createFixtureComputerUseBackend(computerUse, "idle"))
   return <SettingsProvider initialSettings={{ theme: "light" }}>
     <ComputerUseProvider bridge={bridge}>
       <Toaster />
@@ -123,12 +123,39 @@ describe("MachineConfigurationToast", () => {
   })
 
   it("offers no switch for a sandbox without built-in computer use", async () => {
-    const view = render(<Harness current={operation([])} workspaces={existing} />)
-    expect(await screen.findByText("Creating fresh")).toBeVisible()
     const plain = created()
     plain.machine = { ...plain.machine, desktop: undefined } as ApplicationWorkspace["machine"]
+    const request = { ...operation([]), candidate: { schemaVersion: 1, machines: [...existing.map(workspace => workspace.machine), plain.machine] } as never }
+    const view = render(<Harness current={request} workspaces={existing} />)
+    expect(await screen.findByText("Creating fresh")).toBeVisible()
     view.rerender(<Harness current={null} workspaces={[...existing, plain]} />)
     expect(await screen.findByText("Created fresh")).toBeVisible()
     expect(screen.queryByRole("switch")).not.toBeInTheDocument()
+  })
+
+  it("offers the switch for a new stopped sandbox that still reports computer use as unavailable, even when the snapshot lags", async () => {
+    const user = userEvent.setup()
+    const view = render(<Harness computerUse="unavailable" current={operation([event("desktop-installation", 0)])} workspaces={existing} />)
+    expect(await screen.findByText("Creating fresh")).toBeVisible()
+    // The refreshed snapshot does not carry the built-in desktop yet.
+    const lagging = created()
+    lagging.machine = { ...lagging.machine, desktop: undefined } as ApplicationWorkspace["machine"]
+    view.rerender(<Harness computerUse="unavailable" current={null} workspaces={[...existing, lagging]} />)
+    expect(await screen.findByText("Created fresh")).toBeVisible()
+    const approval = await screen.findByRole("switch", { name: "Allow without asking" })
+    await waitFor(() => expect(approval).toBeEnabled())
+    await user.click(approval)
+    await waitFor(() => expect(approval).toBeChecked())
+  })
+
+  it("keeps the title row of a title-only notification free of a body, with the action and close button beside the title", async () => {
+    render(<Harness current={null} workspaces={existing} />)
+    toast.success("Copied", { duration: Infinity, closeButton: true, action: { label: "Open", onClick: () => {} } })
+    const title = await screen.findByText("Copied")
+    const item = title.closest("[data-sonner-toast]")!
+    expect(item.querySelector("[data-description]")).toBeNull()
+    expect(item.querySelector("[data-icon]")).not.toBeNull()
+    expect(item.querySelector("[data-button]")).toHaveTextContent("Open")
+    expect(item.querySelector("[data-close-button]")).not.toBeNull()
   })
 })

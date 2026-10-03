@@ -28,7 +28,7 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
   const applying = operation?.status === "applying"
   const [debounced, setDebounced] = useState(false)
   const show = applying && (description?.kind !== "saving" || debounced)
-  const tracked = useRef<{ creating: string[]; startedAt: number; shown: boolean; pending: boolean } | null>(null)
+  const tracked = useRef<{ creating: string[]; startedAt: number; shown: boolean; pending: boolean; desktop: boolean } | null>(null)
   const latest = useRef({ workspaces, bridge, onOpen })
   latest.current = { workspaces, bridge, onOpen }
 
@@ -41,9 +41,13 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
   useEffect(() => {
     if (!operation || !description) return
     if (operation.status === "applying") {
-      tracked.current ??= { creating: [], startedAt: Date.now(), shown: false, pending: false }
+      tracked.current ??= { creating: [], startedAt: Date.now(), shown: false, pending: false, desktop: false }
       tracked.current.creating = description.creating
       tracked.current.pending = computerUsePending(operation)
+      // The backend adds the built-in desktop to a new sandbox on a v4 image, so neither the request nor a lagging
+      // snapshot may carry it. The request and the setup steps it reports are what is known while it is created.
+      tracked.current.desktop ||= description.creating.length === 1 && (operation.candidate.machines.some(machine => machine.name === description.creating[0] && machine.kind === "vm" && Boolean(machine.desktop))
+        || operation.progressEvents.some(event => event.step === "desktop-installation" || event.step?.startsWith("chatgpt-app-") || event.step === "computer-use-setup" || event.step === "computer-use-pending"))
       if (!show) return
       tracked.current.shown = true
       // Creation waits for ChatGPT for Linux before it takes its turn; the user may finish without computer use.
@@ -83,10 +87,10 @@ export function MachineConfigurationToast({ operation, workspaces, onOpen }: {
     showOperationSuccess(TOAST_ID, single ? `Created ${first.machine.name}` : `Created ${created.length} sandboxes`, {
       persist: true,
       sandbox: created.map(workspace => workspace.machine.name),
-      description: single && computerUse && first.machine.kind === "vm" && first.machine.desktop
+      description: single && computerUse && first.machine.kind === "vm" && (first.machine.desktop || finished.desktop)
         ? createElement("div", { className: "grid gap-1.5" },
           finished.pending ? createElement("p", { className: "text-xs text-muted-foreground" }, "Computer use will finish setting up at first start.") : null,
-          createElement(CreatedSandboxApprovalSwitch, { bridge: computerUse, workspace: workspaceTarget(first) }))
+          createElement(CreatedSandboxApprovalSwitch, { workspace: workspaceTarget(first) }))
         : undefined,
       action: single && open ? { label: "Open", onClick: () => open(first.machine.id) } : undefined,
     })

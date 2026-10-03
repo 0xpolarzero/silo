@@ -1,46 +1,34 @@
-import { useEffect, useId, useState } from "react"
+import { useEffect, useId } from "react"
 
 import { Switch } from "@/components/ui/switch"
-import type { ComputerUseBridge } from "./computer-use-bridge"
-import type { ComputerUseApproval, ComputerUseState } from "./linux-desktop-state"
+import { approvalStatus, useComputerUseApproval } from "./computer-use-approval"
 
 /**
  * Body of the "Created {name}" notification: the sandbox's computer use approval as an
- * "Allow without asking" switch. It reads the sandbox's own mode and renders nothing for a
- * sandbox without built-in computer use or whose state cannot be read.
+ * "Allow without asking" switch. The caller only mounts it for a sandbox known to have built-in
+ * computer use, so the switch shows at once (disabled) while the setting is read. A freshly
+ * created sandbox is stopped and reports its computer use as "unavailable" until its first
+ * start, but its approval is stored now and applied at start, so that state keeps the switch.
+ * It disappears only when the sandbox reports no computer use at all.
  */
-export function CreatedSandboxApprovalSwitch({ bridge, workspace }: { bridge: ComputerUseBridge; workspace: string }) {
-  const [computerUse, setComputerUse] = useState<ComputerUseState | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+export function CreatedSandboxApprovalSwitch({ workspace }: { workspace: string }) {
+  const approval = useComputerUseApproval(workspace, 5000, false)
   const switchId = useId()
+  const refresh = approval?.refresh
+  useEffect(() => { refresh?.() }, [refresh])
 
-  useEffect(() => {
-    let current = true
-    bridge.readState(workspace).then(state => { if (current) setComputerUse(state.computerUse ?? null) }, () => {})
-    return () => { current = false }
-  }, [bridge, workspace])
-
-  if (!computerUse || computerUse.state === "unavailable") return null
-  const change = async (mode: ComputerUseApproval) => {
-    const previous = computerUse
-    setBusy(true)
-    setError(null)
-    setComputerUse({ ...computerUse, approval: mode })
-    try {
-      setComputerUse((await bridge.setApproval(workspace, mode)).computerUse ?? previous)
-    } catch (cause) {
-      setComputerUse(previous)
-      setError(cause instanceof Error ? cause.message : String(cause))
-    } finally {
-      setBusy(false)
-    }
-  }
+  if (!approval || (approval.state && !approval.computerUse)) return null
+  const computerUse = approval.computerUse
+  const status = computerUse ? approvalStatus(computerUse, approval.running) : null
   return <div className="grid gap-1 text-xs">
     <div className="flex items-center justify-between gap-3">
       <label htmlFor={switchId}>Allow without asking</label>
-      <Switch id={switchId} checked={computerUse.approval === "auto"} disabled={busy || computerUse.approval === "unknown"} onCheckedChange={checked => { void change(checked ? "auto" : "ask") }} />
+      <span className="flex shrink-0 items-center gap-2">
+        {status?.applying && <span role="status" className="text-[11px] text-muted-foreground">Applying…</span>}
+        <Switch id={switchId} checked={computerUse?.approval === "auto"} disabled={!computerUse || approval.busy || computerUse.approval === "unknown"}
+          onCheckedChange={checked => approval.setApproval(checked ? "auto" : "ask")} />
+      </span>
     </div>
-    {error && <span role="alert" className="text-destructive">{error}</span>}
+    {(approval.error ?? (!computerUse ? approval.loadError : null)) && <span role="alert" className="text-destructive">{approval.error ?? approval.loadError}</span>}
   </div>
 }

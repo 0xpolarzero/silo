@@ -292,36 +292,67 @@ html.native-status body {
   display: none;
 }
 
-/* Toast layout: the leading icon sits on the title line, and the body may never widen the toast. */
+/* Toast layout. The title row (icon, title, action buttons) is one aligned row, vertically centred;
+   the close button is centred on that same row. Anything more (description, progress, switch)
+   goes on a second row under the title. The content wrapper dissolves so the title and description
+   become cells of the toast's own grid, which lets the buttons sit in the title row. */
 .silo-toaster [data-sonner-toast][data-styled="true"] {
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-rows: minmax(24px, auto);
+  grid-auto-rows: auto;
+  align-items: center;
+  column-gap: 0;
+  row-gap: 6px;
 }
 
 .silo-toaster [data-sonner-toast][data-styled="true"] [data-icon] {
-  margin-top: 2px;
+  grid-row: 1;
+  grid-column: 1;
+  margin-right: 8px;
 }
 
 .silo-toaster [data-sonner-toast][data-styled="true"] [data-content] {
+  display: contents;
+}
+
+.silo-toaster [data-sonner-toast][data-styled="true"] [data-title] {
+  grid-row: 1;
+  grid-column: 2;
   min-width: 0;
-  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.silo-toaster [data-sonner-toast][data-styled="true"] [data-button] {
+  grid-row: 1;
+  margin-left: 6px;
+  margin-right: 0;
 }
 
 .silo-toaster [data-sonner-toast][data-styled="true"] [data-description] {
-  width: 100%;
+  grid-row: 2;
+  grid-column: 2 / -1;
   min-width: 0;
 }
 
-/* Sonner hangs its close button off the toast's top-left corner as a tiny circle. Place a
-   normal ghost-style icon button inside the top-right corner for every toast, and reserve room
-   so the title, description and actions never run under it. */
+/* Without an icon the title takes the first column. */
+.silo-toaster [data-sonner-toast][data-styled="true"]:not(:has([data-icon])) [data-title],
+.silo-toaster [data-sonner-toast][data-styled="true"]:not(:has([data-icon])) [data-description] {
+  grid-column-start: 1;
+}
+
+/* Sonner hangs its close button off the toast's top-left corner as a tiny circle. Make it a
+   normal ghost-style icon button in the last cell of the title row, centred with the icon, title
+   and actions, so the title and description can never run under it. */
 .silo-toaster [data-sonner-toast][data-styled="true"] {
-  padding-right: 34px;
+  padding-right: 10px;
 }
 
 .silo-toaster [data-sonner-toast][data-styled="true"] [data-close-button] {
-  left: auto;
-  right: 6px;
-  top: 6px;
+  position: static;
+  grid-row: 1;
+  grid-column: 5;
+  margin-left: 6px;
   width: 22px;
   height: 22px;
   transform: none;
