@@ -368,8 +368,14 @@ fn only_the_gate_can_name_a_runtime_and_only_the_migration_names_the_previous_on
         }
         if relative != "runtime_migration.rs" && !relative.starts_with("runtime_migration/") {
             assert!(
-                !text.contains("join(\"runtime\")") && !text.contains("runtime/computers.json"),
+                !text.contains("join(\"runtime\")")
+                    && !text.contains("runtime/computers.json")
+                    && !text.contains("runtime/machines.json"),
                 "{relative} names the previous runtime generation; only the migration may"
+            );
+            assert!(
+                !text.contains("machines.json") && !text.contains("sandbox-activity.json"),
+                "{relative} names an inventory file of the earlier vocabulary; only the migration may"
             );
         }
         if relative != "runtime.rs" && relative != "runtime_migration.rs" {

@@ -643,6 +643,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_migrated_configuration_operation_loads() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let journal = load(&migrated.runtime_paths()).unwrap().unwrap();
+        let names = |request: &ComputerConfigurationRequest| {
+            request
+                .computers
+                .iter()
+                .map(|c| c.name().to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&journal.previous), ["dev"]);
+        assert_eq!(names(&journal.request), ["dev"]);
+        assert!(journal.request.computers[0].desktop.is_some());
+    }
+
+    #[test]
     fn network_mappings_are_removed_when_recovering_an_interrupted_deletion() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();

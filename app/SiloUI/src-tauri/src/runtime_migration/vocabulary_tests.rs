@@ -4,10 +4,10 @@ use super::*;
 use serde_json::{json, Value};
 use std::{cell::Cell, collections::BTreeMap, io};
 
-const ID: &str = "fcfbc268-ae3f-40ff-8dfa-8af78911e52f";
-const OTHER: &str = "60e2e26f-c248-4f24-9035-c766d8168fa8";
+pub(crate) const ID: &str = "fcfbc268-ae3f-40ff-8dfa-8af78911e52f";
+pub(crate) const OTHER: &str = "60e2e26f-c248-4f24-9035-c766d8168fa8";
 const SSH: &str = "0b7f0d6c-6a53-4b0d-8f7a-0d2f4f3c0a11";
-const DEVICE: &str = "9d1c7e1a-2f0b-4a53-8c52-5d7ea2c5a001";
+pub(crate) const DEVICE: &str = "9d1c7e1a-2f0b-4a53-8c52-5d7ea2c5a001";
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -144,11 +144,14 @@ fn write_old_storage(storage: &Path) {
         &storage.join("setup-activity.json"),
         &json!([
             {"schemaVersion": 1, "type": "progress", "requestId": "r", "phase": "workspaces",
-             "step": "workspace-image-import", "workspace": "dev", "message": "m", "timestamp": 1},
+             "step": "workspace-image-import", "workspace": "dev", "message": "m", "safeForDisplay": true,
+             "timestamp": 1, "level": "info", "elapsedSeconds": 0},
             {"schemaVersion": 1, "type": "progress", "requestId": "r", "phase": "workspaces",
-             "step": "image-resolving", "workspace": "dev", "message": "m", "timestamp": 2},
+             "step": "image-resolving", "workspace": "dev", "message": "m", "safeForDisplay": true,
+             "timestamp": 2, "level": "info", "elapsedSeconds": 0},
             {"schemaVersion": 1, "type": "progress", "requestId": "r", "phase": "workspaces",
-             "step": "workspace-storage-prepared", "workspace": "dev", "message": "m", "timestamp": 3}
+             "step": "workspace-settings", "workspace": "dev", "message": "m", "safeForDisplay": true,
+             "timestamp": 3, "level": "info", "elapsedSeconds": 0}
         ]),
     );
     put(
@@ -156,7 +159,7 @@ fn write_old_storage(storage: &Path) {
         &json!({
             "version": 1, "checkpoints": [], "snapshotGroup": "g",
             "pendingCheckpointRestore": {
-                "checkpointId": "c", "sourceWorkspace": "dev", "state": "pending"
+                "checkpointId": "c", "sourceWorkspace": "dev", "state": "full"
             },
             "checkpointOperation": null
         }),
@@ -235,12 +238,14 @@ fn assert_new_storage(storage: &Path) {
         get(&storage.join("setup-activity.json")),
         json!([
             {"schemaVersion": 1, "type": "progress", "requestId": "r", "phase": "computers",
-             "step": "computer-image-import", "computer": "dev", "message": "m", "timestamp": 1},
+             "step": "computer-image-import", "computer": "dev", "message": "m", "safeForDisplay": true,
+             "timestamp": 1, "level": "info", "elapsedSeconds": 0},
             {"schemaVersion": 1, "type": "progress", "requestId": "r", "phase": "computers",
-             "step": "image-resolving", "computer": "dev", "message": "m", "timestamp": 2},
-            // Not a step this migration knows: only the listed names are renamed.
+             "step": "image-resolving", "computer": "dev", "message": "m", "safeForDisplay": true,
+             "timestamp": 2, "level": "info", "elapsedSeconds": 0},
             {"schemaVersion": 1, "type": "progress", "requestId": "r", "phase": "computers",
-             "step": "workspace-storage-prepared", "computer": "dev", "message": "m", "timestamp": 3}
+             "step": "computer-settings", "computer": "dev", "message": "m", "safeForDisplay": true,
+             "timestamp": 3, "level": "info", "elapsedSeconds": 0}
         ])
     );
     assert_eq!(
@@ -248,7 +253,7 @@ fn assert_new_storage(storage: &Path) {
         json!({
             "version": 1, "checkpoints": [], "snapshotGroup": "g",
             "pendingCheckpointRestore": {
-                "checkpointId": "c", "sourceComputer": "dev", "state": "pending"
+                "checkpointId": "c", "sourceComputer": "dev", "state": "full"
             },
             "checkpointOperation": null
         })
@@ -387,7 +392,7 @@ fn old_backup_operation() -> Value {
         "archive": {"name": "a", "archivePath": "/a", "completedLabel": "l", "size": "1",
                     "destination": "/", "sandboxes": ["dev"]},
         "request": {"kind": "backup", "names": ["dev"], "machines": [["dev", ID]], "running": [],
-                    "pendingCapture": {"workspaceId": ID, "group": "g", "member": "m"}},
+                    "pending_capture": {"workspaceId": ID, "group": "g", "member": "m"}},
         "cancelled": false, "terminal": null
     })
 }
@@ -398,7 +403,7 @@ fn new_backup_operation() -> Value {
         "archive": {"name": "a", "archivePath": "/a", "completedLabel": "l", "size": "1",
                     "destination": "/", "computers": ["dev"]},
         "request": {"kind": "backup", "names": ["dev"], "computers": [["dev", ID]], "running": [],
-                    "pendingCapture": {"computerId": ID, "group": "g", "member": "m"}},
+                    "pending_capture": {"computerId": ID, "group": "g", "member": "m"}},
         "cancelled": false, "terminal": null
     })
 }
@@ -774,8 +779,11 @@ fn a_linked_file_is_not_followed_and_stops_the_migration() {
     std::os::unix::fs::symlink(&outside, fixture.data("github.json")).unwrap();
     let before = fs::read(&outside).unwrap();
 
-    assert!(fixture.run().is_err());
+    let error = fixture.run().unwrap_err();
 
+    let linked = fixture.data("github.json");
+    assert!(error.contains(&linked.display().to_string()), "{error}");
+    assert!(error.contains("Replace it with a regular file"), "{error}");
     assert_eq!(fs::read(&outside).unwrap(), before);
     assert!(fs::symlink_metadata(fixture.data("github.json"))
         .unwrap()
@@ -813,7 +821,10 @@ fn an_oversized_document_stops_the_migration() {
         .unwrap();
     inventory.set_len(65 * 1024 * 1024).unwrap();
 
-    assert!(fixture.run().is_err());
+    let error = fixture.run().unwrap_err();
+
+    assert!(error.contains("machines.json"), "{error}");
+    assert!(error.contains("move it out of Silo's folder"), "{error}");
 
     assert!(fixture.data(CLEAN).join("machines.json").exists());
     assert!(!fixture.data(CLEAN).join("computers.json").exists());
@@ -1168,4 +1179,45 @@ fn an_interruption_between_writing_and_unlinking_a_renamed_file_loses_nothing() 
     fixture.run().unwrap();
 
     assert_new_storage(&storage);
+}
+
+/// An old-format installation after the migration ran on it, for the tests of the readers
+/// that load the converted files.
+pub(crate) struct Migrated {
+    _dir: tempfile::TempDir,
+    pub(crate) settings: PathBuf,
+    pub(crate) app_data: PathBuf,
+    /// The storage generation Silo reads.
+    pub(crate) storage: PathBuf,
+    /// The private state folder.
+    pub(crate) state: PathBuf,
+}
+
+impl Migrated {
+    /// Paths over the converted storage generation, as the runtime builds them.
+    pub(crate) fn runtime_paths(&self) -> crate::runtime::RuntimePaths {
+        crate::runtime::RuntimePaths {
+            guest_image: self.app_data.join("image"),
+            executable: self.app_data.join("msb"),
+            home: self.storage.join("microsandbox"),
+            storage_home: None,
+            library: self.app_data.join("lib"),
+            metadata: self.storage.join("computers.json"),
+            volumes: self.storage.join("volumes"),
+        }
+    }
+}
+
+pub(crate) fn migrated_installation() -> Migrated {
+    let fixture = Fixture::new();
+    let storage = old_installation(&fixture);
+    fixture.run().unwrap();
+    let Fixture { dir, locations } = fixture;
+    Migrated {
+        _dir: dir,
+        settings: locations.config.join("settings.json"),
+        app_data: locations.app_data,
+        storage,
+        state: locations.state,
+    }
 }

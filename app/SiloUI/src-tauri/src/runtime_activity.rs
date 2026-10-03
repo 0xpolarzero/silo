@@ -531,6 +531,18 @@ pub(super) fn log_text_with_pem(body: &str, in_pem: &mut bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_migrated_activity_history_loads() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let events = events(&migrated.runtime_paths()).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].computer, "dev");
+        assert_eq!(
+            events[0].computer_id,
+            crate::runtime_migration::vocabulary_tests::ID
+        );
+    }
     #[test]
     fn command_line_secret_options_stay_out_of_failure_history() {
         let dir = tempfile::tempdir().unwrap();

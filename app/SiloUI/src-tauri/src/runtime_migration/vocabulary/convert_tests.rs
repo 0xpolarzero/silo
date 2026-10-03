@@ -65,3 +65,27 @@ fn a_draft_without_the_optional_parts_converts() {
                "computerIdentities": {}}})
     );
 }
+
+#[test]
+fn only_the_setup_steps_a_build_wrote_are_renamed() {
+    let event = |step: &str| json!({"phase": "workspaces", "step": step, "workspace": "dev"});
+    let (value, changed) = converted(
+        setup_activity,
+        json!([
+            event("workspace-image-wait"),
+            event("workspace-unknown"),
+            event("image-ready")
+        ]),
+    );
+    assert!(changed);
+    let steps: Vec<_> = value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| event["step"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        steps,
+        ["computer-image-wait", "workspace-unknown", "image-ready"]
+    );
+}

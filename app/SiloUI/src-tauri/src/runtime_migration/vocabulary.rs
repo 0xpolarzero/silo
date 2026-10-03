@@ -19,7 +19,7 @@
 //! | --- | --- |
 //! | `github.json` | `workspaces` becomes `computers`; `workspace` becomes `computer` in its entries and in `operations` |
 //! | `secrets.json` | `secrets[].workspaces`, `secrets[].pendingWorkspaces` become `computers`, `pendingComputers`; `pendingRevocations[].workspace` becomes `computer` |
-//! | `backup-operation.json` | `archive.sandboxes` and `request.machines` become `computers`; `request.pendingCapture.workspaceId` becomes `computerId` |
+//! | `backup-operation.json` | `archive.sandboxes` and `request.machines` become `computers`; `request.pending_capture.workspaceId` becomes `computerId` |
 //!
 //! The storage generation Silo reads (the selected one, or `runtime/` before any is selected):
 //!
@@ -105,6 +105,27 @@ const MAX_RECORD_BYTES: u64 = 64 * 1024;
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
 
 const FAILED: &str = "Silo could not update its saved data to the computer names this version uses. Nothing was removed. Relaunch Silo to try again; if it keeps failing, check free space and access to Silo's storage, then report the problem.";
+
+/// The failure for a file or folder no relaunch can fix: it names the path and the repair.
+fn unusable(path: &Path) -> String {
+    eprintln!("Saved data update: {} cannot be converted.", path.display());
+    format!(
+        "Silo cannot update its saved data because {} is a link, is not an ordinary file, or is larger than any version of Silo writes. Replace it with a regular file, or move it out of Silo's folder, then relaunch Silo.",
+        path.display()
+    )
+}
+
+/// The failure for a folder that is a link or lies behind one.
+fn linked(path: &Path) -> String {
+    eprintln!(
+        "Saved data update: {} is a link or lies behind one.",
+        path.display()
+    );
+    format!(
+        "Silo cannot update its saved data because {} is a link or lies behind one. Replace the link with a regular folder, or move it out of Silo's folder, then relaunch Silo.",
+        path.display()
+    )
+}
 
 type Convert = fn(&mut Value) -> Converted;
 
@@ -213,7 +234,6 @@ pub(super) fn run_in(
 /// Converts the storage folder `storage` in place. The storage migration calls this on
 /// the copy it stages and on a clean generation left by an earlier attempt, neither of
 /// which is read before it. Safe to repeat.
-#[allow(dead_code)]
 pub(super) fn convert_storage_directory(storage: &Path) -> Result<(), String> {
     let targets = storage_targets(storage)?;
     for target in &targets {
@@ -229,12 +249,11 @@ pub(super) fn convert_storage_directory(storage: &Path) -> Result<(), String> {
 /// The inventory of the previous storage generation in the current vocabulary, whether
 /// `folder` holds `machines.json` or an already converted `computers.json`, or `None`
 /// when it has neither. The file is not changed.
-#[allow(dead_code)]
 pub(super) fn read_previous_computers(folder: &Path) -> Result<Option<Value>, String> {
     for name in ["machines.json", "computers.json"] {
         let bytes = match read_source(&folder.join(name)).map_err(|_| FAILED.to_string())? {
             Source::Missing => continue,
-            Source::Unusable => return Err(FAILED.into()),
+            Source::Unusable => return Err(unusable(&folder.join(name))),
             Source::Bytes(bytes) => bytes,
         };
         let mut inventory: Value = serde_json::from_slice(&bytes)
@@ -271,10 +290,7 @@ fn live_storage(app_data: &Path) -> Result<Option<PathBuf>, String> {
 fn ensure_convertible(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() && metadata.len() <= MAX_DOCUMENT_BYTES => Ok(()),
-        Ok(_) => {
-            eprintln!("Saved data update: {} cannot be converted.", path.display());
-            Err(FAILED.into())
-        }
+        Ok(_) => Err(unusable(path)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotADirectory => Ok(()),
         Err(_) => Err(FAILED.into()),
@@ -284,22 +300,15 @@ fn ensure_convertible(path: &Path) -> Result<(), String> {
 /// Fails when `root` is a link or a folder between it and `folder` is one, so no write can
 /// leave the channel's own tree. Folders that do not exist yet are fine.
 fn ensure_unlinked(root: &Path, folder: &Path) -> Result<(), String> {
-    let linked = || {
-        eprintln!(
-            "Saved data update: {} is a link or lies behind one.",
-            folder.display()
-        );
-        FAILED.to_string()
-    };
     let mut current = root.to_path_buf();
-    let relative = folder.strip_prefix(root).map_err(|_| linked())?;
+    let relative = folder.strip_prefix(root).map_err(|_| linked(folder))?;
     let components = std::iter::once(None).chain(relative.components().map(Some));
     for component in components {
         if let Some(component) = component {
             current.push(component);
         }
         match fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => return Err(linked()),
+            Ok(metadata) if metadata.file_type().is_symlink() => return Err(linked(&current)),
             Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
             Err(_) => return Err(FAILED.into()),
@@ -444,7 +453,7 @@ fn convert_file(
     let failed = |_: io::Error| fail();
     let original = match read_source(&target.source).map_err(failed)? {
         Source::Missing => return Ok(()),
-        Source::Unusable => return Err(fail()),
+        Source::Unusable => return Err(unusable(&target.source)),
         Source::Bytes(bytes) => bytes,
     };
     let renamed = target.source != target.destination;

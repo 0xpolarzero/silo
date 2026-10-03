@@ -6093,6 +6093,18 @@ pub(crate) fn read_metadata(path: &Path) -> Result<ComputerConfigurationRequest,
         }),
     )
 }
+/// The saved configuration held by `inventory`, checked as `read_metadata` checks a file.
+pub(crate) fn metadata_from_value(
+    inventory: serde_json::Value,
+) -> Result<ComputerConfigurationRequest, RuntimeError> {
+    let request: ComputerConfigurationRequest =
+        serde_json::from_value(inventory).map_err(|_| {
+            RuntimeError::Malformed("Silo's saved computer configuration is invalid.".into())
+        })?;
+    validate_request(&request)?;
+    Ok(request)
+}
+
 fn read_saved_metadata(path: &Path) -> Result<Option<ComputerConfigurationRequest>, RuntimeError> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
@@ -6187,6 +6199,27 @@ pub(crate) fn write_metadata(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_migrated_inventory_and_setup_history_load() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let paths = migrated.runtime_paths();
+        let request = read_metadata(&paths.metadata).unwrap();
+        let names: Vec<_> = request.computers.iter().map(|c| c.name()).collect();
+        assert_eq!(names, ["dev", "fork"]);
+        assert_eq!(
+            request.computers[0].id(),
+            crate::runtime_migration::vocabulary_tests::ID
+        );
+        let desktop = request.computers[0].desktop.as_ref().unwrap();
+        assert!(!desktop.start_with_computer && desktop.built_in);
+        let events = read_activity(&paths, false).unwrap();
+        assert_eq!(events.len(), 3);
+        assert!(events
+            .iter()
+            .all(|event| event.phase == "computers" && event.computer == "dev"));
+        assert_eq!(events[0].step, "computer-image-import");
+    }
     use super::*;
 
     #[test]

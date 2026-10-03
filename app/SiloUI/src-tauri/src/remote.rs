@@ -2076,6 +2076,20 @@ fn connection_open(stream: &UnixStream) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrated_connections_settings_load() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let config = read_config_in(&migrated.state.join("desktop-remote")).unwrap();
+        assert_eq!(
+            config.device_id,
+            crate::runtime_migration::vocabulary_tests::DEVICE
+        );
+        assert!(config.enabled);
+        assert_eq!(config.devices.len(), 1);
+        assert_eq!(config.devices[0].name, "box");
+        assert_eq!(config.extra["extra"], 1);
+    }
     #[test]
     fn poisoned_settings_lock_is_recovered() {
         let _test_state = crate::test_support::global_state();

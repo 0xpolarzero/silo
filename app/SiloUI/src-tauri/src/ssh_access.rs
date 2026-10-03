@@ -995,6 +995,19 @@ fn remote_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrated_ssh_access_settings_load() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let configs = read(&migrated.runtime_paths()).unwrap();
+        assert_eq!(configs.len(), 1);
+        assert_eq!(configs[0].computer, "dev");
+        assert_eq!(
+            configs[0].computer_id,
+            crate::runtime_migration::vocabulary_tests::ID
+        );
+        assert_eq!(configs[0].port, 2222);
+    }
     use std::{
         fs,
         io::{Read, Write},

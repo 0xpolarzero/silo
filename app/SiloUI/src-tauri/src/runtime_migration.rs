@@ -166,6 +166,19 @@ fn read(path: &Path) -> Result<Option<MigrationState>, String> {
     Ok(Some(state))
 }
 
+/// The inventory in `folder`, the previous generation's, in whichever vocabulary it was
+/// saved. An empty one when `folder` has none.
+fn previous_computers(folder: &Path) -> Result<runtime::ComputerConfigurationRequest, String> {
+    match vocabulary::read_previous_computers(folder)? {
+        Some(inventory) => runtime::metadata_from_value(inventory)
+            .map_err(|_| "Silo's saved computer configuration is invalid.".to_string()),
+        None => Ok(runtime::ComputerConfigurationRequest {
+            schema_version: 1,
+            computers: Vec::new(),
+        }),
+    }
+}
+
 fn initial(path: &Path, app_data: &Path) -> Result<MigrationState, String> {
     if let Some(selected) = generation(app_data)? {
         let metadata = app_data.join(&selected).join("computers.json");
@@ -220,9 +233,9 @@ fn initial(path: &Path, app_data: &Path) -> Result<MigrationState, String> {
         }
         return Ok(state);
     }
-    let metadata = app_data.join("runtime/computers.json");
-    let computers = runtime::read_metadata(&metadata)
-        .map_err(|_| "Existing computer settings could not be read. No data was changed.")?;
+    let computers = previous_computers(&app_data.join("runtime")).map_err(|error| {
+        format!("Existing computer settings could not be read: {error} No data was changed.")
+    })?;
     let total = computers.computers.iter().count();
     let state = if total == 0 {
         fresh("not-required", 0)
@@ -289,8 +302,9 @@ fn journal_stays(path: &Path, awaiting_upgrade: bool) -> bool {
 }
 
 fn prepare_clean_generation(app_data: &Path) -> Result<(), String> {
-    let source = runtime::read_metadata(&app_data.join("runtime/computers.json"))
-        .map_err(|_| "Previous computer settings could not be read. No data was changed.")?;
+    let source = previous_computers(&app_data.join("runtime")).map_err(|error| {
+        format!("Previous computer settings could not be read: {error} No data was changed.")
+    })?;
     let target = app_data.join(CLEAN);
     if target.exists() {
         if fs::symlink_metadata(&target)
@@ -300,6 +314,7 @@ fn prepare_clean_generation(app_data: &Path) -> Result<(), String> {
         {
             return Err("A prior clean runtime attempt is redirected. No data was changed.".into());
         }
+        vocabulary::convert_storage_directory(&target)?;
         let entries = fs::read_dir(&target)
             .map_err(|_| "A prior clean runtime attempt could not be inspected.")?;
         for entry in entries {
@@ -684,8 +699,9 @@ fn convert_with(
         return quarantine_previous_backup_state(app_data, &selected);
     }
     let old_runtime = app_data.join("runtime");
-    let old_metadata = runtime::read_metadata(&old_runtime.join("computers.json"))
-        .map_err(|_| "Existing computer settings could not be read. No data was changed.")?;
+    let old_metadata = previous_computers(&old_runtime).map_err(|error| {
+        format!("Existing computer settings could not be read: {error} No data was changed.")
+    })?;
     let computers: Vec<_> = old_metadata.computers.iter().collect();
     if computers.is_empty() {
         return Err("No existing computers need conversion.".into());
@@ -749,6 +765,7 @@ fn convert_with(
         .map(|configuration| runtime::disk_path(&previous, configuration.name(), "workspace"))
         .collect();
     copy_runtime_tree(&old_runtime, &staged, &workspace_disks)?;
+    vocabulary::convert_storage_directory(&staged)?;
     // The copied image descriptors still name the old runtime's files by absolute path.
     // An image already broken in the old runtime stays as it was; it does not stop the rest.
     if let Err(message) = runtime::image_cache::repair(&staged.join("microsandbox/cache")) {
@@ -1117,7 +1134,7 @@ mod guard_tests;
 mod interrupted_tests;
 pub(crate) mod vocabulary;
 #[cfg(test)]
-mod vocabulary_tests;
+pub(crate) mod vocabulary_tests;
 
 #[cfg(test)]
 mod tests {

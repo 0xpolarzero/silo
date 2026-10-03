@@ -935,6 +935,16 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn migrated_secret_settings_load() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let document = load_from(Some(migrated.app_data.join("secrets.json"))).unwrap();
+        assert_eq!(document.secrets.len(), 1);
+        assert_eq!(document.secrets[0].computers, ["dev"]);
+        assert_eq!(document.secrets[0].pending_computers, ["dev"]);
+        assert_eq!(document.pending_revocations[0].computer, "dev");
+    }
+
     #[cfg(unix)]
     #[test]
     fn secret_document_save_reports_an_unreadable_parent_after_publication() {

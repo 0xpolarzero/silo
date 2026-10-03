@@ -3191,6 +3191,19 @@ pub(crate) fn recover_interrupted(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_migrated_checkpoint_record_loads() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let record = load(
+            &migrated.runtime_paths(),
+            crate::runtime_migration::vocabulary_tests::ID,
+        )
+        .unwrap();
+        let pending = record.pending_checkpoint_restore.unwrap();
+        assert_eq!(pending.source_computer, "dev");
+        assert_eq!(pending.state, "full");
+    }
+
     mod failed_capture_tests;
 
     const ID: &str = "00000000-0000-4000-8000-000000000001";

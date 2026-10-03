@@ -312,6 +312,19 @@ pub(crate) fn recover(app: &AppHandle) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_migrated_update_journal_loads() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let journal = load(&migrated.runtime_paths()).unwrap().unwrap();
+        assert_eq!(
+            journal.computers,
+            [RunningComputer {
+                id: crate::runtime_migration::vocabulary_tests::ID.into(),
+                name: "dev".into()
+            }]
+        );
+    }
     #[test]
     fn uncommitted_runtime_computer_blocks_update_without_replaying_configuration() {
         let _test_state = crate::test_support::global_state();

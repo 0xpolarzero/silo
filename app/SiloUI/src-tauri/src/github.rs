@@ -3431,6 +3431,15 @@ pub async fn retry_github_configuration(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn migrated_repository_settings_load() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let document = super::load_at(&migrated.app_data.join("github.json")).unwrap();
+        assert_eq!(document.computers.len(), 1);
+        assert_eq!(document.computers[0]["computer"], "dev");
+        assert_eq!(document.operations[0]["computer"], "dev");
+    }
     #[test]
     fn repository_refresh_keeps_unrelated_token_operations_stopped() {
         crate::github_http::assert_bearer_retry_isolated(|token| {

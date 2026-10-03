@@ -1217,6 +1217,26 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn migrated_settings_and_onboarding_draft_are_accepted() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let store = SettingsStore::load(Some(migrated.settings.clone()));
+        assert_eq!(store.protected_error, None);
+        let settings = &store.snapshot.settings;
+        assert_eq!(settings["startComputersAtLaunch"], true);
+        assert_eq!(
+            settings["startupComputerIds"],
+            json!([crate::runtime_migration::vocabulary_tests::ID])
+        );
+        assert_eq!(settings["computerOrder"].as_array().unwrap().len(), 2);
+        let draft = &store.snapshot.onboarding_draft;
+        assert_eq!(draft["currentStep"], "computers");
+        assert_eq!(draft["computers"].as_array().unwrap().len(), 1);
+        assert!(draft["unfinishedComputerEditor"]["draft"]
+            .get("kind")
+            .is_none());
+    }
+
+    #[test]
     fn native_theme_follows_saved_preferences_and_releases_system_override() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");

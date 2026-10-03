@@ -525,6 +525,20 @@ fn recover_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_migrated_lifecycle_operation_loads() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let intent = load(&migrated.storage.join("lifecycle-operations/abc.json"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            intent.computer_id,
+            crate::runtime_migration::vocabulary_tests::ID
+        );
+        assert_eq!(intent.name, "dev");
+        assert!(intent.phase == Phase::StopPending);
+    }
     use std::os::unix::fs::PermissionsExt;
     const ID: &str = "00000000-0000-4000-8000-000000000001";
     struct Fake {

@@ -1357,6 +1357,27 @@ mod tests {
     };
     use super::*;
 
+    #[test]
+    fn a_migrated_export_journal_loads() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let journal = load(&migrated.app_data.join(HISTORY_FILE))
+            .unwrap()
+            .unwrap();
+        assert_eq!(journal.archive.computers, ["dev"]);
+        match journal.request {
+            Request::Backup {
+                computers,
+                pending_capture: Some(capture),
+                ..
+            } => {
+                let id = crate::runtime_migration::vocabulary_tests::ID;
+                assert_eq!(computers, [("dev".to_string(), id.to_string())]);
+                assert_eq!(capture.computer_id, id);
+            }
+            _ => panic!("expected an export request"),
+        }
+    }
+
     /// Runtime paths in a temp dir whose `msb` does not exist: any runtime
     /// command recovery runs fails the test.
     fn temp_paths(directory: &Path) -> runtime::RuntimePaths {

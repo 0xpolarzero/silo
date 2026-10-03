@@ -211,7 +211,7 @@ pub(super) fn backup_operation(value: &mut Value) -> Converted {
     if let Some(request) = map.get_mut("request") {
         let request = object(request)?;
         changed |= rename(request, "machines", "computers");
-        if let Some(capture) = request.get_mut("pendingCapture") {
+        if let Some(capture) = request.get_mut("pending_capture") {
             if capture.is_object() {
                 changed |= rename(object(capture)?, "workspaceId", "computerId");
             }

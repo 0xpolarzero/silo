@@ -457,6 +457,19 @@ pub async fn repository_push_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migrated_push_operations_load() {
+        let migrated = crate::runtime_migration::vocabulary_tests::migrated_installation();
+        let jobs = read(
+            &migrated
+                .storage
+                .join("microsandbox/repository-push-operations.json"),
+        )
+        .unwrap();
+        assert_eq!(jobs["op1"].operation["computer"], "dev");
+        assert!(jobs["op1"].operation.get("workspace").is_none());
+    }
     fn target() -> PushTarget {
         PushTarget {
             repository: "owner/repo".into(),
