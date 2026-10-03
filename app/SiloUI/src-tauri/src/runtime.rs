@@ -7320,7 +7320,7 @@ esac
         fs::write(&paths.executable, r#"#!/bin/sh
 case "$1" in
   --silo-github-protocol|--silo-github-token-protocol) echo 1 ;;
-  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.machine-id":"SILO_TEST_MACHINE_ID","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
+  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.machine-id":"SILO_TEST_COMPUTER_ID","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
   modify)
     printf '%s\n' "$*" >> "$MSB_HOME/modify-args"
     cat > "$MSB_HOME/modify-values"
@@ -7329,7 +7329,7 @@ case "$1" in
     while [ -f "$MSB_HOME/modify-block" ]; do sleep 0.05; done
     if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $(cat "$MSB_HOME/modify-values")" >&2; exit 3; fi ;;
 esac
-"#.replace("SILO_TEST_MACHINE_ID", computer().id())).unwrap();
+"#.replace("SILO_TEST_COMPUTER_ID", computer().id())).unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         write_metadata(&paths.metadata, &request(vec![computer()])).unwrap();
     }

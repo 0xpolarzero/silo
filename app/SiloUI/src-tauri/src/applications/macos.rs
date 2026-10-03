@@ -269,7 +269,7 @@ fn add_url(
 
 /// Adds installed known apps and returns their paths in `identifiers` order.
 fn add_known(
-    computer: &NSWorkspace,
+    workspace: &NSWorkspace,
     applications: &mut Vec<Application>,
     identifiers: &[&str],
 ) -> Vec<String> {
@@ -277,7 +277,7 @@ fn add_known(
         .iter()
         .filter_map(|identifier| {
             let url =
-                computer.URLForApplicationWithBundleIdentifier(&NSString::from_str(identifier))?;
+                workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(identifier))?;
             add_url(applications, &url, HandlerFilter::Any)
         })
         .collect()
@@ -298,26 +298,26 @@ fn add_default_handler(
 }
 
 fn add_handlers(
-    computer: &NSWorkspace,
+    workspace: &NSWorkspace,
     url: &NSURL,
     applications: &mut Vec<Application>,
     filter: HandlerFilter,
 ) -> Option<String> {
     // All-handler enumeration arrived in macOS 12; the default-handler query is
     // available since 10.6. Known installed bundles supplement the older result.
-    if computer.respondsToSelector(sel!(URLsForApplicationsToOpenURL:)) {
-        for application in computer.URLsForApplicationsToOpenURL(url) {
+    if workspace.respondsToSelector(sel!(URLsForApplicationsToOpenURL:)) {
+        for application in workspace.URLsForApplicationsToOpenURL(url) {
             add_url(applications, &application, filter);
         }
     }
-    computer
+    workspace
         .URLForApplicationToOpenURL(url)
         .and_then(|application| add_default_handler(applications, &application, filter))
 }
 
 pub fn discover() -> Result<ApplicationCatalog, String> {
     autoreleasepool(|_| {
-        let computer = NSWorkspace::sharedWorkspace();
+        let workspace = NSWorkspace::sharedWorkspace();
         let mut catalog = ApplicationCatalog::default();
         for (kind, applications, extensions, filter) in [
             (
@@ -346,7 +346,7 @@ pub fn discover() -> Result<ApplicationCatalog, String> {
                     .to_str()
                     .ok_or("The temporary application discovery path is invalid")?;
                 let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-                if let Some(path) = add_handlers(&computer, &url, applications, filter) {
+                if let Some(path) = add_handlers(&workspace, &url, applications, filter) {
                     catalog.defaults.entry(kind.into()).or_insert(path);
                 }
             }
@@ -355,7 +355,7 @@ pub fn discover() -> Result<ApplicationCatalog, String> {
             ("terminal", &mut catalog.terminal, TERMINAL_IDS),
             ("editor", &mut catalog.editor, EDITOR_IDS),
         ] {
-            let installed = add_known(&computer, applications, identifiers);
+            let installed = add_known(&workspace, applications, identifiers);
             if let Some(path) = supported_default(catalog.defaults.remove(kind), &installed) {
                 catalog.defaults.insert(kind.into(), path);
             }
@@ -364,14 +364,14 @@ pub fn discover() -> Result<ApplicationCatalog, String> {
         let https = NSURL::URLWithString(&NSString::from_str("https://example.invalid"))
             .ok_or("macOS could not construct an HTTPS handler query")?;
         if let Some(path) = add_handlers(
-            &computer,
+            &workspace,
             &https,
             &mut catalog.browser,
             HandlerFilter::Browser,
         ) {
             catalog.defaults.insert("browser".into(), path);
         }
-        add_known(&computer, &mut catalog.browser, BROWSER_IDS);
+        add_known(&workspace, &mut catalog.browser, BROWSER_IDS);
         Ok(catalog)
     })
 }

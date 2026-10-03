@@ -151,12 +151,12 @@ function AddAction({ label, disabled, onClick }: { label: string; disabled?: boo
 
 /** The Secrets section, scoped to this computer: assigned secrets with the same row states,
  * inline editor, and remove confirmation as the Secrets page. Add preselects this computer.
- * Only local computers support secrets, so remote and SSH computers stay read-only. */
+ * Only local computers support secrets, so remote computers stay read-only. */
 function SecretsSection({ computer, source, actions, onNavigate }: { computer: ApplicationComputer; source: ApplicationSource; actions: ApplicationActions; onNavigate?: (route: ApplicationInitialRoute) => void }) {
   const { configuration } = computer
   const canManage = !computer.device
   const manager = useSecretsManager({ source, onSaveSecret: actions.saveSecret, onRemoveSecret: actions.removeSecret, onRetrySecret: actions.retrySecret })
-  // Secret assignments name local computers, so a remote or SSH computer never lists them.
+  // Secret assignments name local computers, so a remote computer never lists them.
   const computerSecrets = canManage ? source.secrets.filter(secret => secret.computers.includes(configuration.name)) : []
   const adding = Boolean(manager.editor && !manager.editor.secret)
 

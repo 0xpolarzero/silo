@@ -158,7 +158,7 @@ it.each(["native", "fixture"] as const)("updates unsaved startup defaults after 
   expect(write).not.toHaveBeenCalled()
 })
 
-it("puts remote management in Connections and preserves it across settings navigation", async () => {
+it("puts the connections switch under Connections and preserves it across settings navigation", async () => {
   const user = userEvent.setup()
   const source = applicationSourceForScenario("running")
   source.connections = { enabled: false, deviceId: "office", name: "Office Mac", address: "owner@office" }

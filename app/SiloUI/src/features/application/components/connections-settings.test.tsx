@@ -110,7 +110,7 @@ describe("ConnectionsSettings", () => {
     expect(screen.getByRole("button", { name: "Remove connection to Renamed Office" })).toBeVisible()
   })
 
-  it("explains why remote management does not work on this device", () => {
+  it("explains why Connections does not work on this device", () => {
     const status = connectionsStatusSchema.parse({ enabled: true, deviceId: "office", name: "Office Mac", address: "owner@office", error: "Another Silo instance owns Connections." })
     render(<ConnectionsSettings source={source(status)} actions={actions()} />)
     expect(screen.getByRole("alert")).toHaveTextContent("Another Silo instance owns Connections.")
@@ -169,7 +169,7 @@ describe("ConnectionsSettings", () => {
     expect(screen.queryByRole("button", { name: "Use this address" })).not.toBeInTheDocument()
   })
 
-  it("shows no problem when remote management works", () => {
+  it("shows no problem when Connections works", () => {
     const status = connectionsStatusSchema.parse({ enabled: true, deviceId: "office", name: "Office Mac", address: "owner@office", error: null })
     render(<ConnectionsSettings source={source(status)} actions={actions()} />)
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
@@ -325,7 +325,7 @@ it("stops subscription recovery timers when device settings become inactive", as
 })
 
 
-it("blocks removal Retry while a remote management change is pending", async () => {
+it("blocks removal Retry while a Connections change is pending", async () => {
   let finish!: () => void
   const setConnectionsEnabled = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
   const removeDevice = vi.fn().mockRejectedValueOnce(new Error("Connection could not be removed")).mockResolvedValue(undefined)

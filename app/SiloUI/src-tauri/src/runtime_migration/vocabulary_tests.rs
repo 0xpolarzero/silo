@@ -392,7 +392,7 @@ fn old_backup_operation() -> Value {
         "archive": {"name": "a", "archivePath": "/a", "completedLabel": "l", "size": "1",
                     "destination": "/", "sandboxes": ["dev"]},
         "request": {"kind": "backup", "names": ["dev"], "machines": [["dev", ID]], "running": [],
-                    "pending_capture": {"workspaceId": ID, "group": "g", "member": "m"}},
+                    "pending_capture": {"workspaceId": ID, "group": "g", "member": "silo-backup-1-2-3"}},
         "cancelled": false, "terminal": null
     })
 }
@@ -403,7 +403,7 @@ fn new_backup_operation() -> Value {
         "archive": {"name": "a", "archivePath": "/a", "completedLabel": "l", "size": "1",
                     "destination": "/", "computers": ["dev"]},
         "request": {"kind": "backup", "names": ["dev"], "computers": [["dev", ID]], "running": [],
-                    "pending_capture": {"computerId": ID, "group": "g", "member": "m"}},
+                    "pending_capture": {"computerId": ID, "group": "g", "member": "silo-backup-1-2-3"}},
         "cancelled": false, "terminal": null
     })
 }

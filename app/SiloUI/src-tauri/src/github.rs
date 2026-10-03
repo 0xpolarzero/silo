@@ -4036,7 +4036,7 @@ mod tests {
         assert_eq!(d.refresh_at, 160);
     }
     #[test]
-    fn verified_computer_is_not_reapplied_at_another_sandboxs_retry_deadline() {
+    fn verified_computer_is_not_reapplied_at_another_computers_retry_deadline() {
         let _test_state = crate::test_support::global_state();
         let mut d = Document {
             session: session().into(),

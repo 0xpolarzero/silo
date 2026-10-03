@@ -328,7 +328,7 @@ describe("remote device refresh", () => {
     } finally { store.dispose() }
   })
 
-  it("reports a failed device list separately from remote management (H-22)", async () => {
+  it("reports a failed device list separately from Connections (H-22)", async () => {
     let failList = false
     const mock = bridge(command => {
       if (command === "device_list") { if (failList) throw new Error("listedDevices file unreadable"); return [office] }
@@ -584,7 +584,7 @@ describe("overlapping lifecycle responses", () => {
   })
 })
 
-describe("remote management response ordering", () => {
+describe("Connections response ordering", () => {
   it.each([
     { when: "before", fails: false }, { when: "before", fails: true },
     { when: "during", fails: false }, { when: "during", fails: true },
