@@ -1661,7 +1661,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_computer_is_preserved_instead_of_replaced() {
+    fn an_unparseable_workspace_file_is_preserved_instead_of_replaced() {
         let home = tempfile::tempdir().unwrap();
         let root = crate::channel::current().state_dir(home.path());
         let file = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap();
@@ -1673,14 +1673,14 @@ mod tests {
         ] {
             fs::write(&file, contents).unwrap();
             let error = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap_err();
-            assert!(error.contains("computer"));
+            assert!(error.contains("workspace"));
             assert!(error.contains("unchanged"));
             assert_eq!(fs::read_to_string(&file).unwrap(), contents);
         }
     }
 
     #[test]
-    fn zed_keeps_its_ssh_uri_and_no_computer_file() {
+    fn zed_keeps_its_ssh_uri_and_no_workspace_file() {
         let home = tempfile::tempdir().unwrap();
         let zed = applications::launch::EditorCommand {
             program: "/usr/bin/flatpak".into(),
