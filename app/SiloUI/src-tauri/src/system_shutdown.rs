@@ -5,11 +5,11 @@
 //! - A user Quit (Dock Quit, `osascript quit`) enters the confirm-capable Quit
 //!   path (`settings::request_quit`).
 //! - Logout, restart, shutdown and SIGTERM never prompt: Silo stops its local
-//!   VMs within a bound and then exits, even if a stop fails.
+//!   Computers within a bound and then exits, even if a stop fails.
 //!
 //! On macOS AppKit asks `applicationShouldTerminate:`; Silo replies later, once
 //! the Quit path has finished or was cancelled. On Linux a logind delay
-//! inhibitor holds shutdown while VMs stop, and SIGTERM (session logout) enters
+//! inhibitor holds shutdown while computers stop, and SIGTERM (session logout) enters
 //! the same path.
 use std::time::Duration;
 use tauri::AppHandle;
@@ -19,18 +19,18 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 
-/// Upper bound for stopping VMs when the session ends without a logind limit.
+/// Upper bound for stopping computers when the session ends without a logind limit.
 pub(crate) const SESSION_END_BUDGET: Duration = Duration::from_secs(20);
 /// logind's default `InhibitDelayMaxSec`, used when the property is unreadable.
 #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 const LOGIND_DEFAULT_DELAY: Duration = Duration::from_secs(5);
-/// Time left after stopping VMs to save settings and release the inhibitor.
+/// Time left after stopping computers to save settings and release the inhibitor.
 #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 const LOGIND_MARGIN: Duration = Duration::from_millis(750);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShutdownReason {
-    /// The user asked Silo to quit: confirm when sandboxes run.
+    /// The user asked Silo to quit: confirm when computers run.
     UserQuit,
     Logout,
     /// Restart or shutdown.
@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn short_logind_limits_are_not_extended_by_a_minimum_vm_budget() {
+    fn short_logind_limits_are_not_extended_by_a_minimum_computer_budget() {
         for limit in [
             Duration::from_micros(1),
             Duration::from_millis(500),
@@ -174,7 +174,7 @@ mod tests {
             );
             assert!(
                 !budget.is_zero(),
-                "positive delay must leave time to try stopping VMs"
+                "positive delay must leave time to try stopping computers"
             );
         }
         assert_eq!(logind_budget(Some(Duration::ZERO)), Duration::ZERO);

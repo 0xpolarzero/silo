@@ -1,5 +1,5 @@
 //! Guest access is routed through the owning Silo process. Only public SSH keys
-//! cross computers; editor and terminal applications always launch locally.
+//! cross devices; editor and terminal applications always launch locally.
 use crate::{remote, runtime};
 use serde_json::{json, Value};
 use std::process::{Child, Command, Stdio};
@@ -9,13 +9,13 @@ pub(crate) fn target(value: &str) -> Result<Option<(String, String)>, String> {
     let Some(rest) = value.strip_prefix("silo-remote:") else {
         return Ok(None);
     };
-    let Some((host, vm)) = rest.split_once(':') else {
-        return Err("Invalid remote VM target.".into());
+    let Some((device, computer)) = rest.split_once(':') else {
+        return Err("Invalid remote computer target.".into());
     };
-    if uuid::Uuid::parse_str(host).is_err() || uuid::Uuid::parse_str(vm).is_err() {
-        return Err("Invalid remote VM target.".into());
+    if uuid::Uuid::parse_str(device).is_err() || uuid::Uuid::parse_str(computer).is_err() {
+        return Err("Invalid remote computer target.".into());
     }
-    Ok(Some((host.into(), vm.into())))
+    Ok(Some((device.into(), computer.into())))
 }
 fn string<'a>(params: &'a Value, key: &str) -> Result<&'a str, String> {
     params
@@ -23,23 +23,23 @@ fn string<'a>(params: &'a Value, key: &str) -> Result<&'a str, String> {
         .and_then(Value::as_str)
         .ok_or_else(|| format!("Missing {key}."))
 }
-fn vm_name(app: &AppHandle, params: &Value) -> Result<String, String> {
-    runtime::remote_ops::local_vm_name(app, string(params, "vmId")?)
+fn computer_name(app: &AppHandle, params: &Value) -> Result<String, String> {
+    runtime::remote_ops::local_computer_name(app, string(params, "computerId")?)
 }
 
 pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
     match method {
         "desktop.connect" => crate::desktop_viewer::local_connection(
             app,
-            &vm_name(app, params)?,
-            Some(string(params, "vmId")?),
+            &computer_name(app, params)?,
+            Some(string(params, "computerId")?),
         ),
         "desktop.status" => {
             let mut state = crate::desktop::dispatch(app, method, params)?;
-            state["name"] = Value::String(vm_name(app, params)?);
+            state["name"] = Value::String(computer_name(app, params)?);
             Ok(state)
         }
-        "desktop.action" | "computer.approval" => crate::desktop::dispatch(app, method, params),
+        "desktop.action" | "computerUse.approval" => crate::desktop::dispatch(app, method, params),
         "chatgpt.status" => serde_json::to_value(crate::chatgpt_app::local_status(app)?)
             .map_err(|_| "Could not encode the ChatGPT app status.".to_owned()),
         "chatgpt.retry" => serde_json::to_value(crate::chatgpt_app::retry_now(app)?)
@@ -48,12 +48,12 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             crate::ssh_access::remote_dispatch(app, method, params)
         }
         "files.list" => {
-            // A file listing observes one VM's guest without starting or changing it
+            // A file listing observes one computer's guest without starting or changing it
             // (`--no-start`), so it takes no gate and stays available during operations.
-            let name = vm_name(app, params)?;
+            let name = computer_name(app, params)?;
             let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0);
             let offset = usize::try_from(offset).map_err(|_| "Invalid folder offset.")?;
-            let page = tauri::async_runtime::block_on(crate::files::list_workspace_directory(
+            let page = tauri::async_runtime::block_on(crate::files::list_computer_directory(
                 app.clone(),
                 name,
                 string(params, "path")?.into(),
@@ -66,10 +66,10 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             serde_json::to_value(page).map_err(|_| "Could not encode folder listing.".into())
         }
         "guest.prepare" => {
-            // Authorizes a remote key inside one VM's guest; wait its turn per VM.
+            // Authorizes a remote key inside one computer's guest; wait its turn per computer.
             let paths = runtime::runtime_paths(app)?;
             let (_guard, name) =
-                prepare_guest_target(&runtime::OPERATIONS, &paths, string(params, "vmId")?)?;
+                prepare_guest_target(&runtime::OPERATIONS, &paths, string(params, "computerId")?)?;
             let user = crate::working_account::inspect_user(&paths, &name)?;
             crate::working_account::require_client_protocol(params)?;
             let public = crate::editor::authorize_remote(
@@ -85,11 +85,11 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             };
             Ok(json!({"hostPublicKey": public, "user":user, "guestAddress":guest_address}))
         }
-        "network.state" => crate::remote_network::host_state(app),
+        "network.state" => crate::remote_network::device_state(app),
         "network.publish" => {
-            // `save_network_port` takes this VM's operation gate and shutdown check;
-            // taking a computer gate here too would deadlock against that VM guard.
-            let name = vm_name(app, params)?;
+            // `save_network_port` takes this computer's operation gate and shutdown check;
+            // taking a device gate here too would deadlock against that computer guard.
+            let name = computer_name(app, params)?;
             let port = params["port"]
                 .as_u64()
                 .and_then(|p| u16::try_from(p).ok())
@@ -103,12 +103,12 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 None,
                 scheme,
             ))?;
-            crate::remote_network::fresh_host_state(app)
+            crate::remote_network::fresh_device_state(app)
         }
         "network.unpublish" => {
             // The owner's mapping is shared by every controller; removing it from one
-            // removes it here too, like removing the port on this computer.
-            let name = vm_name(app, params)?;
+            // removes it here too, like removing the port on this device.
+            let name = computer_name(app, params)?;
             let port = params["port"]
                 .as_u64()
                 .and_then(|p| u16::try_from(p).ok())
@@ -119,21 +119,21 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 name,
                 port,
             ))?;
-            crate::remote_network::fresh_host_state(app)
+            crate::remote_network::fresh_device_state(app)
         }
         // Pushes are bound to the repository, branch and commit the user confirmed;
         // the older unbound "repository.push" method is no longer served.
         "repository.push.start" => {
-            crate::host_push_operations::start_remote(app, vm_name(app, params)?, params)
+            crate::host_push_operations::start_remote(app, computer_name(app, params)?, params)
         }
         "repository.push.status" => crate::host_push_operations::status(
             app,
-            &vm_name(app, params)?,
+            &computer_name(app, params)?,
             string(params, "path")?,
             string(params, "operationId")?,
         ),
         "repository.dismiss" => {
-            let name = vm_name(app, params)?;
+            let name = computer_name(app, params)?;
             tauri::async_runtime::block_on(crate::host_push::dismiss_repository_push(
                 app.clone(),
                 name,
@@ -142,22 +142,22 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             Ok(Value::Null)
         }
         "checkpoint.create" | "checkpoint.fork" | "checkpoint.restore" => {
-            // Resolve the VM through this computer's saved identity before
+            // Resolve the computer through this device's saved identity before
             // forwarding checkpoint state changes to the owning runtime.
-            let workspace_id = string(params, "vmId")?.to_owned();
-            let _ = vm_name(app, params)?;
+            let computer_id = string(params, "computerId")?.to_owned();
+            let _ = computer_name(app, params)?;
             let result = match method {
                 "checkpoint.create" => {
                     tauri::async_runtime::block_on(runtime::checkpoints::create_checkpoint(
                         app.clone(),
-                        workspace_id,
+                        computer_id,
                         string(params, "name")?.to_owned(),
                     ))?
                 }
                 "checkpoint.fork" => {
                     tauri::async_runtime::block_on(runtime::checkpoints::fork_checkpoint(
                         app.clone(),
-                        workspace_id,
+                        computer_id,
                         params
                             .get("checkpointId")
                             .and_then(Value::as_str)
@@ -168,7 +168,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 "checkpoint.restore" => {
                     tauri::async_runtime::block_on(runtime::checkpoints::restore_checkpoint(
                         app.clone(),
-                        workspace_id,
+                        computer_id,
                         string(params, "checkpointId")?.to_owned(),
                     ))?
                 }
@@ -186,11 +186,11 @@ fn prepare_guest_target<'a>(
     paths: &runtime::RuntimePaths,
     id: &str,
 ) -> Result<(runtime::operation_gate::OperationGuard<'a>, String), String> {
-    let name = runtime::remote_ops::local_vm_name_in(paths, id)?;
+    let name = runtime::remote_ops::local_computer_name_in(paths, id)?;
     let guard = gate
-        .vm(id, &name, &format!("Preparing access to {name}"))
+        .computer(id, &name, &format!("Preparing access to {name}"))
         .map_err(|e| e.to_string())?;
-    let name = runtime::remote_ops::local_vm_name_in(paths, id)?;
+    let name = runtime::remote_ops::local_computer_name_in(paths, id)?;
     Ok((guard, name))
 }
 
@@ -199,12 +199,12 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
         return Err("Unsupported guest connection.".into());
     }
     // Interactive sessions stay outside the operation queue: this only inspects that
-    // the VM is Running and spawns an `msb ssh serve` session, so it takes no gate
+    // the computer is Running and spawns an `msb ssh serve` session, so it takes no gate
     // and a long operation never blocks opening a connection.
-    let name = vm_name(app, params)?;
+    let name = computer_name(app, params)?;
     runtime::shutdown::ensure_accepting_operations()?;
     let paths = runtime::runtime_paths(app)?;
-    crate::terminal::running_vm(&paths, &name)?;
+    crate::terminal::running_computer(&paths, &name)?;
     crate::working_account::require_runtime(&paths)?;
     Command::new(&paths.executable)
         .env("MSB_HOME", &paths.home)
@@ -222,7 +222,7 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|_| "Could not open the remote VM connection.".into())
+        .map_err(|_| "Could not open the remote computer connection.".into())
 }
 
 fn parse_guest_address(value: &str) -> Result<std::net::IpAddr, String> {
@@ -264,17 +264,17 @@ fn guest_forwarding_address(
 
 pub(crate) fn prepare(
     app: &AppHandle,
-    host: &str,
-    vm: &str,
+    device: &str,
+    computer: &str,
     public: &str,
     path: &str,
     forwarding: bool,
 ) -> Result<(String, &'static str, Option<std::net::IpAddr>), String> {
     let result = remote::call_remote(
         app,
-        host,
+        device,
         "guest.prepare",
-        json!({"vmId":vm,"publicKey":public,"path":path,"accountProtocol":1,"forwarding":forwarding}),
+        json!({"computerId":computer,"publicKey":public,"path":path,"accountProtocol":1,"forwarding":forwarding}),
     )?;
     let key = string(&result, "hostPublicKey")?;
     crate::editor::validate_public_key(key)?;
@@ -296,9 +296,9 @@ mod tests {
     fn save_guest_target(paths: &runtime::RuntimePaths, id: &str, name: &str) {
         runtime::write_metadata(
             &paths.metadata,
-            &runtime::MachineConfigurationRequest {
+            &runtime::ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![runtime::MachineConfiguration::Vm {
+                computers: vec![runtime::ComputerConfiguration {
                     id: id.into(),
                     name: name.into(),
                     cpus: 1,
@@ -315,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn queued_guest_preparation_preserves_the_requested_vm_identity() {
+    fn queued_guest_preparation_preserves_the_requested_computer_identity() {
         use std::time::{Duration, Instant};
         let original = "00000000-0000-4000-8000-000000000001";
         let replacement = "00000000-0000-4000-8000-000000000002";
@@ -324,7 +324,7 @@ mod tests {
             let paths = crate::test_support::paths(dir.path());
             save_guest_target(&paths, original, "dev");
             let gate = runtime::operation_gate::OperationGate::new();
-            let computer = gate.computer("Change configuration").unwrap();
+            let device = gate.device("Change configuration").unwrap();
             std::thread::scope(|scope| {
                 let prepare = scope.spawn(|| {
                     prepare_guest_target(&gate, &paths, original).map(|(_guard, name)| name)
@@ -334,16 +334,22 @@ mod tests {
                     assert!(Instant::now() < until, "preparation never queued");
                     std::thread::sleep(Duration::from_millis(5));
                 }
-                assert_eq!(gate.snapshot().waiting[0].vm_id.as_deref(), Some(original));
+                assert_eq!(
+                    gate.snapshot().waiting[0].computer_id.as_deref(),
+                    Some(original)
+                );
                 if replace {
                     save_guest_target(&paths, replacement, "dev");
                 } else {
                     save_guest_target(&paths, original, "renamed");
                 }
-                drop(computer);
+                drop(device);
                 let result = prepare.join().unwrap();
                 if replace {
-                    assert!(result.is_err(), "preparation accepted the replacement VM");
+                    assert!(
+                        result.is_err(),
+                        "preparation accepted the replacement computer"
+                    );
                 } else {
                     assert_eq!(result.unwrap(), "renamed");
                 }
@@ -365,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn guest_preparation_accepts_an_unchanged_vm() {
+    fn guest_preparation_accepts_an_unchanged_computer() {
         let dir = tempfile::tempdir().unwrap();
         let paths = crate::test_support::paths(dir.path());
         let id = "00000000-0000-4000-8000-000000000001";
@@ -373,7 +379,7 @@ mod tests {
         let gate = runtime::operation_gate::OperationGate::new();
         let (guard, name) = prepare_guest_target(&gate, &paths, id).unwrap();
         assert_eq!(name, "dev");
-        assert_eq!(gate.snapshot().running[0].vm_id.as_deref(), Some(id));
+        assert_eq!(gate.snapshot().running[0].computer_id.as_deref(), Some(id));
         drop(guard);
         assert!(gate.is_idle());
     }
@@ -451,17 +457,17 @@ socket.socket = RouteSocket
 
     #[test]
     fn remote_targets_never_fall_back_to_local_names() {
-        let host = uuid::Uuid::new_v4();
-        let vm = uuid::Uuid::new_v4();
+        let device = uuid::Uuid::new_v4();
+        let computer = uuid::Uuid::new_v4();
         assert_eq!(
-            target(&format!("silo-remote:{host}:{vm}")).unwrap(),
-            Some((host.to_string(), vm.to_string()))
+            target(&format!("silo-remote:{device}:{computer}")).unwrap(),
+            Some((device.to_string(), computer.to_string()))
         );
         assert_eq!(target("dev").unwrap(), None);
         for input in [
             "silo-remote:dev",
             "silo-remote:host:dev",
-            "silo-remote:host:vm:extra",
+            "silo-remote:host:computer:extra",
         ] {
             assert!(target(input).is_err());
         }

@@ -67,9 +67,9 @@ pub(crate) fn install(window: &tauri::WebviewWindow) -> Result<(), Box<dyn std::
 pub(crate) fn sync_accessibility(window: &tauri::WebviewWindow) {
     let handle = window.clone();
     let _ = window.run_on_main_thread(move || {
-        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
-        let opaque = workspace.accessibilityDisplayShouldReduceTransparency()
-            || workspace.accessibilityDisplayShouldIncreaseContrast();
+        let computer = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        let opaque = computer.accessibilityDisplayShouldReduceTransparency()
+            || computer.accessibilityDisplayShouldIncreaseContrast();
         let _ = handle.eval(format!(
             "document.documentElement.classList.toggle('native-opaque', {opaque});"
         ));

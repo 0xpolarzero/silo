@@ -59,7 +59,7 @@ def desktop_account():
     try:
         WORKING_ACCOUNT.lstat()
     except FileNotFoundError:
-        raise RuntimeError('Desktop requires the Silo working account; migrate this VM or create a new VM') from None
+        raise RuntimeError('Desktop requires the Silo working account; migrate this computer or create a new computer') from None
     validate_policy_file(WORKING_ACCOUNT)
     policy = json.loads(WORKING_ACCOUNT.read_text())
     if policy != dict(schemaVersion=1, user='silo', home='/home/silo'):
@@ -376,7 +376,7 @@ def remove_stale_display_artifacts():
         lock_info, socket_info, pid = stale_pair
 
         # Recheck identities immediately before unlinking; never follow paths
-        # supplied by the VM or remove anything beyond this display's pair.
+        # supplied by the computer or remove anything beyond this display's pair.
         current_lock = lock.lstat()
         current_socket = display_socket.lstat()
         if ((current_lock.st_dev, current_lock.st_ino) != (lock_info.st_dev, lock_info.st_ino) or
@@ -714,7 +714,7 @@ def session_pulse_is_live():
 def clear_stale_pulse_runtime(pulse):
     """Remove the pid file and socket of a PulseAudio that is gone.
 
-    /run lives on the VM's disk, so a restart or an imported disk still carries the
+    /run lives on the computer's disk, so a restart or an imported disk still carries the
     previous session's `pid`. Boots are nearly deterministic: the new PulseAudio often
     gets the very pid the file names, and PulseAudio then refuses to start ("Daemon
     already running") because that pid is itself."""
@@ -1187,7 +1187,7 @@ def main():
             marker = RUN / 'boot-id'
             if not marker.exists() or marker.read_text() != epoch:
                 (RUN / 'failed').unlink(missing_ok=True)
-                # Nothing of the previous boot runs, but /run is on the VM's disk.
+                # Nothing of the previous boot runs, but /run is on the computer's disk.
                 reset_session_runtime()
                 marker.write_text(epoch)
         if action == 'status':

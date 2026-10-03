@@ -1,10 +1,10 @@
 //! Each controller owns its loopback tunnels. A remote host's localhost address
-//! is never presented as an address on this computer.
+//! is never presented as an address on this device.
 //!
 //! A tunnel the user opened is kept as an intent (its local port and scheme) while the
-//! computer stays saved. When the tunnel dies (sleep, a dropped connection) or the other
-//! computer publishes the port on a new endpoint, it is opened again in the background on
-//! the same local port. Failed polls close live tunnels only when the computer failed
+//! device stays saved. When the tunnel dies (sleep, a dropped connection) or the other
+//! device publishes the port on a new endpoint, it is opened again in the background on
+//! the same local port. Failed polls close live tunnels only when the device failed
 //! repeatedly or no longer admits this one (`remote::close_after_failed_poll`).
 use crate::bridge_error::{BridgeError, ErrorCode};
 use crate::{remote, runtime};
@@ -19,13 +19,13 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 
-/// Saved computer id, sandbox id, guest port.
+/// Saved device id, computer id, guest port.
 type Key = (String, String, u16);
 
 struct Tunnel {
     child: crate::owned_tunnel::Tunnel,
     local_port: u16,
-    // Owner publication endpoint is retained to detect replacement across VM restarts.
+    // Owner publication endpoint is retained to detect replacement across computer restarts.
     remote_port: u16,
     _directory: Option<tempfile::TempDir>,
 }
@@ -43,7 +43,7 @@ impl Tunnel {
         self.child.running()
     }
 }
-/// A port the user opened from this computer, kept while its tunnel is down.
+/// A port the user opened from this device, kept while its tunnel is down.
 #[derive(Clone, Debug, PartialEq)]
 struct Intent {
     local_port: u16,
@@ -70,20 +70,20 @@ struct Tunnels {
     observations: HashMap<String, Arc<()>>,
 }
 impl Tunnels {
-    fn observe(&mut self, host: &str) -> Observation {
+    fn observe(&mut self, device: &str) -> Observation {
         let observation = Observation {
-            revision: self.revision(host),
+            revision: self.revision(device),
             token: Arc::new(()),
         };
         self.observations
-            .insert(host.into(), observation.token.clone());
+            .insert(device.into(), observation.token.clone());
         observation
     }
-    fn revision(&self, host: &str) -> Option<Arc<()>> {
-        self.revisions.get(host).cloned()
+    fn revision(&self, device: &str) -> Option<Arc<()>> {
+        self.revisions.get(device).cloned()
     }
-    fn changed(&mut self, host: &str) {
-        self.revisions.insert(host.into(), Arc::new(()));
+    fn changed(&mut self, device: &str) {
+        self.revisions.insert(device.into(), Arc::new(()));
     }
     fn has_connection(&self, key: &Key) -> bool {
         self.live.contains_key(key)
@@ -147,21 +147,23 @@ pub(crate) const TUNNEL_LIMIT: usize = 128;
 /// How long a new tunnel may take to confirm forwarding.
 const READY_WITHIN: Duration = Duration::from_secs(12);
 /// How long the owner reuses its network state for polling controllers.
-const HOST_STATE_MAX_AGE: Duration = Duration::from_secs(2);
+const DEVICE_STATE_MAX_AGE: Duration = Duration::from_secs(2);
 
-/// Network state of this computer for a controller, with stable VM ids. Several
+/// Network state of this device for a controller, with stable computer ids. Several
 /// controllers polling at once share one read (see `cached`).
-pub(crate) fn host_state(app: &AppHandle) -> Result<Value, String> {
-    cached(&HOST_STATE, HOST_STATE_MAX_AGE, || read_host_state(app))
+pub(crate) fn device_state(app: &AppHandle) -> Result<Value, String> {
+    cached(&DEVICE_STATE, DEVICE_STATE_MAX_AGE, || {
+        read_device_state(app)
+    })
 }
-/// A fresh read after a change on this computer; later polls reuse it.
-pub(crate) fn fresh_host_state(app: &AppHandle) -> Result<Value, String> {
-    cached(&HOST_STATE, Duration::ZERO, || read_host_state(app))
+/// A fresh read after a change on this device; later polls reuse it.
+pub(crate) fn fresh_device_state(app: &AppHandle) -> Result<Value, String> {
+    cached(&DEVICE_STATE, Duration::ZERO, || read_device_state(app))
 }
-static HOST_STATE: Mutex<Option<(Instant, Value)>> = Mutex::new(None);
+static DEVICE_STATE: Mutex<Option<(Instant, Value)>> = Mutex::new(None);
 /// Returns the stored value while younger than `max_age`, else computes and stores it. The
 /// lock is held while computing, so concurrent callers wait for one read instead of each
-/// inspecting every VM. Errors are not stored.
+/// inspecting every computer. Errors are not stored.
 fn cached(
     cache: &Mutex<Option<(Instant, Value)>>,
     max_age: Duration,
@@ -177,22 +179,21 @@ fn cached(
     *cache = Some((Instant::now(), value.clone()));
     Ok(value)
 }
-fn read_host_vm_ids(metadata: &Path) -> Result<HashMap<String, String>, String> {
+fn read_device_computer_ids(metadata: &Path) -> Result<HashMap<String, String>, String> {
     let config = runtime::read_metadata(metadata).map_err(|e| e.to_string())?;
     Ok(config
-        .machines
+        .computers
         .into_iter()
-        .filter(|m| m.is_vm())
         .map(|m| (m.name().to_owned(), m.id().to_owned()))
         .collect())
 }
 
-fn read_host_state(app: &AppHandle) -> Result<Value, String> {
+fn read_device_state(app: &AppHandle) -> Result<Value, String> {
     let paths = runtime::runtime_paths(app)?;
-    let before = read_host_vm_ids(&paths.metadata)?;
+    let before = read_device_computer_ids(&paths.metadata)?;
     let state = tauri::async_runtime::block_on(crate::network::read_network_state(app.clone()))?;
     let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
-    let after = read_host_vm_ids(&paths.metadata)?;
+    let after = read_device_computer_ids(&paths.metadata)?;
     project_host_ports(value, &before, &after)
 }
 
@@ -201,42 +202,42 @@ fn project_host_ports(
     before: &HashMap<String, String>,
     after: &HashMap<String, String>,
 ) -> Result<Value, String> {
-    for row in value["workspaces"]
+    for row in value["computers"]
         .as_array_mut()
         .ok_or("Invalid network state.")?
     {
-        let name = row["workspace"].as_str().unwrap_or("");
+        let name = row["computer"].as_str().unwrap_or("");
         let id = after
             .get(name)
-            .ok_or("VM configuration changed. Refresh network services.")?;
+            .ok_or("Computer configuration changed. Refresh network services.")?;
         if before.get(name) != Some(id) {
-            return Err("VM configuration changed. Refresh network services.".into());
+            return Err("Computer configuration changed. Refresh network services.".into());
         }
-        row["vmId"] = json!(id);
+        row["computerId"] = json!(id);
     }
     Ok(value)
 }
 
-fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
-    // A computer that just failed repeatedly is answered at once; its snapshot poll
+fn read(app: &AppHandle, device: &str) -> Result<Value, BridgeError> {
+    // A device that just failed repeatedly is answered at once; its snapshot poll
     // (or this read, shortly) tries again.
-    if let Some(error) = remote::offline(host) {
+    if let Some(error) = remote::offline(device) {
         return Err(error.into());
     }
-    let observation = tunnels().observe(host);
-    let value = match remote::call_remote_typed(app, host, "network.state", json!({})) {
+    let observation = tunnels().observe(device);
+    let value = match remote::call_remote_typed(app, device, "network.state", json!({})) {
         Ok(value) => {
-            remote::poll_succeeded(host);
+            remote::poll_succeeded(device);
             value
         }
         Err(error) => {
             if error.code != ErrorCode::UnsupportedRemoteOperation {
-                remote::close_after_failed_poll(host, &error.message);
+                remote::close_after_failed_poll(device, &error.message);
             }
             return Err(error);
         }
     };
-    let projection = project_observed(value, host, observation, &mut tunnels())?;
+    let projection = project_observed(value, device, observation, &mut tunnels())?;
     let Projection {
         value,
         closed,
@@ -258,36 +259,38 @@ struct Projection {
 }
 fn project_observed(
     value: Value,
-    host: &str,
+    device: &str,
     observation: Observation,
     tunnels: &mut Tunnels,
 ) -> Result<Projection, String> {
     let latest = tunnels
         .observations
-        .get(host)
+        .get(device)
         .is_some_and(|token| Arc::ptr_eq(token, &observation.token));
     if !latest {
         return Err(
             "A newer network refresh superseded this request. Refresh network services.".into(),
         );
     }
-    let current = match (observation.revision.as_ref(), tunnels.revisions.get(host)) {
+    let current = match (observation.revision.as_ref(), tunnels.revisions.get(device)) {
         (None, None) => true,
         (Some(before), Some(now)) => Arc::ptr_eq(before, now),
         _ => false,
     };
-    if !current || tunnels.saves.keys().any(|key| key.0 == host) {
+    if !current || tunnels.saves.keys().any(|key| key.0 == device) {
         return Err("Network settings changed while refreshing. Refresh network services.".into());
     }
-    project_ports(value, host, tunnels)
+    project_ports(value, device, tunnels)
 }
 
 fn validate_remote_ports(value: &Value) -> Result<(), String> {
-    for row in value["workspaces"]
+    for row in value["computers"]
         .as_array()
         .ok_or("Invalid remote network state.")?
     {
-        row["vmId"].as_str().ok_or("Missing remote VM identity.")?;
+        row["computerId"]
+            .as_str()
+            .ok_or("Missing remote computer identity.")?;
         for port in row["ports"]
             .as_array()
             .ok_or("Invalid remote port state.")?
@@ -301,35 +304,35 @@ fn validate_remote_ports(value: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Rewrites the owner's rows for this computer: rows become remote targets, ports show this
-/// computer's tunnel (never the owner's loopback endpoint). Each sandbox gets the host
+/// Rewrites the owner's rows for this device: rows become remote targets, ports show this
+/// device's tunnel (never the owner's loopback endpoint). Each computer gets the host
 /// name its websites open at here (C-24; the owner's own host choice is ignored).
 /// Dead or outdated tunnels with an intent are reopened.
 fn project_ports(
     mut value: Value,
-    host: &str,
+    device: &str,
     tunnels: &mut Tunnels,
 ) -> Result<Projection, String> {
     // Reject the whole response before changing tunnel ownership or scheduling workers.
     validate_remote_ports(&value)?;
     let mut observed = HashSet::new();
-    let mut failed_vms = HashSet::new();
+    let mut failed_computers = HashSet::new();
     let mut closed = Vec::new();
     let mut reconnect = Vec::new();
-    for row in value["workspaces"]
+    for row in value["computers"]
         .as_array_mut()
         .ok_or("Invalid remote network state.")?
     {
-        let vm = row["vmId"]
+        let computer = row["computerId"]
             .as_str()
-            .ok_or("Missing remote VM identity.")?
+            .ok_or("Missing remote computer identity.")?
             .to_owned();
         if row["error"].as_str().is_some() {
-            failed_vms.insert(vm.clone());
+            failed_computers.insert(computer.clone());
         }
-        let name = row["workspace"].as_str().unwrap_or("").to_owned();
-        row["host"] = json!(crate::network::sandbox_host(&name, &vm));
-        row["workspace"] = json!(format!("silo-remote:{host}:{vm}"));
+        let name = row["computer"].as_str().unwrap_or("").to_owned();
+        row["host"] = json!(crate::network::computer_host(&name, &computer));
+        row["computer"] = json!(format!("silo-remote:{device}:{computer}"));
         for port in row["ports"]
             .as_array_mut()
             .ok_or("Invalid remote port state.")?
@@ -338,7 +341,7 @@ fn project_ports(
                 .as_u64()
                 .and_then(|n| u16::try_from(n).ok())
                 .ok_or("Invalid remote port.")?;
-            let key: Key = (host.into(), vm.clone(), guest);
+            let key: Key = (device.into(), computer.clone(), guest);
             observed.insert(key.clone());
             let endpoint = port["hostPort"]
                 .as_u64()
@@ -346,7 +349,7 @@ fn project_ports(
                 .filter(|n| *n != 0);
             // The owner removed the publication (the guest service may still listen). A row
             // that failed to observe says nothing about publication, so it keeps its tunnel.
-            let removed = !failed_vms.contains(&vm)
+            let removed = !failed_computers.contains(&computer)
                 && port["configured"] == json!(false)
                 && port["state"] == json!("unpublished")
                 && endpoint.is_none();
@@ -355,7 +358,7 @@ fn project_ports(
                 tunnels.intents.remove(&key);
                 tunnels.connecting.remove(&key);
             }
-            // A stopped or restarting VM has no endpoint yet; its tunnel waits for it.
+            // A stopped or restarting computer has no endpoint yet; its tunnel waits for it.
             let current = tunnels.live.get_mut(&key).is_some_and(|tunnel| {
                 tunnel.alive() && endpoint.is_none_or(|endpoint| endpoint == tunnel.remote_port)
             });
@@ -381,7 +384,7 @@ fn project_ports(
                     port["hostPort"] = Value::Null;
                     if let Some(endpoint) = endpoint {
                         port["state"] = json!("waiting");
-                        port["message"] = json!("Reconnecting to the other computer…");
+                        port["message"] = json!("Reconnecting to the other device…");
                         let unchanged = tunnels.connecting.get(&key).is_some_and(|request| {
                             request.remote_port == endpoint && request.intent == intent
                         });
@@ -407,12 +410,14 @@ fn project_ports(
             }
         }
     }
-    // Missing ports imply deletion only when their VM was observed successfully.
+    // Missing ports imply deletion only when their computer was observed successfully.
     let gone: Vec<Key> = tunnels
         .live
         .keys()
         .chain(tunnels.intents.keys())
-        .filter(|key| key.0 == host && !observed.contains(*key) && !failed_vms.contains(&key.1))
+        .filter(|key| {
+            key.0 == device && !observed.contains(*key) && !failed_computers.contains(&key.1)
+        })
         .cloned()
         .collect();
     for key in gone {
@@ -590,7 +595,7 @@ fn finish_save(
         if !pending.current(&tunnels) {
             return Err("This port configuration was superseded. Refresh network services.".into());
         }
-        // Automatic keeps the port this computer used before, so bookmarks keep working.
+        // Automatic keeps the port this device used before, so bookmarks keep working.
         let requested =
             host_port.or_else(|| tunnels.intents.get(&key).map(|intent| intent.local_port));
         let unchanged = tunnels.live.get_mut(&key).is_some_and(|tunnel| {
@@ -643,16 +648,16 @@ fn finish_save(
 }
 
 #[tauri::command]
-pub async fn remote_network_state(app: AppHandle, host_id: String) -> Result<Value, BridgeError> {
-    tauri::async_runtime::spawn_blocking(move || read(&app, &host_id))
+pub async fn remote_network_state(app: AppHandle, device_id: String) -> Result<Value, BridgeError> {
+    tauri::async_runtime::spawn_blocking(move || read(&app, &device_id))
         .await
         .map_err(|e| e.to_string())?
 }
 #[tauri::command]
 pub async fn remote_save_network_port(
     app: AppHandle,
-    host_id: String,
-    vm_id: String,
+    device_id: String,
+    computer_id: String,
     port: u16,
     host_port: Option<u16>,
     scheme: Option<String>,
@@ -664,26 +669,26 @@ pub async fn remote_save_network_port(
         {
             return Err("Invalid port configuration.".into());
         }
-        let pending = PendingSave::new((host_id.clone(), vm_id.clone(), port))?;
+        let pending = PendingSave::new((device_id.clone(), computer_id.clone(), port))?;
         let state = remote::call_remote_typed(
             &app,
-            &host_id,
+            &device_id,
             "network.publish",
-            json!({"vmId":vm_id,"port":port,"scheme":scheme}),
+            json!({"computerId":computer_id,"port":port,"scheme":scheme}),
         )?;
-        let endpoint = state["workspaces"]
+        let endpoint = state["computers"]
             .as_array()
-            .and_then(|rows| rows.iter().find(|r| r["vmId"] == vm_id))
+            .and_then(|rows| rows.iter().find(|r| r["computerId"] == computer_id))
             .and_then(|r| r["ports"].as_array())
             .and_then(|ports| ports.iter().find(|p| p["port"] == port))
             .and_then(|p| p["hostPort"].as_u64())
             .and_then(|p| u16::try_from(p).ok())
-            .ok_or("The remote VM port is not available yet. Check the VM service and retry.")?;
-        let key = (host_id.clone(), vm_id, port);
+            .ok_or("The remote computer port is not available yet. Check the computer service and retry.")?;
+        let key = (device_id.clone(), computer_id, port);
         finish_save(pending, host_port, scheme, endpoint, |local| {
             open_guest_tunnel(&app, &key, local, endpoint)
         })?;
-        read(&app, &host_id)
+        read(&app, &device_id)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -700,23 +705,23 @@ fn forget_port(key: &Key) {
     drop(closed);
 }
 
-/// Stops publishing the port on the owning computer, then closes this computer's tunnel.
+/// Stops publishing the port on the owning device, then closes this device's tunnel.
 #[tauri::command]
 pub async fn remote_remove_network_port(
     app: AppHandle,
-    host_id: String,
-    vm_id: String,
+    device_id: String,
+    computer_id: String,
     port: u16,
 ) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         remote::call_remote_typed(
             &app,
-            &host_id,
+            &device_id,
             "network.unpublish",
-            json!({"vmId":vm_id,"port":port}),
+            json!({"computerId":computer_id,"port":port}),
         )?;
-        forget_port(&(host_id.clone(), vm_id, port));
-        read(&app, &host_id)
+        forget_port(&(device_id.clone(), computer_id, port));
+        read(&app, &device_id)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -724,16 +729,16 @@ pub async fn remote_remove_network_port(
 #[tauri::command]
 pub async fn remote_open_network_port(
     app: AppHandle,
-    host_id: String,
-    vm_id: String,
+    device_id: String,
+    computer_id: String,
     port: u16,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let state = read(&app, &host_id).map_err(|error| error.message)?;
-        let target = format!("silo-remote:{host_id}:{vm_id}");
-        let endpoint = state["workspaces"]
+        let state = read(&app, &device_id).map_err(|error| error.message)?;
+        let target = format!("silo-remote:{device_id}:{computer_id}");
+        let endpoint = state["computers"]
             .as_array()
-            .and_then(|rows| rows.iter().find(|r| r["workspace"] == target))
+            .and_then(|rows| rows.iter().find(|r| r["computer"] == target))
             .and_then(|r| r["ports"].as_array())
             .and_then(|ports| {
                 ports
@@ -756,10 +761,10 @@ pub async fn remote_open_network_port(
     .map_err(|e| e.to_string())?
 }
 fn row_host<'a>(state: &'a Value, target: &str) -> Option<&'a str> {
-    state["workspaces"]
+    state["computers"]
         .as_array()?
         .iter()
-        .find(|row| row["workspace"] == target)?["host"]
+        .find(|row| row["computer"] == target)?["host"]
         .as_str()
 }
 /// Closes every tunnel (quit).
@@ -773,17 +778,17 @@ pub(crate) fn close_all() {
     };
     drop(closed);
 }
-/// Closes a computer's live tunnels but keeps their intents, so they reopen on the same
+/// Closes a device's live tunnels but keeps their intents, so they reopen on the same
 /// local ports once it answers again.
-pub(crate) fn disconnect_host(host: &str) {
+pub(crate) fn disconnect_device(device: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
-        tunnels.connecting.retain(|key, _| key.0 != host);
-        tunnels.observations.remove(host);
+        tunnels.connecting.retain(|key, _| key.0 != device);
+        tunnels.observations.remove(device);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
-            .filter(|key| key.0 == host)
+            .filter(|key| key.0 == device)
             .cloned()
             .collect();
         keys.iter()
@@ -792,20 +797,20 @@ pub(crate) fn disconnect_host(host: &str) {
     };
     drop(closed);
 }
-/// Forgets a computer's tunnels and intents (removed, or no longer the same computer).
-pub(crate) fn close_host(host: &str) {
+/// Forgets a device's tunnels and intents (removed, or no longer the same device).
+pub(crate) fn close_device(device: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
-        tunnels.revisions.remove(host);
-        tunnels.observations.remove(host);
-        tunnels.saves.retain(|key, _| key.0 != host);
-        tunnels.intents.retain(|key, _| key.0 != host);
-        tunnels.connecting.retain(|key, _| key.0 != host);
-        tunnels.observations.remove(host);
+        tunnels.revisions.remove(device);
+        tunnels.observations.remove(device);
+        tunnels.saves.retain(|key, _| key.0 != device);
+        tunnels.intents.retain(|key, _| key.0 != device);
+        tunnels.connecting.retain(|key, _| key.0 != device);
+        tunnels.observations.remove(device);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
-            .filter(|key| key.0 == host)
+            .filter(|key| key.0 == device)
             .cloned()
             .collect();
         keys.iter()
@@ -820,7 +825,7 @@ mod tests {
     use super::*;
     use std::process::Child;
     fn observed(host_port: Option<u16>) -> Value {
-        json!({"workspaces":[{"workspace":"dev","vmId":"vm","ports":[{"port":3000,"hostPort":host_port,"configured":true,"state":"reachable","scheme":"http"}]}]})
+        json!({"computers":[{"computer":"dev","computerId":"computer","ports":[{"port":3000,"hostPort":host_port,"configured":true,"state":"reachable","scheme":"http"}]}]})
     }
     fn child() -> crate::owned_tunnel::Tunnel {
         crate::owned_tunnel::Tunnel::spawn(Command::new("/bin/sleep").arg("30"), None).unwrap()
@@ -839,11 +844,11 @@ mod tests {
             scheme: Some("http".into()),
         }
     }
-    fn key(host: &str) -> Key {
-        (host.into(), "vm".into(), 3000)
+    fn key(device: &str) -> Key {
+        (device.into(), "computer".into(), 3000)
     }
     fn port(result: &Projection) -> &Value {
-        &result.value["workspaces"][0]["ports"][0]
+        &result.value["computers"][0]["ports"][0]
     }
 
     fn reconnect_targets(projection: &Projection) -> Vec<(Key, Intent, u16)> {
@@ -865,8 +870,8 @@ mod tests {
         let mut tunnels = Tunnels::default();
         let result = project_ports(observed(Some(32000)), "office", &mut tunnels).unwrap();
         assert_eq!(
-            result.value["workspaces"][0]["workspace"],
-            "silo-remote:office:vm"
+            result.value["computers"][0]["computer"],
+            "silo-remote:office:computer"
         );
         assert!(port(&result)["hostPort"].is_null());
         assert_eq!(port(&result)["configured"], false);
@@ -879,12 +884,12 @@ mod tests {
     }
 
     #[test]
-    fn remote_sandboxes_open_at_their_own_host_on_this_computer() {
+    fn remote_computers_open_at_their_own_host_on_this_device() {
         let mut tunnels = Tunnels::default();
-        let value = json!({"workspaces":[{"workspace":"dev","vmId":"1a2b3c4d-0000-4000-8000-000000000001","host":"owner-choice.localhost","ports":[]}]});
+        let value = json!({"computers":[{"computer":"dev","computerId":"1a2b3c4d-0000-4000-8000-000000000001","host":"owner-choice.localhost","ports":[]}]});
         let result = project_ports(value.clone(), "office", &mut tunnels).unwrap();
         assert_eq!(
-            result.value["workspaces"][0]["host"],
+            result.value["computers"][0]["host"],
             "dev-1a2b3c4d.localhost"
         );
         assert_eq!(
@@ -896,10 +901,10 @@ mod tests {
         );
         // An owner without a named host still gets cookie isolation here.
         let mut value = value;
-        value["workspaces"][0]["host"] = Value::Null;
+        value["computers"][0]["host"] = Value::Null;
         let result = project_ports(value, "office", &mut tunnels).unwrap();
         assert_eq!(
-            result.value["workspaces"][0]["host"],
+            result.value["computers"][0]["host"],
             "dev-1a2b3c4d.localhost"
         );
     }
@@ -909,7 +914,7 @@ mod tests {
         let mut tunnels = Tunnels::default();
         tunnels.live.insert(key("office"), tunnel(43000, 32000));
         tunnels.intents.insert(key("office"), intent(43000));
-        // The VM restarted and the owner published the port on a new endpoint.
+        // The computer restarted and the owner published the port on a new endpoint.
         let result = project_ports(observed(Some(32001)), "office", &mut tunnels).unwrap();
         assert_eq!(result.closed.len(), 1);
         assert_eq!(
@@ -942,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn a_restarting_vm_keeps_its_tunnel_and_intent() {
+    fn a_restarting_computer_keeps_its_tunnel_and_intent() {
         let mut tunnels = Tunnels::default();
         tunnels.live.insert(key("office"), tunnel(43000, 32000));
         tunnels.intents.insert(key("office"), intent(43000));
@@ -963,8 +968,8 @@ mod tests {
         tunnels.intents.insert(key("office"), intent(43000));
         // The owner removed the publication while the guest service keeps listening.
         let mut value = observed(None);
-        value["workspaces"][0]["ports"][0]["configured"] = json!(false);
-        value["workspaces"][0]["ports"][0]["state"] = json!("unpublished");
+        value["computers"][0]["ports"][0]["configured"] = json!(false);
+        value["computers"][0]["ports"][0]["state"] = json!("unpublished");
         let result = project_ports(value, "office", &mut tunnels).unwrap();
         assert_eq!(result.closed.len(), 1);
         assert!(result.reconnect.is_empty());
@@ -977,9 +982,9 @@ mod tests {
         tunnels.live.insert(key("office"), tunnel(43000, 32000));
         tunnels.intents.insert(key("office"), intent(43000));
         let mut failed = observed(None);
-        failed["workspaces"][0]["error"] = json!("unreachable");
-        failed["workspaces"][0]["ports"][0]["configured"] = json!(false);
-        failed["workspaces"][0]["ports"][0]["state"] = json!("unpublished");
+        failed["computers"][0]["error"] = json!("unreachable");
+        failed["computers"][0]["ports"][0]["configured"] = json!(false);
+        failed["computers"][0]["ports"][0]["state"] = json!("unpublished");
         let result = project_ports(failed, "office", &mut tunnels).unwrap();
         assert!(result.closed.is_empty());
         assert!(
@@ -989,13 +994,13 @@ mod tests {
     }
 
     #[test]
-    fn a_deleted_port_or_vm_forgets_only_its_own_tunnels() {
+    fn a_deleted_port_or_computer_forgets_only_its_own_tunnels() {
         let mut tunnels = Tunnels::default();
-        for host in ["office", "other"] {
-            tunnels.live.insert(key(host), tunnel(43000, 32000));
-            tunnels.intents.insert(key(host), intent(43000));
+        for device in ["office", "other"] {
+            tunnels.live.insert(key(device), tunnel(43000, 32000));
+            tunnels.intents.insert(key(device), intent(43000));
         }
-        let result = project_ports(json!({"workspaces":[]}), "office", &mut tunnels).unwrap();
+        let result = project_ports(json!({"computers":[]}), "office", &mut tunnels).unwrap();
         assert_eq!(result.closed.len(), 1);
         assert!(
             !tunnels.live.contains_key(&key("office"))
@@ -1030,7 +1035,7 @@ mod tests {
         let first = state.observe("office");
         let second = state.observe("office");
         project_observed(observed(Some(32001)), "office", second, &mut state).unwrap();
-        let older = project_observed(json!({"workspaces":[]}), "office", first, &mut state);
+        let older = project_observed(json!({"computers":[]}), "office", first, &mut state);
         assert!(
             older.is_err(),
             "the old poll deleted the newer verified tunnel"
@@ -1039,46 +1044,46 @@ mod tests {
     }
 
     #[test]
-    fn a_recreated_vm_cannot_relabel_an_older_network_snapshot() {
-        let before = HashMap::from([("dev".into(), "original-vm".into())]);
-        let after = HashMap::from([("dev".into(), "replacement-vm".into())]);
+    fn a_recreated_computer_cannot_relabel_an_older_network_snapshot() {
+        let before = HashMap::from([("dev".into(), "original-computer".into())]);
+        let after = HashMap::from([("dev".into(), "replacement-computer".into())]);
         let snapshot =
-            json!({"workspaces":[{"workspace":"dev","ports":[{"port":3000,"hostPort":32000}]}]});
+            json!({"computers":[{"computer":"dev","ports":[{"port":3000,"hostPort":32000}]}]});
         assert!(
             project_host_ports(snapshot, &before, &after).is_err(),
-            "the old endpoint was assigned the replacement VM's identity"
+            "the old endpoint was assigned the replacement computer's identity"
         );
     }
 
     #[test]
-    fn a_vm_created_during_observation_requires_a_fresh_identity_snapshot() {
+    fn a_computer_created_during_observation_requires_a_fresh_identity_snapshot() {
         let before = HashMap::new();
-        let after = HashMap::from([("dev".into(), "new-vm".into())]);
-        let snapshot = json!({"workspaces":[{"workspace":"dev","ports":[]}]});
+        let after = HashMap::from([("dev".into(), "new-computer".into())]);
+        let snapshot = json!({"computers":[{"computer":"dev","ports":[]}]});
         assert!(project_host_ports(snapshot, &before, &after).is_err());
     }
 
     #[test]
-    fn stable_vm_identity_survives_unrelated_metadata_changes() {
+    fn stable_computer_identity_survives_unrelated_metadata_changes() {
         let before = HashMap::from([
-            ("dev".into(), "stable-vm".into()),
+            ("dev".into(), "stable-computer".into()),
             ("other".into(), "old-other".into()),
         ]);
         let after = HashMap::from([
-            ("dev".into(), "stable-vm".into()),
+            ("dev".into(), "stable-computer".into()),
             ("other".into(), "new-other".into()),
         ]);
-        let snapshot = json!({"workspaces":[{"workspace":"dev","ports":[]}]});
+        let snapshot = json!({"computers":[{"computer":"dev","ports":[]}]});
         let projected = project_host_ports(snapshot, &before, &after).unwrap();
-        assert_eq!(projected["workspaces"][0]["vmId"], "stable-vm");
+        assert_eq!(projected["computers"][0]["computerId"], "stable-computer");
     }
 
     #[test]
-    fn a_workspace_observation_error_does_not_forget_its_connections() {
+    fn a_computer_observation_error_does_not_forget_its_connections() {
         let mut state = Tunnels::default();
         state.live.insert(key("office"), tunnel(43000, 32000));
         state.intents.insert(key("office"), intent(43000));
-        let failed = json!({"workspaces":[{"workspace":"dev","vmId":"vm","ports":[],"error":"Could not read network settings."}]});
+        let failed = json!({"computers":[{"computer":"dev","computerId":"computer","ports":[],"error":"Could not read network settings."}]});
         let result = project_ports(failed, "office", &mut state).unwrap();
         assert!(
             result.closed.is_empty(),
@@ -1089,7 +1094,7 @@ mod tests {
         assert_eq!(port(&recovered)["hostPort"], 43000);
         assert!(recovered.reconnect.is_empty());
         let deleted = project_ports(
-            json!({"workspaces":[{"vmId":"vm","ports":[],"error":null}]}),
+            json!({"computers":[{"computerId":"computer","ports":[],"error":null}]}),
             "office",
             &mut state,
         )
@@ -1099,14 +1104,14 @@ mod tests {
     }
 
     #[test]
-    fn an_observation_error_preserves_only_that_workspaces_intents() {
+    fn an_observation_error_preserves_only_that_computers_intents() {
         let mut state = Tunnels::default();
         state.intents.insert(key("office"), intent(43000));
         let healthy_key = ("office".into(), "healthy".into(), 3000);
         state.intents.insert(healthy_key.clone(), intent(43001));
-        let partial = json!({"workspaces":[
-            {"vmId":"vm","ports":[],"error":"Read failed"},
-            {"vmId":"healthy","ports":[],"error":null}
+        let partial = json!({"computers":[
+            {"computerId":"computer","ports":[],"error":"Read failed"},
+            {"computerId":"healthy","ports":[],"error":null}
         ]});
         project_ports(partial, "office", &mut state).unwrap();
         assert!(
@@ -1119,17 +1124,17 @@ mod tests {
     #[test]
     fn a_reconnect_cannot_restore_a_tunnel_after_close_all() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        tunnels().intents.insert(key(&host), intent(43000));
-        let request = project_ports(observed(Some(32000)), &host, &mut tunnels())
+        let device = uuid::Uuid::new_v4().to_string();
+        tunnels().intents.insert(key(&device), intent(43000));
+        let request = project_ports(observed(Some(32000)), &device, &mut tunnels())
             .unwrap()
             .reconnect
             .pop()
             .unwrap();
         close_all();
         let unused = finish_reconnect(&request, Ok(tunnel(43000, request.remote_port)));
-        let restored = tunnels().live.contains_key(&key(&host));
-        close_host(&host);
+        let restored = tunnels().live.contains_key(&key(&device));
+        close_device(&device);
         assert!(
             unused.is_some(),
             "cleanup did not invalidate the pending reconnect"
@@ -1140,29 +1145,29 @@ mod tests {
     #[test]
     fn an_older_reconnect_cannot_clear_a_newer_attempt() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        tunnels().intents.insert(key(&host), intent(43000));
-        let old = project_ports(observed(Some(32000)), &host, &mut tunnels())
+        let device = uuid::Uuid::new_v4().to_string();
+        tunnels().intents.insert(key(&device), intent(43000));
+        let old = project_ports(observed(Some(32000)), &device, &mut tunnels())
             .unwrap()
             .reconnect
             .pop()
             .unwrap();
-        forget_port(&key(&host));
-        tunnels().intents.insert(key(&host), intent(43000));
-        let newer = project_ports(observed(Some(32001)), &host, &mut tunnels())
+        forget_port(&key(&device));
+        tunnels().intents.insert(key(&device), intent(43000));
+        let newer = project_ports(observed(Some(32001)), &device, &mut tunnels())
             .unwrap()
             .reconnect
             .pop()
             .unwrap();
         let unused = finish_reconnect(&old, Ok(tunnel(43000, old.remote_port)));
-        let marked = tunnels().connecting.contains_key(&key(&host));
-        let stale = tunnels().live.contains_key(&key(&host));
+        let marked = tunnels().connecting.contains_key(&key(&device));
+        let stale = tunnels().live.contains_key(&key(&device));
         let valid = finish_reconnect(&newer, Ok(tunnel(43000, newer.remote_port)));
         let endpoint = tunnels()
             .live
-            .get(&key(&host))
+            .get(&key(&device))
             .map(|tunnel| tunnel.remote_port);
-        close_host(&host);
+        close_device(&device);
         assert!(unused.is_some(), "an obsolete reconnect was committed");
         assert!(marked, "the older worker cleared a newer attempt's marker");
         assert!(!stale);
@@ -1189,10 +1194,10 @@ mod tests {
         let mut state = Tunnels::default();
         state.intents.insert(key("office"), intent(43000));
         let mut invalid = observed(Some(32000));
-        invalid["workspaces"]
+        invalid["computers"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"workspace":"bad","ports":[]}));
+            .push(json!({"computer":"bad","ports":[]}));
         assert!(project_ports(invalid, "office", &mut state).is_err());
         assert!(
             !state.connecting.contains_key(&key("office")),
@@ -1211,10 +1216,10 @@ mod tests {
         state.live.insert(key("office"), tunnel(43000, 32000));
         state.intents.insert(key("office"), intent(43000));
         let mut invalid = observed(Some(32001));
-        invalid["workspaces"]
+        invalid["computers"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"vmId":"bad","ports":[{"port":65536}]}));
+            .push(json!({"computerId":"bad","ports":[{"port":65536}]}));
         assert!(project_ports(invalid, "office", &mut state).is_err());
         assert!(
             state
@@ -1229,41 +1234,41 @@ mod tests {
     #[test]
     fn concurrent_saves_reserve_the_last_connection_slot() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        for vm in 0..TUNNEL_LIMIT - 1 {
+        let device = uuid::Uuid::new_v4().to_string();
+        for computer in 0..TUNNEL_LIMIT - 1 {
             tunnels()
                 .intents
-                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+                .insert((device.clone(), computer.to_string(), 3000), intent(43000));
         }
-        let first = PendingSave::new((host.clone(), "first".into(), 3000)).unwrap();
-        let second = PendingSave::new((host.clone(), "second".into(), 3000));
+        let first = PendingSave::new((device.clone(), "first".into(), 3000)).unwrap();
+        let second = PendingSave::new((device.clone(), "second".into(), 3000));
         let rejected = second.is_err();
         drop(second);
         drop(first);
-        close_host(&host);
+        close_device(&device);
         assert!(rejected, "two saves were admitted into the last slot");
     }
 
     #[test]
     fn a_failed_save_releases_its_connection_slot() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        for vm in 0..TUNNEL_LIMIT - 1 {
+        let device = uuid::Uuid::new_v4().to_string();
+        for computer in 0..TUNNEL_LIMIT - 1 {
             tunnels()
                 .intents
-                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+                .insert((device.clone(), computer.to_string(), 3000), intent(43000));
         }
         let failed = save_tunnel(
-            (host.clone(), "failed".into(), 3000),
+            (device.clone(), "failed".into(), 3000),
             None,
             None,
             32000,
             |_| Err("SSH fixture failed".into()),
         );
-        let next = PendingSave::new((host.clone(), "next".into(), 3000));
+        let next = PendingSave::new((device.clone(), "next".into(), 3000));
         let admitted = next.is_ok();
         drop(next);
-        close_host(&host);
+        close_device(&device);
         assert!(failed.is_err());
         assert!(admitted, "a failed open leaked its connection slot");
     }
@@ -1271,21 +1276,21 @@ mod tests {
     #[test]
     fn disconnected_intents_keep_their_connection_slots() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        for vm in 0..TUNNEL_LIMIT {
+        let device = uuid::Uuid::new_v4().to_string();
+        for computer in 0..TUNNEL_LIMIT {
             tunnels()
                 .intents
-                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+                .insert((device.clone(), computer.to_string(), 3000), intent(43000));
         }
-        disconnect_host(&host);
-        let extra = PendingSave::new((host.clone(), "extra".into(), 3000));
+        disconnect_device(&device);
+        let extra = PendingSave::new((device.clone(), "extra".into(), 3000));
         let rejected = extra.is_err();
         drop(extra);
         // Editing an existing connection remains possible at the limit.
-        let existing = PendingSave::new((host.clone(), "0".into(), 3000));
+        let existing = PendingSave::new((device.clone(), "0".into(), 3000));
         let editable = existing.is_ok();
         drop(existing);
-        close_host(&host);
+        close_device(&device);
         assert!(rejected, "disconnecting freed slots promised to reconnects");
         assert!(editable, "a configured connection could not be edited");
     }
@@ -1293,22 +1298,23 @@ mod tests {
     #[test]
     fn an_older_poll_cannot_forget_a_newly_saved_tunnel() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        let key = key(&host);
-        let before = tunnels().observe(&host);
+        let device = uuid::Uuid::new_v4().to_string();
+        let key = key(&device);
+        let before = tunnels().observe(&device);
         save_tunnel(key.clone(), None, Some("http".into()), 32000, |_| {
             Ok(tunnel(43100, 32000))
         })
         .unwrap();
         let mut state = tunnels();
-        let result = project_observed(json!({"workspaces":[]}), &host, before, &mut state);
+        let result = project_observed(json!({"computers":[]}), &device, before, &mut state);
         let kept = state.live.contains_key(&key) && state.intents.contains_key(&key);
-        let current = state.observe(&host);
-        let fresh = project_observed(json!({"workspaces":[]}), &host, current, &mut state).unwrap();
+        let current = state.observe(&device);
+        let fresh =
+            project_observed(json!({"computers":[]}), &device, current, &mut state).unwrap();
         let deleted = !state.live.contains_key(&key) && !state.intents.contains_key(&key);
         drop(state);
         drop(fresh);
-        close_host(&host);
+        close_device(&device);
         assert!(result.is_err(), "an obsolete poll was applied");
         assert!(kept, "an obsolete poll deleted the saved connection");
         assert!(deleted, "a current deletion must still close the tunnel");
@@ -1317,34 +1323,34 @@ mod tests {
     #[test]
     fn polls_wait_for_their_own_hosts_pending_save() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        let pending = PendingSave::new(key(&host)).unwrap();
+        let device = uuid::Uuid::new_v4().to_string();
+        let pending = PendingSave::new(key(&device)).unwrap();
         let mut state = tunnels();
-        let observation = state.observe(&host);
+        let observation = state.observe(&device);
         assert!(
-            project_observed(json!({"workspaces":[]}), &host, observation, &mut state).is_err()
+            project_observed(json!({"computers":[]}), &device, observation, &mut state).is_err()
         );
         let other = state.observe("other");
-        assert!(project_observed(json!({"workspaces":[]}), "other", other, &mut state).is_ok());
+        assert!(project_observed(json!({"computers":[]}), "other", other, &mut state).is_ok());
         drop(state);
         drop(pending);
-        close_host(&host);
+        close_device(&device);
     }
 
     #[test]
     fn a_removed_port_is_not_restored_by_an_older_save() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        let key = key(&host);
+        let device = uuid::Uuid::new_v4().to_string();
+        let key = key(&device);
         let result = save_tunnel(key.clone(), None, Some("http".into()), 32000, |_| {
             forget_port(&key);
             Ok(tunnel(43100, 32000))
         });
         let mut state = tunnels();
-        let projection = project_ports(observed(None), &host, &mut state).unwrap();
+        let projection = project_ports(observed(None), &device, &mut state).unwrap();
         let restored = state.live.contains_key(&key) || state.intents.contains_key(&key);
         drop(state);
-        close_host(&host);
+        close_device(&device);
         assert!(result.is_err(), "an obsolete save succeeded after removal");
         assert!(!restored, "removal was undone by the older save");
         assert_eq!(port(&projection)["configured"], false);
@@ -1353,8 +1359,8 @@ mod tests {
     #[test]
     fn a_save_removed_during_publication_never_opens_a_tunnel() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        let key = key(&host);
+        let device = uuid::Uuid::new_v4().to_string();
+        let key = key(&device);
         let pending = PendingSave::new(key.clone()).unwrap();
         forget_port(&key);
         let result = finish_save(pending, None, Some("http".into()), 32000, |_| {
@@ -1362,14 +1368,14 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(!tunnels().saves.contains_key(&key));
-        close_host(&host);
+        close_device(&device);
     }
 
     #[test]
     fn saving_a_port_never_holds_the_lock_while_ssh_starts_and_keeps_the_old_tunnel_on_failure() {
         let _guard = crate::test_support::global_state();
-        let host = uuid::Uuid::new_v4().to_string();
-        let key = key(&host);
+        let device = uuid::Uuid::new_v4().to_string();
+        let key = key(&device);
         save_tunnel(key.clone(), None, Some("http".into()), 32000, |requested| {
             assert!(
                 TUNNELS.get().unwrap().try_lock().is_ok(),
@@ -1416,9 +1422,9 @@ mod tests {
         })
         .unwrap();
         assert_eq!(tunnels().intents[&key].scheme.as_deref(), Some("http"));
-        disconnect_host(&host);
+        disconnect_device(&device);
         assert!(!tunnels().live.contains_key(&key) && tunnels().intents.contains_key(&key));
-        close_host(&host);
+        close_device(&device);
         assert!(!tunnels().intents.contains_key(&key));
     }
 

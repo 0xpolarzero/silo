@@ -21,7 +21,7 @@ static DOCUMENT: Mutex<()> = Mutex::new(());
 static REMOVALS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 type Vault = BTreeMap<String, String>;
 /// The credential-store result and when it was obtained. A failure is cached only
-/// briefly so a locked or denied store does not fail every later VM start until
+/// briefly so a locked or denied store does not fail every later computer start until
 /// the user edits a secret; the store is asked again after `STORE_RETRY_AFTER`.
 type Cached = Option<(Result<Vault, String>, Instant)>;
 static VAULT: Mutex<Cached> = Mutex::new(None);
@@ -63,12 +63,12 @@ struct Secret {
     id: String,
     name: String,
     value_id: String,
-    workspaces: Vec<String>,
+    computers: Vec<String>,
     allowed_domains: Vec<String>,
     #[serde(default)]
     affected: Vec<String>,
     #[serde(default)]
-    pending_workspaces: Vec<String>,
+    pending_computers: Vec<String>,
     #[serde(default)]
     errors: BTreeMap<String, String>,
     #[serde(default)]
@@ -81,7 +81,7 @@ pub(crate) struct PendingRevocation {
     secret_id: String,
     generation: String,
     pub(crate) name: String,
-    pub(crate) workspace: String,
+    pub(crate) computer: String,
 }
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -100,7 +100,7 @@ pub struct Request {
     id: Option<String>,
     name: String,
     value: Option<String>,
-    workspaces: Vec<String>,
+    computers: Vec<String>,
     allowed_domains: Vec<String>,
 }
 fn entry() -> Result<keyring::Entry, String> {
@@ -175,7 +175,7 @@ pub(crate) fn use_test_vault(values: Option<BTreeMap<String, String>>) {
 }
 /// Tests on this thread use `path` as the secret document instead of the app's.
 /// Values still come from the credential store, so tests must not assign secrets
-/// to a workspace whose runtime material they read.
+/// to a computer whose runtime material they read.
 #[cfg(test)]
 pub(crate) fn use_test_store(path: Option<PathBuf>) {
     TEST_PATH.with(|test| *test.borrow_mut() = path);
@@ -246,11 +246,11 @@ fn public(secret: &Secret) -> Value {
         .iter()
         .map(|(name, error)| format!("{name}: {error}"))
         .collect::<Vec<_>>();
-    json!({"id":secret.id,"name":secret.name,"workspaces":secret.workspaces,"allowedDomains":secret.allowed_domains,
-        "state": if secret.errors.is_empty() && secret.affected.iter().any(|workspace| !secret.pending_workspaces.contains(workspace)) {
+    json!({"id":secret.id,"name":secret.name,"computers":secret.computers,"allowedDomains":secret.allowed_domains,
+        "state": if secret.errors.is_empty() && secret.affected.iter().any(|computer| !secret.pending_computers.contains(computer)) {
             "applying"
-        } else if secret.pending_workspaces.is_empty() {"active"} else {"restart-required"},
-        "pendingWorkspaces":secret.pending_workspaces,"removing":secret.removing,
+        } else if secret.pending_computers.is_empty() {"active"} else {"restart-required"},
+        "pendingComputers":secret.pending_computers,"removing":secret.removing,
         "error": if errors.is_empty() {Value::Null} else {json!(errors.join(" "))}})
 }
 pub(crate) fn snapshot() -> Result<Vec<Value>, String> {
@@ -263,13 +263,13 @@ pub(crate) fn activities() -> Result<Vec<Value>, String> {
     Ok(load()?.activities)
 }
 pub(crate) fn runtime_material(
-    workspace: &str,
+    computer: &str,
 ) -> Result<Vec<(String, String, Vec<String>)>, String> {
     let document = load()?;
     let selected: Vec<_> = document
         .secrets
         .iter()
-        .filter(|s| !s.removing && s.workspaces.iter().any(|w| w == workspace))
+        .filter(|s| !s.removing && s.computers.iter().any(|w| w == computer))
         .collect();
     if selected.is_empty() {
         return Ok(Vec::new());
@@ -300,10 +300,10 @@ pub(crate) fn fork_assignments(source: &str, target: &str) -> Result<(), String>
 fn copy_assignment_refs(document: &mut Document, source: &str, target: &str) {
     for secret in &mut document.secrets {
         if !secret.removing
-            && secret.workspaces.iter().any(|name| name == source)
-            && !secret.workspaces.iter().any(|name| name == target)
+            && secret.computers.iter().any(|name| name == source)
+            && !secret.computers.iter().any(|name| name == target)
         {
-            secret.workspaces.push(target.into());
+            secret.computers.push(target.into());
         }
     }
 }
@@ -316,11 +316,11 @@ fn event(document: &mut Document, title: &str, failed: bool) {
         document.activities.remove(0);
     }
 }
-fn revision(document: &Document, workspace: &str) -> String {
+fn revision(document: &Document, computer: &str) -> String {
     let desired: Vec<_> = document
         .secrets
         .iter()
-        .filter(|s| !s.removing && s.workspaces.iter().any(|w| w == workspace))
+        .filter(|s| !s.removing && s.computers.iter().any(|w| w == computer))
         .map(|s| (&s.name, &s.value_id, &s.allowed_domains))
         .collect();
     format!(
@@ -328,89 +328,89 @@ fn revision(document: &Document, workspace: &str) -> String {
         Sha256::digest(serde_json::to_vec(&desired).unwrap_or_default())
     )
 }
-pub(crate) fn workspace_revision(workspace: &str) -> Result<String, String> {
-    Ok(revision(&load()?, workspace))
+pub(crate) fn computer_revision(computer: &str) -> Result<String, String> {
+    Ok(revision(&load()?, computer))
 }
-/// Per workspace, a counter of verified starts and the secret revision they booted.
+/// Per computer, a counter of verified starts and the secret revision they booted.
 static STARTS: Mutex<BTreeMap<String, (u64, String)>> = Mutex::new(BTreeMap::new());
-fn last_start(workspace: &str) -> Option<(u64, String)> {
+fn last_start(computer: &str) -> Option<(u64, String)> {
     STARTS
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .get(workspace)
+        .get(computer)
         .cloned()
 }
-pub(crate) fn workspace_started(workspace: &str, applied_revision: &str) -> Result<(), String> {
+pub(crate) fn computer_started(computer: &str, applied_revision: &str) -> Result<(), String> {
     // Called only after runtime verification. No operation lock: start owns the runtime lock.
     if store_path().is_none() {
         return Ok(());
     }
     update(|document| {
-        if revision(document, workspace) != applied_revision {
+        if revision(document, computer) != applied_revision {
             return Ok(());
         }
         let mut starts = STARTS.lock().unwrap_or_else(PoisonError::into_inner);
-        let start = starts.entry(workspace.into()).or_default();
+        let start = starts.entry(computer.into()).or_default();
         *start = (start.0.wrapping_add(1), applied_revision.into());
         drop(starts);
         document
             .pending_revocations
-            .retain(|record| record.workspace != workspace);
+            .retain(|record| record.computer != computer);
         for secret in &mut document.secrets {
-            secret.pending_workspaces.retain(|w| w != workspace);
-            secret.affected.retain(|w| w != workspace);
-            secret.errors.remove(workspace);
+            secret.pending_computers.retain(|w| w != computer);
+            secret.affected.retain(|w| w != computer);
+            secret.errors.remove(computer);
         }
         Ok(())
     })
 }
-/// Called with the VM gate held after an observed stop. Assignments and deferred
+/// Called with the computer gate held after an observed stop. Assignments and deferred
 /// additions still apply on the next start; only removed generations are cleared.
-pub(crate) fn workspace_stopped(workspace: &str) -> Result<(), String> {
-    if store_path().is_none() || pending_names(workspace)?.is_empty() {
+pub(crate) fn computer_stopped(computer: &str) -> Result<(), String> {
+    if store_path().is_none() || pending_names(computer)?.is_empty() {
         return Ok(());
     }
     update(|document| {
         document
             .pending_revocations
-            .retain(|record| record.workspace != workspace);
+            .retain(|record| record.computer != computer);
         Ok(())
     })
 }
 
-pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
+pub(crate) fn computer_removed(computer: &str) -> Result<(), String> {
     if store_path().is_none() {
         return Ok(());
     }
     update(|document| {
-        // Invalidate saves that validated the old sandbox, including after name reuse.
+        // Invalidate saves that validated the old computer, including after name reuse.
         let mut removals = REMOVALS.lock().unwrap_or_else(PoisonError::into_inner);
-        let revision = removals.entry(workspace.into()).or_default();
+        let revision = removals.entry(computer.into()).or_default();
         *revision = revision.wrapping_add(1);
         drop(removals);
         document
             .pending_revocations
-            .retain(|record| record.workspace != workspace);
+            .retain(|record| record.computer != computer);
         for secret in &mut document.secrets {
-            secret.workspaces.retain(|w| w != workspace);
-            secret.affected.retain(|w| w != workspace);
-            secret.pending_workspaces.retain(|w| w != workspace);
-            secret.errors.remove(workspace);
+            secret.computers.retain(|w| w != computer);
+            secret.affected.retain(|w| w != computer);
+            secret.pending_computers.retain(|w| w != computer);
+            secret.errors.remove(computer);
         }
         Ok(())
     })
 }
-fn assignment_revision(workspaces: &[String]) -> Vec<u64> {
+fn assignment_revision(computers: &[String]) -> Vec<u64> {
     let removals = REMOVALS.lock().unwrap_or_else(PoisonError::into_inner);
-    workspaces
+    computers
         .iter()
-        .map(|workspace| removals.get(workspace).copied().unwrap_or_default())
+        .map(|computer| removals.get(computer).copied().unwrap_or_default())
         .collect()
 }
 /// Called inside the document transaction so deletion cannot overtake the commit.
-fn ensure_assignment_revision(workspaces: &[String], expected: &[u64]) -> Result<(), String> {
-    if assignment_revision(workspaces) != expected {
-        return Err("A selected sandbox was removed while saving this secret. Select sandboxes again and retry.".into());
+fn ensure_assignment_revision(computers: &[String], expected: &[u64]) -> Result<(), String> {
+    if assignment_revision(computers) != expected {
+        return Err("A selected computer was removed while saving this secret. Select computers again and retry.".into());
     }
     Ok(())
 }
@@ -508,14 +508,14 @@ fn validate(request: &Request, document: &Document) -> Result<(), String> {
             "Secret values must contain between 1 and 65536 bytes without null characters.".into(),
         );
     }
-    if request.workspaces.is_empty()
-        || request.workspaces.len() > 100
-        || request.workspaces.iter().collect::<BTreeSet<_>>().len() != request.workspaces.len()
+    if request.computers.is_empty()
+        || request.computers.len() > 100
+        || request.computers.iter().collect::<BTreeSet<_>>().len() != request.computers.len()
         || request.allowed_domains.is_empty()
         || request.allowed_domains.len() > 100
         || !request.allowed_domains.iter().all(|d| valid_domain(d))
     {
-        return Err("Select sandboxes and valid allowed domains.".into());
+        return Err("Select computers and valid allowed domains.".into());
     }
     Ok(())
 }
@@ -526,17 +526,17 @@ fn reconcile(app: &AppHandle, id: &str, operation: &mut OperationGuard) -> Resul
         id,
         operation,
         &runtime_material,
-        &mut |workspace, _desired| crate::runtime::apply_secrets(app, workspace),
+        &mut |computer, _desired| crate::runtime::apply_secrets(app, computer),
         &|| {
             let _ = app.emit("silo://application-state-changed", ());
         },
     )
 }
-/// Applies one secret's desired state to each affected VM. The global secret
-/// operation lock is released while a VM applies, which can wait on that VM's gate
+/// Applies one secret's desired state to each affected computer. The global secret
+/// operation lock is released while a computer applies, which can wait on that computer's gate
 /// for minutes, so forks, updates and other secret operations are not blocked. It
 /// is re-taken to record each result and before credential-store changes. When the
-/// VM's desired secrets changed while unlocked, the newer state is applied again.
+/// Computer's desired secrets changed while unlocked, the newer state is applied again.
 fn reconcile_with(
     id: &str,
     operation: &mut OperationGuard,
@@ -562,26 +562,26 @@ fn reconcile_with(
     let targets: BTreeSet<_> = secret
         .affected
         .iter()
-        .chain(secret.workspaces.iter())
+        .chain(secret.computers.iter())
         .cloned()
         .collect();
-    for workspace in targets {
+    for computer in targets {
         let mut attempts = 0;
         let (result, applied_revision) = loop {
             if !load()?.secrets.iter().any(|secret| secret.id == id) {
                 return Ok(());
             }
-            let desired_revision = workspace_revision(&workspace)?;
-            let started_before = last_start(&workspace);
-            let desired = material(&workspace);
+            let desired_revision = computer_revision(&computer)?;
+            let started_before = last_start(&computer);
+            let desired = material(&computer);
             *operation = None;
-            let result = desired.and_then(|desired| apply(&workspace, desired));
+            let result = desired.and_then(|desired| apply(&computer, desired));
             *operation = Some(lock_unit(&OPERATION));
             attempts += 1;
-            if attempts >= 3 || workspace_revision(&workspace)? == desired_revision {
+            if attempts >= 3 || computer_revision(&computer)? == desired_revision {
                 // A restart that finished while this apply ran already booted with the
                 // desired secrets, so a deferred result must not ask for another one.
-                let restarted = last_start(&workspace).is_some_and(|start| {
+                let restarted = last_start(&computer).is_some_and(|start| {
                     Some(&start) != started_before.as_ref() && start.1 == desired_revision
                 });
                 break (
@@ -592,12 +592,12 @@ fn reconcile_with(
         };
         update(|document| {
             // Exhausted retries and concurrent deletion cannot publish an obsolete result.
-            if revision(document, &workspace) != applied_revision {
+            if revision(document, &computer) != applied_revision {
                 if let Some(secret) = document.secrets.iter_mut().find(|s| s.id == id) {
-                    if secret.affected.contains(&workspace)
-                        && !secret.pending_workspaces.contains(&workspace)
+                    if secret.affected.contains(&computer)
+                        && !secret.pending_computers.contains(&computer)
                     {
-                        secret.errors.entry(workspace.clone()).or_insert_with(|| {
+                        secret.errors.entry(computer.clone()).or_insert_with(|| {
                             "Secret settings changed during this update. Retry to verify the latest settings.".into()
                         });
                     }
@@ -607,18 +607,18 @@ fn reconcile_with(
             let Some(secret) = document.secrets.iter_mut().find(|s| s.id == id) else {
                 return Ok(());
             };
-            secret.pending_workspaces.retain(|w| w != &workspace);
+            secret.pending_computers.retain(|w| w != &computer);
             match &result {
                 Ok(pending_names) => {
-                    secret.errors.remove(&workspace);
+                    secret.errors.remove(&computer);
                     if !secret.removing && pending_names.contains(&secret.name) {
-                        secret.pending_workspaces.push(workspace.clone());
+                        secret.pending_computers.push(computer.clone());
                     } else {
-                        secret.affected.retain(|w| w != &workspace);
+                        secret.affected.retain(|w| w != &computer);
                     }
                 }
                 Err(error) => {
-                    secret.errors.insert(workspace.clone(), error.clone());
+                    secret.errors.insert(computer.clone(), error.clone());
                 }
             }
             Ok(())
@@ -659,8 +659,8 @@ fn remove_from_store(id: &str) -> Result<(), String> {
             .find(|secret| secret.id == id)
             .ok_or("This secret no longer exists.")?
             .removing = true;
-        for workspace in secret
-            .workspaces
+        for computer in secret
+            .computers
             .iter()
             .chain(&secret.affected)
             .collect::<BTreeSet<_>>()
@@ -669,7 +669,7 @@ fn remove_from_store(id: &str) -> Result<(), String> {
                 secret_id: secret.id.clone(),
                 generation: secret.value_id.clone(),
                 name: secret.name.clone(),
-                workspace: workspace.clone(),
+                computer: computer.clone(),
             };
             if !document.pending_revocations.contains(&record) {
                 document.pending_revocations.push(record);
@@ -687,18 +687,18 @@ fn remove_from_store(id: &str) -> Result<(), String> {
     })
 }
 
-pub(crate) fn pending_names(workspace: &str) -> Result<Vec<String>, String> {
+pub(crate) fn pending_names(computer: &str) -> Result<Vec<String>, String> {
     Ok(load()?
         .pending_revocations
         .into_iter()
-        .filter(|record| record.workspace == workspace)
+        .filter(|record| record.computer == computer)
         .map(|record| record.name)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect())
 }
 
-/// Called inside the VM gate, immediately before name-only revocation. A current
+/// Called inside the computer gate, immediately before name-only revocation. A current
 /// assignment of this name must be applied by its own reconcile, never removed by
 /// a retry for an older generation. Keep the warning until replacement is verified.
 pub(crate) fn revocation_needed(record: &PendingRevocation) -> Result<bool, String> {
@@ -707,7 +707,7 @@ pub(crate) fn revocation_needed(record: &PendingRevocation) -> Result<bool, Stri
         && !document.secrets.iter().any(|secret| {
             !secret.removing
                 && secret.name == record.name
-                && secret.workspaces.contains(&record.workspace)
+                && secret.computers.contains(&record.computer)
         }))
 }
 
@@ -715,12 +715,12 @@ pub(crate) fn revocation_needed(record: &PendingRevocation) -> Result<bool, Stri
 /// present before that update, so a concurrent later removal remains pending.
 pub(crate) fn revocations_replaced(
     records: &[PendingRevocation],
-    workspace: &str,
+    computer: &str,
     pending_names: &[String],
 ) -> Result<(), String> {
     update(|document| {
         document.pending_revocations.retain(|record| {
-            record.workspace != workspace
+            record.computer != computer
                 || pending_names.contains(&record.name)
                 || !records.contains(record)
         });
@@ -804,10 +804,10 @@ pub async fn save_secret(
         let _update = crate::updates::operation_guard()?;
         let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
-        let validated_assignments = assignment_revision(&request.workspaces);
+        let validated_assignments = assignment_revision(&request.computers);
         let document = load()?;
         validate(&request, &document)?;
-        crate::runtime::validate_secret_workspaces(&app, &request.workspaces)?;
+        crate::runtime::validate_secret_computers(&app, &request.computers)?;
         let id = request
             .id
             .clone()
@@ -823,11 +823,11 @@ pub async fn save_secret(
             original.ok_or("Enter a secret value.")?.value_id.clone()
         };
         update(|d| {
-            ensure_assignment_revision(&request.workspaces, &validated_assignments)?;
+            ensure_assignment_revision(&request.computers, &validated_assignments)?;
             let affected = original
                 .into_iter()
-                .flat_map(|s| s.affected.iter().chain(s.workspaces.iter()))
-                .chain(request.workspaces.iter())
+                .flat_map(|s| s.affected.iter().chain(s.computers.iter()))
+                .chain(request.computers.iter())
                 .cloned()
                 .collect::<BTreeSet<_>>()
                 .into_iter()
@@ -837,10 +837,10 @@ pub async fn save_secret(
                 id: id.clone(),
                 name: request.name,
                 value_id,
-                workspaces: request.workspaces,
+                computers: request.computers,
                 allowed_domains: request.allowed_domains,
                 affected,
-                pending_workspaces: Vec::new(),
+                pending_computers: Vec::new(),
                 errors: BTreeMap::new(),
                 removing: false,
             });
@@ -912,7 +912,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     std::thread::spawn(move || {
         let mut operation = Some(lock_unit(&OPERATION));
         if let Ok(document) = load() {
-            // Migrate legacy removals before any slow live update can wait on a VM.
+            // Migrate legacy removals before any slow live update can wait on a computer.
             for secret in document.secrets.iter().filter(|secret| secret.removing) {
                 let _ = remove_from_store(&secret.id);
             }
@@ -972,7 +972,7 @@ mod tests {
             id: None,
             name: "API_KEY".into(),
             value: Some("private-value".into()),
-            workspaces: vec!["dev".into()],
+            computers: vec!["dev".into()],
             allowed_domains: vec!["api.example.com".into()],
         }
     }
@@ -981,10 +981,10 @@ mod tests {
             id: "id".into(),
             name: "API_KEY".into(),
             value_id: "private-reference".into(),
-            workspaces: vec!["dev".into()],
+            computers: vec!["dev".into()],
             allowed_domains: vec!["api.example.com".into()],
             affected: vec!["dev".into()],
-            pending_workspaces: Vec::new(),
+            pending_computers: Vec::new(),
             errors: BTreeMap::new(),
             removing: false,
         }
@@ -1072,10 +1072,10 @@ mod tests {
             ..Default::default()
         };
         copy_assignment_refs(&mut document, "dev", "fork");
-        assert_eq!(document.secrets[0].workspaces, ["dev", "fork"]);
+        assert_eq!(document.secrets[0].computers, ["dev", "fork"]);
         assert_eq!(document.secrets[0].value_id, "private-reference");
-        document.secrets[0].workspaces.retain(|name| name != "dev");
-        assert_eq!(document.secrets[0].workspaces, ["fork"]);
+        document.secrets[0].computers.retain(|name| name != "dev");
+        assert_eq!(document.secrets[0].computers, ["fork"]);
     }
     #[test]
     fn applied_revision_changes_for_rotation_domains_and_removal_not_status() {
@@ -1086,7 +1086,7 @@ mod tests {
         };
         let original = revision(&d, "dev");
         d.secrets[0].errors.insert("dev".into(), "Retry".into());
-        d.secrets[0].pending_workspaces.push("dev".into());
+        d.secrets[0].pending_computers.push("dev".into());
         assert_eq!(revision(&d, "dev"), original);
         d.secrets[0].value_id = "new-value-reference".into();
         assert_ne!(revision(&d, "dev"), original);
@@ -1217,17 +1217,17 @@ mod tests {
         assert!(validate(&request(), &d).is_err());
     }
     #[test]
-    fn snapshots_expose_only_public_metadata_and_actual_pending_vms() {
+    fn snapshots_expose_only_public_metadata_and_actual_pending_computers() {
         let _test_state = crate::test_support::global_state();
         let mut s = secret();
-        s.pending_workspaces = vec!["dev".into()];
+        s.pending_computers = vec!["dev".into()];
         let value = public(&s);
         let text = value.to_string();
         assert!(!text.contains("private-reference"));
         assert!(value.get("value").is_none());
         assert_eq!(value["state"], "restart-required");
-        assert_eq!(value["pendingWorkspaces"], json!(["dev"]));
-        s.pending_workspaces.clear();
+        assert_eq!(value["pendingComputers"], json!(["dev"]));
+        s.pending_computers.clear();
         s.errors
             .insert("dev".into(), "Could not apply secret changes.".into());
         assert!(public(&s)["error"].as_str().unwrap().contains("dev:"));
@@ -1239,7 +1239,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let mut secret = secret();
         assert_eq!(public(&secret)["state"], "applying");
-        secret.pending_workspaces.push("dev".into());
+        secret.pending_computers.push("dev".into());
         assert_eq!(public(&secret)["state"], "restart-required");
         secret.affected.push("other".into());
         assert_eq!(public(&secret)["state"], "applying");
@@ -1249,7 +1249,7 @@ mod tests {
         assert_eq!(public(&secret)["state"], "restart-required");
         assert!(public(&secret)["error"].is_string());
         secret.affected.clear();
-        secret.pending_workspaces.clear();
+        secret.pending_computers.clear();
         secret.errors.clear();
         assert_eq!(public(&secret)["state"], "active");
     }
@@ -1281,20 +1281,20 @@ mod tests {
         expire_failure(&mut cached, failed_at + STORE_RETRY_AFTER);
         assert!(
             cached.is_none(),
-            "an old failure no longer blocks VM starts"
+            "an old failure no longer blocks computer starts"
         );
         let mut unlocked: Cached = Some((Ok(Vault::new()), failed_at));
         expire_failure(&mut unlocked, failed_at + STORE_RETRY_AFTER * 100);
         assert!(unlocked.is_some(), "successful reads stay cached");
     }
     #[test]
-    fn deleting_and_recreating_a_sandbox_leaves_it_no_secret_material() {
+    fn deleting_and_recreating_a_computer_leaves_it_no_secret_material() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
         let mut assigned = secret();
-        assigned.workspaces = vec!["dev".into(), "other".into()];
-        assigned.pending_workspaces = vec!["dev".into()];
+        assigned.computers = vec!["dev".into(), "other".into()];
+        assigned.pending_computers = vec!["dev".into()];
         assigned.errors.insert("dev".into(), "Retry".into());
         save(&Document {
             secrets: vec![assigned],
@@ -1302,16 +1302,16 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        workspace_removed("dev").unwrap();
+        computer_removed("dev").unwrap();
         let document = load().unwrap();
         let kept = &document.secrets[0];
-        assert_eq!(kept.workspaces, ["other"]);
-        assert!(kept.affected.is_empty() && kept.pending_workspaces.is_empty());
+        assert_eq!(kept.computers, ["other"]);
+        assert!(kept.affected.is_empty() && kept.pending_computers.is_empty());
         assert!(kept.errors.is_empty());
         // A new `dev` selects no secrets, so no credential-store read happens.
         assert!(runtime_material("dev").unwrap().is_empty());
         assert_eq!(
-            workspace_revision("dev").unwrap(),
+            computer_revision("dev").unwrap(),
             revision(&Document::default(), "dev")
         );
         use_test_store(None);
@@ -1327,7 +1327,7 @@ mod tests {
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
         let deletion = std::thread::spawn(move || {
             use_test_store(Some(path));
-            let result = workspace_removed("dev");
+            let result = computer_removed("dev");
             finished_tx.send(()).unwrap();
             use_test_store(None);
             result
@@ -1354,13 +1354,13 @@ mod tests {
         .unwrap();
         let save_operation = lock_unit(&OPERATION);
         let original = load().unwrap().secrets.remove(0);
-        let validated_assignments = assignment_revision(&original.workspaces);
-        workspace_removed("other").unwrap();
-        ensure_assignment_revision(&original.workspaces, &validated_assignments).unwrap();
-        // The save is waiting on its credential store while the old sandbox is deleted.
-        workspace_removed("dev").unwrap();
+        let validated_assignments = assignment_revision(&original.computers);
+        computer_removed("other").unwrap();
+        ensure_assignment_revision(&original.computers, &validated_assignments).unwrap();
+        // The save is waiting on its credential store while the old computer is deleted.
+        computer_removed("dev").unwrap();
         let committed = update(|document| {
-            ensure_assignment_revision(&original.workspaces, &validated_assignments)?;
+            ensure_assignment_revision(&original.computers, &validated_assignments)?;
             document.secrets.clear();
             document.secrets.push(original.clone());
             Ok(())
@@ -1368,20 +1368,20 @@ mod tests {
         drop(save_operation);
         assert!(committed.unwrap_err().contains("was removed"));
         let document = load().unwrap();
-        assert!(document.secrets[0].workspaces.is_empty());
+        assert!(document.secrets[0].computers.is_empty());
         assert!(document.secrets[0].affected.is_empty());
-        // A replacement sandbox with this name selects no material or credential values.
+        // A replacement computer with this name selects no material or credential values.
         assert!(runtime_material("dev").unwrap().is_empty());
         // Only a fresh save validated after name reuse can assign to the replacement.
-        let replacement_assignments = assignment_revision(&original.workspaces);
+        let replacement_assignments = assignment_revision(&original.computers);
         update(|document| {
-            ensure_assignment_revision(&original.workspaces, &replacement_assignments)?;
+            ensure_assignment_revision(&original.computers, &replacement_assignments)?;
             document.secrets.clear();
             document.secrets.push(original);
             Ok(())
         })
         .unwrap();
-        assert_eq!(load().unwrap().secrets[0].workspaces, ["dev"]);
+        assert_eq!(load().unwrap().secrets[0].computers, ["dev"]);
         use_test_store(None);
     }
     #[test]
@@ -1446,7 +1446,7 @@ mod tests {
             "id",
             &mut operation,
             &runtime_material,
-            &mut |workspace, material| {
+            &mut |computer, material| {
                 applied.push(material[0].1.clone());
                 let _newer_save = lock_unit(&OPERATION);
                 update(|document| {
@@ -1454,7 +1454,7 @@ mod tests {
                     if applied.len() == 3 {
                         document.secrets[0]
                             .errors
-                            .insert(workspace.into(), "Newer update failed.".into());
+                            .insert(computer.into(), "Newer update failed.".into());
                     }
                     Ok(())
                 })?;
@@ -1477,7 +1477,7 @@ mod tests {
         use_test_vault(None);
     }
     #[test]
-    fn reconcile_releases_the_operation_lock_while_a_vm_applies() {
+    fn reconcile_releases_the_operation_lock_while_a_computer_applies() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
@@ -1493,12 +1493,12 @@ mod tests {
             "id",
             &mut operation,
             &|_| Ok(Vec::new()),
-            &mut |workspace, _| {
-                // A fork or update check can take the lock while this VM applies.
+            &mut |computer, _| {
+                // A fork or update check can take the lock while this computer applies.
                 assert!(try_lock_unit(&OPERATION).is_some());
-                applied.push(workspace.to_string());
+                applied.push(computer.to_string());
                 if applied.len() == 1 {
-                    // Another save changes this VM's desired secrets meanwhile.
+                    // Another save changes this computer's desired secrets meanwhile.
                     update(|d| {
                         d.secrets[0].value_id = "rotated-reference".into();
                         Ok(())
@@ -1530,7 +1530,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
         let mut assigned = secret();
-        assigned.workspaces = vec!["restarting".into()];
+        assigned.computers = vec!["restarting".into()];
         assigned.affected = vec!["restarting".into()];
         save(&Document {
             secrets: vec![assigned],
@@ -1543,10 +1543,10 @@ mod tests {
             "id",
             &mut operation,
             &|_| Ok(Vec::new()),
-            &mut |workspace, _| {
-                // The running VM defers the change, but a restart completes with the
+            &mut |computer, _| {
+                // The running computer defers the change, but a restart completes with the
                 // desired revision before this result is recorded.
-                workspace_started(workspace, &workspace_revision(workspace)?)?;
+                computer_started(computer, &computer_revision(computer)?)?;
                 Ok(vec!["API_KEY".into()])
             },
             &|| {},
@@ -1554,7 +1554,7 @@ mod tests {
         .unwrap();
         drop(operation);
         let document = load().unwrap();
-        assert!(document.secrets[0].pending_workspaces.is_empty());
+        assert!(document.secrets[0].pending_computers.is_empty());
         assert_eq!(public(&document.secrets[0])["state"], "active");
         use_test_store(None);
     }
@@ -1662,7 +1662,7 @@ mod tests {
     }
 
     #[test]
-    fn restart_and_deletion_clear_only_their_sandbox_revocations() {
+    fn restart_and_deletion_clear_only_their_computer_revocations() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         use_test_store(Some(dir.path().join("secrets.json")));
@@ -1670,24 +1670,24 @@ mod tests {
             [("private-reference".into(), "private-value".into())].into(),
         ));
         let mut assigned = secret();
-        assigned.workspaces.push("other".into());
+        assigned.computers.push("other".into());
         save(&Document {
             secrets: vec![assigned],
             ..Default::default()
         })
         .unwrap();
-        let before = workspace_revision("dev").unwrap();
+        let before = computer_revision("dev").unwrap();
         remove_from_store("id").unwrap();
-        workspace_started("dev", &before).unwrap();
+        computer_started("dev", &before).unwrap();
         assert_eq!(
             pending_names("dev").unwrap(),
             ["API_KEY"],
             "an obsolete boot still had the value"
         );
-        workspace_started("dev", &workspace_revision("dev").unwrap()).unwrap();
+        computer_started("dev", &computer_revision("dev").unwrap()).unwrap();
         assert!(pending_names("dev").unwrap().is_empty());
         assert_eq!(pending_names("other").unwrap(), ["API_KEY"]);
-        workspace_removed("other").unwrap();
+        computer_removed("other").unwrap();
         assert!(load().unwrap().pending_revocations.is_empty());
         use_test_store(None);
         use_test_vault(None);
@@ -1720,7 +1720,7 @@ mod tests {
         .unwrap();
         assert!(
             !revocation_needed(&old).unwrap(),
-            "the VM gate rechecks this immediately before name-only removal"
+            "the computer gate rechecks this immediately before name-only removal"
         );
         // A delayed success for the old generation cannot clear a later removal.
         write_vault([("new-generation".into(), "new-value".into())].into()).unwrap();

@@ -42,15 +42,15 @@ impl RuntimeRunner for FailedCaptureRunner {
                 return Err(error("Source inspection failed."));
             }
             let mut output = self.runtime.run(paths, args, timeout)?;
-            let mut vm: Value = serde_json::from_str(&output.stdout).unwrap();
-            vm["config"]["resources"] = serde_json::json!({
+            let mut computer: Value = serde_json::from_str(&output.stdout).unwrap();
+            computer["config"]["resources"] = serde_json::json!({
                 "max_cpus": 1, "max_memory_mib": 1024
             });
             if *self.captured.lock().unwrap() && self.failure == "identity" {
-                vm["config"]["labels"]["silo.machine-id"] =
+                computer["config"]["labels"]["silo.machine-id"] =
                     Value::String("00000000-0000-4000-8000-000000000002".into());
             }
-            output.stdout = vm.to_string();
+            output.stdout = computer.to_string();
             return Ok(output);
         }
         if self.failure == "success" && args[0] == "snapshot" {
@@ -109,7 +109,10 @@ fn failed_full_capture_settles_its_paused_source(failure: &'static str) {
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
         let runner = FailedCaptureRunner::new(failure, resume_failure);
-        let guard = runner.gate.vm(ID, "dev", "Creating checkpoint").unwrap();
+        let guard = runner
+            .gate
+            .computer(ID, "dev", "Creating checkpoint")
+            .unwrap();
         guard.allow_cancel();
         let reported = capture_with(&runner, &paths, ID, "Failed", "manual")
             .unwrap_err()
@@ -197,11 +200,12 @@ fn failed_resume_and_stop_remain_recoverable_through_ordinary_stop() {
     );
     assert!(load(&paths, ID).unwrap().inflight_checkpoint.is_some());
     let retry = journal_runner("Paused", "resume");
-    let host = HostResources {
+    let device = DeviceResources {
         logical_cpus: 8,
         physical_memory_bytes: Some(16 * 1024 * 1024 * 1024),
     };
-    super::super::super::lifecycle_recovery::perform(&retry, &paths, &host, "stop", "dev").unwrap();
+    super::super::super::lifecycle_recovery::perform(&retry, &paths, &device, "stop", "dev")
+        .unwrap();
     assert_eq!(*retry.state.lock().unwrap(), "Stopped");
     assert!(!retry
         .calls
@@ -246,11 +250,11 @@ fn ordinary_start_can_recover_a_failed_capture_without_a_restore_journal() {
     capture_with(&runner, &paths, ID, "Failed", "manual").unwrap_err();
     let retry = FailedCaptureRunner::new("error", "resume");
     *retry.runtime.state.lock().unwrap() = "Paused";
-    let host = HostResources {
+    let device = DeviceResources {
         logical_cpus: 8,
         physical_memory_bytes: Some(16 * 1024 * 1024 * 1024),
     };
-    super::super::super::explicit_workspace_action_with(&retry, &paths, &host, "start", "dev")
+    super::super::super::explicit_computer_action_with(&retry, &paths, &device, "start", "dev")
         .unwrap();
     assert_eq!(*retry.runtime.state.lock().unwrap(), "Running");
 }
@@ -273,7 +277,7 @@ fn checkpoint_retry_recovers_the_source_before_capturing_again() {
 }
 
 #[test]
-fn failed_full_capture_never_recovers_a_replacement_vm() {
+fn failed_full_capture_never_recovers_a_replacement_computer() {
     let _test_state = crate::test_support::global_state();
     let directory = tempfile::tempdir().unwrap();
     let paths = restore_fixture(&directory, None);

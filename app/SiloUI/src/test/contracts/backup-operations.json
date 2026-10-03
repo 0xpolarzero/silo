@@ -3,11 +3,11 @@
     "archive": {
       "archivePath": "/backups/saved.silo-backup",
       "completedLabel": "Verified archive",
-      "destination": "/backups",
-      "name": "saved.silo-backup",
-      "sandboxes": [
+      "computers": [
         "dev"
       ],
+      "destination": "/backups",
+      "name": "saved.silo-backup",
       "size": "1 GiB"
     },
     "canCancel": false,
@@ -15,7 +15,7 @@
     "operation": "restore",
     "phases": [
       {
-        "detail": "Creating sandbox",
+        "detail": "Creating computer",
         "title": "Import",
         "tone": "running"
       }
@@ -28,14 +28,14 @@
     "archive": {
       "archivePath": "/backups/saved.silo-backup",
       "completedLabel": "Verified archive",
-      "destination": "/backups",
-      "name": "saved.silo-backup",
-      "sandboxes": [
+      "computers": [
         "dev"
       ],
+      "destination": "/backups",
+      "name": "saved.silo-backup",
       "size": "1 GiB"
     },
-    "detail": "No new sandbox was retained",
+    "detail": "No new computer was retained",
     "kind": "result",
     "message": "Runtime refused creation",
     "operation": "restore",

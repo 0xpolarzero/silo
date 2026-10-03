@@ -1,4 +1,4 @@
-//! Live checks of LCU inside a built-in VM: its status, doctor and MCP client driving the
+//! Live checks of LCU inside a built-in computer: its status, doctor and MCP client driving the
 //! desktop without a model, and the approval switch editing agent configuration.
 use super::Fixture;
 use crate::runtime;
@@ -50,7 +50,7 @@ impl Fixture {
     }
 
     /// Prints the numbers the plan asks for: guest memory and disk, and on the host the
-    /// image cache and the VM's own disk files.
+    /// image cache and the computer's own disk files.
     pub(crate) fn measure(&self, name: &str, label: &str) {
         let guest = self.exec_status(
             name,
@@ -72,7 +72,7 @@ impl Fixture {
                 .unwrap_or(0)
         };
         eprintln!(
-            "MEASURE {label} host: image cache {} MiB, sandbox {name} {} MiB",
+            "MEASURE {label} host: image cache {} MiB, computer {name} {} MiB",
             du(self.paths.home.join("cache")) / 1024,
             du(self.paths.home.join("sandboxes").join(name)) / 1024,
         );
@@ -98,7 +98,7 @@ fn mark<'a>(output: &'a str, name: &str) -> Option<&'a str> {
         .find_map(|line| line.strip_prefix(&format!("MARK {name} ")))
 }
 
-/// A fresh v4 VM through Silo's create and Start paths, then LCU's own MCP client drives
+/// A fresh v4 computer through Silo's create and Start paths, then LCU's own MCP client drives
 /// the desktop with no model: window list, screenshot, GNOME Text Editor (GTK4: typeText
 /// and paste must not crash it) saved through its dialog, and per-key typing into a
 /// terminal. Files are verified from outside the driver. Also records the numbers of the
@@ -111,10 +111,13 @@ fn live_lcu_drives_the_desktop_without_a_model() {
     let mut fixture = Fixture::new("silo-lcu-", None, true);
     let name = "e2e-lcu";
     let started = Instant::now();
-    let machine = fixture.create(name);
-    assert!(crate::computer_use::is_built_in(&machine), "{machine:?}");
+    let configuration = fixture.create(name);
+    assert!(
+        crate::computer_use::is_built_in(&configuration),
+        "{configuration:?}"
+    );
     let created = started.elapsed();
-    runtime::start_disposable_test_machine(&fixture.paths, name).unwrap();
+    runtime::start_disposable_test_computer(&fixture.paths, name).unwrap();
     let (status, _) = fixture.wait_ready(name, "drive");
     let ready = started.elapsed();
     eprintln!(
@@ -174,7 +177,7 @@ fn live_lcu_drives_the_desktop_without_a_model() {
     let probe = run_driver(&fixture, name, "DRIVE_MODE=probe");
     assert_eq!(mark(&probe, "x11-reachable"), Some("yes"), "{probe}");
 
-    // The drive itself, in LCU's default configuration (node_repl sandbox untouched).
+    // The drive itself, in LCU's default configuration (node_repl computer untouched).
     let output = run_driver(&fixture, name, "DRIVE=default");
     eprintln!("{output}");
     assert_eq!(mark(&output, "x11-reachable"), Some("yes"), "{output}");

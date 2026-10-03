@@ -318,7 +318,7 @@ fn notifications_proxy() -> Result<gio::DBusProxy, gio::glib::Error> {
 
 // Click routing is not implemented on Linux: it needs a GLib main loop to receive the
 // `ActionInvoked` signal, and desktops differ in whether they show a default action.
-// Notices still replace by key and are closed when their sandbox is deleted.
+// Notices still replace by key and are closed when their computer is deleted.
 pub fn deliver_notification(
     notice: &crate::notifications::Notice,
 ) -> Result<super::NotificationDelivery, String> {

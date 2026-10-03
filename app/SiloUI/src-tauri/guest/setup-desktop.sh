@@ -150,7 +150,7 @@ if [ "$action" = update-streamer ]; then
     exit 0
 fi
 
-# Desktop sessions share the VM's required working account.
+# Desktop sessions share the computer's required working account.
 account=$(python3 "$helper" prepare-install)
 [ "$account" = 'silo /home/silo' ] || { echo 'Unexpected desktop account' >&2; exit 1; }
 desktop_user=silo
@@ -243,7 +243,7 @@ restore_image_defaults() {
         'application/json=org.gnome.TextEditor.desktop' 'application/xml=org.gnome.TextEditor.desktop' \
         > /etc/xdg/mimeapps.list
 }
-# The image cannot hold per-VM state: connection credentials, the web-client patch,
+# The image cannot hold per-computer state: connection credentials, the web-client patch,
 # receipts, the lifecycle helper and the session script. Never touches apt or the network.
 provision_image_desktop() {
     [ -f "$selkies_web_client_patch" ] || { echo 'Selkies web client patch helper is missing' >&2; exit 1; }

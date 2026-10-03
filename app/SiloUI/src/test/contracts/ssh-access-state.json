@@ -1,32 +1,34 @@
 [
   {
-    "workspaces": [
+    "computers": [
       {
         "addresses": [
           "192.0.2.10"
         ],
         "bindAddress": "127.0.0.1",
-        "computerName": "Contract computer",
+        "computer": "dev",
+        "computerId": "00000000-0000-4000-8000-000000000001",
+        "deviceName": "Contract device",
         "enabled": false,
         "fingerprint": null,
         "keys": [],
         "message": null,
         "port": 2222,
         "state": "disabled",
-        "user": "silo",
-        "vmId": "00000000-0000-4000-8000-000000000001",
-        "workspace": "dev"
+        "user": "silo"
       }
     ]
   },
   {
-    "workspaces": [
+    "computers": [
       {
         "addresses": [
           "192.0.2.10"
         ],
         "bindAddress": "127.0.0.1",
-        "computerName": "Contract computer",
+        "computer": "dev",
+        "computerId": "00000000-0000-4000-8000-000000000001",
+        "deviceName": "Contract device",
         "enabled": true,
         "fingerprint": null,
         "keys": [
@@ -35,20 +37,20 @@
         "message": null,
         "port": 2222,
         "state": "waiting",
-        "user": "silo",
-        "vmId": "00000000-0000-4000-8000-000000000001",
-        "workspace": "dev"
+        "user": "silo"
       }
     ]
   },
   {
-    "workspaces": [
+    "computers": [
       {
         "addresses": [
           "192.0.2.10"
         ],
         "bindAddress": "127.0.0.1",
-        "computerName": "Contract computer",
+        "computer": "dev",
+        "computerId": "00000000-0000-4000-8000-000000000001",
+        "deviceName": "Contract device",
         "enabled": true,
         "fingerprint": "SHA256:contract-public-fingerprint",
         "keys": [
@@ -57,20 +59,20 @@
         "message": null,
         "port": 2222,
         "state": "listening",
-        "user": "silo",
-        "vmId": "00000000-0000-4000-8000-000000000001",
-        "workspace": "dev"
+        "user": "silo"
       }
     ]
   },
   {
-    "workspaces": [
+    "computers": [
       {
         "addresses": [
           "192.0.2.10"
         ],
         "bindAddress": "127.0.0.1",
-        "computerName": "Contract computer",
+        "computer": "dev",
+        "computerId": "00000000-0000-4000-8000-000000000001",
+        "deviceName": "Contract device",
         "enabled": true,
         "fingerprint": null,
         "keys": [
@@ -79,9 +81,7 @@
         "message": "SSH listener could not start.",
         "port": 2222,
         "state": "error",
-        "user": "silo",
-        "vmId": "00000000-0000-4000-8000-000000000001",
-        "workspace": "dev"
+        "user": "silo"
       }
     ]
   }

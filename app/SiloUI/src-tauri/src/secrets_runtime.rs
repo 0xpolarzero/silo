@@ -145,7 +145,7 @@ fn plan(
 
 fn modify(
     paths: &RuntimePaths,
-    workspace: &str,
+    computer: &str,
     options: &[String],
     material: &Material,
     deferred: bool,
@@ -153,7 +153,7 @@ fn modify(
     if options.is_empty() {
         return Ok(());
     }
-    let mut args = vec!["modify".into(), workspace.into()];
+    let mut args = vec!["modify".into(), computer.into()];
     args.extend_from_slice(options);
     args.extend(["--format".into(), "json".into()]);
     if deferred {
@@ -181,12 +181,12 @@ fn modify_error(error: RuntimeError) -> Attempt {
     match error {
         RuntimeError::Cancelled { .. } => Attempt::Cancelled("Saving secrets was cancelled.".into()),
         RuntimeError::Failed { exit_code: Some(_), .. } => {
-            "The sandbox rejected the secret update. Retry after checking its state.".into()
+            "The computer rejected the secret update. Retry after checking its state.".into()
         }
         RuntimeError::TimedOut { .. } | RuntimeError::Failed { .. } => Attempt::Transient(
-            "Updating sandbox secrets timed out or could not be verified. Retry after checking its state.".into(),
+            "Updating computer secrets timed out or could not be verified. Retry after checking its state.".into(),
         ),
-        _ => "Could not update sandbox secrets.".into(),
+        _ => "Could not update computer secrets.".into(),
     }
 }
 
@@ -241,24 +241,24 @@ pub(crate) fn verify_config(config: &Value, material: &Material) -> bool {
 
 pub(crate) fn apply(
     paths: &RuntimePaths,
-    workspace: &str,
+    computer: &str,
     material: &Material,
     boot: bool,
 ) -> Result<Vec<String>, Attempt> {
     validate_material(material)?;
-    let inspected = inspect_workspace(&ProcessRunner, paths, workspace)
-        .map_err(|_| "Could not inspect sandbox secrets.".to_string())?;
+    let inspected = inspect_computer(&ProcessRunner, paths, computer)
+        .map_err(|_| "Could not inspect computer secrets.".to_string())?;
     ensure_managed(&inspected).map_err(|error| error.to_string())?;
     if !matches!(
         inspected.status.as_str(),
         "Running" | "Created" | "Stopped" | "Crashed"
     ) {
         return Err(
-            "Wait for the sandbox operation to finish, then retry the secret update.".into(),
+            "Wait for the computer operation to finish, then retry the secret update.".into(),
         );
     }
     if inspected.status == "Running" && inspected.active_config.is_none() {
-        return Err("The running sandbox's active secret configuration could not be verified. Stop it, then retry.".into());
+        return Err("The running computer's active secret configuration could not be verified. Stop it, then retry.".into());
     }
     if !material.is_empty()
         && inspected
@@ -267,21 +267,21 @@ pub(crate) fn apply(
             .and_then(Value::as_bool)
             != Some(true)
     {
-        return Err("This sandbox does not have secure HTTPS secret handling enabled. Recreate it before assigning secrets.".into());
+        return Err("This computer does not have secure HTTPS secret handling enabled. Recreate it before assigning secrets.".into());
     }
     let (live, deferred, pending) = plan(&inspected, material, boot);
-    modify(paths, workspace, &live, material, false)?;
+    modify(paths, computer, &live, material, false)?;
     // Stop before the deferred (next-start) update if the user cancelled between the two
     // runtime commands, so a cancelled save does not push further changes.
     if operation_gate::cancel_requested() {
         return Err(Attempt::Cancelled("Saving secrets was cancelled.".into()));
     }
-    modify(paths, workspace, &deferred, material, true)?;
-    let observed = inspect_workspace(&ProcessRunner, paths, workspace)
-        .map_err(|_| "Could not verify the saved sandbox secrets.".to_string())?;
+    modify(paths, computer, &deferred, material, true)?;
+    let observed = inspect_computer(&ProcessRunner, paths, computer)
+        .map_err(|_| "Could not verify the saved computer secrets.".to_string())?;
     if !verify_config(&observed.config, material) {
         return Err(
-            "The sandbox secret configuration did not match the saved settings. Retry the update."
+            "The computer secret configuration did not match the saved settings. Retry the update."
                 .into(),
         );
     }
@@ -304,7 +304,7 @@ pub(crate) fn apply(
             .is_some_and(|config| verify_config(config, &active_material))
         {
             return Err(
-                "The running sandbox did not confirm the secret update. Retry the update.".into(),
+                "The running computer did not confirm the secret update. Retry the update.".into(),
             );
         }
     }
@@ -326,10 +326,10 @@ pub(crate) fn apply(
 
 /// Revoke only the removed name. No remaining secret values or credential-store
 /// reads are needed, and unrelated secret/GitHub policies remain untouched.
-pub(crate) fn remove_name(paths: &RuntimePaths, workspace: &str, name: &str) -> Result<(), String> {
+pub(crate) fn remove_name(paths: &RuntimePaths, computer: &str, name: &str) -> Result<(), String> {
     modify(
         paths,
-        workspace,
+        computer,
         &["--secret-rm".into(), name.into()],
         &Vec::new(),
         false,
@@ -340,7 +340,7 @@ pub(crate) fn remove_name(paths: &RuntimePaths, workspace: &str, name: &str) -> 
 pub(crate) fn revoke_observed_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace: &str,
+    computer: &str,
     name: &str,
     inspected: &InspectedSandbox,
     remove: &mut dyn FnMut(&str) -> Result<(), String>,
@@ -355,9 +355,9 @@ pub(crate) fn revoke_observed_with(
         return Ok(true);
     }
     remove(name)?;
-    match observe_vm(runner, paths, workspace).map_err(|error| error.to_string())? {
-        VmRuntime::Absent => Ok(true),
-        VmRuntime::Present(observed) => {
+    match observe_computer(runner, paths, computer).map_err(|error| error.to_string())? {
+        ComputerRuntime::Absent => Ok(true),
+        ComputerRuntime::Present(observed) => {
             ensure_managed(&observed).map_err(|error| error.to_string())?;
             Ok(
                 matches!(observed.status.as_str(), "Stopped" | "Created" | "Crashed")
@@ -435,7 +435,7 @@ mod tests {
         ] {
             let attempt = modify_error(error);
             assert!(attempt.is_transient());
-            assert_eq!(String::from(attempt), "Updating sandbox secrets timed out or could not be verified. Retry after checking its state.");
+            assert_eq!(String::from(attempt), "Updating computer secrets timed out or could not be verified. Retry after checking its state.");
         }
         let rejected = modify_error(RuntimeError::Failed {
             operation: "modify".into(),
@@ -445,7 +445,7 @@ mod tests {
         assert!(matches!(rejected, Attempt::Final(_)));
         assert_eq!(
             String::from(rejected),
-            "The sandbox rejected the secret update. Retry after checking its state."
+            "The computer rejected the secret update. Retry after checking its state."
         );
         for error in [
             RuntimeError::Invalid("private diagnostic".into()),
@@ -454,7 +454,7 @@ mod tests {
         ] {
             let attempt = modify_error(error);
             assert!(matches!(attempt, Attempt::Final(_)));
-            assert_eq!(String::from(attempt), "Could not update sandbox secrets.");
+            assert_eq!(String::from(attempt), "Could not update computer secrets.");
         }
     }
 
@@ -639,7 +639,7 @@ mod tests {
         assert_eq!(
             revoke_observed_with(&runner, &paths, "dev", "TOKEN", &inspected, &mut |_| Ok(()))
                 .unwrap_err(),
-            "Inspect timed out. Check the sandbox state, then retry."
+            "Inspect timed out. Check the computer state, then retry."
         );
         runner.assert_finished();
 
@@ -652,7 +652,7 @@ mod tests {
         assert_eq!(
             revoke_observed_with(&runner, &paths, "dev", "TOKEN", &inspected, &mut |_| Ok(()))
                 .unwrap_err(),
-            "Sandbox 'dev' is not owned by Silo. No sandbox operation was performed."
+            "Computer 'dev' is not owned by Silo. No computer operation was performed."
         );
         runner.assert_finished();
     }
@@ -695,7 +695,7 @@ mod tests {
         let gate: &'static operation_gate::OperationGate =
             Box::leak(Box::new(operation_gate::OperationGate::new()));
         let guard = gate
-            .vm("secret-cancel-id", "secret-cancel", "Saving secrets")
+            .computer("secret-cancel-id", "secret-cancel", "Saving secrets")
             .unwrap();
         guard.allow_cancel();
         let id = gate.snapshot().running[0].id;
@@ -743,7 +743,7 @@ mod tests {
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         let store = directory.path().join("secrets.json");
         // This unrelated assignment has no credential. Revocation must not ask for it.
-        fs::write(&store, r#"{"secrets":[{"id":"keep","valueId":"unavailable","name":"KEEP","workspaces":["dev"],"allowedDomains":["api.example.com"]}]}"#).unwrap();
+        fs::write(&store, r#"{"secrets":[{"id":"keep","valueId":"unavailable","name":"KEEP","computers":["dev"],"allowedDomains":["api.example.com"]}]}"#).unwrap();
         crate::secrets::use_test_store(Some(store));
         crate::secrets::use_test_vault(Some(Default::default()));
         remove_name(&paths, "dev", "REMOVED").unwrap();
@@ -913,7 +913,7 @@ fn live_secret_adapter_uses_refs_and_preserves_boot_for_live_updates() {
         ),
         home: directory.path().join("msb"),
         storage_home: None,
-        metadata: directory.path().join("machines.json"),
+        metadata: directory.path().join("computers.json"),
         volumes: directory.path().join("volumes"),
     };
     let name = "secrets-test";
@@ -1173,7 +1173,7 @@ finally: c.close()
             restarted_boot
         );
         let inspected =
-            inspect_workspace(&ProcessRunner, &paths, name).map_err(|_| "final inspect failed")?;
+            inspect_computer(&ProcessRunner, &paths, name).map_err(|_| "final inspect failed")?;
         let encoded = serde_json::to_string(&inspected.config).unwrap();
         assert!(!encoded.contains("synthetic-"));
         Ok(())
@@ -1181,6 +1181,6 @@ finally: c.close()
     let stopped = command(&["stop", name, "--quiet"], &vec![]);
     let removed = command(&["remove", name, "--quiet"], &vec![]);
     assert!(result.is_ok(), "{}", result.err().unwrap_or_default());
-    assert!(stopped.is_ok(), "temporary sandbox stop failed");
-    assert!(removed.is_ok(), "temporary sandbox removal failed");
+    assert!(stopped.is_ok(), "temporary computer stop failed");
+    assert!(removed.is_ok(), "temporary computer removal failed");
 }

@@ -110,7 +110,7 @@ class DesktopLifecycle(unittest.TestCase):
     def test_absent_account_policy_requires_migration_even_when_installed(self):
         service.WORKING_ACCOUNT.unlink()
         for action in ('status', 'prepare-install', 'start', 'boot'):
-            with self.subTest(action=action), self.assertRaisesRegex(RuntimeError, 'migrate this VM or create a new VM'):
+            with self.subTest(action=action), self.assertRaisesRegex(RuntimeError, 'migrate this computer or create a new computer'):
                 self.command(action)
         self.assertFalse((service.STATE / 'configuration-managed.json').exists())
 

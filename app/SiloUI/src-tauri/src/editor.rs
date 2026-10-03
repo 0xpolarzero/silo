@@ -30,9 +30,9 @@ fn files_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<(), String> {
-    if let Some((host, vm)) = crate::remote_access::target(name)? {
+    if let Some((device, computer)) = crate::remote_access::target(name)? {
         let path = path.unwrap_or("/workspace");
-        let (alias, _) = prepare_remote(app, &host, &vm, path)?;
+        let (alias, _) = prepare_remote(app, &device, &computer, path)?;
         let application = applications::selected_editor(app)?;
         let command = applications::editor_command(&application)?;
         let home = app.path().home_dir().map_err(|_| FAILED)?;
@@ -41,7 +41,7 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
             EDITOR_EXIT_WINDOW,
         );
     }
-    require_openssh("open VM folders in your editor")?;
+    require_openssh("open computer folders in your editor")?;
     runtime::validate_name(name).map_err(|error| error.to_string())?;
     let path = path.unwrap_or("/workspace");
     validate_path(path)?;
@@ -50,13 +50,13 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if !metadata
-        .machines
+        .computers
         .iter()
-        .any(|machine| machine.name() == name && machine.is_vm())
+        .any(|configuration| configuration.name() == name)
     {
-        return Err("This sandbox does not support local editor connections.".into());
+        return Err("This computer does not support local editor connections.".into());
     }
-    crate::terminal::running_vm(&paths, name)?;
+    crate::terminal::running_computer(&paths, name)?;
     let user = crate::working_account::USER;
     // Validate the exact folder inside the guest, as positional data, before handoff.
     runtime::run_msb(
@@ -82,7 +82,7 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
         ],
         Duration::from_secs(8),
     )
-    .map_err(|_| "This folder is unavailable inside the VM.")?;
+    .map_err(|_| "This folder is unavailable inside the computer.")?;
     let user_home = app.path().home_dir().map_err(|_| FAILED)?;
     let (alias, config) = prepare(&paths, &user_home, name)?;
     let mut probe = Command::new("/usr/bin/ssh");
@@ -95,7 +95,7 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
         "true",
     ]);
     run(&mut probe, Duration::from_secs(10)).map_err(|_| {
-        "Could not connect to this VM over SSH. Retry after checking that it is running."
+        "Could not connect to this computer over SSH. Retry after checking that it is running."
     })?;
     launch_editor(
         editor_launch(&command, &alias, path, &user_home)?,
@@ -165,25 +165,25 @@ fn validate_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// VS Code profile for every Silo sandbox window, so the settings below and
-/// the extensions that can reach the sandbox never mix with the user's own
+/// VS Code profile for every Silo computer window, so the settings below and
+/// the extensions that can reach the computer never mix with the user's own
 /// profile (decision 5, G-19). VS Code creates it empty on first use and
 /// offers to install Remote - SSH into it.
-/// Carried by a Silo-owned workspace file on the host. Workspace settings
+/// Carried by a Silo-owned computer file on the host. Computer settings
 /// apply from the first window, whether or not the profile exists yet, and
-/// outrank the "Remote" settings a sandbox can write for itself.
+/// outrank the "Remote" settings a computer can write for itself.
 const VSCODE_SETTINGS: [(&str, bool); 4] = [
-    // Git in the sandbox cannot borrow the host VS Code's GitHub session.
+    // Git in the computer cannot borrow the host VS Code's GitHub session.
     ("github.gitAuthentication", false),
-    // Sandbox terminals get no askpass handle back to the host VS Code.
+    // Computer terminals get no askpass handle back to the host VS Code.
     ("git.terminalAuthentication", false),
-    // Sandbox ports reach this computer only through Silo's port publishing.
+    // Computer ports reach this device only through Silo's port publishing.
     ("remote.autoForwardPorts", false),
     ("remote.forwardOnOpen", false),
 ];
 
-/// The editor command for a sandbox folder: Zed receives its SSH URI; VS Code
-/// opens the Silo profile with the folder's Silo workspace file.
+/// The editor command for a computer folder: Zed receives its SSH URI; VS Code
+/// opens the Silo profile with the folder's Silo computer file.
 fn editor_launch(
     command: &applications::launch::EditorCommand,
     alias: &str,
@@ -207,7 +207,7 @@ fn editor_launch(
 }
 
 /// Writes `<channel home>/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
-/// any other workspace settings the user added and restoring Silo's own.
+/// any other computer settings the user added and restoring Silo's own.
 fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
     validate_path(path)?;
@@ -243,7 +243,7 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
     let file = directory.join(format!(
         "{}.code-workspace",
         if folder.is_empty() {
-            "workspace"
+            "computer"
         } else {
             folder
         }
@@ -251,7 +251,7 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
     let old = read_regular(&file)?;
     let invalid = || {
         format!(
-            "Silo cannot update the editor workspace {} as a JSON object. The file was left unchanged. Remove comments or repair its JSON, then retry.",
+            "Silo cannot update the editor computer {} as a JSON object. The file was left unchanged. Remove comments or repair its JSON, then retry.",
             file.display()
         )
     };
@@ -579,8 +579,8 @@ fn prepare_configuration(
 }
 
 /// The `Host` line of an entry: `alias`, then the aliases an earlier runtime home
-/// gave this sandbox that the entry already answers to. An editor that saved one
-/// of them (the storage migration changes the alias) keeps finding the sandbox
+/// gave this computer that the entry already answers to. An editor that saved one
+/// of them (the storage migration changes the alias) keeps finding the computer
 /// instead of falling back to a copy kept from before the upgrade.
 fn host_patterns(config: &Path, alias: &str, name: &str) -> String {
     let earlier = read_regular(config)
@@ -662,7 +662,7 @@ pub(crate) fn authorize_remote(
     crate::runtime::shutdown::ensure_accepting_operations()?;
     validate_public_key(public)?;
     validate_path(path)?;
-    crate::terminal::running_vm(paths, name)?;
+    crate::terminal::running_computer(paths, name)?;
     let user = crate::working_account::USER;
     runtime::run_msb(
         paths,
@@ -687,7 +687,7 @@ pub(crate) fn authorize_remote(
         ],
         Duration::from_secs(8),
     )
-    .map_err(|_| "This folder is unavailable inside the VM.")?;
+    .map_err(|_| "This folder is unavailable inside the computer.")?;
     let _guard = files_lock();
     let root = paths.home.join("ssh");
     private_directory(&root)?;
@@ -714,21 +714,21 @@ pub(crate) fn authorize_remote(
 /// Prepare the pinned guest SSH identity without changing the user's SSH configuration.
 pub(crate) fn prepare_remote_private(
     app: &AppHandle,
-    host: &str,
-    vm: &str,
+    device: &str,
+    computer: &str,
     path: &str,
 ) -> Result<(String, PathBuf), String> {
-    prepare_remote_transport(app, host, vm, path, None, false)
+    prepare_remote_transport(app, device, computer, path, None, false)
         .map(|(alias, config, _)| (alias, config))
 }
 pub(crate) fn prepare_remote_network_private(
     app: &AppHandle,
-    host: &str,
-    vm: &str,
+    device: &str,
+    computer: &str,
     port: u16,
 ) -> Result<(String, PathBuf, std::net::IpAddr), String> {
     let (alias, config, address) =
-        prepare_remote_transport(app, host, vm, "/workspace", Some(port), true)?;
+        prepare_remote_transport(app, device, computer, "/workspace", Some(port), true)?;
     Ok((
         alias,
         config,
@@ -737,20 +737,20 @@ pub(crate) fn prepare_remote_network_private(
 }
 fn prepare_remote_transport(
     app: &AppHandle,
-    host: &str,
-    vm: &str,
+    device: &str,
+    computer: &str,
     path: &str,
     port: Option<u16>,
     forwarding: bool,
 ) -> Result<(String, PathBuf, Option<std::net::IpAddr>), String> {
     validate_path(path)?;
-    uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
-    uuid::Uuid::parse_str(vm).map_err(|_| "Invalid VM identity.")?;
+    uuid::Uuid::parse_str(device).map_err(|_| "Invalid device identity.")?;
+    uuid::Uuid::parse_str(computer).map_err(|_| "Invalid computer identity.")?;
     let home = app.path().home_dir().map_err(|_| FAILED)?;
     let state = crate::channel::current().state_dir(&home);
     crate::runtime::prepare_private_directory(&state).map_err(|e| e.to_string())?;
     let root = state.join("desktop-remote/ssh");
-    let client = root.join(format!("{host}.key"));
+    let client = root.join(format!("{device}.key"));
     let client_public = {
         let _guard = files_lock();
         private_directory(&root)?;
@@ -759,20 +759,20 @@ fn prepare_remote_transport(
     };
     // The remote call can take minutes; keep the file lock free meanwhile.
     let (host_public, user, address) =
-        crate::remote_access::prepare(app, host, vm, &client_public, path, forwarding)?;
+        crate::remote_access::prepare(app, device, computer, &client_public, path, forwarding)?;
     let _guard = files_lock();
     let alias = format!(
-        "{}-{host}-{vm}",
+        "{}-{device}-{computer}",
         crate::channel::current().remote_alias_prefix()
     );
-    let known_hosts = root.join(format!("{host}-{vm}.known_hosts"));
+    let known_hosts = root.join(format!("{device}-{computer}.known_hosts"));
     write_private(&known_hosts, format!("{alias} {host_public}\n").as_bytes())?;
     // A published-port forward has its own configuration: its ProxyCommand names the
     // guest port the owner revokes by, and tunnels for other ports run concurrently.
-    let proxy = remote_proxy_for(host, vm, port)?;
+    let proxy = remote_proxy_for(device, computer, port)?;
     let config = match port {
-        Some(port) => root.join(format!("{host}-{vm}-port-{port}.conf")),
-        None => root.join(format!("{host}-{vm}.conf")),
+        Some(port) => root.join(format!("{device}-{computer}-port-{port}.conf")),
+        None => root.join(format!("{device}-{computer}.conf")),
     };
     let contents = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, contents.as_bytes())?;
@@ -787,7 +787,7 @@ fn proxy_command<S: AsRef<str>>(parts: &[S]) -> String {
         .join(" ")
 }
 
-/// The ProxyCommand for a local sandbox. An AppImage's bundled tools live in a
+/// The ProxyCommand for a local computer. An AppImage's bundled tools live in a
 /// mount that changes on every start, so editor configurations that outlive
 /// Silo call the AppImage file itself instead (G-12).
 fn local_proxy(paths: &RuntimePaths, name: &str) -> Result<String, String> {
@@ -821,23 +821,28 @@ fn local_proxy(paths: &RuntimePaths, name: &str) -> Result<String, String> {
     ]))
 }
 
-/// The ProxyCommand for a sandbox on another computer, through this Silo.
-fn remote_proxy(host: &str, vm: &str) -> Result<String, String> {
-    remote_proxy_for(host, vm, None)
+/// The ProxyCommand for a computer on another device, through this Silo.
+fn remote_proxy(device: &str, computer: &str) -> Result<String, String> {
+    remote_proxy_for(device, computer, None)
 }
 
 /// The same, for a published-port forward when `port` is the guest port.
-fn remote_proxy_for(host: &str, vm: &str, port: Option<u16>) -> Result<String, String> {
-    uuid::Uuid::parse_str(host).map_err(|_| FAILED)?;
-    uuid::Uuid::parse_str(vm).map_err(|_| FAILED)?;
+fn remote_proxy_for(device: &str, computer: &str, port: Option<u16>) -> Result<String, String> {
+    uuid::Uuid::parse_str(device).map_err(|_| FAILED)?;
+    uuid::Uuid::parse_str(computer).map_err(|_| FAILED)?;
     let silo = applications::launch::stable_executable()?;
     let port = port.map(|port| port.to_string());
-    let mut parts = vec![silo.to_str().ok_or(FAILED)?, "--remote-guest", host, vm];
+    let mut parts = vec![
+        silo.to_str().ok_or(FAILED)?,
+        "--remote-guest",
+        device,
+        computer,
+    ];
     parts.extend(port.as_deref());
     Ok(proxy_command(&parts))
 }
 
-/// `silo --msb-ssh-serve <runtime home> <sandbox>`: the local editor transport
+/// `silo --msb-ssh-serve <runtime home> <computer>`: the local editor transport
 /// run from an AppImage, whose bundled runtime has no stable path (G-12).
 pub(crate) const TRANSPORT_MODE: &str = "--msb-ssh-serve";
 
@@ -845,7 +850,7 @@ pub(crate) const TRANSPORT_MODE: &str = "--msb-ssh-serve";
 pub(crate) fn run_transport(args: &[String]) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     let [home, name] = args else {
-        return Err("Expected a runtime home and a sandbox name.".into());
+        return Err("Expected a runtime home and a computer name.".into());
     };
     runtime::validate_name(name).map_err(|error| error.to_string())?;
     let home = Path::new(home);
@@ -876,7 +881,7 @@ pub(crate) fn run_transport(args: &[String]) -> Result<(), String> {
         .env("MSB_PATH", &msb)
         .env("MSB_LIBKRUNFW_PATH", &library)
         .exec();
-    Err(format!("Could not start the sandbox connection: {error}"))
+    Err(format!("Could not start the computer connection: {error}"))
 }
 
 /// Replaces the value of every `directive` line of a configuration Silo wrote.
@@ -1004,7 +1009,7 @@ fn user_config_has_line(user_home: &Path, line: &str) -> bool {
 
 /// The storage migration copies the previous generation's editor entries as they
 /// were, so they still start the previous runtime home: an editor that reconnects
-/// by itself would run `msb ssh serve` against the pre-upgrade copy of the sandbox,
+/// by itself would run `msb ssh serve` against the pre-upgrade copy of the computer,
 /// outside the migration guard, and against nothing once that backup is deleted.
 /// Points every entry in the converted home at the converted home, and adds its
 /// `Include` where the user's SSH configuration still includes the previous one.
@@ -1105,9 +1110,9 @@ pub(crate) async fn read_editor_include_notice(
 }
 
 /// The runtime home the previous generation used, once the storage migration
-/// completed and converted every sandbox. `None` before that, without any
+/// completed and converted every computer. `None` before that, without any
 /// migration, and after "Continue" into a fresh runtime, where the previous
-/// generation holds the only copy of the unconverted sandboxes.
+/// generation holds the only copy of the unconverted computers.
 fn previous_home_after_migration(app_data: &Path, user_home: &Path) -> Option<PathBuf> {
     let locations = crate::runtime_migration::backup_locations(app_data)?;
     Some(runtime::runtime_home_alias(
@@ -1117,12 +1122,12 @@ fn previous_home_after_migration(app_data: &Path, user_home: &Path) -> Option<Pa
 }
 
 /// At startup, points editor configurations at the runtime that holds their
-/// sandboxes. After a storage migration that converted every sandbox (any build,
+/// computers. After a storage migration that converted every computer (any build,
 /// every launch, so installs migrated by an earlier Silo are repaired too) the
 /// entries copied from the previous generation name its runtime home. Under an
 /// AppImage, also points configurations written by an earlier run at the
 /// AppImage file instead of that run's mount (G-12, with C-19). Editors
-/// reconnecting after a restart then find the sandbox and the transport.
+/// reconnecting after a restart then find the computer and the transport.
 pub(crate) fn refresh_transports(app: &AppHandle) {
     let appimage = applications::launch::tools_are_temporary();
     let migrated = app
@@ -1149,7 +1154,7 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
                         crate::notifications::failure(
                             "startup:editor-connections",
                             "Editor connections need attention",
-                            &format!("Editors that reconnect on their own may still open the sandbox copies kept from before the upgrade. {error}"),
+                            &format!("Editors that reconnect on their own may still open the computer copies kept from before the upgrade. {error}"),
                             None,
                         ),
                     );
@@ -1174,9 +1179,9 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
                     .state_dir(&home)
                     .join("desktop-remote/ssh"),
                 &|stem| {
-                    let (host, vm) = (stem.get(..36)?, stem.get(37..)?);
+                    let (device, computer) = (stem.get(..36)?, stem.get(37..)?);
                     (stem.as_bytes().get(36) == Some(&b'-')).then_some(())?;
-                    remote_proxy(host, vm).ok()
+                    remote_proxy(device, computer).ok()
                 },
             ) {
                 failures.push(error);
@@ -1199,11 +1204,11 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
 
 pub(crate) fn prepare_remote(
     app: &AppHandle,
-    host: &str,
-    vm: &str,
+    device: &str,
+    computer: &str,
     path: &str,
 ) -> Result<(String, PathBuf), String> {
-    let (alias, config) = prepare_remote_private(app, host, vm, path)?;
+    let (alias, config) = prepare_remote_private(app, device, computer, path)?;
     let root = config.parent().ok_or(FAILED)?;
     let home = app.path().home_dir().map_err(|_| FAILED)?;
     let _guard = files_lock();
@@ -1264,16 +1269,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ssh = dir.path().join("ssh");
         let keygen = dir.path().join("ssh-keygen");
-        let error = require_openssh_at(&ssh, &keygen, "view VM desktops").unwrap_err();
-        assert_eq!(error, "OpenSSH is required to view VM desktops. Install your system's OpenSSH client and retry.");
+        let error = require_openssh_at(&ssh, &keygen, "view computer desktops").unwrap_err();
+        assert_eq!(error, "OpenSSH is required to view computer desktops. Install your system's OpenSSH client and retry.");
         fs::write(&ssh, b"").unwrap();
-        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        assert!(require_openssh_at(&ssh, &keygen, "view computer desktops").is_err());
         fs::write(&keygen, b"").unwrap();
-        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        assert!(require_openssh_at(&ssh, &keygen, "view computer desktops").is_err());
         fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        assert!(require_openssh_at(&ssh, &keygen, "view computer desktops").is_err());
         fs::set_permissions(&keygen, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_ok());
+        assert!(require_openssh_at(&ssh, &keygen, "view computer desktops").is_ok());
     }
 
     #[test]
@@ -1414,7 +1419,7 @@ mod tests {
         {
             let root = home.path().join(name).join("ssh");
             fs::create_dir_all(&root).unwrap();
-            let hostname = format!("selected-vm-{index}");
+            let hostname = format!("selected-computer-{index}");
             fs::write(
                 root.join("dev.conf"),
                 format!("Host silo-test-dev\n  HostName {hostname}\n"),
@@ -1530,14 +1535,14 @@ mod tests {
             local_proxy(&paths, "dev").unwrap(),
             "'/usr/bin/env' 'MSB_HOME=/Users/me/.silo/abc' 'MSB_PATH=/Applications/Silo.app/Contents/MacOS/msb' 'MSB_LIBKRUNFW_PATH=/Applications/Silo.app/Contents/Frameworks/libkrunfw.5.dylib' '/Applications/Silo.app/Contents/MacOS/msb' 'ssh' 'serve' 'dev' '--stdio' '--no-start' '--no-inactivity-timeout'"
         );
-        let host = "0b6a1c9e-9f55-4d8e-9d2c-3f0a4b5c6d7e";
-        let vm = "1c7b2d0f-0a66-4e9f-8e3d-4a1b5c6d7e8f";
-        let remote = remote_proxy(host, vm).unwrap();
-        assert!(remote.ends_with(&format!("'--remote-guest' '{host}' '{vm}'")));
-        assert!(remote_proxy("not-a-uuid", vm).is_err());
-        assert!(remote_proxy_for(host, vm, Some(3000))
+        let device = "0b6a1c9e-9f55-4d8e-9d2c-3f0a4b5c6d7e";
+        let computer = "1c7b2d0f-0a66-4e9f-8e3d-4a1b5c6d7e8f";
+        let remote = remote_proxy(device, computer).unwrap();
+        assert!(remote.ends_with(&format!("'--remote-guest' '{device}' '{computer}'")));
+        assert!(remote_proxy("not-a-uuid", computer).is_err());
+        assert!(remote_proxy_for(device, computer, Some(3000))
             .unwrap()
-            .ends_with(&format!("'--remote-guest' '{host}' '{vm}' '3000'")));
+            .ends_with(&format!("'--remote-guest' '{device}' '{computer}' '3000'")));
         assert!(run_transport(&["relative".into(), "dev".into()]).is_err());
         assert!(run_transport(&["/home".into(), "bad;name".into()]).is_err());
     }
@@ -1583,7 +1588,7 @@ mod tests {
     }
 
     #[test]
-    fn vscode_opens_the_silo_profile_with_protective_workspace_settings() {
+    fn vscode_opens_the_silo_profile_with_protective_computer_settings() {
         let home = tempfile::tempdir().unwrap();
         let code = vscode("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
         let launch =
@@ -1594,7 +1599,7 @@ mod tests {
         assert_eq!(
             args.len(),
             3,
-            "no --folder-uri: the workspace file names the folder"
+            "no --folder-uri: the computer file names the folder"
         );
         let file = PathBuf::from(&args[2]);
         assert!(file.starts_with(home.path().join(".silo/editor/silo-abc-dev")));
@@ -1627,14 +1632,14 @@ mod tests {
                 "remote.forwardOnOpen": false,
             })
         );
-        // Another folder of the same sandbox gets its own workspace file.
+        // Another folder of the same computer gets its own computer file.
         let other = editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap();
         assert_ne!(launch_args(&other)[2], args[2]);
         assert!(launch_args(&other)[2].ends_with("/workspace.code-workspace"));
     }
 
     #[test]
-    fn user_workspace_settings_survive_while_silo_settings_are_restored() {
+    fn user_computer_settings_survive_while_silo_settings_are_restored() {
         let home = tempfile::tempdir().unwrap();
         let code = vscode("/usr/bin/code");
         let args =
@@ -1656,26 +1661,26 @@ mod tests {
     }
 
     #[test]
-    fn an_unparseable_workspace_is_preserved_instead_of_replaced() {
+    fn an_unparseable_computer_is_preserved_instead_of_replaced() {
         let home = tempfile::tempdir().unwrap();
         let root = crate::channel::current().state_dir(home.path());
         let file = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap();
         for contents in [
-            "{\n// keep my workspace settings\n\"settings\": {\"editor.fontSize\": 15}}",
+            "{\n// keep my computer settings\n\"settings\": {\"editor.fontSize\": 15}}",
             "{\"settings\":",
             "[]",
             "",
         ] {
             fs::write(&file, contents).unwrap();
             let error = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap_err();
-            assert!(error.contains("workspace"));
+            assert!(error.contains("computer"));
             assert!(error.contains("unchanged"));
             assert_eq!(fs::read_to_string(&file).unwrap(), contents);
         }
     }
 
     #[test]
-    fn zed_keeps_its_ssh_uri_and_no_workspace_file() {
+    fn zed_keeps_its_ssh_uri_and_no_computer_file() {
         let home = tempfile::tempdir().unwrap();
         let zed = applications::launch::EditorCommand {
             program: "/usr/bin/flatpak".into(),
@@ -1844,7 +1849,7 @@ mod tests {
             home: directory.path().join("runtime"),
             storage_home: None,
             library: directory.path().join("msb"),
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         crate::working_account::test_runtime(&paths.executable);
@@ -1892,7 +1897,7 @@ mod tests {
             .contains("serveraliveinterval 37\n"));
     }
 
-    /// A computer after the storage migration: the editor entry `prepare` wrote for
+    /// A device after the storage migration: the editor entry `prepare` wrote for
     /// the previous runtime home (and the `Include` it added), and the converted
     /// home holding the verbatim copy the migration made of that home.
     struct Migrated {
@@ -1904,7 +1909,7 @@ mod tests {
 
     const OLD_HOME: &str = "aaaaaaaaaaaa";
     const NEW_HOME: &str = "bbbbbbbbbbbb";
-    const OLD_HOST: &str = "silo-aaaaaaaaaaaa-dev";
+    const OLD_DEVICE: &str = "silo-aaaaaaaaaaaa-dev";
 
     fn migrated() -> Migrated {
         let directory = tempfile::tempdir().unwrap();
@@ -1921,7 +1926,7 @@ mod tests {
             home: user_home.join(".silo").join(home),
             storage_home: None,
             library: directory.path().join(executable),
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         let previous = paths(OLD_HOME, "old-msb");
@@ -1957,13 +1962,13 @@ mod tests {
             repoint_converted_entries(&self.converted, &self.user_home, &self.previous.home)
         }
 
-        /// What `ssh` resolves for `host` from the user's own configuration.
-        fn resolved(&self, host: &str) -> String {
+        /// What `ssh` resolves for `alias` from the user's own configuration.
+        fn resolved(&self, alias: &str) -> String {
             let output = Command::new("/usr/bin/ssh")
                 .arg("-G")
                 .arg("-F")
                 .arg(self.user_home.join(".ssh/config"))
-                .arg(host)
+                .arg(alias)
                 .output()
                 .unwrap();
             assert!(output.status.success());
@@ -1993,30 +1998,30 @@ mod tests {
     #[test]
     fn entries_copied_by_a_migration_are_pointed_at_the_converted_home() {
         use std::os::unix::fs::MetadataExt;
-        let computer = migrated();
+        let device = migrated();
         let include = |home: &str| {
             format!(
                 "Include \"{}/.silo/{home}/ssh/*.conf\"",
-                computer.user_home.display()
+                device.user_home.display()
             )
         };
         // Before: the copy and the user's file still lead to the previous home.
-        let before = computer.resolved(OLD_HOST);
-        assert!(before.contains(&format!("MSB_HOME={}", computer.previous.home.display())));
+        let before = device.resolved(OLD_DEVICE);
+        assert!(before.contains(&format!("MSB_HOME={}", device.previous.home.display())));
         assert!(!before.contains(NEW_HOME));
-        let previous_before = snapshot(&computer.previous.home);
-        let config_before = computer.config();
+        let previous_before = snapshot(&device.previous.home);
+        let config_before = device.config();
         assert!(config_before.starts_with(include(OLD_HOME).as_bytes()));
 
-        computer.repoint().unwrap();
+        device.repoint().unwrap();
 
         // The Host name an editor saved still resolves, now to the converted home:
         // the proxy, the identity and the known hosts it names are all there.
         // The previous `Include` is still there, but it comes after the new one and
         // `ssh` keeps the first value it finds, so the proxy and known hosts are the
         // converted home's; the identity files are cumulative and the converted one is first.
-        let after = computer.resolved(OLD_HOST);
-        let converted = computer.converted.home.display().to_string();
+        let after = device.resolved(OLD_DEVICE);
+        let converted = device.converted.home.display().to_string();
         let values = |key: &str| -> Vec<String> {
             after
                 .lines()
@@ -2030,10 +2035,10 @@ mod tests {
             proxy[0].contains(&format!("MSB_HOME={converted}")),
             "{after}"
         );
-        assert!(!proxy[0].contains(&computer.previous.home.display().to_string()));
+        assert!(!proxy[0].contains(&device.previous.home.display().to_string()));
         assert!(proxy[0].contains(&format!(
             "MSB_PATH={}",
-            computer.converted.executable.display()
+            device.converted.executable.display()
         )));
         assert_eq!(
             values("identityfile")[0],
@@ -2043,15 +2048,15 @@ mod tests {
             values("userknownhostsfile"),
             [format!("{converted}/ssh/dev.known_hosts")]
         );
-        assert_eq!(values("hostname"), [OLD_HOST]);
+        assert_eq!(values("hostname"), [OLD_DEVICE]);
         assert_eq!(values("stricthostkeychecking"), ["true"]);
-        let entry = computer.entry(&computer.converted);
+        let entry = device.entry(&device.converted);
         assert!(entry.starts_with(&format!(
-            "Host {OLD_HOST}\n  HostName {OLD_HOST}\n  User silo\n"
+            "Host {OLD_DEVICE}\n  HostName {OLD_DEVICE}\n  User silo\n"
         )));
         assert!(entry.ends_with("\n\nHost *\n"));
         assert_eq!(
-            fs::metadata(computer.converted.home.join("ssh/dev.conf"))
+            fs::metadata(device.converted.home.join("ssh/dev.conf"))
                 .unwrap()
                 .mode()
                 & 0o777,
@@ -2059,7 +2064,7 @@ mod tests {
         );
 
         // The user's file gains one line at the top; the previous line and the rest stay.
-        let config = computer.config();
+        let config = device.config();
         assert_eq!(
             config,
             [
@@ -2069,83 +2074,83 @@ mod tests {
             .concat()
         );
         // The unrelated entries of the user keep resolving as before.
-        assert!(computer.resolved("personal").contains("user example\n"));
-        assert!(computer
+        assert!(device.resolved("personal").contains("user example\n"));
+        assert!(device
             .resolved("unrelated")
             .contains("serveraliveinterval 37\n"));
 
         // The backup stays an exact copy: nothing in the previous home was written.
-        assert_eq!(snapshot(&computer.previous.home), previous_before);
+        assert_eq!(snapshot(&device.previous.home), previous_before);
 
         // Repeating changes nothing, anywhere.
-        let converted_before = snapshot(&computer.converted.home);
-        computer.repoint().unwrap();
-        assert_eq!(computer.config(), config);
-        assert_eq!(snapshot(&computer.converted.home), converted_before);
-        assert_eq!(snapshot(&computer.previous.home), previous_before);
-        drop(computer.directory);
+        let converted_before = snapshot(&device.converted.home);
+        device.repoint().unwrap();
+        assert_eq!(device.config(), config);
+        assert_eq!(snapshot(&device.converted.home), converted_before);
+        assert_eq!(snapshot(&device.previous.home), previous_before);
+        drop(device.directory);
     }
 
     #[test]
     fn the_converted_entry_does_not_depend_on_the_previous_home_once_it_is_deleted() {
-        let computer = migrated();
-        computer.repoint().unwrap();
-        fs::remove_dir_all(&computer.previous.home).unwrap();
-        let entry = computer.entry(&computer.converted);
-        assert!(!entry.contains(&computer.previous.home.display().to_string()));
-        let resolved = computer.resolved(OLD_HOST);
-        assert!(resolved.contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+        let device = migrated();
+        device.repoint().unwrap();
+        fs::remove_dir_all(&device.previous.home).unwrap();
+        let entry = device.entry(&device.converted);
+        assert!(!entry.contains(&device.previous.home.display().to_string()));
+        let resolved = device.resolved(OLD_DEVICE);
+        assert!(resolved.contains(&format!("MSB_HOME={}", device.converted.home.display())));
         assert!(!resolved.contains("old-msb"));
         // The key the entry names is still there to offer.
-        assert!(computer.converted.home.join("ssh/silo_ed25519").is_file());
+        assert!(device.converted.home.join("ssh/silo_ed25519").is_file());
     }
 
     #[test]
-    fn a_user_who_opened_the_sandbox_after_the_migration_already_has_the_include() {
-        let computer = migrated();
+    fn a_user_who_opened_the_computer_after_the_migration_already_has_the_include() {
+        let device = migrated();
         // `prepare` for the converted home writes its own entry and `Include` first.
-        crate::working_account::test_runtime(&computer.converted.executable);
-        prepare(&computer.converted, &computer.user_home, "dev").unwrap();
-        let config = computer.config();
-        let entry = computer.entry(&computer.converted);
-        computer.repoint().unwrap();
-        assert_eq!(computer.config(), config);
-        assert_eq!(computer.entry(&computer.converted), entry);
+        crate::working_account::test_runtime(&device.converted.executable);
+        prepare(&device.converted, &device.user_home, "dev").unwrap();
+        let config = device.config();
+        let entry = device.entry(&device.converted);
+        device.repoint().unwrap();
+        assert_eq!(device.config(), config);
+        assert_eq!(device.entry(&device.converted), entry);
     }
 
     #[test]
-    fn opening_the_sandbox_again_keeps_the_alias_an_editor_saved_before_the_upgrade() {
-        let computer = migrated();
-        computer.repoint().unwrap();
-        crate::working_account::test_runtime(&computer.converted.executable);
-        prepare(&computer.converted, &computer.user_home, "dev").unwrap();
-        let entry = computer.entry(&computer.converted);
-        let new_host = format!("silo-{NEW_HOME}-dev");
+    fn opening_the_computer_again_keeps_the_alias_an_editor_saved_before_the_upgrade() {
+        let device = migrated();
+        device.repoint().unwrap();
+        crate::working_account::test_runtime(&device.converted.executable);
+        prepare(&device.converted, &device.user_home, "dev").unwrap();
+        let entry = device.entry(&device.converted);
+        let new_device = format!("silo-{NEW_HOME}-dev");
         assert!(
             entry.starts_with(&format!(
-                "Host {new_host} {OLD_HOST}\n  HostName {new_host}\n"
+                "Host {new_device} {OLD_DEVICE}\n  HostName {new_device}\n"
             )),
             "{entry}"
         );
-        // Both names reach the converted sandbox; the copy kept from before the
+        // Both names reach the converted computer; the copy kept from before the
         // upgrade is shadowed by the new `Include` for either of them.
-        for host in [new_host.as_str(), OLD_HOST] {
-            let resolved = computer.resolved(host);
+        for alias in [new_device.as_str(), OLD_DEVICE] {
+            let resolved = device.resolved(alias);
             let proxy: Vec<_> = resolved
                 .lines()
                 .filter(|line| line.starts_with("proxycommand "))
                 .collect();
             assert_eq!(proxy.len(), 1, "{resolved}");
-            assert!(proxy[0].contains(&format!("MSB_HOME={}", computer.converted.home.display())));
-            assert!(resolved.contains(&format!("hostname {new_host}\n")));
+            assert!(proxy[0].contains(&format!("MSB_HOME={}", device.converted.home.display())));
+            assert!(resolved.contains(&format!("hostname {new_device}\n")));
         }
         // Repeating changes nothing.
-        prepare(&computer.converted, &computer.user_home, "dev").unwrap();
-        assert_eq!(computer.entry(&computer.converted), entry);
+        prepare(&device.converted, &device.user_home, "dev").unwrap();
+        assert_eq!(device.entry(&device.converted), entry);
     }
 
     #[test]
-    fn only_aliases_silo_gave_this_sandbox_are_kept_in_a_host_line() {
+    fn only_aliases_silo_gave_this_computer_are_kept_in_a_host_line() {
         let directory = tempfile::tempdir().unwrap();
         let config = directory.path().join("dev.conf");
         let patterns = |first_line: &str| {
@@ -2183,37 +2188,37 @@ mod tests {
 
     #[test]
     fn the_include_is_added_only_where_the_user_included_the_previous_home() {
-        let computer = migrated();
+        let device = migrated();
         // The user removed Silo's line from their configuration on their own.
         let plain = b"Host personal\n  User example\n";
-        fs::write(computer.user_home.join(".ssh/config"), plain).unwrap();
-        computer.repoint().unwrap();
-        assert_eq!(computer.config(), plain);
+        fs::write(device.user_home.join(".ssh/config"), plain).unwrap();
+        device.repoint().unwrap();
+        assert_eq!(device.config(), plain);
         // The copy is still pointed at the converted home.
-        assert!(computer
-            .entry(&computer.converted)
-            .contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+        assert!(device
+            .entry(&device.converted)
+            .contains(&format!("MSB_HOME={}", device.converted.home.display())));
         // No SSH configuration at all: none is created.
-        fs::remove_file(computer.user_home.join(".ssh/config")).unwrap();
-        computer.repoint().unwrap();
-        assert!(!computer.user_home.join(".ssh/config").exists());
+        fs::remove_file(device.user_home.join(".ssh/config")).unwrap();
+        device.repoint().unwrap();
+        assert!(!device.user_home.join(".ssh/config").exists());
     }
 
     #[test]
     fn a_stow_linked_config_receives_the_include_through_its_link() {
-        let computer = migrated();
-        let dotfiles = computer.directory.path().join("dotfiles");
+        let device = migrated();
+        let dotfiles = device.directory.path().join("dotfiles");
         fs::create_dir_all(&dotfiles).unwrap();
         fs::rename(
-            computer.user_home.join(".ssh/config"),
+            device.user_home.join(".ssh/config"),
             dotfiles.join("ssh-config"),
         )
         .unwrap();
-        let link = computer.user_home.join(".ssh/config");
+        let link = device.user_home.join(".ssh/config");
         std::os::unix::fs::symlink(dotfiles.join("ssh-config"), &link).unwrap();
         let before = fs::read(&link).unwrap();
-        computer.repoint().unwrap();
-        computer.repoint().unwrap();
+        device.repoint().unwrap();
+        device.repoint().unwrap();
         assert!(fs::symlink_metadata(&link)
             .unwrap()
             .file_type()
@@ -2223,29 +2228,29 @@ mod tests {
             [
                 format!(
                     "Include \"{}/.silo/{NEW_HOME}/ssh/*.conf\"\n",
-                    computer.user_home.display()
+                    device.user_home.display()
                 )
                 .as_bytes(),
                 &before[..]
             ]
             .concat()
         );
-        assert!(computer
-            .resolved(OLD_HOST)
-            .contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+        assert!(device
+            .resolved(OLD_DEVICE)
+            .contains(&format!("MSB_HOME={}", device.converted.home.display())));
     }
 
     #[test]
     fn an_unwritable_linked_config_explains_the_line_to_add_and_the_entries_are_still_repointed() {
-        let computer = migrated();
-        let (store, lock) = read_only_linked_config(&computer);
+        let device = migrated();
+        let (store, lock) = read_only_linked_config(&device);
         let before = fs::read(store.join("config")).unwrap();
         lock(true);
-        let error = computer.repoint().unwrap_err();
+        let error = device.repoint().unwrap_err();
         lock(false);
         let include = format!(
             "Include \"{}/.silo/{NEW_HOME}/ssh/*.conf\"",
-            computer.user_home.display()
+            device.user_home.display()
         );
         assert!(
             error.ends_with(&format!(
@@ -2254,19 +2259,19 @@ mod tests {
             "{error}"
         );
         assert_eq!(fs::read(store.join("config")).unwrap(), before);
-        assert!(computer
-            .entry(&computer.converted)
-            .contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+        assert!(device
+            .entry(&device.converted)
+            .contains(&format!("MSB_HOME={}", device.converted.home.display())));
     }
 
     /// Moves the user's SSH configuration into a store folder it links to, like a
     /// read-only home-manager file in the Nix store. Returns the folder and a switch
     /// that locks (`true`) or unlocks (`false`) it for this account.
-    fn read_only_linked_config(computer: &Migrated) -> (PathBuf, impl Fn(bool)) {
-        let store = computer.directory.path().join("store");
+    fn read_only_linked_config(device: &Migrated) -> (PathBuf, impl Fn(bool)) {
+        let store = device.directory.path().join("store");
         fs::create_dir_all(&store).unwrap();
-        fs::rename(computer.user_home.join(".ssh/config"), store.join("config")).unwrap();
-        std::os::unix::fs::symlink(store.join("config"), computer.user_home.join(".ssh/config"))
+        fs::rename(device.user_home.join(".ssh/config"), store.join("config")).unwrap();
+        std::os::unix::fs::symlink(store.join("config"), device.user_home.join(".ssh/config"))
             .unwrap();
         let root = unsafe { libc::geteuid() } == 0;
         let folder = store.clone();
@@ -2287,13 +2292,13 @@ mod tests {
 
     /// A runtime home named `name` holding a copy of the previous one, as a
     /// migration leaves it.
-    fn converted_at(computer: &Migrated, name: &str) -> RuntimePaths {
-        let mut paths = computer.converted.clone();
-        paths.home = computer.user_home.join(".silo").join(name);
+    fn converted_at(device: &Migrated, name: &str) -> RuntimePaths {
+        let mut paths = device.converted.clone();
+        paths.home = device.user_home.join(".silo").join(name);
         fs::create_dir_all(&paths.home).unwrap();
         let copy = Command::new("/bin/cp")
             .arg("-R")
-            .arg(computer.previous.home.join("."))
+            .arg(device.previous.home.join("."))
             .arg(&paths.home)
             .status()
             .unwrap();
@@ -2316,9 +2321,9 @@ mod tests {
 
     #[test]
     fn a_line_is_reported_only_where_silo_cannot_add_it_and_only_until_it_is_there() {
-        let computer = migrated();
-        let line = computer.include(NEW_HOME);
-        let needed = |line: &str| manual_include_needed(&computer.user_home, Some(line.into()));
+        let device = migrated();
+        let line = device.include(NEW_HOME);
+        let needed = |line: &str| manual_include_needed(&device.user_home, Some(line.into()));
 
         // Silo can write the file: it adds the line itself and has nothing to report.
         let writable = migrated();
@@ -2330,29 +2335,29 @@ mod tests {
 
         // Silo can't: every launch reports the line, however often it repeats, and
         // the entries are repointed all the same.
-        let (store, lock) = read_only_linked_config(&computer);
-        let entry = computer.converted.home.join("ssh/dev.conf");
+        let (store, lock) = read_only_linked_config(&device);
+        let entry = device.converted.home.join("ssh/dev.conf");
         lock(true);
         let launches: Vec<_> = (0..2)
             .map(|_| {
-                fs::copy(computer.previous.home.join("ssh/dev.conf"), &entry).unwrap();
+                fs::copy(device.previous.home.join("ssh/dev.conf"), &entry).unwrap();
                 (
-                    computer.repair(&computer.converted),
-                    computer.entry(&computer.converted),
+                    device.repair(&device.converted),
+                    device.entry(&device.converted),
                 )
             })
             .collect();
         // A different converted home needs a different line.
-        let later = converted_at(&computer, "cccccccccccc");
-        let changed = computer.repair(&later);
+        let later = converted_at(&device, "cccccccccccc");
+        let changed = device.repair(&later);
         lock(false);
         for (repair, entry) in launches {
             assert_eq!(repair, Repair::ManualInclude(line.clone()));
-            assert!(entry.contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+            assert!(entry.contains(&format!("MSB_HOME={}", device.converted.home.display())));
         }
         assert_eq!(
             changed,
-            Repair::ManualInclude(computer.include("cccccccccccc"))
+            Repair::ManualInclude(device.include("cccccccccccc"))
         );
         assert_eq!(needed(&line), Some(line.clone()));
 
@@ -2365,14 +2370,14 @@ mod tests {
         )
         .unwrap();
         lock(true);
-        let after = computer.repair(&computer.converted);
+        let after = device.repair(&device.converted);
         lock(false);
         assert_eq!(after, Repair::Done);
         assert_eq!(needed(&line), None);
         // The line of another home is still needed.
         assert_eq!(
-            needed(&computer.include("cccccccccccc")),
-            Some(computer.include("cccccccccccc"))
+            needed(&device.include("cccccccccccc")),
+            Some(device.include("cccccccccccc"))
         );
     }
 
@@ -2382,43 +2387,43 @@ mod tests {
         if unsafe { libc::geteuid() } == 0 {
             return;
         }
-        let computer = migrated();
-        let root = computer.converted.home.join("ssh");
+        let device = migrated();
+        let root = device.converted.home.join("ssh");
         let entry = root.join("dev.conf");
         let original = fs::read(&entry).unwrap();
-        let config = computer.config();
+        let config = device.config();
         fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
         assert!(write_private(&entry, b"cannot replace").is_err());
-        let repair = computer.repair(&computer.converted);
+        let repair = device.repair(&device.converted);
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
         assert!(matches!(repair, Repair::Failed(_)), "{repair:?}");
         assert_eq!(fs::read(&entry).unwrap(), original);
-        assert_eq!(computer.config(), config);
-        assert_eq!(computer.repair(&computer.converted), Repair::Done);
-        let updated = computer.entry(&computer.converted);
+        assert_eq!(device.config(), config);
+        assert_eq!(device.repair(&device.converted), Repair::Done);
+        let updated = device.entry(&device.converted);
         for directive in ["ProxyCommand", "IdentityFile", "UserKnownHostsFile"] {
             let value = updated
                 .lines()
                 .find(|line| line.starts_with(&format!("  {directive} ")))
                 .unwrap();
             assert!(
-                value.contains(&computer.converted.home.display().to_string()),
+                value.contains(&device.converted.home.display().to_string()),
                 "{value}"
             );
-            assert!(!value.contains(&computer.previous.home.display().to_string()));
+            assert!(!value.contains(&device.previous.home.display().to_string()));
         }
     }
 
     #[test]
     fn repair_reports_unreadable_files_and_finishes_the_writable_batch() {
-        let computer = migrated();
-        let root = computer.converted.home.join("ssh");
-        let outside = computer.directory.path().join("unrelated-config");
+        let device = migrated();
+        let root = device.converted.home.join("ssh");
+        let outside = device.directory.path().join("unrelated-config");
         fs::write(&outside, "keep this file").unwrap();
         let unreadable = root.join("unreadable.conf");
         std::os::unix::fs::symlink(&outside, &unreadable).unwrap();
-        let config = computer.config();
-        let repair = computer.repair(&computer.converted);
+        let config = device.config();
+        let repair = device.repair(&device.converted);
         assert!(
             matches!(&repair, Repair::Failed(error) if error.contains("unreadable.conf")),
             "{repair:?}"
@@ -2428,28 +2433,28 @@ mod tests {
             .unwrap()
             .file_type()
             .is_symlink());
-        assert_eq!(computer.config(), config);
-        assert!(computer
-            .entry(&computer.converted)
-            .contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+        assert_eq!(device.config(), config);
+        assert!(device
+            .entry(&device.converted)
+            .contains(&format!("MSB_HOME={}", device.converted.home.display())));
         fs::remove_file(&unreadable).unwrap();
-        assert_eq!(computer.repair(&computer.converted), Repair::Done);
+        assert_eq!(device.repair(&device.converted), Repair::Done);
     }
 
     #[test]
     fn repair_accepts_an_absent_optional_configuration_directory() {
-        let computer = migrated();
-        fs::remove_dir_all(computer.converted.home.join("ssh")).unwrap();
-        assert_eq!(computer.repair(&computer.converted), Repair::Done);
+        let device = migrated();
+        fs::remove_dir_all(device.converted.home.join("ssh")).unwrap();
+        assert_eq!(device.repair(&device.converted), Repair::Done);
     }
 
     #[test]
     fn a_failure_other_than_the_line_to_add_is_not_reported_as_one() {
-        let computer = migrated();
+        let device = migrated();
         // A runtime home `ssh` can't be told about: the `Include` can't be written at all.
-        let mut broken = computer.converted.clone();
-        broken.home = computer.user_home.join(".silo/bb\nbb");
-        assert_eq!(computer.repair(&broken), Repair::Failed(FAILED.into()));
+        let mut broken = device.converted.clone();
+        broken.home = device.user_home.join(".silo/bb\nbb");
+        assert_eq!(device.repair(&broken), Repair::Failed(FAILED.into()));
     }
 
     #[test]
@@ -2465,12 +2470,12 @@ mod tests {
 
     #[test]
     fn an_unreadable_or_oversized_config_is_never_rewritten() {
-        let computer = migrated();
-        let config = computer.user_home.join(".ssh/config");
+        let device = migrated();
+        let config = device.user_home.join(".ssh/config");
         fs::remove_file(&config).unwrap();
         // A dangling link: nothing to read, nothing to replace.
         std::os::unix::fs::symlink("/silo-test-missing/config", &config).unwrap();
-        computer.repoint().unwrap();
+        device.repoint().unwrap();
         assert!(fs::symlink_metadata(&config)
             .unwrap()
             .file_type()
@@ -2480,27 +2485,23 @@ mod tests {
 
     #[test]
     fn only_silo_entries_that_are_regular_files_are_rewritten() {
-        let computer = migrated();
-        let ssh = computer.converted.home.join("ssh");
+        let device = migrated();
+        let ssh = device.converted.home.join("ssh");
         let foreign = "Host mine\n  HostName example.org\n";
         fs::write(ssh.join("mine.conf"), foreign).unwrap();
-        fs::write(
-            ssh.join("bad name.conf"),
-            computer.entry(&computer.converted),
-        )
-        .unwrap();
-        let target = computer.directory.path().join("target.conf");
-        fs::write(&target, computer.entry(&computer.converted)).unwrap();
+        fs::write(ssh.join("bad name.conf"), device.entry(&device.converted)).unwrap();
+        let target = device.directory.path().join("target.conf");
+        fs::write(&target, device.entry(&device.converted)).unwrap();
         std::os::unix::fs::symlink(&target, ssh.join("linked.conf")).unwrap();
-        assert!(computer.repoint().unwrap_err().contains("linked.conf"));
+        assert!(device.repoint().unwrap_err().contains("linked.conf"));
         assert_eq!(fs::read_to_string(ssh.join("mine.conf")).unwrap(), foreign);
         assert_eq!(
             fs::read_to_string(ssh.join("bad name.conf")).unwrap(),
-            computer.entry(&computer.previous)
+            device.entry(&device.previous)
         );
         assert_eq!(
             fs::read_to_string(&target).unwrap(),
-            computer.entry(&computer.previous)
+            device.entry(&device.previous)
         );
     }
 
@@ -2571,7 +2572,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires an explicitly provided running Silo VM and installs its editor SSH configuration"]
+    #[ignore = "requires an explicitly provided running Silo computer and installs its editor SSH configuration"]
     fn live_editor_transport() {
         crate::test_support::live::require_confirmation();
         let home =

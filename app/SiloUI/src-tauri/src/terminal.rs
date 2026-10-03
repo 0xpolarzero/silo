@@ -46,22 +46,23 @@ fn command(paths: &RuntimePaths, name: &str) -> Result<String, String> {
     ];
     Ok(args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" "))
 }
-/// The inspected VM, or "Start <name> first." when it is stopped or has no runtime sandbox yet.
-pub(crate) fn running_vm(
+/// The inspected computer, or "Start <name> first." when it is stopped or has no runtime computer yet.
+pub(crate) fn running_computer(
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<runtime::InspectedSandbox, String> {
-    running_vm_with(&runtime::ProcessRunner, paths, name)
+    running_computer_with(&runtime::ProcessRunner, paths, name)
 }
-pub(crate) fn running_vm_with(
+pub(crate) fn running_computer_with(
     runner: &dyn runtime::RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<runtime::InspectedSandbox, String> {
-    let inspected = match runtime::observe_vm(runner, paths, name).map_err(|e| e.to_string())? {
-        runtime::VmRuntime::Absent => return Err(start_first(name)),
-        runtime::VmRuntime::Present(inspected) => inspected,
-    };
+    let inspected =
+        match runtime::observe_computer(runner, paths, name).map_err(|e| e.to_string())? {
+            runtime::ComputerRuntime::Absent => return Err(start_first(name)),
+            runtime::ComputerRuntime::Present(inspected) => inspected,
+        };
     runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
     if inspected.status != "Running" {
         return Err(start_first(name));
@@ -72,9 +73,10 @@ pub(crate) fn start_first(name: &str) -> String {
     format!("Start {name} first.")
 }
 pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
-    if let Some((host, vm)) = crate::remote_access::target(name)? {
+    if let Some((device, computer)) = crate::remote_access::target(name)? {
         // ssh gets `-F`, so the user's ~/.ssh/config needs no Include (G-11).
-        let (alias, config) = crate::editor::prepare_remote_private(app, &host, &vm, "/workspace")?;
+        let (alias, config) =
+            crate::editor::prepare_remote_private(app, &device, &computer, "/workspace")?;
         let application = applications::selected_terminal(app)?;
         let command = [
             "/usr/bin/ssh",
@@ -93,14 +95,10 @@ pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
     let application = applications::selected_terminal(app)?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
-    if !metadata
-        .machines
-        .iter()
-        .any(|m| m.name() == name && m.is_vm())
-    {
-        return Err("Choose a local Silo VM.".into());
+    if !metadata.computers.iter().any(|m| m.name() == name) {
+        return Err("Choose a local Silo computer.".into());
     }
-    running_vm(&paths, name)?;
+    running_computer(&paths, name)?;
     applications::open_terminal(app, &application, &command(&paths, name)?)
 }
 
@@ -165,7 +163,7 @@ mod tests {
     use crate::test_support::runner::{ExpectedCommand, ScriptedRunner};
 
     #[test]
-    fn only_a_running_managed_vm_can_open_a_terminal() {
+    fn only_a_running_managed_computer_can_open_a_terminal() {
         let dir = tempfile::tempdir().unwrap();
         let paths = crate::test_support::paths(dir.path());
         for status in [
@@ -180,7 +178,7 @@ mod tests {
                 })
                 .to_string(),
             )]);
-            let result = running_vm_with(&runner, &paths, "dev");
+            let result = running_computer_with(&runner, &paths, "dev");
             if status == "Running" {
                 let inspected = result.unwrap();
                 assert_eq!(inspected.name, "dev");
@@ -193,21 +191,22 @@ mod tests {
     }
 
     #[test]
-    fn an_unmanaged_running_vm_is_rejected_without_mutation() {
+    fn an_unmanaged_running_computer_is_rejected_without_mutation() {
         let dir = tempfile::tempdir().unwrap();
         let runner = ScriptedRunner::new([ExpectedCommand::ok(
             ["inspect", "dev", "--format", "json"],
             r#"{"name":"dev","status":"Running","config":{"labels":{}}}"#,
         )]);
         assert_eq!(
-            running_vm_with(&runner, &crate::test_support::paths(dir.path()), "dev").unwrap_err(),
-            "Sandbox 'dev' is not owned by Silo. No sandbox operation was performed."
+            running_computer_with(&runner, &crate::test_support::paths(dir.path()), "dev")
+                .unwrap_err(),
+            "Computer 'dev' is not owned by Silo. No computer operation was performed."
         );
         runner.assert_finished();
     }
 
     #[test]
-    fn missing_vm_and_failed_inspection_have_distinct_recovery_messages() {
+    fn missing_computer_and_failed_inspection_have_distinct_recovery_messages() {
         let dir = tempfile::tempdir().unwrap();
         let paths = crate::test_support::paths(dir.path());
         let missing = ScriptedRunner::new([ExpectedCommand::error(
@@ -219,7 +218,7 @@ mod tests {
             },
         )]);
         assert_eq!(
-            running_vm_with(&missing, &paths, "dev").unwrap_err(),
+            running_computer_with(&missing, &paths, "dev").unwrap_err(),
             "Start dev first."
         );
         missing.assert_finished();
@@ -231,8 +230,8 @@ mod tests {
             },
         )]);
         assert_eq!(
-            running_vm_with(&timed_out, &paths, "dev").unwrap_err(),
-            "Inspect timed out. Check the sandbox state, then retry."
+            running_computer_with(&timed_out, &paths, "dev").unwrap_err(),
+            "Inspect timed out. Check the computer state, then retry."
         );
         timed_out.assert_finished();
 
@@ -241,8 +240,8 @@ mod tests {
             "{broken",
         )]);
         assert_eq!(
-            running_vm_with(&malformed, &paths, "dev").unwrap_err(),
-            "The bundled runtime returned invalid state for sandbox 'dev'."
+            running_computer_with(&malformed, &paths, "dev").unwrap_err(),
+            "The bundled runtime returned invalid state for computer 'dev'."
         );
         malformed.assert_finished();
     }
@@ -309,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn opens_in_workspace_without_starting_a_stopped_vm() {
+    fn opens_in_computer_without_starting_a_stopped_computer() {
         let paths = RuntimePaths {
             guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("runtime/guest-image"),

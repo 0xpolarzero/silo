@@ -36,7 +36,7 @@ pub(crate) fn paths(directory: &std::path::Path) -> crate::runtime::RuntimePaths
         home: directory.join("home"),
         storage_home: None,
         library: directory.join("libkrunfw"),
-        metadata: directory.join("machines.json"),
+        metadata: directory.join("computers.json"),
         volumes: directory.join("volumes"),
     }
 }

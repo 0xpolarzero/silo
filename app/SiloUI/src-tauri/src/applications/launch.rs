@@ -8,13 +8,13 @@ use std::{
     process::Command,
 };
 
-/// An editor command that accepts a sandbox folder.
+/// An editor command that accepts a computer folder.
 #[derive(Debug, PartialEq)]
 pub(crate) struct EditorCommand {
     pub program: PathBuf,
     /// Arguments before Silo's own (for example `run <app id>` for Flatpak).
     pub args: Vec<OsString>,
-    /// Zed takes an `ssh://` URI; Visual Studio Code takes a workspace file.
+    /// Zed takes an `ssh://` URI; Visual Studio Code takes a computer file.
     pub zed: bool,
 }
 
@@ -669,7 +669,7 @@ mod tests {
     }
 
     #[test]
-    fn text_editors_that_cannot_open_sandboxes_are_refused() {
+    fn text_editors_that_cannot_open_computers_are_refused() {
         for line in [
             "gnome-text-editor %U",
             "/usr/bin/gedit %U",

@@ -19,7 +19,7 @@ use tauri::{
 };
 
 struct Viewer {
-    workspace: String,
+    computer: String,
     proxy: Option<Proxy>,
     tunnel: Option<Tunnel>,
     /// Bumped whenever the connection is replaced or torn down, so a connect
@@ -28,9 +28,9 @@ struct Viewer {
     connecting: bool,
 }
 impl Viewer {
-    fn new(workspace: String) -> Self {
+    fn new(computer: String) -> Self {
         Self {
-            workspace,
+            computer,
             proxy: None,
             tunnel: None,
             generation: 0,
@@ -64,12 +64,12 @@ enum AttachPlan {
 fn begin_attach(
     entries: &mut HashMap<String, Viewer>,
     label: &str,
-    workspace: &str,
+    computer: &str,
     has_view: bool,
 ) -> Result<AttachPlan, String> {
     let entry = entries
         .get_mut(label)
-        .filter(|v| v.workspace == workspace)
+        .filter(|v| v.computer == computer)
         .ok_or("Desktop viewer closed.")?;
     if entry.connecting {
         return Err("The desktop is still connecting.".into());
@@ -115,32 +115,32 @@ fn abort_attach(entries: &mut HashMap<String, Viewer>, label: &str, generation: 
     }
 }
 enum ViewerClaim {
-    /// A viewer for this workspace exists or is being created.
+    /// A viewer for this computer exists or is being created.
     Existing(String),
     /// The caller reserved this label and must create its window.
     New(String),
 }
-/// Reserves one viewer per workspace, so a concurrent second open finds the
+/// Reserves one viewer per computer, so a concurrent second open finds the
 /// pending entry instead of creating a duplicate window and tunnel.
 fn claim_viewer(
     entries: &mut HashMap<String, Viewer>,
-    workspace: &str,
+    computer: &str,
 ) -> Result<ViewerClaim, String> {
-    if let Some((label, _)) = entries.iter().find(|(_, v)| v.workspace == workspace) {
+    if let Some((label, _)) = entries.iter().find(|(_, v)| v.computer == computer) {
         return Ok(ViewerClaim::Existing(label.clone()));
     }
     if entries.len() >= 16 {
         return Err("Close an unused desktop viewer first.".into());
     }
     let label = format!("desktop-shell-{}", uuid::Uuid::new_v4().simple());
-    entries.insert(label.clone(), Viewer::new(workspace.into()));
+    entries.insert(label.clone(), Viewer::new(computer.into()));
     Ok(ViewerClaim::New(label))
 }
 static VIEWERS: OnceLock<Mutex<HashMap<String, Viewer>>> = OnceLock::new();
 fn viewers() -> &'static Mutex<HashMap<String, Viewer>> {
     VIEWERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
-pub(crate) fn require_workspace(window: &Window, workspace: &str) -> Result<(), String> {
+pub(crate) fn require_computer(window: &Window, computer: &str) -> Result<(), String> {
     if window.label() == "main" {
         return Ok(());
     }
@@ -148,7 +148,7 @@ pub(crate) fn require_workspace(window: &Window, workspace: &str) -> Result<(), 
         .lock()
         .map_err(|_| "Desktop unavailable.")?
         .get(window.label())
-        .is_some_and(|v| v.workspace == workspace)
+        .is_some_and(|v| v.computer == computer)
     {
         Ok(())
     } else {
@@ -157,13 +157,13 @@ pub(crate) fn require_workspace(window: &Window, workspace: &str) -> Result<(), 
 }
 pub(crate) fn local_connection(
     app: &AppHandle,
-    workspace: &str,
+    computer: &str,
     expected_id: Option<&str>,
 ) -> Result<Value, String> {
-    // Reading desktop connection credentials only observes a running VM; it takes
+    // Reading desktop connection credentials only observes a running computer; it takes
     // no operation gate so viewing stays available during other operations.
     runtime::shutdown::ensure_accepting_operations()?;
-    crate::desktop::connection_local(app, workspace, expected_id)
+    crate::desktop::connection_local(app, computer, expected_id)
 }
 
 /// `sun_path` holds 104 bytes on macOS and 108 on Linux, including the NUL.
@@ -211,7 +211,7 @@ fn forward_command(
 }
 
 /// A fresh 0700 directory inside Silo's private `~/.silo`, short enough for
-/// `sun_path` whatever the workspace or computer identifiers are.
+/// `sun_path` whatever the computer or device identifiers are.
 fn socket_directory(root: &Path) -> Result<tempfile::TempDir, String> {
     use std::os::unix::fs::PermissionsExt;
     runtime::prepare_private_directory(root).map_err(|error| error.to_string())?;
@@ -235,25 +235,30 @@ fn socket_ready(path: &Path, uid: u32) -> Result<bool, String> {
     }
 }
 
-fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), String> {
-    editor::require_openssh("view VM desktops")?;
-    let remote_target = remote_access::target(workspace)?;
-    let connection = if let Some((host, vm)) = &remote_target {
-        remote::call_remote(app, host, "desktop.connect", json!({"vmId":vm}))?
+fn connect(app: &AppHandle, computer: &str) -> Result<(Proxy, Option<Tunnel>), String> {
+    editor::require_openssh("view computer desktops")?;
+    let remote_target = remote_access::target(computer)?;
+    let connection = if let Some((device, computer)) = &remote_target {
+        remote::call_remote(
+            app,
+            device,
+            "desktop.connect",
+            json!({"computerId":computer}),
+        )?
     } else {
-        local_connection(app, workspace, None)?
+        local_connection(app, computer, None)?
     };
     let guest = connection["port"]
         .as_u64()
         .and_then(|p| u16::try_from(p).ok())
         .filter(|p| *p != 0)
         .ok_or("Invalid desktop endpoint.")?;
-    let (alias, config) = if let Some((host, vm)) = remote_target {
-        editor::prepare_remote_private(app, &host, &vm, "/workspace")?
+    let (alias, config) = if let Some((device, computer)) = remote_target {
+        editor::prepare_remote_private(app, &device, &computer, "/workspace")?
     } else {
         let paths = runtime::runtime_paths(app)?;
-        let directory = paths.home.join("ssh/desktop-viewer").join(workspace);
-        editor::prepare_private_transport(&paths, workspace, &directory)?
+        let directory = paths.home.join("ssh/desktop-viewer").join(computer);
+        editor::prepare_private_transport(&paths, computer, &directory)?
     };
     let home = app
         .path()
@@ -268,13 +273,13 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
         if !tunnel.running() {
-            return Err("Desktop tunnel closed. Check the VM connection.".into());
+            return Err("Desktop tunnel closed. Check the computer connection.".into());
         }
         if socket_ready(&socket, uid)? {
             break;
         }
         if Instant::now() >= deadline {
-            return Err("Desktop connection timed out. Reconnect the VM.".into());
+            return Err("Desktop connection timed out. Reconnect the computer.".into());
         }
         std::thread::sleep(Duration::from_millis(80));
     }
@@ -295,44 +300,52 @@ fn viewer_title(name: &str, channel: crate::channel::Channel) -> String {
 pub(crate) async fn open_desktop(
     app: AppHandle,
     window: Window,
-    workspace: String,
+    computer: String,
 ) -> Result<(), String> {
     if window.label() != "main" {
         return Err("Open desktops from the main Silo window.".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
         runtime::shutdown::ensure_accepting_operations()?;
-        let name = if let Some((host, vm)) = remote_access::target(&workspace)? {
+        let name = if let Some((device, computer)) = remote_access::target(&computer)? {
             // Verify the remote identity before creating a shell.
-            let state = remote::call_remote(&app, &host, "desktop.status", json!({"vmId":vm}))?;
-            let machine = state["name"].as_str().unwrap_or(&vm);
-            let computer = remote::saved_hosts()?
+            let state = remote::call_remote(
+                &app,
+                &device,
+                "desktop.status",
+                json!({"computerId":computer}),
+            )?;
+            let configuration = state["name"].as_str().unwrap_or(&computer);
+            let device_name = remote::saved_devices()?
                 .into_iter()
-                .find(|h| h.id == host)
+                .find(|h| h.id == device)
                 .map(|h| h.name);
-            format!("{machine} · {}", computer.as_deref().unwrap_or(&host))
+            format!(
+                "{configuration} · {}",
+                device_name.as_deref().unwrap_or(&device)
+            )
         } else {
-            runtime::validate_name(&workspace).map_err(|e| e.to_string())?;
+            runtime::validate_name(&computer).map_err(|e| e.to_string())?;
             let paths = runtime::runtime_paths(&app)?;
             if !runtime::read_metadata(&paths.metadata)
                 .map_err(|e| e.to_string())?
-                .machines
+                .computers
                 .iter()
-                .any(|m| m.is_vm() && m.name() == workspace)
+                .any(|m| m.name() == computer)
             {
-                return Err("Sandbox no longer exists.".into());
+                return Err("Computer no longer exists.".into());
             }
-            workspace.clone()
+            computer.clone()
         };
         let mut route = tauri::Url::parse("http://silo.local/index.html").unwrap();
         route
             .query_pairs_mut()
-            .append_pair("desktop", &workspace)
+            .append_pair("desktop", &computer)
             .append_pair("name", &name);
         let route = format!("index.html?{}", route.query().unwrap());
         let claim = {
             let mut entries = viewers().lock().map_err(|_| "Desktop unavailable.")?;
-            claim_viewer(&mut entries, &workspace)?
+            claim_viewer(&mut entries, &computer)?
         };
         // Window calls run on the main thread; never make them under the lock.
         let label = match claim {
@@ -416,14 +429,14 @@ fn viewer_url(origin: &str) -> tauri::Url {
 pub(crate) async fn desktop_viewer_attach(
     app: AppHandle,
     window: Window,
-    workspace: String,
+    computer: String,
     x: f64,
     y: f64,
     width: f64,
     height: f64,
     viewport_height: f64,
 ) -> Result<(), String> {
-    require_workspace(&window, &workspace)?;
+    require_computer(&window, &computer)?;
     if window.label() == "main"
         || [x, y, width, height, viewport_height]
             .iter()
@@ -465,7 +478,7 @@ pub(crate) async fn desktop_viewer_attach(
         let existing = app.get_webview(&label);
         let plan = {
             let mut entries = viewers().lock().map_err(|_| "Desktop unavailable.")?;
-            begin_attach(&mut entries, window.label(), &workspace, existing.is_some())?
+            begin_attach(&mut entries, window.label(), &computer, existing.is_some())?
         };
         let generation = match plan {
             AttachPlan::Resize => {
@@ -492,7 +505,7 @@ pub(crate) async fn desktop_viewer_attach(
             view.close()
                 .map_err(|_| abort("Could not reconnect desktop."))?;
         }
-        let (proxy, tunnel) = connect(&app, &workspace).map_err(|e| abort(&e))?;
+        let (proxy, tunnel) = connect(&app, &computer).map_err(|e| abort(&e))?;
         let origin = format!("http://127.0.0.1:{}", proxy.port);
         let permitted = origin.clone();
         let builder = WebviewBuilder::new(
@@ -577,12 +590,12 @@ fn disconnect_matching(matches: impl Fn(&Viewer) -> bool) {
 pub(crate) fn close_all() {
     disconnect_matching(|_| true);
 }
-pub(crate) fn close_workspace(workspace: &str) {
-    disconnect_matching(|entry| entry.workspace == workspace);
+pub(crate) fn close_computer(computer: &str) {
+    disconnect_matching(|entry| entry.computer == computer);
 }
-pub(crate) fn close_host(host: &str) {
-    let prefix = format!("silo-remote:{host}:");
-    disconnect_matching(|entry| entry.workspace.starts_with(&prefix));
+pub(crate) fn close_device(device: &str) {
+    let prefix = format!("silo-remote:{device}:");
+    disconnect_matching(|entry| entry.computer.starts_with(&prefix));
 }
 
 #[cfg(test)]
@@ -687,7 +700,7 @@ mod transport_tests {
     fn desktop_forward_uses_pinned_ssh_config_and_a_private_socket() {
         let command = forward_command(
             Path::new("/tmp/silo-private-ssh.conf"),
-            "silo-remote-host-vm",
+            "silo-remote-host-computer",
             Path::new("/home/user/.silo/desktop-abc/desktop.sock"),
             6901,
         )
@@ -717,7 +730,7 @@ mod transport_tests {
                 "ServerAliveCountMax=3",
                 "-L",
                 "/home/user/.silo/desktop-abc/desktop.sock:127.0.0.1:6901",
-                "silo-remote-host-vm",
+                "silo-remote-host-computer",
             ]
         );
         // No TCP listener: nothing binds a loopback port for the guest.
@@ -1055,7 +1068,7 @@ mod registry_tests {
             Ok(ViewerClaim::New(_))
         ));
         for index in 0..14 {
-            claim_viewer(&mut entries, &format!("vm-{index}")).unwrap();
+            claim_viewer(&mut entries, &format!("computer-{index}")).unwrap();
         }
         assert!(claim_viewer(&mut entries, "one-too-many").is_err());
     }

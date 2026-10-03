@@ -3,7 +3,7 @@
 
 Silo pushes this helper and the pinned pair (`pinned.json`) into the guest, then runs
 `apply --approval ask|auto` after each boot, whenever the app becomes ready and when the
-user changes the VM's approval switch. The helper is a plain executor: the host decides
+user changes the computer's approval switch. The helper is a plain executor: the host decides
 the mode, serializes the runs and keeps the result. `apply` is idempotent and cheap when
 nothing changed:
 
@@ -19,14 +19,14 @@ nothing changed:
   agents are pending (the guest has no init system to host a `.path` unit);
 * `lcu status --json` and `lcu doctor` (inside the desktop session) are recorded. After a
   boot the helper waits for the session (bounded) and, when the session ended up failed
-  or stopped although the desktop starts with the VM, asks `silo-desktop start` for it
+  or stopped although the desktop starts with the computer, asks `silo-desktop start` for it
   again a few times with backoff instead of failing the receipt.
 
 The result is a receipt under /var/lib/silo-computer-use that `status` projects
 for the host, and `apply` prints that status plus this run's approval outcome
 (`applied`, `partial` when `lcu setup` configured some agents and failed for others, or
 `failed`); agents still to be installed are pending, not a failure. Nothing here talks to the host or holds credentials. The approval switch
-configures agents' own approval prompts; agents in the VM have root, so it is a
+configures agents' own approval prompts; agents in the computer have root, so it is a
 convenience and not a security boundary, and the helper keeps no record to defend.
 """
 import argparse
@@ -629,7 +629,7 @@ def session_running():
 
 
 def desktop_autostart():
-    """Whether the desktop starts with the VM (the default when never configured)."""
+    """Whether the desktop starts with the computer (the default when never configured)."""
     value = read_json(DESKTOP_CONFIG)
     return not value or value.get('autoStart') is not False
 
@@ -707,7 +707,7 @@ def apply(approval, force=False, boot=False):
     """Brings computer use up to date for the pinned pair with `approval` configured in
     the agents. Returns the public status plus `apply`, this run's approval outcome.
 
-    The host decides the mode, serializes runs for the VM and keeps the result; nothing is
+    The host decides the mode, serializes runs for the computer and keeps the result; nothing is
     remembered here beyond the receipt, so a request is never ignored as stale."""
     pinned = load_pinned()
     if pinned is None:

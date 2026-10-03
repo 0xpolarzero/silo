@@ -1,8 +1,8 @@
 //! A logind "delay" inhibitor holds system shutdown and reboot while Silo stops
-//! its local VMs (F-20). logind sends `PrepareForShutdown(true)`, then waits
+//! its local computers (F-20). logind sends `PrepareForShutdown(true)`, then waits
 //! until every delay lock is released or `InhibitDelayMaxSec` passes. Silo
 //! releases its lock right before exiting. Suspend is not inhibited: sleeping
-//! must not stop sandboxes.
+//! must not stop computers.
 use std::{sync::Mutex, time::Duration};
 
 use tauri::AppHandle;
@@ -46,7 +46,7 @@ fn watch(app: &AppHandle) -> zbus::Result<()> {
         &(
             "shutdown",
             crate::channel::current().product_name(),
-            "Stopping local sandboxes",
+            "Stopping local computers",
             "delay",
         ),
     )?;

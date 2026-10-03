@@ -13,7 +13,7 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 
-const REINSTALL_GUIDANCE: &str = "Reinstall Silo from its original download or package manager, keeping its app data. Your VMs and settings are stored separately from the app.";
+const REINSTALL_GUIDANCE: &str = "Reinstall Silo from its original download or package manager, keeping its app data. Your computers and settings are stored separately from the app.";
 const RETRY_GUIDANCE: &str =
     "Retry checks. If this keeps happening, quit and reopen Silo, then retry.";
 
@@ -774,12 +774,12 @@ fn kvm_api_query_failure(error: io::Error) -> DependencyCheck {
         "Virtualization",
         CheckStatus::Unavailable,
         format!("KVM API query failed: {error}"),
-        "Check KVM access on this host, then retry checks.",
+        "Check KVM access on this device, then retry checks.",
     )
 }
 
 #[cfg(any(target_os = "linux", test))]
-const KVM_FIRMWARE_GUIDANCE: &str = "Turn on hardware virtualization (Intel VT-x or AMD-V/SVM) in your computer’s firmware (BIOS/UEFI) settings, then restart. Inside a VM, enable nested virtualization on its host. Then retry checks.";
+const KVM_FIRMWARE_GUIDANCE: &str = "Turn on hardware virtualization (Intel VT-x or AMD-V/SVM) in your device’s firmware (BIOS/UEFI) settings, then restart. inside a VM, enable nested virtualization on its host. Then retry checks.";
 
 /// ENODEV/ENXIO: the KVM module is loaded but the CPU's virtualization support
 /// is disabled in firmware or unavailable.
@@ -812,7 +812,7 @@ fn kvm_create_vm_result(result: io::Result<()>) -> DependencyCheck {
             title,
             CheckStatus::Unavailable,
             format!("KVM could not create a test VM: {error}"),
-            "Retry checks. If this keeps happening, check that KVM works on this host, for example with kvm-ok.",
+            "Retry checks. If this keeps happening, check that KVM works on this device, for example with kvm-ok.",
         ),
     }
 }
@@ -824,13 +824,13 @@ fn kvm_open_failure(error: io::Error) -> DependencyCheck {
             "/dev/kvm exists, but hardware virtualization is unavailable.".to_owned(),
             KVM_FIRMWARE_GUIDANCE),
         io::ErrorKind::NotFound => (CheckStatus::Unavailable,
-            "/dev/kvm is unavailable on this host.".to_owned(),
-            "Enable hardware virtualization in your host settings and enable KVM using your Linux distribution’s instructions. Inside a VM, enable nested virtualization on its host. Then retry checks."),
+            "/dev/kvm is unavailable on this device.".to_owned(),
+            "Enable hardware virtualization in your device settings and enable KVM using your Linux distribution’s instructions. inside a VM, enable nested virtualization on its host. Then retry checks."),
         io::ErrorKind::PermissionDenied => (CheckStatus::Failed,
             "Silo cannot open /dev/kvm for this user.".to_owned(),
             "Ask your administrator to grant your user read and write access to /dev/kvm, usually through the kvm group. Sign out and back in, then retry checks."),
         _ => (CheckStatus::Unavailable, format!("Silo could not open /dev/kvm: {error}"),
-            "Retry checks. If this keeps happening, check that KVM is enabled and /dev/kvm is accessible on this host."),
+            "Retry checks. If this keeps happening, check that KVM is enabled and /dev/kvm is accessible on this device."),
     };
     DependencyCheck::failure(
         "system-virtualization",
@@ -1219,7 +1219,7 @@ fn timed_out(checks: &[DependencyCheck]) -> bool {
 }
 
 /// Runs each group under its own deadline. A group that timed out (usually a
-/// busy computer) runs once more with a fresh budget before it is reported.
+/// busy device) runs once more with a fresh budget before it is reported.
 fn run_groups(request_id: String, groups: &[CheckGroup]) -> DependencyReport {
     let run = |group: &CheckGroup| (group.run)(Instant::now() + group.budget);
     let checks = groups

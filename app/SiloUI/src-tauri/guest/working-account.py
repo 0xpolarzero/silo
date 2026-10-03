@@ -1,7 +1,7 @@
 #!/usr/bin/python3
-"""Set up this Silo VM's silo working account; Silo runs it as root (see working-account.sh).
+"""Set up this Silo computer's silo working account; Silo runs it as root (see working-account.sh).
 
-A new VM gets a fresh account. A VM from an older Silo kept agent files under /root,
+A new computer gets a fresh account. A computer from an older Silo kept agent files under /root,
 and sometimes had a separate silo-desktop account: those homes are copied into
 /home/silo and the originals stay in place. The account record is written last;
 completed copies can be retried, and conflicting entries stop setup for resolution.
@@ -222,7 +222,7 @@ def write_text_atomic(path, contents, mode):
 
 def set_up(desktop_service):
     if os.geteuid() != 0 or run('sh', '-c', '. /etc/os-release; printf "%s %s" "$ID" "$VERSION_ID"') != 'ubuntu 24.04':
-        raise RuntimeError('The silo account needs root inside an Ubuntu 24.04 Silo VM.')
+        raise RuntimeError('The silo account needs root inside an Ubuntu 24.04 Silo computer.')
     missing = [tool for tool in TOOLS if not shutil.which(tool)]
     if missing:
         raise RuntimeError(f'The sandbox is missing {", ".join(missing)}.')

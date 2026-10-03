@@ -46,7 +46,7 @@ impl Environment {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PendingRestore {
     pub(super) checkpoint_id: String,
-    pub(super) source_workspace: String,
+    pub(super) source_computer: String,
     pub(super) state: String,
 }
 
@@ -74,8 +74,8 @@ struct RestoreJournal {
 pub(super) struct Record {
     version: u8,
     pub(super) checkpoints: Vec<Checkpoint>,
-    /// The native MicroSandbox group containing this workspace's lineage.
-    /// It is absent until the workspace first captures a checkpoint or backup.
+    /// The native MicroSandbox group containing this computer's lineage.
+    /// It is absent until the computer first captures a checkpoint or backup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) snapshot_group: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -84,7 +84,7 @@ pub(super) struct Record {
     restore_attempted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restore_attempt_id: Option<String>,
-    /// The attempt's VM ran, so it may hold writes to `/workspace`: a retry keeps and
+    /// The attempt's computer ran, so it may hold writes to `/workspace`: a retry keeps and
     /// starts it rather than recreating it from the checkpoint (E-06).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     restore_attempt_ran: bool,
@@ -98,7 +98,7 @@ pub(super) struct Record {
     pub(super) checkpoint_operation: Option<Operation>,
 }
 
-/// Boot variables that older versions used to set a sandbox's Git and jj identity.
+/// Boot variables that older versions used to set a computer's Git and jj identity.
 pub(super) const IDENTITY_ENVIRONMENT: [&str; 6] = [
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",
@@ -128,8 +128,8 @@ impl Record {
     }
 }
 
-/// Drops the identity boot variables from a workspace's recorded environment once Silo
-/// has removed them from the computer. A workspace without a record is left untouched.
+/// Drops the identity boot variables from a computer's recorded environment once Silo
+/// has removed them from the device. A computer without a record is left untouched.
 pub(super) fn forget_identity_environment(
     paths: &RuntimePaths,
     id: &str,
@@ -161,7 +161,7 @@ fn path(paths: &RuntimePaths, id: &str) -> PathBuf {
 }
 
 pub(super) fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeError> {
-    uuid::Uuid::parse_str(id).map_err(|_| error("Silo could not identify this sandbox. Refresh its status and retry the checkpoint action."))?;
+    uuid::Uuid::parse_str(id).map_err(|_| error("Silo could not identify this computer. Refresh its status and retry the checkpoint action."))?;
     let bytes = match fs::read(path(paths, id)) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Record::default()),
@@ -202,7 +202,7 @@ pub(super) fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeErro
             .as_ref()
             .is_some_and(|pending| {
                 !valid_native_id(&pending.checkpoint_id)
-                    || !valid_snapshot_group(&pending.source_workspace)
+                    || !valid_snapshot_group(&pending.source_computer)
                     || !matches!(pending.state.as_str(), "full" | "disk")
             })
         || record
@@ -259,7 +259,7 @@ fn new_checkpoint_id(record: &Record) -> String {
 fn ensure_pending_runtime_absent(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine_name: &str,
+    computer_name: &str,
 ) -> Result<(), RuntimeError> {
     let listed = runner.run(
         paths,
@@ -267,10 +267,10 @@ fn ensure_pending_runtime_absent(
         READ_TIMEOUT,
     )?;
     let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
-        .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
-    if listed.iter().any(|entry| entry.name == machine_name) {
+        .map_err(|_| error("The runtime returned an invalid computer list."))?;
+    if listed.iter().any(|entry| entry.name == computer_name) {
         return Err(error(
-            "A runtime VM exists for this pending restore. Start or recover it before changing checkpoint state.",
+            "A runtime computer exists for this pending restore. Start or recover it before changing checkpoint state.",
         ));
     }
     Ok(())
@@ -290,11 +290,11 @@ fn valid_snapshot_group(group: &str) -> bool {
 }
 
 /// Resolve and persist the native group once. Records from the original
-/// checkpoint format used the sandbox name as MicroSandbox's default group.
+/// checkpoint format used the computer name as MicroSandbox's default group.
 pub(crate) fn ensure_snapshot_group(
     paths: &RuntimePaths,
     id: &str,
-    sandbox_name: &str,
+    computer_name: &str,
 ) -> Result<String, RuntimeError> {
     let mut record = load(paths, id)?;
     if let Some(group) = record.snapshot_group.as_deref() {
@@ -311,18 +311,18 @@ pub(crate) fn ensure_snapshot_group(
         && record.inflight_checkpoint.is_none()
     {
         return Err(error(
-            "Silo cannot match the saved checkpoints to this sandbox. Its history was preserved. Relaunch Silo and retry; if the problem continues, report it with the sandbox name.",
+            "Silo cannot match the saved checkpoints to this computer. Its history was preserved. Relaunch Silo and retry; if the problem continues, report it with the computer name.",
         ));
     }
     let group = record
         .pending_checkpoint_restore
         .as_ref()
-        .map(|pending| pending.source_workspace.as_str())
-        .unwrap_or(sandbox_name)
+        .map(|pending| pending.source_computer.as_str())
+        .unwrap_or(computer_name)
         .to_owned();
     if !valid_snapshot_group(&group) {
         return Err(error(
-            "Silo could not identify this sandbox's checkpoints. No checkpoint action was started. Refresh its history and retry.",
+            "Silo could not identify this computer's checkpoints. No checkpoint action was started. Refresh its history and retry.",
         ));
     }
     record.snapshot_group = Some(group.clone());
@@ -331,7 +331,7 @@ pub(crate) fn ensure_snapshot_group(
 }
 
 pub(super) fn save(paths: &RuntimePaths, id: &str, record: &Record) -> Result<(), RuntimeError> {
-    uuid::Uuid::parse_str(id).map_err(|_| error("Silo could not identify this sandbox. Refresh its status and retry the checkpoint action."))?;
+    uuid::Uuid::parse_str(id).map_err(|_| error("Silo could not identify this computer. Refresh its status and retry the checkpoint action."))?;
     let directory = directory(paths);
     fs::create_dir_all(&directory).map_err(|_| error("Checkpoint history could not be saved."))?;
     let mut file = tempfile::NamedTempFile::new_in(&directory)
@@ -350,12 +350,15 @@ pub(super) fn save(paths: &RuntimePaths, id: &str, record: &Record) -> Result<()
         .map_err(|_| error("Checkpoint history could not be synced."))
 }
 
-fn machine(paths: &RuntimePaths, id: &str) -> Result<MachineConfiguration, RuntimeError> {
+fn computer_configuration(
+    paths: &RuntimePaths,
+    id: &str,
+) -> Result<ComputerConfiguration, RuntimeError> {
     read_metadata(&paths.metadata)?
-        .machines
+        .computers
         .into_iter()
-        .find(|machine| machine.is_vm() && machine.id() == id)
-        .ok_or_else(|| RuntimeError::Invalid("This workspace is not a local VM.".into()))
+        .find(|configuration| configuration.id() == id)
+        .ok_or_else(|| RuntimeError::Invalid("This computer is not a local computer.".into()))
 }
 
 fn snapshot_ready(
@@ -369,7 +372,7 @@ fn snapshot_ready(
         Ok(())
     } else {
         Err(error(
-            "The checkpoint is absent or incomplete in the runtime. No workspace state was changed.",
+            "The checkpoint is absent or incomplete in the runtime. No computer state was changed.",
         ))
     }
 }
@@ -586,7 +589,7 @@ fn capture_with(
             "Checkpoint name must contain 1 to 80 printable characters.".into(),
         ));
     }
-    let machine = machine(paths, id)?;
+    let configuration = computer_configuration(paths, id)?;
     let mut record = load(paths, id)?;
     if let Some(pending) = record.pending_checkpoint_restore.clone() {
         if record.restore_journal.is_some() {
@@ -594,9 +597,9 @@ fn capture_with(
                 "A Restore recovery is unfinished. Resolve it before creating a checkpoint.",
             ));
         }
-        let snapshot_group = ensure_snapshot_group(paths, id, machine.name())?;
+        let snapshot_group = ensure_snapshot_group(paths, id, configuration.name())?;
         record = load(paths, id)?;
-        if pending.source_workspace != snapshot_group
+        if pending.source_computer != snapshot_group
             || !valid_native_id(&pending.checkpoint_id)
             || !matches!(pending.state.as_str(), "full" | "disk")
         {
@@ -604,7 +607,7 @@ fn capture_with(
                 "The pending checkpoint reference is invalid. It was preserved.",
             ));
         }
-        ensure_pending_runtime_absent(runner, paths, machine.name())?;
+        ensure_pending_runtime_absent(runner, paths, configuration.name())?;
         snapshot_ready(
             runner,
             paths,
@@ -625,7 +628,7 @@ fn capture_with(
         return save(paths, id, &record);
     }
     ensure_no_unfinished_restore(&record, "creating another checkpoint")?;
-    let mut inspected = inspect_workspace(runner, paths, machine.name())?;
+    let mut inspected = inspect_computer(runner, paths, configuration.name())?;
     ensure_managed(&inspected)?;
     if inspected
         .config
@@ -634,18 +637,20 @@ fn capture_with(
         != Some(id)
     {
         return Err(error(
-            "The workspace runtime identity changed. No checkpoint was made.",
+            "The computer runtime identity changed. No checkpoint was made.",
         ));
     }
-    if inspected.status == "Paused" && recover_paused_capture(runner, paths, id, machine.name())? {
-        inspected = inspect_capture_source(runner, paths, id, machine.name())?;
+    if inspected.status == "Paused"
+        && recover_paused_capture(runner, paths, id, configuration.name())?
+    {
+        inspected = inspect_capture_source(runner, paths, id, configuration.name())?;
     }
     let scope = match inspected.status.as_str() {
         "Running" => "full",
         "Created" | "Stopped" => "disk",
         _ => {
             return Err(RuntimeError::Invalid(
-                "Wait until the workspace is running or stopped before creating a checkpoint."
+                "Wait until the computer is running or stopped before creating a checkpoint."
                     .into(),
             ));
         }
@@ -657,23 +662,20 @@ fn capture_with(
         .get("mounts")
         .and_then(Value::as_array)
         .is_some_and(|mounts| {
-            let workspace: Vec<_> = mounts
+            let computer: Vec<_> = mounts
                 .iter()
                 .filter(|mount| mount.get("guest").and_then(Value::as_str) == Some(WORKSPACE_MOUNT))
                 .collect();
-            workspace.len() == 1
-                && workspace[0].get("type").and_then(Value::as_str) == Some("Owned")
-                && workspace[0]
-                    .pointer("/storage/kind")
-                    .and_then(Value::as_str)
-                    == Some("disk")
+            computer.len() == 1
+                && computer[0].get("type").and_then(Value::as_str) == Some("Owned")
+                && computer[0].pointer("/storage/kind").and_then(Value::as_str) == Some("disk")
         });
     if !owned_workspace {
         return Err(error(
-            "This VM still uses the old workspace disk. Finish runtime migration before creating a checkpoint.",
+            "This computer still uses the old workspace disk. Finish runtime migration before creating a checkpoint.",
         ));
     }
-    let snapshot_group = ensure_snapshot_group(paths, id, machine.name())?;
+    let snapshot_group = ensure_snapshot_group(paths, id, configuration.name())?;
     record.snapshot_group = Some(snapshot_group.clone());
     if let Some(interrupted) = record.inflight_checkpoint.clone() {
         if !discard_failed_capture(
@@ -701,7 +703,7 @@ fn capture_with(
     record.checkpoint_operation = Some(Operation {
         kind: "capture".into(),
         status: "running".into(),
-        stage: "Capturing VM state".into(),
+        stage: "Capturing computer state".into(),
         error: None,
     });
     save(paths, id, &record)?;
@@ -710,7 +712,7 @@ fn capture_with(
         "create".into(),
         checkpoint_id.clone(),
         "--from-sandbox".into(),
-        machine.name().into(),
+        configuration.name().into(),
         "--group".into(),
         snapshot_group.clone(),
     ];
@@ -737,7 +739,7 @@ fn capture_with(
         }
         Err(failure) => {
             let (settled, failure) = if scope == "full" {
-                settle_capture_failure(runner, paths, id, machine.name(), failure)
+                settle_capture_failure(runner, paths, id, configuration.name(), failure)
             } else {
                 (true, failure)
             };
@@ -775,28 +777,28 @@ fn ensure_no_unfinished_restore(record: &Record, action: &str) -> Result<(), Run
 #[tauri::command]
 pub async fn create_checkpoint(
     app: AppHandle,
-    workspace_id: String,
+    computer_id: String,
     name: String,
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        // Capture touches only this VM's own snapshot store and per-VM checkpoint
-        // record, not the shared inventory, so it is ordered per VM by stable id.
-        let vm_name = machine(&paths, &workspace_id)
+        // Capture touches only this computer's own snapshot store and per-computer checkpoint
+        // record, not the shared inventory, so it is ordered per computer by stable id.
+        let computer_name = computer_configuration(&paths, &computer_id)
             .map_err(|error| error.to_string())?
             .name()
             .to_owned();
         let guard = OPERATIONS
             .kind(super::operation_gate::OperationKind::CheckpointCapture)
-            .vm(&workspace_id, &vm_name, "Creating checkpoint")
+            .computer(&computer_id, &computer_name, "Creating checkpoint")
             .map_err(|error| error.to_string())?;
         // Checkpoint capture is cancellable and expected to finish within 15 minutes.
         guard.allow_cancel();
         guard.expect_within(std::time::Duration::from_secs(15 * 60));
         shutdown::ensure_accepting_operations()?;
-        let result = capture_with(&ProcessRunner, &paths, &workspace_id, &name, "manual");
+        let result = capture_with(&ProcessRunner, &paths, &computer_id, &name, "manual");
         drop(guard);
         let result = result.and_then(|_| application_state_response(&worker_app, &paths));
         let _ = worker_app.emit("silo://application-state-changed", ());
@@ -823,9 +825,9 @@ pub(super) fn pending_view(
     runtime_exists: bool,
 ) -> Result<bool, RuntimeError> {
     let record = load(paths, id)?;
-    // Once a restore attempt has created its runtime VM, the workspace is present: it is
+    // Once a restore attempt has created its runtime computer, the computer is present: it is
     // read from the runtime (with its pending restore still exposed for attention) so the
-    // configured and listed sandboxes keep matching, and deletion removes that VM.
+    // configured and listed computers keep matching, and deletion removes that computer.
     Ok((record.pending_checkpoint_restore.is_some()
         && !(runtime_exists && record.restore_attempted))
         || (!runtime_exists
@@ -847,7 +849,7 @@ pub(super) fn view_pending(record: &Record, name: &str) -> Option<PendingRestore
             .find(|checkpoint| checkpoint.id == journal.target_checkpoint_id)?;
         Some(PendingRestore {
             checkpoint_id: target.native_id().to_owned(),
-            source_workspace: record.snapshot_group.as_deref().unwrap_or(name).into(),
+            source_computer: record.snapshot_group.as_deref().unwrap_or(name).into(),
             state: target.scope.clone(),
         })
     })
@@ -865,23 +867,19 @@ pub(crate) fn forget_removed(paths: &RuntimePaths, id: &str) -> Result<(), Runti
     }
 }
 
-pub(super) fn pending_workspace(
-    machine: MachineConfiguration,
-) -> Result<ApplicationWorkspace, RuntimeError> {
-    if !machine.is_vm() {
-        return Err(error("A checkpoint fork must be a local VM."));
-    }
-    Ok(ApplicationWorkspace {
-        machine,
+pub(super) fn pending_computer(
+    configuration: ComputerConfiguration,
+) -> Result<ApplicationComputer, RuntimeError> {
+    Ok(ApplicationComputer {
+        configuration,
         purpose: "Local MicroSandbox".into(),
-        state: WorkspaceState::Stopped,
+        state: ComputerState::Stopped,
         state_detail: "Ready to start from checkpoint".into(),
         can_dismiss_error: false,
         lifecycle_failure: None,
         attention: None,
         freshness: Freshness::Fresh,
         settling: false,
-        host: "127.0.0.1".into(),
         repositories: Vec::new(),
         files: Vec::new(),
         ports: Vec::new(),
@@ -907,15 +905,15 @@ fn is_checkpoint_native_id(id: &str) -> bool {
 
 /// Resolve a stored checkpoint into the MicroSandbox lineage selector a portable
 /// export needs. The checkpoint is addressed by its public Silo id in this
-/// workspace's record; the returned member is MicroSandbox's immutable name.
+/// computer's record; the returned member is MicroSandbox's immutable name.
 /// Reads `(snapshot_group, native_member, scope, display_name)` without changing history.
 pub(crate) fn export_source(
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     checkpoint_id: &str,
 ) -> Result<(String, String, String, String), RuntimeError> {
-    let machine = machine(paths, workspace_id)?;
-    let record = load(paths, workspace_id)?;
+    let configuration = computer_configuration(paths, computer_id)?;
+    let record = load(paths, computer_id)?;
     if record.restore_journal.is_some() {
         return Err(error(
             "Finish the pending Restore before exporting a checkpoint.",
@@ -943,12 +941,12 @@ pub(crate) fn export_source(
             record
                 .pending_checkpoint_restore
                 .as_ref()
-                .map(|pending| pending.source_workspace.as_str())
+                .map(|pending| pending.source_computer.as_str())
         })
-        .unwrap_or(machine.name());
+        .unwrap_or(configuration.name());
     if !valid_snapshot_group(snapshot_group) {
         return Err(error(
-            "Silo could not identify this sandbox's checkpoints. No checkpoint action was started. Refresh its history and retry.",
+            "Silo could not identify this computer's checkpoints. No checkpoint action was started. Refresh its history and retry.",
         ));
     }
     Ok((
@@ -959,27 +957,27 @@ pub(crate) fn export_source(
     ))
 }
 
-/// Record an archive snapshot as a new stopped workspace. Snapshot loading
+/// Record an archive snapshot as a new stopped computer. Snapshot loading
 /// only installs immutable data; activation is deliberately deferred to the
 /// common explicit-start path.
 #[cfg(test)]
 pub(crate) fn import_pending_restore(
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     source_group: &str,
     member: &str,
 ) -> Result<(), RuntimeError> {
-    import_pending_restore_with_environment(paths, workspace_id, source_group, member, &Value::Null)
+    import_pending_restore_with_environment(paths, computer_id, source_group, member, &Value::Null)
 }
 
 pub(crate) fn import_pending_restore_with_environment(
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     source_group: &str,
     member: &str,
     runtime_config: &Value,
 ) -> Result<(), RuntimeError> {
-    // These are MicroSandbox snapshot selectors, not sandbox names. Require
+    // These are MicroSandbox snapshot selectors, not computer names. Require
     // the exact forms produced by Silo's v3 export/import before saving intent.
     // The member is either a state export's `silo-backup-<n>-<n>-<n>` name or,
     // for a checkpoint export, that checkpoint's `c`+31-hex native id.
@@ -1015,11 +1013,11 @@ pub(crate) fn import_pending_restore_with_environment(
             "Imported environment is invalid.".into(),
         ));
     }
-    // An import (and so a transfer) starts from this computer's initial approval mode with
-    // no attempt known, whatever policy a VM of this id had here: its first boot applies it
+    // An import (and so a transfer) starts from this device's initial approval mode with
+    // no attempt known, whatever policy a computer of this id had here: its first boot applies it
     // over the configuration the imported disk carries.
-    crate::computer_use::forget(paths, workspace_id)?;
-    crate::computer_use::start_with(paths, workspace_id, crate::computer_use::initial_approval());
+    crate::computer_use::forget(paths, computer_id)?;
+    crate::computer_use::start_with(paths, computer_id, crate::computer_use::initial_approval());
     let mut record = Record::default();
     record.snapshot_group = Some(source_group.to_owned());
     record.desired_environment = environment
@@ -1028,7 +1026,7 @@ pub(crate) fn import_pending_restore_with_environment(
         .collect();
     record.pending_checkpoint_restore = Some(PendingRestore {
         checkpoint_id: member.to_owned(),
-        source_workspace: source_group.to_owned(),
+        source_computer: source_group.to_owned(),
         state: "disk".into(),
     });
     // Imported policy and credentials are archive input and carry no authority.
@@ -1038,7 +1036,7 @@ pub(crate) fn import_pending_restore_with_environment(
         "default_ingress": "deny",
         "rules": []
     }));
-    save(paths, workspace_id, &record)
+    save(paths, computer_id, &record)
 }
 
 /// Capture a checkpoint through the production capture path and return its public
@@ -1046,11 +1044,11 @@ pub(crate) fn import_pending_restore_with_environment(
 #[cfg(test)]
 pub(crate) fn capture_for_test(
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     name: &str,
 ) -> Result<String, RuntimeError> {
-    capture_with(&ProcessRunner, paths, workspace_id, name, "manual")?;
-    load(paths, workspace_id)?
+    capture_with(&ProcessRunner, paths, computer_id, name, "manual")?;
+    load(paths, computer_id)?
         .checkpoints
         .first()
         .map(|checkpoint| checkpoint.id.clone())
@@ -1096,17 +1094,17 @@ fn running_child_matches(
             })
 }
 
-/// A built-in VM must have the read-only computer-use mount, whichever recovery path
+/// A built-in computer must have the read-only computer-use mount, whichever recovery path
 /// accepts it. Returns before any state changes, so the pending restore is preserved.
 fn require_mount(
     observed: &InspectedSandbox,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
-    if crate::computer_use::mount_present(&observed.config, machine) {
+    if crate::computer_use::mount_present(&observed.config, configuration) {
         Ok(())
     } else {
         Err(error(
-            "The restored VM does not have the read-only computer-use folder. It was preserved for inspection; the pending restore is unchanged.",
+            "The restored computer does not have the read-only computer-use folder. It was preserved for inspection; the pending restore is unchanged.",
         ))
     }
 }
@@ -1114,12 +1112,12 @@ fn require_mount(
 pub(super) fn start_pending(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<(), RuntimeError> {
-    // Before any state changes: a VM that needs the mount cannot restore without it.
-    let mounts = crate::computer_use::mount_args(machine)?;
-    let mut record = load(paths, machine.id())?;
-    let lineage_group = ensure_snapshot_group(paths, machine.id(), machine.name())?;
+    // Before any state changes: a computer that needs the mount cannot restore without it.
+    let mounts = crate::computer_use::mount_args(configuration)?;
+    let mut record = load(paths, configuration.id())?;
+    let lineage_group = ensure_snapshot_group(paths, configuration.id(), configuration.name())?;
     record.snapshot_group = Some(lineage_group.clone());
     if record.pending_checkpoint_restore.is_none()
         && record
@@ -1133,9 +1131,15 @@ pub(super) fn start_pending(
             READ_TIMEOUT,
         )?;
         let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
-            .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
-        if listed.iter().any(|entry| entry.name == machine.name()) {
-            return Err(error(&unfinished_restore_message(&record, machine.name())));
+            .map_err(|_| error("The runtime returned an invalid computer list."))?;
+        if listed
+            .iter()
+            .any(|entry| entry.name == configuration.name())
+        {
+            return Err(error(&unfinished_restore_message(
+                &record,
+                configuration.name(),
+            )));
         }
         let journal = record.restore_journal.clone().unwrap();
         let target = record
@@ -1145,20 +1149,20 @@ pub(super) fn start_pending(
             .ok_or_else(|| error("The selected checkpoint was lost from recovery history."))?;
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: target.native_id().to_owned(),
-            source_workspace: lineage_group.clone(),
+            source_computer: lineage_group.clone(),
             state: target.scope.clone(),
         });
         record.restore_journal = None;
         record.checkpoint_operation = None;
-        save(paths, machine.id(), &record)?;
+        save(paths, configuration.id(), &record)?;
     }
     let pending = record.pending_checkpoint_restore.clone().ok_or_else(|| {
         if record.restore_journal.is_some() {
-            RuntimeError::Invalid(unfinished_restore_message(&record, machine.name()))
+            RuntimeError::Invalid(unfinished_restore_message(&record, configuration.name()))
         } else {
             RuntimeError::Invalid(format!(
                 "{} has no checkpoint to start from.",
-                machine.name()
+                configuration.name()
             ))
         }
     })?;
@@ -1167,29 +1171,29 @@ pub(super) fn start_pending(
             "The pending checkpoint has an unsupported capture scope.",
         ));
     }
-    if pending.source_workspace != lineage_group {
+    if pending.source_computer != lineage_group {
         return Err(error(
-            "Silo cannot match the pending checkpoint to this sandbox's history. The checkpoint was preserved. Relaunch Silo and retry Start.",
+            "Silo cannot match the pending checkpoint to this computer's history. The checkpoint was preserved. Relaunch Silo and retry Start.",
         ));
     }
     let policy = record.desired_network_policy.clone().ok_or_else(|| {
         error("The fork's desired network policy is missing. The checkpoint was preserved.")
     })?;
     let network_args = current_network_args(&serde_json::json!({"network":{"policy":policy}}))?;
-    let material =
-        crate::secrets::runtime_material(machine.name()).map_err(RuntimeError::Unavailable)?;
+    let material = crate::secrets::runtime_material(configuration.name())
+        .map_err(RuntimeError::Unavailable)?;
     secrets_runtime::validate_material(&material).map_err(RuntimeError::Invalid)?;
     let native_scope = snapshot_scope(
         runner,
         paths,
-        &pending.source_workspace,
+        &pending.source_computer,
         &pending.checkpoint_id,
         &pending.state,
     )?
     .ok_or_else(|| {
         error(
-        "The checkpoint is absent or incomplete in the runtime. No workspace state was changed.",
-    )
+            "The checkpoint is absent or incomplete in the runtime. No computer state was changed.",
+        )
     })?;
     let listed = runner.run(
         paths,
@@ -1197,33 +1201,42 @@ pub(super) fn start_pending(
         READ_TIMEOUT,
     )?;
     let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
-        .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
-    if listed.iter().any(|entry| entry.name == machine.name()) {
+        .map_err(|_| error("The runtime returned an invalid computer list."))?;
+    if listed
+        .iter()
+        .any(|entry| entry.name == configuration.name())
+    {
         if !record.restore_attempted {
             return Err(error(
-                "A runtime sandbox already uses this fork's name. No restore was attempted.",
+                "A runtime computer already uses this fork's name. No restore was attempted.",
             ));
         }
-        let observed = inspect_workspace(runner, paths, machine.name())?;
+        let observed = inspect_computer(runner, paths, configuration.name())?;
         let attempt_id = record.restore_attempt_id.as_deref().ok_or_else(|| {
             error("The previous restore attempt has no saved identity. It was preserved.")
         })?;
-        if running_child_matches(&observed, machine.id(), attempt_id, &material, &policy) {
-            // Accepting the running VM must not skip the mount check a fresh restore gets.
-            require_mount(&observed, machine)?;
+        if running_child_matches(
+            &observed,
+            configuration.id(),
+            attempt_id,
+            &material,
+            &policy,
+        ) {
+            // Accepting the running computer must not skip the mount check a fresh restore gets.
+            require_mount(&observed, configuration)?;
             record.pending_checkpoint_restore = None;
             record.checkpoint_operation = None;
             record.restore_attempted = false;
             record.restore_attempt_ran = false;
             record.restore_attempt_id = None;
-            save(paths, machine.id(), &record)?;
+            save(paths, configuration.id(), &record)?;
             return Ok(());
         }
         if observed
             .config
             .pointer("/labels/silo.machine-id")
             .and_then(Value::as_str)
-            != Some(machine.id())
+            != Some(configuration.id())
             || observed
                 .config
                 .pointer("/labels/silo.managed")
@@ -1243,27 +1256,31 @@ pub(super) fn start_pending(
         if record.restore_attempt_ran {
             // Checked before any recovery state is cleared: without the mount the
             // attempt would start without computer use and the record could not show why.
-            require_mount(&observed, machine)?;
+            require_mount(&observed, configuration)?;
             // The attempt already ran and may hold changes; recreating it from the
-            // checkpoint would silently discard them. Keep it as the sandbox and start it
+            // checkpoint would silently discard them. Keep it as the computer and start it
             // like any other; only an explicit, confirmed action (such as Delete) discards it.
             record.pending_checkpoint_restore = None;
             record.restore_attempted = false;
             record.restore_attempt_id = None;
             record.restore_attempt_ran = false;
             record.checkpoint_operation = None;
-            save(paths, machine.id(), &record)?;
+            save(paths, configuration.id(), &record)?;
             return super::lifecycle_recovery::perform(
                 runner,
                 paths,
-                &host_resources()?,
+                &device_resources()?,
                 "start",
-                machine.name(),
+                configuration.name(),
             );
         }
         runner.run(
             paths,
-            &["remove".into(), "--quiet".into(), machine.name().into()],
+            &[
+                "remove".into(),
+                "--quiet".into(),
+                configuration.name().into(),
+            ],
             STOP_TIMEOUT,
         )?;
     }
@@ -1276,12 +1293,12 @@ pub(super) fn start_pending(
         stage: "Starting from checkpoint".into(),
         error: None,
     });
-    save(paths, machine.id(), &record)?;
+    save(paths, configuration.id(), &record)?;
     let mut args = vec![
         "restore".into(),
-        format!("{}:{}", pending.source_workspace, pending.checkpoint_id),
+        format!("{}:{}", pending.source_computer, pending.checkpoint_id),
         "--name".into(),
-        machine.name().into(),
+        configuration.name().into(),
     ];
     // A disk snapshot cold-boots by default. MicroSandbox's --disk-only
     // selects the disk from a *full* checkpoint and rejects file/disk captures.
@@ -1290,11 +1307,11 @@ pub(super) fn start_pending(
     }
     if pending.state == "full" {
         args.push("--cow-mem".into());
-    } else if let MachineConfiguration::Vm {
-        cpus, memory_gib, ..
-    } = machine
-    {
-        // Disk restore starts a new VM and otherwise uses the runtime's 1 CPU / 512 MiB
+    } else {
+        let ComputerConfiguration {
+            cpus, memory_gib, ..
+        } = configuration;
+        // Disk restore starts a new computer and otherwise uses the runtime's 1 CPU / 512 MiB
         // defaults. Preserve the user's saved Silo resources on imported cold boots.
         args.extend([
             "--cpus".into(),
@@ -1305,7 +1322,7 @@ pub(super) fn start_pending(
     }
     for label in [
         MANAGED_LABEL.to_string(),
-        format!("silo.machine-id={}", machine.id()),
+        format!("silo.machine-id={}", configuration.id()),
         format!("silo.restore-attempt={attempt_id}"),
         "silo.github-protocol=1".into(),
     ] {
@@ -1331,19 +1348,19 @@ pub(super) fn start_pending(
     // A snapshot never carries host mounts: pass the computer-use mount again.
     args.extend(mounts);
     let restored = runner.run(paths, &args, Duration::from_secs(900));
-    // A completed restore resumed the VM; after a failure, a running, paused or crashed VM
+    // A completed restore resumed the computer; after a failure, a running, paused or crashed computer
     // shows it ran as well. Checked even after a cancel.
     let ran = restored.is_ok()
         || super::operation_gate::uncancellable(|| {
-            inspect_workspace(runner, paths, machine.name())
+            inspect_computer(runner, paths, configuration.name())
         })
-        .is_ok_and(|vm| matches!(vm.status.as_str(), "Running" | "Paused" | "Crashed"));
+        .is_ok_and(|computer| matches!(computer.status.as_str(), "Running" | "Paused" | "Crashed"));
     let result = restored
-        .and_then(|_| inspect_workspace(runner, paths, machine.name()))
-        .and_then(|observed| if running_child_matches(&observed, machine.id(), &attempt_id, &material, &policy)
-            && crate::computer_use::mount_present(&observed.config, machine) {
+        .and_then(|_| inspect_computer(runner, paths, configuration.name()))
+        .and_then(|observed| if running_child_matches(&observed, configuration.id(), &attempt_id, &material, &policy)
+            && crate::computer_use::mount_present(&observed.config, configuration) {
             Ok(observed)
-        } else { Err(error("The restored VM did not reach a verified running state. Its checkpoint was preserved.")) });
+        } else { Err(error("The restored computer did not reach a verified running state. Its checkpoint was preserved.")) });
     match result {
         Ok(observed) => {
             record.pending_checkpoint_restore = None;
@@ -1351,15 +1368,15 @@ pub(super) fn start_pending(
             record.restore_attempt_id = None;
             record.restore_attempt_ran = false;
             record.checkpoint_operation = None;
-            save(paths, machine.id(), &record)?;
-            let revision = crate::secrets::workspace_revision(machine.name())
+            save(paths, configuration.id(), &record)?;
+            let revision = crate::secrets::computer_revision(configuration.name())
                 .map_err(RuntimeError::Unavailable)?;
-            crate::secrets::workspace_started(machine.name(), &revision)
+            crate::secrets::computer_started(configuration.name(), &revision)
                 .map_err(RuntimeError::Unavailable)?;
-            crate::network::reconcile_started(paths, machine.name());
+            crate::network::reconcile_started(paths, configuration.name());
             crate::ssh_access::reconcile(paths);
             // Record the verified storage runtime like an ordinary Start, so the Storage
-            // panel and automatic reclamation treat the restored VM as current.
+            // panel and automatic reclamation treat the restored computer as current.
             super::storage::after_start(runner, paths, &observed);
             Ok(())
         }
@@ -1371,7 +1388,7 @@ pub(super) fn start_pending(
                 stage: "Start failed".into(),
                 error: Some(failure.to_string()),
             });
-            Err(save_failure(paths, machine.id(), &record, failure))
+            Err(save_failure(paths, configuration.id(), &record, failure))
         }
     }
 }
@@ -1379,7 +1396,7 @@ pub(super) fn start_pending(
 fn fork_source_policy(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    source: &MachineConfiguration,
+    source: &ComputerConfiguration,
     record: &Record,
 ) -> Result<Value, RuntimeError> {
     if view_pending(record, source.name()).is_some() {
@@ -1389,7 +1406,7 @@ fn fork_source_policy(
             READ_TIMEOUT,
         )?;
         let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
-            .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
+            .map_err(|_| error("The runtime returned an invalid computer list."))?;
         if !listed.iter().any(|entry| entry.name == source.name()) {
             let policy = record.desired_network_policy.clone().ok_or_else(|| {
                 error("The source network policy is missing. No fork was created.")
@@ -1398,7 +1415,7 @@ fn fork_source_policy(
             return Ok(policy);
         }
     }
-    let source_runtime = inspect_workspace(runner, paths, source.name())?;
+    let source_runtime = inspect_computer(runner, paths, source.name())?;
     ensure_managed(&source_runtime)?;
     if source_runtime
         .config
@@ -1407,7 +1424,7 @@ fn fork_source_policy(
         != Some(source.id())
     {
         return Err(error(
-            "The source workspace identity changed. No fork was created.",
+            "The source computer identity changed. No fork was created.",
         ));
     }
     current_network_args(&source_runtime.config)?;
@@ -1421,7 +1438,7 @@ fn fork_source_policy(
 fn pending_current_fork_point(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine_name: &str,
+    computer_name: &str,
     record: &Record,
     snapshot_group: &str,
 ) -> Result<Option<PendingRestore>, RuntimeError> {
@@ -1429,7 +1446,7 @@ fn pending_current_fork_point(
         return Ok(None);
     };
     if record.restore_journal.is_some()
-        || pending.source_workspace != snapshot_group
+        || pending.source_computer != snapshot_group
         || !valid_native_id(&pending.checkpoint_id)
         || !matches!(pending.state.as_str(), "full" | "disk")
     {
@@ -1437,7 +1454,7 @@ fn pending_current_fork_point(
             "The pending checkpoint reference is invalid or has unfinished recovery. It was preserved.",
         ));
     }
-    ensure_pending_runtime_absent(runner, paths, machine_name)?;
+    ensure_pending_runtime_absent(runner, paths, computer_name)?;
     snapshot_ready(
         runner,
         paths,
@@ -1448,7 +1465,7 @@ fn pending_current_fork_point(
     Ok(Some(pending))
 }
 
-/// Host-side settings a fork copies from its source sandbox. Production uses the GitHub and
+/// Host-side settings a fork copies from its source computer. Production uses the GitHub and
 /// secret stores; tests inject failures to prove the rollback (E-17).
 pub(super) trait ForkAssignments {
     fn copy_github(&self, source: &str, target: &str) -> Result<(), String>;
@@ -1470,7 +1487,7 @@ impl ForkAssignments for AppForkAssignments<'_> {
         crate::secrets::fork_assignments(source, target)
     }
     fn forget_secrets(&self, target: &str) -> Result<(), String> {
-        crate::secrets::workspace_removed(target)
+        crate::secrets::computer_removed(target)
     }
 }
 
@@ -1484,41 +1501,43 @@ pub(super) struct ForkSource {
 }
 
 fn ensure_fork_name_available(
-    metadata: &MachineConfigurationRequest,
+    metadata: &ComputerConfigurationRequest,
     new_name: &str,
 ) -> Result<(), RuntimeError> {
-    if metadata.machines.len() >= MAX_MACHINE_COUNT
-        || metadata.machines.iter().any(|m| m.name() == new_name)
+    if metadata.computers.len() >= MAX_COMPUTER_COUNT
+        || metadata.computers.iter().any(|m| m.name() == new_name)
     {
         return Err(RuntimeError::Invalid(
-            "The fork name is already in use or the workspace limit was reached.".into(),
+            "The fork name is already in use or the computer limit was reached.".into(),
         ));
     }
     Ok(())
 }
 
-/// Phase one of a fork, under the source VM's lane: resolve the checkpoint, capturing a
+/// Phase one of a fork, under the source computer's lane: resolve the checkpoint, capturing a
 /// "Fork point" of the current state when none was chosen. It touches only the source's
-/// own snapshot store and checkpoint record, so other VMs keep working meanwhile (E-09).
+/// own snapshot store and checkpoint record, so other computers keep working meanwhile (E-09).
 pub(super) fn fork_source(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     checkpoint_id: Option<&str>,
     new_name: &str,
 ) -> Result<ForkSource, RuntimeError> {
     validate_name(new_name)?;
     let metadata = read_metadata(&paths.metadata)?;
     let source = metadata
-        .machines
+        .computers
         .iter()
-        .find(|machine| machine.is_vm() && machine.id() == workspace_id)
-        .ok_or_else(|| RuntimeError::Invalid("The source workspace is not a local VM.".into()))?
+        .find(|configuration| configuration.id() == computer_id)
+        .ok_or_else(|| {
+            RuntimeError::Invalid("The source computer is not a local computer.".into())
+        })?
         .clone();
     // Fail before an expensive capture; the inventory write checks again.
     ensure_fork_name_available(&metadata, new_name)?;
-    let source_record = load(paths, workspace_id)?;
-    let snapshot_group = ensure_snapshot_group(paths, workspace_id, source.name())?;
+    let source_record = load(paths, computer_id)?;
+    let snapshot_group = ensure_snapshot_group(paths, computer_id, source.name())?;
     let pending_current = if checkpoint_id.is_none() {
         pending_current_fork_point(
             runner,
@@ -1540,8 +1559,8 @@ pub(super) fn fork_source(
         let selected_id = match checkpoint_id {
             Some(id) => id.to_owned(),
             None => {
-                capture_with(runner, paths, workspace_id, "Fork point", "manual")?;
-                load(paths, workspace_id)?
+                capture_with(runner, paths, computer_id, "Fork point", "manual")?;
+                load(paths, computer_id)?
                     .checkpoints
                     .first()
                     .ok_or_else(|| error("The fork checkpoint was not recorded."))?
@@ -1549,7 +1568,7 @@ pub(super) fn fork_source(
                     .clone()
             }
         };
-        let source_record = load(paths, workspace_id)?;
+        let source_record = load(paths, computer_id)?;
         let checkpoint = source_record
             .checkpoints
             .iter()
@@ -1567,7 +1586,7 @@ pub(super) fn fork_source(
         (checkpoint.native_id().to_owned(), checkpoint.scope.clone())
     };
     Ok(ForkSource {
-        source_id: workspace_id.into(),
+        source_id: computer_id.into(),
         snapshot_group,
         member,
         scope,
@@ -1587,7 +1606,7 @@ fn with_context(failure: RuntimeError, context: &str) -> RuntimeError {
     }
 }
 
-/// Phase two of a fork, under the computer-wide lane: add the stopped fork to the shared
+/// Phase two of a fork, under the device-wide lane: add the stopped fork to the shared
 /// inventory. Failures before publication remove what this phase added. A published fork
 /// keeps its dependent state even when the inventory's directory sync fails.
 pub(super) fn fork_commit(
@@ -1606,18 +1625,18 @@ fn fork_commit_with_metadata_writer(
     assignments: &dyn ForkAssignments,
     fork: &ForkSource,
     new_name: &str,
-    write: &dyn Fn(&Path, &MachineConfigurationRequest) -> Result<(), RuntimeError>,
+    write: &dyn Fn(&Path, &ComputerConfigurationRequest) -> Result<(), RuntimeError>,
 ) -> Result<(), RuntimeError> {
     validate_name(new_name)?;
     let mut metadata = read_metadata(&paths.metadata)?;
     // Resolve the source again: it may have been renamed or deleted between the phases.
     let source = metadata
-        .machines
+        .computers
         .iter()
-        .find(|machine| machine.is_vm() && machine.id() == fork.source_id)
+        .find(|configuration| configuration.id() == fork.source_id)
         .ok_or_else(|| {
             RuntimeError::Invalid(
-                "The source sandbox no longer exists. No fork was created.".into(),
+                "The source computer no longer exists. No fork was created.".into(),
             )
         })?
         .clone();
@@ -1631,7 +1650,8 @@ fn fork_commit_with_metadata_writer(
     )?;
     let child_id = uuid::Uuid::new_v4().to_string();
     let mut child = source.clone();
-    if let MachineConfiguration::Vm { id, name, .. } = &mut child {
+    {
+        let ComputerConfiguration { id, name, .. } = &mut child;
         *id = child_id.clone();
         *name = new_name.into();
     }
@@ -1639,7 +1659,7 @@ fn fork_commit_with_metadata_writer(
     child_record.snapshot_group = Some(fork.snapshot_group.clone());
     child_record.pending_checkpoint_restore = Some(PendingRestore {
         checkpoint_id: fork.member.clone(),
-        source_workspace: fork.snapshot_group.clone(),
+        source_computer: fork.snapshot_group.clone(),
         state: fork.scope.clone(),
     });
     child_record.desired_network_policy = Some(fork.desired_policy.clone());
@@ -1657,7 +1677,7 @@ fn fork_commit_with_metadata_writer(
             .copy_secrets(source.name(), new_name)
             .map_err(RuntimeError::Unavailable)?;
         copied_secrets = true;
-        metadata.machines.push(child);
+        metadata.computers.push(child);
         write(&paths.metadata, &metadata)
     })();
     let Err(failure) = result else {
@@ -1668,19 +1688,19 @@ fn fork_commit_with_metadata_writer(
     match read_metadata(&paths.metadata) {
         Ok(saved)
             if !saved
-                .machines
+                .computers
                 .iter()
-                .any(|machine| machine.id() == child_id) => {}
+                .any(|configuration| configuration.id() == child_id) => {}
         Ok(_) => {
             return Err(with_context(
                 failure,
-                " The fork was saved. Its checkpoint and assignments were preserved; refresh the sandbox list before retrying.",
+                " The fork was saved. Its checkpoint and assignments were preserved; refresh the computer list before retrying.",
             ));
         }
         Err(_) => {
             return Err(with_context(
                 failure,
-                " The sandbox list could not be checked. The fork's checkpoint and assignments were preserved.",
+                " The computer list could not be checked. The fork's checkpoint and assignments were preserved.",
             ));
         }
     }
@@ -1707,32 +1727,34 @@ fn fork_commit_with_metadata_writer(
 }
 
 /// Both fork phases with their lanes: the source's own lane while its checkpoint is
-/// resolved or captured, then the computer-wide lane only for the inventory write.
+/// resolved or captured, then the device-wide lane only for the inventory write.
 fn fork_in_lanes(
     gate: &super::operation_gate::OperationGate,
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     assignments: &dyn ForkAssignments,
-    workspace_id: &str,
+    computer_id: &str,
     checkpoint_id: Option<&str>,
     new_name: &str,
 ) -> Result<(), RuntimeError> {
     use super::operation_gate::OperationKind;
-    let vm_name = machine(paths, workspace_id)?.name().to_owned();
+    let computer_name = computer_configuration(paths, computer_id)?
+        .name()
+        .to_owned();
     let fork = {
-        let guard = gate.kind(OperationKind::CheckpointFork).vm(
-            workspace_id,
-            &vm_name,
+        let guard = gate.kind(OperationKind::CheckpointFork).computer(
+            computer_id,
+            &computer_name,
             "Forking checkpoint",
         )?;
         // Fork is not cancellable; flag it slow after the capture window.
         guard.expect_within(Duration::from_secs(10 * 60));
         shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
-        fork_source(runner, paths, workspace_id, checkpoint_id, new_name)?
+        fork_source(runner, paths, computer_id, checkpoint_id, new_name)?
     };
     let guard = gate
         .kind(OperationKind::CheckpointFork)
-        .computer("Forking checkpoint")?;
+        .device("Forking checkpoint")?;
     guard.expect_within(Duration::from_secs(60));
     shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
     fork_commit(runner, paths, assignments, &fork, new_name)
@@ -1741,7 +1763,7 @@ fn fork_in_lanes(
 #[tauri::command]
 pub async fn fork_checkpoint(
     app: AppHandle,
-    workspace_id: String,
+    computer_id: String,
     checkpoint_id: Option<String>,
     new_name: String,
 ) -> Result<ApplicationSource, String> {
@@ -1754,7 +1776,7 @@ pub async fn fork_checkpoint(
             &ProcessRunner,
             &paths,
             &AppForkAssignments(&worker_app),
-            &workspace_id,
+            &computer_id,
             checkpoint_id.as_deref(),
             &new_name,
         )
@@ -1764,7 +1786,7 @@ pub async fn fork_checkpoint(
     })
     .await
     .map_err(|_| {
-        "Silo could not finish creating the fork. Refresh the sandbox list before trying again."
+        "Silo could not finish creating the fork. Refresh the computer list before trying again."
             .to_string()
     })?
 }
@@ -1791,28 +1813,29 @@ fn save_failure(
 }
 
 /// Leave the `capturing` phase after a failure that happened before the recovery
-/// checkpoint existed. The original VM is untouched, so the journal is cleared unless
-/// the VM stays paused (a retry then continues from the paused VM).
+/// checkpoint existed. The original computer is untouched, so the journal is cleared unless
+/// the computer stays paused (a retry then continues from the paused computer).
 fn abandon_capture(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     record: &mut Record,
-    vm_name: &str,
+    computer_name: &str,
     failure: RuntimeError,
 ) -> RuntimeError {
-    let (settled, failure) = settle_capture_failure(runner, paths, workspace_id, vm_name, failure);
+    let (settled, failure) =
+        settle_capture_failure(runner, paths, computer_id, computer_name, failure);
     if settled {
         // The recovery point was never recorded; remove it if the capture published it.
         if let Some(journal) = record.restore_journal.take() {
             let group = record
                 .snapshot_group
                 .clone()
-                .unwrap_or_else(|| vm_name.to_owned());
+                .unwrap_or_else(|| computer_name.to_owned());
             discard_failed_capture(
                 runner,
                 paths,
-                workspace_id,
+                computer_id,
                 (group, journal.recovery_checkpoint.native_id().to_owned()),
             );
         }
@@ -1823,19 +1846,19 @@ fn abandon_capture(
         stage: "Recovery checkpoint failed".into(),
         error: Some(failure.to_string()),
     });
-    save_failure(paths, workspace_id, record, failure)
+    save_failure(paths, computer_id, record, failure)
 }
 
 fn restore_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     checkpoint_id: &str,
 ) -> Result<(), RuntimeError> {
-    restore_steps(runner, paths, workspace_id, checkpoint_id).map_err(|failure| {
+    restore_steps(runner, paths, computer_id, checkpoint_id).map_err(|failure| {
         // Every error after the journal save must leave a failed status with the
         // real cause, not a "running" operation later read as an interrupted one.
-        let Ok(mut record) = load(paths, workspace_id) else {
+        let Ok(mut record) = load(paths, computer_id) else {
             return failure;
         };
         let Some(operation) = record
@@ -1851,19 +1874,19 @@ fn restore_with(
             stage: operation.stage.clone(),
             error: Some(failure.to_string()),
         });
-        save_failure(paths, workspace_id, &record, failure)
+        save_failure(paths, computer_id, &record, failure)
     })
 }
 
 fn restore_steps(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     checkpoint_id: &str,
 ) -> Result<(), RuntimeError> {
-    let machine = machine(paths, workspace_id)?;
-    let mut record = load(paths, workspace_id)?;
-    let lineage_group = ensure_snapshot_group(paths, workspace_id, machine.name())?;
+    let configuration = computer_configuration(paths, computer_id)?;
+    let mut record = load(paths, computer_id)?;
+    let lineage_group = ensure_snapshot_group(paths, computer_id, configuration.name())?;
     record.snapshot_group = Some(lineage_group.clone());
     let target = record
         .checkpoints
@@ -1878,7 +1901,7 @@ fn restore_steps(
                 "A previous Restore recovery is unfinished. The pending checkpoint was preserved.",
             ));
         }
-        if pending.source_workspace != lineage_group
+        if pending.source_computer != lineage_group
             || !valid_native_id(&pending.checkpoint_id)
             || !matches!(pending.state.as_str(), "full" | "disk")
         {
@@ -1886,7 +1909,7 @@ fn restore_steps(
                 "The pending checkpoint reference is invalid. It was preserved.",
             ));
         }
-        ensure_pending_runtime_absent(runner, paths, machine.name())?;
+        ensure_pending_runtime_absent(runner, paths, configuration.name())?;
         snapshot_ready(
             runner,
             paths,
@@ -1909,14 +1932,14 @@ fn restore_steps(
         current_network_args(&serde_json::json!({"network":{"policy":policy}}))?;
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: target.native_id().to_owned(),
-            source_workspace: lineage_group,
+            source_computer: lineage_group,
             state: target.scope,
         });
         record.restore_attempted = false;
         record.restore_attempt_ran = false;
         record.restore_attempt_id = None;
         record.checkpoint_operation = None;
-        return save(paths, workspace_id, &record);
+        return save(paths, computer_id, &record);
     }
     if record
         .restore_journal
@@ -1929,11 +1952,14 @@ fn restore_steps(
             READ_TIMEOUT,
         )?;
         let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
-            .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
-        if !listed.iter().any(|entry| entry.name == machine.name()) {
+            .map_err(|_| error("The runtime returned an invalid computer list."))?;
+        if !listed
+            .iter()
+            .any(|entry| entry.name == configuration.name())
+        {
             record.pending_checkpoint_restore = Some(PendingRestore {
                 checkpoint_id: target.native_id().to_owned(),
-                source_workspace: lineage_group.clone(),
+                source_computer: lineage_group.clone(),
                 state: target.scope,
             });
             record.restore_journal = None;
@@ -1941,20 +1967,20 @@ fn restore_steps(
             record.restore_attempt_ran = false;
             record.restore_attempt_id = None;
             record.checkpoint_operation = None;
-            save(paths, workspace_id, &record)?;
+            save(paths, computer_id, &record)?;
             return Ok(());
         }
     }
-    let inspected = inspect_workspace(runner, paths, machine.name())?;
+    let inspected = inspect_computer(runner, paths, configuration.name())?;
     ensure_managed(&inspected)?;
     if inspected
         .config
         .pointer("/labels/silo.machine-id")
         .and_then(Value::as_str)
-        != Some(workspace_id)
+        != Some(computer_id)
     {
         return Err(error(
-            "The workspace runtime identity changed. No Restore was performed.",
+            "The computer runtime identity changed. No Restore was performed.",
         ));
     }
     let policy = inspected
@@ -1964,21 +1990,21 @@ fn restore_steps(
         .clone();
     current_network_args(&inspected.config)?;
     let prior_running = inspected.status == "Running";
-    // A retry of an unfinished Restore also accepts a crashed VM: its disks are intact.
+    // A retry of an unfinished Restore also accepts a crashed computer: its disks are intact.
     let retrying = record.restore_journal.is_some();
     if !prior_running
         && !matches!(inspected.status.as_str(), "Paused" | "Stopped" | "Created")
         && !(retrying && inspected.status == "Crashed")
     {
         return Err(RuntimeError::Invalid(
-            "Wait until the VM is running or stopped before Restore.".into(),
+            "Wait until the computer is running or stopped before Restore.".into(),
         ));
     }
     if let Some(existing) = &record.restore_journal {
         if existing.target_checkpoint_id != checkpoint_id {
             return Err(RuntimeError::Invalid(unfinished_restore_message(
                 &record,
-                machine.name(),
+                configuration.name(),
             )));
         }
     } else {
@@ -2003,26 +2029,26 @@ fn restore_steps(
             stage: "Creating recovery checkpoint".into(),
             error: None,
         });
-        save(paths, workspace_id, &record)?;
+        save(paths, computer_id, &record)?;
     }
     let mut journal = record.restore_journal.clone().unwrap();
     if journal.phase == "capturing" {
         if journal.prior_running
             && matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed")
         {
-            // The VM stopped before its memory was captured (for example Silo or the
+            // The computer stopped before its memory was captured (for example Silo or the
             // host closed mid-capture). Only its disks remain, so secure those instead.
             journal.prior_running = false;
             journal.recovery_checkpoint.scope = "disk".into();
             record.restore_journal = Some(journal.clone());
-            save(paths, workspace_id, &record)?;
+            save(paths, computer_id, &record)?;
         }
         if journal.prior_running && inspected.status == "Running" {
             if let Err(failure) = runner.run(
                 paths,
                 &[
                     "pause".into(),
-                    machine.name().into(),
+                    configuration.name().into(),
                     "--guest-flush".into(),
                     "required".into(),
                 ],
@@ -2031,23 +2057,23 @@ fn restore_steps(
                 return Err(abandon_capture(
                     runner,
                     paths,
-                    workspace_id,
+                    computer_id,
                     &mut record,
-                    machine.name(),
+                    configuration.name(),
                     failure,
                 ));
             }
         }
         if journal.prior_running
-            && inspect_workspace(runner, paths, machine.name())?.status != "Paused"
+            && inspect_computer(runner, paths, configuration.name())?.status != "Paused"
         {
             return Err(abandon_capture(
                 runner,
                 paths,
-                workspace_id,
+                computer_id,
                 &mut record,
-                machine.name(),
-                error("The VM did not remain paused. No replacement was made."),
+                configuration.name(),
+                error("The computer did not remain paused. No replacement was made."),
             ));
         }
         let mut args = vec![
@@ -2055,7 +2081,7 @@ fn restore_steps(
             "create".into(),
             journal.recovery_checkpoint.id.clone(),
             "--from-sandbox".into(),
-            machine.name().into(),
+            configuration.name().into(),
             "--group".into(),
             lineage_group.clone(),
         ];
@@ -2072,9 +2098,9 @@ fn restore_steps(
             return Err(abandon_capture(
                 runner,
                 paths,
-                workspace_id,
+                computer_id,
                 &mut record,
-                machine.name(),
+                configuration.name(),
                 failure,
             ));
         }
@@ -2092,40 +2118,44 @@ fn restore_steps(
         record.checkpoint_operation = Some(Operation {
             kind: "restore".into(),
             status: "running".into(),
-            stage: "Replacing workspace generation".into(),
+            stage: "Replacing computer generation".into(),
             error: None,
         });
-        save(paths, workspace_id, &record)?;
+        save(paths, computer_id, &record)?;
     }
-    let current = inspect_workspace(runner, paths, machine.name())?;
+    let current = inspect_computer(runner, paths, configuration.name())?;
     if current.status == "Running" {
         return Err(error(
-            "The VM resumed after its recovery checkpoint. Restore was stopped to protect later writes.",
+            "The computer resumed after its recovery checkpoint. Restore was stopped to protect later writes.",
         ));
     }
     if current.status == "Paused" {
         runner.run(
             paths,
-            &["stop".into(), "--force".into(), machine.name().into()],
+            &["stop".into(), "--force".into(), configuration.name().into()],
             STOP_TIMEOUT,
         )?;
     }
-    let stopped = inspect_workspace(runner, paths, machine.name())?;
+    let stopped = inspect_computer(runner, paths, configuration.name())?;
     if !matches!(stopped.status.as_str(), "Stopped" | "Created" | "Crashed") {
         return Err(error(
-            "The original VM did not stop. Its recovery checkpoint was preserved.",
+            "The original computer did not stop. Its recovery checkpoint was preserved.",
         ));
     }
-    crate::ssh_access::close_workspace(machine.name());
-    crate::desktop_viewer::close_workspace(machine.name());
+    crate::ssh_access::close_computer(configuration.name());
+    crate::desktop_viewer::close_computer(configuration.name());
     runner.run(
         paths,
-        &["remove".into(), "--quiet".into(), machine.name().into()],
+        &[
+            "remove".into(),
+            "--quiet".into(),
+            configuration.name().into(),
+        ],
         STOP_TIMEOUT,
     )?;
     record.pending_checkpoint_restore = Some(PendingRestore {
         checkpoint_id: target.native_id().to_owned(),
-        source_workspace: lineage_group,
+        source_computer: lineage_group,
         state: target.scope,
     });
     record.restore_journal = None;
@@ -2133,34 +2163,34 @@ fn restore_steps(
     record.restore_attempt_ran = false;
     record.restore_attempt_id = None;
     record.checkpoint_operation = None;
-    save(paths, workspace_id, &record)
+    save(paths, computer_id, &record)
 }
 
 #[tauri::command]
 pub async fn restore_checkpoint(
     app: AppHandle,
-    workspace_id: String,
+    computer_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        // Restore rewrites only this VM's runtime state and per-VM checkpoint record,
-        // not the shared inventory, so it is ordered per VM by stable id.
-        let vm_name = machine(&paths, &workspace_id)
+        // Restore rewrites only this computer's runtime state and per-computer checkpoint record,
+        // not the shared inventory, so it is ordered per computer by stable id.
+        let computer_name = computer_configuration(&paths, &computer_id)
             .map_err(|error| error.to_string())?
             .name()
             .to_owned();
         let guard = OPERATIONS
             .kind(super::operation_gate::OperationKind::CheckpointRestore)
-            .vm(&workspace_id, &vm_name, "Restoring checkpoint")
+            .computer(&computer_id, &computer_name, "Restoring checkpoint")
             .map_err(|error| error.to_string())?;
         // Restore is deliberately not cancellable; flag it slow after the restore window.
         guard.expect_within(RESTORE_EXPECTED_DURATION);
         let _guard = guard;
         shutdown::ensure_accepting_operations()?;
-        let result = restore_with(&ProcessRunner, &paths, &workspace_id, &checkpoint_id)
+        let result = restore_with(&ProcessRunner, &paths, &computer_id, &checkpoint_id)
             .and_then(|_| application_state_response(&worker_app, &paths));
         let _ = worker_app.emit("silo://application-state-changed", ());
         result.map_err(|error| error.to_string())
@@ -2172,28 +2202,28 @@ pub async fn restore_checkpoint(
 fn inspect_capture_source(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
-    vm_name: &str,
+    computer_id: &str,
+    computer_name: &str,
 ) -> Result<InspectedSandbox, RuntimeError> {
-    let vm = inspect_workspace(runner, paths, vm_name)?;
-    ensure_managed(&vm)?;
-    if vm.name != vm_name
-        || vm
+    let computer = inspect_computer(runner, paths, computer_name)?;
+    ensure_managed(&computer)?;
+    if computer.name != computer_name
+        || computer
             .config
             .pointer("/labels/silo.machine-id")
             .and_then(Value::as_str)
-            != Some(workspace_id)
+            != Some(computer_id)
     {
         return Err(error(
-            "The workspace runtime identity changed. Its state was preserved.",
+            "The computer runtime identity changed. Its state was preserved.",
         ));
     }
-    Ok(vm)
+    Ok(computer)
 }
 
-fn capture_source_recoverable(vm: &InspectedSandbox) -> bool {
+fn capture_source_recoverable(computer: &InspectedSandbox) -> bool {
     matches!(
-        vm.status.as_str(),
+        computer.status.as_str(),
         "Running" | "Stopped" | "Created" | "Crashed"
     )
 }
@@ -2203,35 +2233,39 @@ fn capture_source_recoverable(vm: &InspectedSandbox) -> bool {
 fn settle_capture_source(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
-    vm_name: &str,
+    computer_id: &str,
+    computer_name: &str,
 ) -> Result<Option<String>, RuntimeError> {
     super::operation_gate::uncancellable(|| {
-        let inspect = || inspect_capture_source(runner, paths, workspace_id, vm_name);
-        let vm = inspect()?;
-        if capture_source_recoverable(&vm) {
+        let inspect = || inspect_capture_source(runner, paths, computer_id, computer_name);
+        let computer = inspect()?;
+        if capture_source_recoverable(&computer) {
             return Ok(None);
         }
-        if vm.status != "Paused" {
+        if computer.status != "Paused" {
             return Err(error(
                 "The capture source is still changing state. Retry Start or Stop to recover it.",
             ));
         }
-        let resume = runner.run(paths, &["resume".into(), vm_name.into()], MUTATION_TIMEOUT);
+        let resume = runner.run(
+            paths,
+            &["resume".into(), computer_name.into()],
+            MUTATION_TIMEOUT,
+        );
         let resume_failure = resume.as_ref().err().map(ToString::to_string);
         let context = resume_failure
             .as_deref()
-            .unwrap_or("The VM remained Paused after resume.");
-        let vm = inspect().map_err(|failure| error(&format!("{context} {failure}")))?;
-        if capture_source_recoverable(&vm) {
+            .unwrap_or("The computer remained Paused after resume.");
+        let computer = inspect().map_err(|failure| error(&format!("{context} {failure}")))?;
+        if capture_source_recoverable(&computer) {
             return Ok(resume_failure);
         }
-        if vm.status != "Paused" {
+        if computer.status != "Paused" {
             return Err(error(&format!("{context} The capture source is still changing state. Retry Start or Stop to recover it.")));
         }
         let stop = runner.run(
             paths,
-            &["stop".into(), "--force".into(), vm_name.into()],
+            &["stop".into(), "--force".into(), computer_name.into()],
             STOP_TIMEOUT,
         );
         let stop_failure = stop.as_ref().err().map(ToString::to_string);
@@ -2239,30 +2273,30 @@ fn settle_capture_source(
             Some(failure) => format!("{context} {failure}"),
             None => context.to_owned(),
         };
-        let vm = inspect().map_err(|failure| error(&format!("{context} {failure}")))?;
-        if capture_source_recoverable(&vm) {
-            let action = if vm.status == "Running" {
+        let computer = inspect().map_err(|failure| error(&format!("{context} {failure}")))?;
+        if capture_source_recoverable(&computer) {
+            let action = if computer.status == "Running" {
                 ""
             } else {
                 " Start it to continue."
             };
             return Ok(Some(format!(
-                "{context} The VM is now {}; its disks were preserved.{action}",
-                vm.status
+                "{context} The computer is now {}; its disks were preserved.{action}",
+                computer.status
             )));
         }
-        Err(error(&format!("{context} The VM could not be resumed or stopped. Its capture recovery was kept. Retry Start or Stop.")))
+        Err(error(&format!("{context} The computer could not be resumed or stopped. Its capture recovery was kept. Retry Start or Stop.")))
     })
 }
 
 fn settle_capture_failure(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
-    vm_name: &str,
+    computer_id: &str,
+    computer_name: &str,
     failure: RuntimeError,
 ) -> (bool, RuntimeError) {
-    match settle_capture_source(runner, paths, workspace_id, vm_name) {
+    match settle_capture_source(runner, paths, computer_id, computer_name) {
         Ok(None) => (true, failure),
         Ok(Some(context)) => (true, error(&format!("{failure} {context}"))),
         Err(recovery) => (false, error(&format!("{failure} {recovery}"))),
@@ -2274,10 +2308,10 @@ fn settle_capture_failure(
 pub(super) fn recover_paused_capture(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
-    vm_name: &str,
+    computer_id: &str,
+    computer_name: &str,
 ) -> Result<bool, RuntimeError> {
-    let record = load(paths, workspace_id)?;
+    let record = load(paths, computer_id)?;
     if !record
         .inflight_checkpoint
         .as_ref()
@@ -2285,16 +2319,16 @@ pub(super) fn recover_paused_capture(
     {
         return Ok(false);
     }
-    settle_capture_source(runner, paths, workspace_id, vm_name).map(|_| true)
+    settle_capture_source(runner, paths, computer_id, computer_name).map(|_| true)
 }
 
 fn release_paused(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
-    vm_name: &str,
+    computer_id: &str,
+    computer_name: &str,
 ) -> bool {
-    settle_capture_source(runner, paths, workspace_id, vm_name).is_ok()
+    settle_capture_source(runner, paths, computer_id, computer_name).is_ok()
 }
 
 fn restore_target_name(record: &Record, journal: &RestoreJournal) -> String {
@@ -2308,7 +2342,7 @@ fn restore_target_name(record: &Record, journal: &RestoreJournal) -> String {
         )
 }
 
-/// Why a sandbox with an unfinished Restore cannot take another action, naming the checkpoint.
+/// Why a computer with an unfinished Restore cannot take another action, naming the checkpoint.
 fn unfinished_restore_message(record: &Record, name: &str) -> String {
     match &record.restore_journal {
         Some(journal) => {
@@ -2319,7 +2353,7 @@ fn unfinished_restore_message(record: &Record, name: &str) -> String {
     }
 }
 
-/// The message for Start, Stop or another action refused while a sandbox waits for an
+/// The message for Start, Stop or another action refused while a computer waits for an
 /// explicit Start from a checkpoint or has an unfinished Restore (E-08).
 pub(super) fn explicit_start_message(paths: &RuntimePaths, id: &str, name: &str) -> String {
     match load(paths, id) {
@@ -2328,7 +2362,7 @@ pub(super) fn explicit_start_message(paths: &RuntimePaths, id: &str, name: &str)
     }
 }
 
-/// An unfinished Restore, exposed in the sandbox view so it can be retried or abandoned.
+/// An unfinished Restore, exposed in the computer view so it can be retried or abandoned.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct UnfinishedRestore {
@@ -2352,20 +2386,20 @@ pub(super) fn view_unfinished_restore(record: &Record) -> Option<UnfinishedResto
     })
 }
 
-/// Give up an unfinished Restore while the original VM still exists: it keeps its current
+/// Give up an unfinished Restore while the original computer still exists: it keeps its current
 /// state and is resumed (or stopped) if the Restore left it paused. A recovery checkpoint
 /// already saved stays in the history; one only partly captured is removed (E-05).
 fn abandon_restore_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
 ) -> Result<(), RuntimeError> {
-    let machine = machine(paths, workspace_id)?;
-    let mut record = load(paths, workspace_id)?;
+    let configuration = computer_configuration(paths, computer_id)?;
+    let mut record = load(paths, computer_id)?;
     let Some(journal) = record.restore_journal.clone() else {
         return Err(RuntimeError::Invalid(format!(
             "{} has no unfinished Restore.",
-            machine.name()
+            configuration.name()
         )));
     };
     let listed = runner.run(
@@ -2374,70 +2408,74 @@ fn abandon_restore_with(
         READ_TIMEOUT,
     )?;
     let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
-        .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
-    if !listed.iter().any(|entry| entry.name == machine.name()) {
+        .map_err(|_| error("The runtime returned an invalid computer list."))?;
+    if !listed
+        .iter()
+        .any(|entry| entry.name == configuration.name())
+    {
         return Err(RuntimeError::Invalid(format!(
             "{name} was already replaced by this Restore. Start {name} to finish it, or Restore another checkpoint.",
-            name = machine.name()
+            name = configuration.name()
         )));
     }
-    let inspected = inspect_workspace(runner, paths, machine.name())?;
+    let inspected = inspect_computer(runner, paths, configuration.name())?;
     ensure_managed(&inspected)?;
     if inspected
         .config
         .pointer("/labels/silo.machine-id")
         .and_then(Value::as_str)
-        != Some(workspace_id)
+        != Some(computer_id)
     {
         return Err(error(
-            "The workspace runtime identity changed. The Restore was not abandoned.",
+            "The computer runtime identity changed. The Restore was not abandoned.",
         ));
     }
-    if inspected.status == "Paused" && !release_paused(runner, paths, machine.id(), machine.name())
+    if inspected.status == "Paused"
+        && !release_paused(runner, paths, configuration.id(), configuration.name())
     {
         return Err(error(&format!(
             "{} could not be resumed or stopped. The unfinished Restore was kept.",
-            machine.name()
+            configuration.name()
         )));
     }
     if journal.phase == "capturing" {
         let group = record
             .snapshot_group
             .clone()
-            .unwrap_or_else(|| machine.name().to_owned());
+            .unwrap_or_else(|| configuration.name().to_owned());
         discard_failed_capture(
             runner,
             paths,
-            workspace_id,
+            computer_id,
             (group, journal.recovery_checkpoint.native_id().to_owned()),
         );
     }
     record.restore_journal = None;
     record.checkpoint_operation = None;
-    save(paths, workspace_id, &record)
+    save(paths, computer_id, &record)
 }
 
 #[tauri::command]
 pub async fn abandon_restore(
     app: AppHandle,
-    workspace_id: String,
+    computer_id: String,
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        let vm_name = machine(&paths, &workspace_id)
+        let computer_name = computer_configuration(&paths, &computer_id)
             .map_err(|error| error.to_string())?
             .name()
             .to_owned();
         let guard = OPERATIONS
             .kind(super::operation_gate::OperationKind::CheckpointRestore)
-            .vm(&workspace_id, &vm_name, "Abandoning Restore")
+            .computer(&computer_id, &computer_name, "Abandoning Restore")
             .map_err(|error| error.to_string())?;
         guard.expect_within(std::time::Duration::from_secs(5 * 60));
         let _guard = guard;
         shutdown::ensure_accepting_operations()?;
-        let result = abandon_restore_with(&ProcessRunner, &paths, &workspace_id)
+        let result = abandon_restore_with(&ProcessRunner, &paths, &computer_id)
             .and_then(|_| application_state_response(&worker_app, &paths));
         let _ = worker_app.emit("silo://application-state-changed", ());
         result.map_err(|error| error.to_string())
@@ -2449,17 +2487,18 @@ pub async fn abandon_restore(
     })?
 }
 
-/// Quit stops VMs gracefully, which a paused VM cannot take. Release a VM an unfinished
+/// Quit stops computers gracefully, which a paused computer cannot take. Release a computer an unfinished
 /// Restore left paused; the Restore itself stays unfinished and can be retried (E-05).
 pub(crate) fn release_paused_restore(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) {
-    if load(paths, machine.id()).is_ok_and(|record| record.restore_journal.is_some())
-        && inspect_workspace(runner, paths, machine.name()).is_ok_and(|vm| vm.status == "Paused")
+    if load(paths, configuration.id()).is_ok_and(|record| record.restore_journal.is_some())
+        && inspect_computer(runner, paths, configuration.name())
+            .is_ok_and(|computer| computer.status == "Paused")
     {
-        release_paused(runner, paths, machine.id(), machine.name());
+        release_paused(runner, paths, configuration.id(), configuration.name());
     }
 }
 
@@ -2484,7 +2523,7 @@ fn survey(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Survey, Ru
 
 /// What deleting one checkpoint entry does to native data.
 enum Deletion {
-    /// Only the entry goes: another entry of the same sandbox shares its member, or the
+    /// Only the entry goes: another entry of the same computer shares its member, or the
     /// member is already gone.
     EntryOnly,
     /// The entry goes and this member is removed.
@@ -2500,16 +2539,16 @@ fn quoted_list(items: &[String]) -> String {
     }
 }
 
-fn use_description(sandbox: &str, purpose: &native::Purpose) -> String {
+fn use_description(computer: &str, purpose: &native::Purpose) -> String {
     match purpose {
         native::Purpose::Checkpoint(_, label) => {
-            format!("{sandbox}’s checkpoint “{label}” shares the same saved state.")
+            format!("{computer}’s checkpoint “{label}” shares the same saved state.")
         }
         native::Purpose::PendingStart => {
-            format!("{sandbox} starts from it the next time it starts.")
+            format!("{computer} starts from it the next time it starts.")
         }
         native::Purpose::Capturing | native::Purpose::RestoreRecovery => {
-            format!("{sandbox} is using it for an unfinished operation.")
+            format!("{computer} is using it for an unfinished operation.")
         }
     }
 }
@@ -2517,19 +2556,19 @@ fn use_description(sandbox: &str, purpose: &native::Purpose) -> String {
 /// The reason a checkpoint cannot be deleted, in Silo's words.
 fn blocker_message(
     survey: &Survey,
-    workspace_id: &str,
-    sandbox: &str,
+    computer_id: &str,
+    computer: &str,
     blocker: &native::Blocker,
 ) -> String {
     match blocker {
         native::Blocker::Used(uses) => {
-            let mut names: Vec<String> = uses.iter().map(|used| used.sandbox.clone()).collect();
+            let mut names: Vec<String> = uses.iter().map(|used| used.computer.clone()).collect();
             names.sort();
             names.dedup();
-            format!("Used by {}. {}", quoted_list(&names), use_description(&uses[0].sandbox, &uses[0].purpose))
+            format!("Used by {}. {}", quoted_list(&names), use_description(&uses[0].computer, &uses[0].purpose))
         }
-        native::Blocker::Lineage(owner) if owner == sandbox => format!(
-            "{sandbox}’s next checkpoint and export build on this one, so it can’t be deleted while it is the latest state {sandbox} builds on."
+        native::Blocker::Lineage(owner) if owner == computer => format!(
+            "{computer}’s next checkpoint and export build on this one, so it can’t be deleted while it is the latest state {computer} builds on."
         ),
         native::Blocker::Lineage(owner) => format!(
             "Used by {owner}. {owner} was started from this checkpoint and still builds on it."
@@ -2541,10 +2580,10 @@ fn blocker_message(
                 let Some(key) = child.key() else { continue };
                 for used in survey.uses.get(&key).into_iter().flatten() {
                     if let native::Purpose::Checkpoint(_, label) = &used.purpose {
-                        if used.workspace_id == workspace_id {
+                        if used.computer_id == computer_id {
                             own.push(format!("“{label}”"));
                         } else {
-                            others.push(format!("{}’s checkpoint “{label}”", used.sandbox));
+                            others.push(format!("{}’s checkpoint “{label}”", used.computer));
                         }
                     }
                 }
@@ -2567,8 +2606,8 @@ fn blocker_message(
 /// Decide what deleting `checkpoint` from `record` would do, or why it is not allowed.
 fn deletion(
     survey: &Survey,
-    workspace_id: &str,
-    sandbox: &str,
+    computer_id: &str,
+    computer: &str,
     record: &Record,
     checkpoint: &Checkpoint,
 ) -> Result<Deletion, String> {
@@ -2580,15 +2619,15 @@ fn deletion(
     let group = record
         .snapshot_group
         .clone()
-        .unwrap_or_else(|| sandbox.to_owned());
+        .unwrap_or_else(|| computer.to_owned());
     let key: native::Key = (group, checkpoint.native_id().to_owned());
     if record
         .pending_checkpoint_restore
         .as_ref()
-        .is_some_and(|pending| pending.source_workspace == key.0 && pending.checkpoint_id == key.1)
+        .is_some_and(|pending| pending.source_computer == key.0 && pending.checkpoint_id == key.1)
     {
         return Err(format!(
-            "{sandbox} starts from this checkpoint the next time it starts. Start {sandbox} first."
+            "{computer} starts from this checkpoint the next time it starts. Start {computer} first."
         ));
     }
     let this_entry = native::Purpose::Checkpoint(checkpoint.id.clone(), checkpoint.name.clone());
@@ -2597,19 +2636,19 @@ fn deletion(
         .get(&key)
         .into_iter()
         .flatten()
-        .filter(|used| !(used.workspace_id == workspace_id && used.purpose == this_entry))
+        .filter(|used| !(used.computer_id == computer_id && used.purpose == this_entry))
         .cloned()
         .collect();
     let elsewhere: Vec<native::Use> = others
         .iter()
-        .filter(|used| used.workspace_id != workspace_id)
+        .filter(|used| used.computer_id != computer_id)
         .cloned()
         .collect();
     if !elsewhere.is_empty() {
         return Err(blocker_message(
             survey,
-            workspace_id,
-            sandbox,
+            computer_id,
+            computer,
             &native::Blocker::Used(elsewhere),
         ));
     }
@@ -2632,7 +2671,7 @@ fn deletion(
         &survey.positions,
     );
     if let Some((_, blocker)) = plan.kept.first() {
-        return Err(blocker_message(survey, workspace_id, sandbox, blocker));
+        return Err(blocker_message(survey, computer_id, computer, blocker));
     }
     Ok(Deletion::Remove(member.clone()))
 }
@@ -2642,12 +2681,12 @@ fn deletion(
 fn delete_checkpoint_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     checkpoint_id: &str,
 ) -> Result<(), RuntimeError> {
-    let machine = machine(paths, workspace_id)?;
-    let _ = ensure_snapshot_group(paths, workspace_id, machine.name())?;
-    let mut record = load(paths, workspace_id)?;
+    let configuration = computer_configuration(paths, computer_id)?;
+    let _ = ensure_snapshot_group(paths, computer_id, configuration.name())?;
+    let mut record = load(paths, computer_id)?;
     let checkpoint = record
         .checkpoints
         .iter()
@@ -2655,8 +2694,14 @@ fn delete_checkpoint_with(
         .ok_or_else(|| RuntimeError::Invalid("The selected checkpoint no longer exists.".into()))?
         .clone();
     let survey = survey(runner, paths)?;
-    match deletion(&survey, workspace_id, machine.name(), &record, &checkpoint)
-        .map_err(RuntimeError::Invalid)?
+    match deletion(
+        &survey,
+        computer_id,
+        configuration.name(),
+        &record,
+        &checkpoint,
+    )
+    .map_err(RuntimeError::Invalid)?
     {
         Deletion::EntryOnly => {}
         Deletion::Remove(member) => {
@@ -2679,7 +2724,7 @@ fn delete_checkpoint_with(
     {
         record.checkpoint_operation = None;
     }
-    save(paths, workspace_id, &record)?;
+    save(paths, computer_id, &record)?;
     if let Err(failure) = retry_deleted_snapshots(runner, paths) {
         eprintln!("Previously deleted checkpoint data was kept: {failure}");
     }
@@ -2689,23 +2734,23 @@ fn delete_checkpoint_with(
 #[tauri::command]
 pub async fn delete_checkpoint(
     app: AppHandle,
-    workspace_id: String,
+    computer_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
     crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        // A deleted child can release a deleted source's member in another sandbox's
+        // A deleted child can release a deleted source's member in another computer's
         // lineage group. Serialize the shared cleanup journal and native store changes.
         let guard = OPERATIONS
             .kind(super::operation_gate::OperationKind::CheckpointDelete)
-            .computer("Deleting checkpoint")
+            .device("Deleting checkpoint")
             .map_err(|error| error.to_string())?;
         guard.expect_within(std::time::Duration::from_secs(5 * 60));
         let _guard = guard;
         shutdown::ensure_accepting_operations()?;
-        let result = delete_checkpoint_with(&ProcessRunner, &paths, &workspace_id, &checkpoint_id)
+        let result = delete_checkpoint_with(&ProcessRunner, &paths, &computer_id, &checkpoint_id)
             .and_then(|_| application_state_response(&worker_app, &paths));
         let _ = worker_app.emit("silo://application-state-changed", ());
         result.map_err(|error| error.to_string())
@@ -2721,7 +2766,7 @@ pub async fn delete_checkpoint(
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckpointUsage {
-    /// Host allocation of this sandbox's checkpoints, each member counted once; `None`
+    /// Host allocation of this computer's checkpoints, each member counted once; `None`
     /// when any of them could not be measured.
     total_bytes: Option<u64>,
     checkpoints: Vec<CheckpointUsageEntry>,
@@ -2733,7 +2778,7 @@ pub struct CheckpointUsageEntry {
     id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     size_bytes: Option<u64>,
-    /// Other sandboxes that depend on this checkpoint.
+    /// Other computers that depend on this checkpoint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     used_by: Vec<String>,
     /// Why Delete is unavailable; absent when the checkpoint can be deleted.
@@ -2744,10 +2789,10 @@ pub struct CheckpointUsageEntry {
 fn usage_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
 ) -> Result<CheckpointUsage, RuntimeError> {
-    let machine = machine(paths, workspace_id)?;
-    let record = load(paths, workspace_id)?;
+    let configuration = computer_configuration(paths, computer_id)?;
+    let record = load(paths, computer_id)?;
     if record.checkpoints.is_empty() {
         return Ok(CheckpointUsage {
             total_bytes: Some(0),
@@ -2757,7 +2802,7 @@ fn usage_with(
     let group = record
         .snapshot_group
         .clone()
-        .unwrap_or_else(|| machine.name().to_owned());
+        .unwrap_or_else(|| configuration.name().to_owned());
     let metadata = read_metadata(&paths.metadata)?;
     let uses = native::uses(paths, &metadata)?;
     let inventory = native::inventory(runner, paths)?;
@@ -2804,12 +2849,12 @@ fn usage_with(
             .get(&key)
             .into_iter()
             .flatten()
-            .filter(|used| used.workspace_id != workspace_id)
-            .map(|used| used.sandbox.clone())
+            .filter(|used| used.computer_id != computer_id)
+            .map(|used| used.computer.clone())
             .chain(
                 member
                     .and_then(|member| survey.positions.get(&member.snapshot_id))
-                    .filter(|owner| owner.as_str() != machine.name())
+                    .filter(|owner| owner.as_str() != configuration.name())
                     .cloned(),
             )
             .collect();
@@ -2819,8 +2864,14 @@ fn usage_with(
             id: checkpoint.id.clone(),
             size_bytes,
             used_by,
-            delete_blocker: deletion(&survey, workspace_id, machine.name(), &record, checkpoint)
-                .err(),
+            delete_blocker: deletion(
+                &survey,
+                computer_id,
+                configuration.name(),
+                &record,
+                checkpoint,
+            )
+            .err(),
         });
     }
     Ok(CheckpointUsage {
@@ -2832,11 +2883,11 @@ fn usage_with(
 #[tauri::command]
 pub async fn read_checkpoint_usage(
     app: AppHandle,
-    workspace_id: String,
+    computer_id: String,
 ) -> Result<CheckpointUsage, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
-        usage_with(&ProcessRunner, &paths, &workspace_id)
+        usage_with(&ProcessRunner, &paths, &computer_id)
             .map_err(|error| safe_activity_error(&error))
     })
     .await
@@ -2845,26 +2896,26 @@ pub async fn read_checkpoint_usage(
     })?
 }
 
-/// Host allocation of one sandbox's checkpoints and how many it has, for the Storage tab.
-/// Only lists snapshots: no sandbox is inspected. `None` bytes when not measurable.
+/// Host allocation of one computer's checkpoints and how many it has, for the Storage tab.
+/// Only lists snapshots: no computer is inspected. `None` bytes when not measurable.
 pub(super) fn storage_totals(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
-    sandbox: &str,
+    computer_id: &str,
+    computer: &str,
 ) -> (Option<u64>, usize) {
-    let Ok(record) = load(paths, workspace_id) else {
+    let Ok(record) = load(paths, computer_id) else {
         return (None, 0);
     };
     let count = record.checkpoints.len();
     if count == 0 {
         return (Some(0), 0);
     }
-    let group = record.snapshot_group.as_deref().unwrap_or(sandbox);
+    let group = record.snapshot_group.as_deref().unwrap_or(computer);
     let Ok(inventory) = native::inventory_in_group(runner, paths, group) else {
         return (None, count);
     };
-    let keys: HashSet<native::Key> = native::record_uses(&record, sandbox)
+    let keys: HashSet<native::Key> = native::record_uses(&record, computer)
         .into_iter()
         .filter(|(_, purpose)| matches!(purpose, native::Purpose::Checkpoint(..)))
         .map(|(key, _)| key)
@@ -2882,7 +2933,7 @@ pub(super) fn storage_totals(
     (Some(total), count)
 }
 
-/// Exact native members selected by a sandbox deletion. Keep dependency-blocked members
+/// Exact native members selected by a computer deletion. Keep dependency-blocked members
 /// in this journal so deleting the last dependent can retry them even after the source's
 /// checkpoint history is gone. Snapshot ids prevent a reused name from selecting new data.
 fn cleanup_path(paths: &RuntimePaths) -> PathBuf {
@@ -2982,17 +3033,17 @@ fn retry_deleted_snapshots(
     Ok(())
 }
 
-/// Called after a sandbox leaves the configured inventory and runtime. Journal its
+/// Called after a computer leaves the configured inventory and runtime. Journal its
 /// members before removing them, then retry prior deletions released by this deletion.
 /// Failure never loses the source history: the caller clears it only after journaling.
 pub(crate) fn remove_deleted_snapshots(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
-    sandbox: &str,
+    computer_id: &str,
+    computer: &str,
 ) -> Result<(), RuntimeError> {
-    let record = load(paths, workspace_id)?;
-    let referenced: Vec<native::Key> = native::record_uses(&record, sandbox)
+    let record = load(paths, computer_id)?;
+    let referenced: Vec<native::Key> = native::record_uses(&record, computer)
         .into_iter()
         .map(|(key, _)| key)
         .collect();
@@ -3002,7 +3053,7 @@ pub(crate) fn remove_deleted_snapshots(
         }
         return Ok(());
     }
-    let group = record.snapshot_group.as_deref().unwrap_or(sandbox);
+    let group = record.snapshot_group.as_deref().unwrap_or(computer);
     let mut queued = load_cleanup(paths)?;
     let inventory = native::inventory(runner, paths)?;
     for member in inventory {
@@ -3016,9 +3067,9 @@ pub(crate) fn remove_deleted_snapshots(
         }
     }
     save_cleanup(paths, &queued)?;
-    // The durable journal keeps failed removals; the sandbox deletion can finish.
+    // The durable journal keeps failed removals; the computer deletion can finish.
     if let Err(failure) = retry_deleted_snapshots(runner, paths) {
-        eprintln!("Kept checkpoint data of deleted sandbox {sandbox}: {failure}");
+        eprintln!("Kept checkpoint data of deleted computer {computer}: {failure}");
     }
     Ok(())
 }
@@ -3028,7 +3079,7 @@ pub(crate) fn remove_deleted_snapshots(
 pub(crate) fn discard_failed_capture(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    workspace_id: &str,
+    computer_id: &str,
     key: native::Key,
 ) -> bool {
     super::operation_gate::uncancellable(|| {
@@ -3047,7 +3098,7 @@ pub(crate) fn discard_failed_capture(
         // This capture's own in-progress reference is the one being discarded.
         if let Some(uses) = survey.uses.get_mut(&key) {
             uses.retain(|used| {
-                !(used.workspace_id == workspace_id
+                !(used.computer_id == computer_id
                     && matches!(
                         used.purpose,
                         native::Purpose::Capturing | native::Purpose::RestoreRecovery
@@ -3082,25 +3133,25 @@ pub(crate) fn recover_interrupted(
         unresolved: HashMap::new(),
         cleanup_error: retry_deleted_snapshots(runner, paths).err(),
     };
-    for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
+    for configuration in metadata.computers.iter() {
         let result = (|| {
-            let mut record = load(paths, machine.id())?;
+            let mut record = load(paths, configuration.id())?;
             let Some(inflight) = record.inflight_checkpoint.clone() else {
                 return Ok(());
             };
             let source_recovery = if inflight.scope == "full" {
-                settle_capture_source(runner, paths, machine.id(), machine.name())?
+                settle_capture_source(runner, paths, configuration.id(), configuration.name())?
             } else {
                 None
             };
             let group = record
                 .snapshot_group
                 .clone()
-                .unwrap_or_else(|| machine.name().to_owned());
+                .unwrap_or_else(|| configuration.name().to_owned());
             if !discard_failed_capture(
                 runner,
                 paths,
-                machine.id(),
+                configuration.id(),
                 (group, inflight.native_id().to_owned()),
             ) {
                 return Err(error("Interrupted checkpoint data is still in use or could not be removed. It was preserved."));
@@ -3125,10 +3176,12 @@ pub(crate) fn recover_interrupted(
                 stage: "Checkpoint interrupted".into(),
                 error: Some(failure),
             });
-            save(paths, machine.id(), &record)
+            save(paths, configuration.id(), &record)
         })();
         if let Err(failure) = result {
-            recovery.unresolved.insert(machine.id().to_owned(), failure);
+            recovery
+                .unresolved
+                .insert(configuration.id().to_owned(), failure);
         }
     }
     Ok(recovery)
@@ -3178,7 +3231,7 @@ mod tests {
             .unwrap()
             .pending_checkpoint_restore
             .unwrap();
-        assert_eq!(pending.source_workspace, group);
+        assert_eq!(pending.source_computer, group);
         assert_eq!(
             load(&paths, ID).unwrap().snapshot_group.as_deref(),
             Some(group)
@@ -3225,9 +3278,9 @@ mod tests {
         let paths = paths(&directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -3245,7 +3298,7 @@ mod tests {
         let before = fs::read(path(&paths, ID)).unwrap();
         let checkpoint_guard = super::super::OPERATIONS
             .kind(super::super::operation_gate::OperationKind::CheckpointCapture)
-            .vm(ID, "dev", "Creating checkpoint")
+            .computer(ID, "dev", "Creating checkpoint")
             .unwrap();
         let (result, during_preflight) = std::thread::scope(|scope| {
             let (send, receive) = std::sync::mpsc::channel();
@@ -3273,7 +3326,7 @@ mod tests {
 
         let _export_guard = super::super::OPERATIONS
             .kind(super::super::operation_gate::OperationKind::Export)
-            .computer("Exporting sandbox")
+            .device("Exporting computer")
             .unwrap();
         assert_eq!(ensure_snapshot_group(&paths, ID, "dev").unwrap(), "dev");
         assert_eq!(
@@ -3313,9 +3366,9 @@ mod tests {
         let paths = paths(&directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -3374,7 +3427,7 @@ mod tests {
                     Some("list") => "[]".into(),
                     Some("restore") => return Err(error("synthetic restore failure")),
                     // After a failed restore Silo checks whether the attempt ran.
-                    Some("inspect") => return Err(error("sandbox not found: dev")),
+                    Some("inspect") => return Err(error("computer not found: dev")),
                     _ => panic!("unexpected command: {args:?}"),
                 };
                 Ok(CommandOutput {
@@ -3393,7 +3446,7 @@ mod tests {
         )
         .unwrap();
         let runner = DiskRunner(Mutex::new(Vec::new()));
-        assert!(start_pending(&runner, &paths, &machine())
+        assert!(start_pending(&runner, &paths, &computer_configuration())
             .unwrap_err()
             .to_string()
             .contains("synthetic restore failure"));
@@ -3456,7 +3509,7 @@ mod tests {
                 scope: native_scope,
                 probe: RestoreProbe(Mutex::new(Vec::new())),
             };
-            assert!(start_pending(&runner, &paths, &machine())
+            assert!(start_pending(&runner, &paths, &computer_configuration())
                 .unwrap_err()
                 .to_string()
                 .contains("synthetic restore failure"));
@@ -3501,7 +3554,7 @@ mod tests {
                     scope,
                     probe: RestoreProbe(Mutex::new(Vec::new())),
                 };
-                assert!(start_pending(&runner, &paths, &machine())
+                assert!(start_pending(&runner, &paths, &computer_configuration())
                     .unwrap_err()
                     .to_string()
                     .contains("synthetic restore failure"));
@@ -3550,7 +3603,7 @@ mod tests {
         .unwrap();
         assert_eq!(load(&paths, ID).unwrap().desired_environment.len(), 5);
         let runner = RestoreProbe(Mutex::new(Vec::new()));
-        assert!(start_pending(&runner, &paths, &machine())
+        assert!(start_pending(&runner, &paths, &computer_configuration())
             .unwrap_err()
             .to_string()
             .contains("synthetic restore failure"));
@@ -3567,7 +3620,7 @@ mod tests {
         forget_identity_environment(&paths, ID).unwrap();
         assert_eq!(load(&paths, ID).unwrap().desired_environment.len(), 2);
         let runner = RestoreProbe(Mutex::new(Vec::new()));
-        assert!(start_pending(&runner, &paths, &machine()).is_err());
+        assert!(start_pending(&runner, &paths, &computer_configuration()).is_err());
         let calls = runner.0.lock().unwrap();
         let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
         assert!(restore
@@ -3638,9 +3691,9 @@ mod tests {
         .unwrap();
         let metadata = read_metadata(&paths.metadata).unwrap();
         let child = metadata
-            .machines
+            .computers
             .iter()
-            .find(|machine| machine.name() == "branch")
+            .find(|configuration| configuration.name() == "branch")
             .unwrap();
         for id in [ID, child.id()] {
             let keys: Vec<String> = load(&paths, id)
@@ -3672,7 +3725,7 @@ mod tests {
                 .to_string(),
                 Some("list") => "[]".into(),
                 Some("restore") => return Err(error("synthetic restore failure")),
-                Some("inspect") => return Err(error("sandbox not found: dev")),
+                Some("inspect") => return Err(error("computer not found: dev")),
                 _ => panic!("unexpected command: {args:?}"),
             };
             Ok(CommandOutput {
@@ -3682,15 +3735,16 @@ mod tests {
         }
     }
 
-    fn built_in_machine() -> MachineConfiguration {
-        let mut machine = machine();
-        if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+    fn built_in_computer() -> ComputerConfiguration {
+        let mut configuration = computer_configuration();
+        {
+            let ComputerConfiguration { desktop, .. } = &mut configuration;
             *desktop = Some(crate::desktop::DesktopConfiguration {
-                start_with_sandbox: true,
+                start_with_computer: true,
                 built_in: true,
             });
         }
-        machine
+        configuration
     }
 
     fn pending_import(paths: &RuntimePaths) {
@@ -3704,7 +3758,7 @@ mod tests {
     }
 
     #[test]
-    fn restoring_a_built_in_vm_passes_the_computer_use_mount_again() {
+    fn restoring_a_built_in_computer_passes_the_computer_use_mount_again() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -3715,7 +3769,7 @@ mod tests {
         crate::computer_use::set_test_published_dir(Some(published.clone()));
         pending_import(&paths);
         let runner = RestoreProbe(Mutex::new(Vec::new()));
-        assert!(start_pending(&runner, &paths, &built_in_machine()).is_err());
+        assert!(start_pending(&runner, &paths, &built_in_computer()).is_err());
         let calls = runner.0.lock().unwrap();
         let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
         let mount = format!("{}:/opt/silo/chatgpt:ro,uid=0,gid=0", published.display());
@@ -3729,14 +3783,14 @@ mod tests {
     }
 
     #[test]
-    fn restoring_a_vm_without_built_in_computer_use_adds_no_mount() {
+    fn restoring_a_computer_without_built_in_computer_use_adds_no_mount() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         crate::computer_use::set_test_published_dir(Some(directory.path().to_path_buf()));
         pending_import(&paths);
         let runner = RestoreProbe(Mutex::new(Vec::new()));
-        assert!(start_pending(&runner, &paths, &machine()).is_err());
+        assert!(start_pending(&runner, &paths, &computer_configuration()).is_err());
         let calls = runner.0.lock().unwrap();
         let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
         assert!(!restore
@@ -3748,7 +3802,7 @@ mod tests {
     const ATTEMPT: &str = "6b79cf8f-70b3-4d2f-93d1-3b8b7a7c0001";
 
     /// A runtime where the rejected restore left a stopped, already-run attempt with
-    /// the VM's labels but without the computer-use mount.
+    /// the computer's labels but without the computer-use mount.
     struct RejectedRestore(Mutex<Vec<Vec<String>>>);
     impl RuntimeRunner for RejectedRestore {
         fn run(
@@ -3772,7 +3826,7 @@ mod tests {
                     "mounts":[{"type":"Owned","guest":"/workspace"}],
                 }})
                 .to_string(),
-                _ => panic!("a retry without the mount must not change the VM: {args:?}"),
+                _ => panic!("a retry without the mount must not change the computer: {args:?}"),
             };
             Ok(CommandOutput {
                 stdout,
@@ -3796,11 +3850,11 @@ mod tests {
         record.restore_attempt_id = Some(ATTEMPT.into());
         save(&paths, ID, &record).unwrap();
         let runner = RejectedRestore(Mutex::new(Vec::new()));
-        let failure = start_pending(&runner, &paths, &built_in_machine())
+        let failure = start_pending(&runner, &paths, &built_in_computer())
             .unwrap_err()
             .to_string();
         assert!(failure.contains("computer-use folder"), "{failure}");
-        // No command changed the VM, and the recovery state survives for the next Retry.
+        // No command changed the computer, and the recovery state survives for the next Retry.
         assert!(runner
             .0
             .lock()
@@ -3815,14 +3869,14 @@ mod tests {
     }
 
     #[test]
-    fn a_built_in_vm_cannot_restore_without_the_shared_folder() {
+    fn a_built_in_computer_cannot_restore_without_the_shared_folder() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         crate::computer_use::set_test_published_dir(None);
         pending_import(&paths);
         let runner = RestoreProbe(Mutex::new(Vec::new()));
-        let failure = start_pending(&runner, &paths, &built_in_machine()).unwrap_err();
+        let failure = start_pending(&runner, &paths, &built_in_computer()).unwrap_err();
         assert!(failure.to_string().contains("shared ChatGPT folder"));
         // Nothing ran and the pending restore is untouched.
         assert!(runner.0.lock().unwrap().is_empty());
@@ -3925,8 +3979,8 @@ mod tests {
     fn paths(directory: &tempfile::TempDir) -> RuntimePaths {
         crate::test_support::paths(directory.path())
     }
-    fn machine() -> MachineConfiguration {
-        MachineConfiguration::Vm {
+    fn computer_configuration() -> ComputerConfiguration {
+        ComputerConfiguration {
             id: ID.into(),
             name: "dev".into(),
             cpus: 1,
@@ -3956,7 +4010,7 @@ mod tests {
                 let stdout = match args[0].as_str() {
                     "list" => serde_json::json!([{"name":"dev","status":"Stopped"}]).to_string(),
                     "inspect" => {
-                        return Err(RuntimeError::Unavailable("sandbox not found: dev".into()))
+                        return Err(RuntimeError::Unavailable("computer not found: dev".into()))
                     }
                     _ => panic!("unexpected runtime command: {args:?}"),
                 };
@@ -3971,7 +4025,7 @@ mod tests {
         let mut record = Record::default();
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9".into(),
+            source_computer: "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9".into(),
             state: "full".into(),
         });
         let policy =
@@ -3982,7 +4036,7 @@ mod tests {
             calls: Mutex::new(Vec::new()),
         };
         assert_eq!(
-            fork_source_policy(&absent, &paths, &machine(), &record).unwrap(),
+            fork_source_policy(&absent, &paths, &computer_configuration(), &record).unwrap(),
             policy
         );
         assert_eq!(
@@ -3999,7 +4053,7 @@ mod tests {
             present: true,
             calls: Mutex::new(Vec::new()),
         };
-        assert!(fork_source_policy(&present, &paths, &machine(), &record).is_err());
+        assert!(fork_source_policy(&present, &paths, &computer_configuration(), &record).is_err());
         assert_eq!(
             present
                 .calls
@@ -4011,9 +4065,9 @@ mod tests {
             ["list", "inspect"]
         );
         record.desired_network_policy = None;
-        assert!(fork_source_policy(&absent, &paths, &machine(), &record).is_err());
+        assert!(fork_source_policy(&absent, &paths, &computer_configuration(), &record).is_err());
         record.desired_network_policy = Some(serde_json::json!({"default_egress":"invalid"}));
-        assert!(fork_source_policy(&absent, &paths, &machine(), &record).is_err());
+        assert!(fork_source_policy(&absent, &paths, &computer_configuration(), &record).is_err());
     }
     #[test]
     fn captures_full_state_only_with_an_owned_workspace_disk() {
@@ -4022,9 +4076,9 @@ mod tests {
         let paths = paths(&directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -4083,9 +4137,9 @@ mod tests {
         let paths = paths(&directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -4093,7 +4147,7 @@ mod tests {
         pending.snapshot_group = Some("dev".into());
         pending.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         pending.desired_network_policy = Some(serde_json::json!({
@@ -4127,7 +4181,7 @@ mod tests {
         let mut legacy = Record::default();
         legacy.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         legacy.desired_network_policy = stored.desired_network_policy;
@@ -4178,7 +4232,7 @@ mod tests {
                     ]).to_string(),
                     "snapshot" if args.get(1).is_some_and(|value| value == "verify") => "{}".into(),
                     "restore" => return Err(error("synthetic restore failure after request capture")),
-                    "inspect" => return Err(error("sandbox not found: dev")),
+                    "inspect" => return Err(error("computer not found: dev")),
                     _ => panic!("unexpected runtime command: {args:?}"),
                 };
                 Ok(CommandOutput {
@@ -4192,9 +4246,9 @@ mod tests {
         let paths = paths(&directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -4219,7 +4273,7 @@ mod tests {
         record.checkpoints = vec![first.clone(), second.clone()];
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: first.id.clone(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         record.desired_network_policy = Some(serde_json::json!({
@@ -4265,12 +4319,12 @@ mod tests {
             checkpoint.native_id() == second.id && checkpoint.reason == "before-restore"
         }));
 
-        let host = super::super::HostResources {
+        let device = super::super::DeviceResources {
             logical_cpus: 8,
             physical_memory_bytes: Some(16 * 1024 * 1024 * 1024),
         };
         let failure =
-            super::super::explicit_workspace_action_with(&runner, &paths, &host, "start", "dev")
+            super::super::explicit_computer_action_with(&runner, &paths, &device, "start", "dev")
                 .unwrap_err();
         assert!(failure.to_string().contains("synthetic restore failure"));
         let calls = runner.calls.lock().unwrap();
@@ -4319,7 +4373,7 @@ mod tests {
         record.snapshot_group = Some("dev".into());
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "silo-backup-0-330418-1790360984903".into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         record.desired_network_policy = Some(serde_json::json!({
@@ -4369,9 +4423,9 @@ mod tests {
             assert_eq!(args[0], "inspect");
             if self.missing {
                 return Err(RuntimeError::Failed {
-                    operation: "Inspecting the sandbox".into(),
+                    operation: "Inspecting the computer".into(),
                     exit_code: Some(1),
-                    detail: "sandbox 'dev' not found".into(),
+                    detail: "computer 'dev' not found".into(),
                 });
             }
             Ok(CommandOutput {
@@ -4381,15 +4435,15 @@ mod tests {
         }
     }
     #[test]
-    fn pending_and_stopped_vms_read_as_stopped_and_ask_to_be_started() {
+    fn pending_and_stopped_computers_read_as_stopped_and_ask_to_be_started() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -4401,32 +4455,32 @@ mod tests {
             calls: Mutex::new(0),
         };
         assert!(matches!(
-            observe_vm(&stopped, &paths, "dev").unwrap(),
-            VmRuntime::Present(_)
+            observe_computer(&stopped, &paths, "dev").unwrap(),
+            ComputerRuntime::Present(_)
         ));
         assert_eq!(
-            crate::terminal::running_vm_with(&stopped, &paths, "dev")
+            crate::terminal::running_computer_with(&stopped, &paths, "dev")
                 .err()
                 .unwrap(),
             "Start dev first."
         );
 
-        // A runtime that does not know the sandbox is stopped, not an error.
+        // A runtime that does not know the computer is stopped, not an error.
         let missing = Observed {
             status: "",
             missing: true,
             calls: Mutex::new(0),
         };
         assert!(matches!(
-            observe_vm(&missing, &paths, "dev").unwrap(),
-            VmRuntime::Absent
+            observe_computer(&missing, &paths, "dev").unwrap(),
+            ComputerRuntime::Absent
         ));
 
         // Pending restore: decided from Silo's record; the runtime is never asked.
         let mut record = Record::default();
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "source".into(),
+            source_computer: "source".into(),
             state: "full".into(),
         });
         save(&paths, ID, &record).unwrap();
@@ -4436,12 +4490,12 @@ mod tests {
             calls: Mutex::new(0),
         };
         assert!(matches!(
-            observe_vm(&pending, &paths, "dev").unwrap(),
-            VmRuntime::Absent
+            observe_computer(&pending, &paths, "dev").unwrap(),
+            ComputerRuntime::Absent
         ));
         assert!(is_pending_restore(&paths, "dev"));
         assert_eq!(
-            crate::terminal::running_vm_with(&pending, &paths, "dev")
+            crate::terminal::running_computer_with(&pending, &paths, "dev")
                 .err()
                 .unwrap(),
             "Start dev first."
@@ -4452,19 +4506,19 @@ mod tests {
         assert_eq!(error, None);
         assert_eq!(ports, vec![("waiting", None)]);
 
-        // A failed restore may already own a live VM. Its pending record must
-        // not hide that VM from terminal access or secret revocation checks.
+        // A failed restore may already own a live computer. Its pending record must
+        // not hide that computer from terminal access or secret revocation checks.
         record.restore_attempted = true;
         save(&paths, ID, &record).unwrap();
         assert!(matches!(
-            observe_vm(&pending, &paths, "dev").unwrap(),
-            VmRuntime::Present(_)
+            observe_computer(&pending, &paths, "dev").unwrap(),
+            ComputerRuntime::Present(_)
         ));
-        assert!(crate::terminal::running_vm_with(&pending, &paths, "dev").is_ok());
+        assert!(crate::terminal::running_computer_with(&pending, &paths, "dev").is_ok());
         assert_eq!(*pending.calls.lock().unwrap(), 2);
         assert!(matches!(
-            observe_vm(&missing, &paths, "dev").unwrap(),
-            VmRuntime::Absent
+            observe_computer(&missing, &paths, "dev").unwrap(),
+            ComputerRuntime::Absent
         ));
 
         // Other runtime failures still surface.
@@ -4477,7 +4531,7 @@ mod tests {
         ]);
         delete_record_for_test(&paths);
         assert!(
-            matches!(observe_vm(&broken, &paths, "dev"), Err(RuntimeError::Unavailable(message)) if message == "runtime down")
+            matches!(observe_computer(&broken, &paths, "dev"), Err(RuntimeError::Unavailable(message)) if message == "runtime down")
         );
         broken.assert_finished();
     }
@@ -4491,16 +4545,16 @@ mod tests {
         let paths = paths(&directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
         let mut record = Record::default();
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "source".into(),
+            source_computer: "source".into(),
             state: "full".into(),
         });
         save(&paths, ID, &record).unwrap();
@@ -4509,13 +4563,13 @@ mod tests {
             mount_type: "Owned",
             calls: Mutex::new(Vec::new()),
         };
-        let host = HostResources {
+        let device = DeviceResources {
             logical_cpus: 8,
             physical_memory_bytes: Some(16 * 1024 * 1024 * 1024),
         };
-        start_at_launch_with(&runner, &paths, &host, ID).unwrap();
+        start_at_launch_with(&runner, &paths, &device, ID).unwrap();
         assert!(runner.calls.lock().unwrap().is_empty());
-        assert!(workspace_action_with(&runner, &paths, &host, "start", "dev").is_err());
+        assert!(computer_action_with(&runner, &paths, &device, "start", "dev").is_err());
         assert!(runner.calls.lock().unwrap().is_empty());
         assert!(run_msb(
             &paths,
@@ -4525,8 +4579,8 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("starts from a checkpoint first"));
-        let view = pending_workspace(machine()).unwrap();
-        assert!(matches!(view.state, WorkspaceState::Stopped));
+        let view = pending_computer(computer_configuration()).unwrap();
+        assert!(matches!(view.state, ComputerState::Stopped));
     }
     #[test]
     fn first_start_network_flags_preserve_current_asymmetric_policy() {
@@ -4586,24 +4640,25 @@ mod tests {
         }
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let mut child = machine();
+        let mut child = computer_configuration();
         let child_id = "00000000-0000-4000-8000-000000000002";
-        if let MachineConfiguration::Vm { id, name, .. } = &mut child {
+        {
+            let ComputerConfiguration { id, name, .. } = &mut child;
             *id = child_id.into();
             *name = "fork".into();
         }
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine(), child.clone()],
+                computers: vec![computer_configuration(), child.clone()],
             },
         )
         .unwrap();
         let mut record = Record::default();
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         record.desired_network_policy =
@@ -4623,7 +4678,7 @@ mod tests {
         assert_eq!(stored.checkpoint_operation.unwrap().status, "failed");
         assert!(read_metadata(&paths.metadata)
             .unwrap()
-            .machines
+            .computers
             .iter()
             .any(|m| m.name() == "dev"));
         assert_eq!(
@@ -4663,7 +4718,7 @@ mod tests {
                 } else if args[0] == "restore" {
                     return Err(error("synthetic restore failure"));
                 } else if args[0] == "inspect" && !self.present {
-                    return Err(error("sandbox not found: dev"));
+                    return Err(error("computer not found: dev"));
                 } else {
                     panic!("unexpected runtime command")
                 };
@@ -4677,9 +4732,9 @@ mod tests {
         let paths = paths(&directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -4716,7 +4771,7 @@ mod tests {
             present: true,
             calls: Mutex::new(Vec::new()),
         };
-        assert!(start_pending(&original, &paths, &machine())
+        assert!(start_pending(&original, &paths, &computer_configuration())
             .unwrap_err()
             .to_string()
             .contains("is unfinished"));
@@ -4729,7 +4784,7 @@ mod tests {
             present: false,
             calls: Mutex::new(Vec::new()),
         };
-        let failure = start_pending(&removed, &paths, &machine()).unwrap_err();
+        let failure = start_pending(&removed, &paths, &computer_configuration()).unwrap_err();
         assert!(
             failure.to_string().contains("synthetic restore failure"),
             "{failure}"
@@ -4747,11 +4802,11 @@ mod tests {
         let mut fork = load(&paths, ID).unwrap();
         fork.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: target.id,
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         save(&paths, ID, &fork).unwrap();
-        let fork_failure = start_pending(&removed, &paths, &machine()).unwrap_err();
+        let fork_failure = start_pending(&removed, &paths, &computer_configuration()).unwrap_err();
         assert!(
             fork_failure
                 .to_string()
@@ -4795,24 +4850,25 @@ mod tests {
         }
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
-        let mut child = machine();
+        let mut child = computer_configuration();
         let child_id = "00000000-0000-4000-8000-000000000002";
-        if let MachineConfiguration::Vm { id, name, .. } = &mut child {
+        {
+            let ComputerConfiguration { id, name, .. } = &mut child;
             *id = child_id.into();
             *name = "fork".into();
         }
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![child.clone()],
+                computers: vec![child.clone()],
             },
         )
         .unwrap();
         let mut record = Record::default();
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "source".into(),
+            source_computer: "source".into(),
             state: "full".into(),
         });
         record.desired_network_policy =
@@ -4881,9 +4937,9 @@ mod tests {
         let paths = paths(&directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -4919,18 +4975,18 @@ mod tests {
             "c000000000000000000000000000000"
         );
         assert!(stored.restore_journal.is_none());
-        assert_eq!(read_metadata(&paths.metadata).unwrap().machines[0].id(), ID);
         assert_eq!(
-            read_metadata(&paths.metadata).unwrap().machines[0].name(),
+            read_metadata(&paths.metadata).unwrap().computers[0].id(),
+            ID
+        );
+        assert_eq!(
+            read_metadata(&paths.metadata).unwrap().computers[0].name(),
             "dev"
         );
         drop(calls);
         let source = read_application_state_with(&runner, &paths).unwrap();
-        assert!(matches!(
-            source.workspaces[0].state,
-            WorkspaceState::Stopped
-        ));
-        assert!(source.workspaces[0].pending_checkpoint_restore.is_some());
+        assert!(matches!(source.computers[0].state, ComputerState::Stopped));
+        assert!(source.computers[0].pending_checkpoint_restore.is_some());
         let calls = runner.calls.lock().unwrap();
         let remove = calls.iter().position(|args| args[0] == "remove").unwrap();
         assert!(calls[remove + 1..].iter().all(|args| args[0] == "list"));
@@ -5024,9 +5080,9 @@ mod tests {
         let paths = paths(directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -5065,7 +5121,7 @@ mod tests {
     }
 
     #[test]
-    fn capturing_journal_for_a_stopped_vm_secures_a_disk_recovery_and_finishes() {
+    fn capturing_journal_for_a_stopped_computer_secures_a_disk_recovery_and_finishes() {
         let _test_state = crate::test_support::global_state();
         for status in ["Stopped", "Created", "Crashed"] {
             let directory = tempfile::tempdir().unwrap();
@@ -5116,7 +5172,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_capture_of_a_stopped_vm_leaves_no_journal() {
+    fn failed_capture_of_a_stopped_computer_leaves_no_journal() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("capturing", true)));
@@ -5147,7 +5203,7 @@ mod tests {
     }
 
     #[test]
-    fn crashed_vm_can_retry_a_secured_restore() {
+    fn crashed_computer_can_retry_a_secured_restore() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("secured", true)));
@@ -5188,14 +5244,14 @@ mod tests {
     }
 
     #[test]
-    fn attempted_restore_with_a_listed_runtime_reads_as_a_present_workspace() {
+    fn attempted_restore_with_a_listed_runtime_reads_as_a_present_computer() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
         let mut record = load(&paths, ID).unwrap();
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         save(&paths, ID, &record).unwrap();
@@ -5320,9 +5376,9 @@ mod tests {
         .unwrap();
         let metadata = read_metadata(&paths.metadata).unwrap();
         let child = metadata
-            .machines
+            .computers
             .iter()
-            .find(|machine| machine.name() == "branch")
+            .find(|configuration| configuration.name() == "branch")
             .unwrap();
         assert_eq!(
             crate::computer_use::settings(&paths, child.id()).approval,
@@ -5333,7 +5389,7 @@ mod tests {
             .pending_checkpoint_restore
             .unwrap();
         assert_eq!(pending.checkpoint_id, fork.member);
-        assert_eq!(pending.source_workspace, "dev");
+        assert_eq!(pending.source_computer, "dev");
         assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
         assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
     }
@@ -5361,7 +5417,7 @@ mod tests {
             .to_string()
             .contains("computer-use setting"));
         assert_eq!(record_ids(&paths), [ID]);
-        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        assert_eq!(read_metadata(&paths.metadata).unwrap().computers.len(), 1);
         assert!(assignments.github.lock().unwrap().is_empty());
         assert!(assignments.secrets.lock().unwrap().is_empty());
         assert_eq!(
@@ -5393,9 +5449,9 @@ mod tests {
         assert!(failure.starts_with("Directory sync failed."), "{failure}");
         let metadata = read_metadata(&paths.metadata).unwrap();
         let child = metadata
-            .machines
+            .computers
             .iter()
-            .find(|machine| machine.name() == "branch")
+            .find(|configuration| configuration.name() == "branch")
             .unwrap();
         let record = load(&paths, child.id()).unwrap();
         assert_eq!(
@@ -5464,7 +5520,7 @@ mod tests {
             .to_string();
             assert_eq!(failure, expected);
             assert_eq!(record_ids(&paths), [ID]);
-            assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+            assert_eq!(read_metadata(&paths.metadata).unwrap().computers.len(), 1);
             assert!(assignments.github.lock().unwrap().is_empty());
             assert!(assignments.secrets.lock().unwrap().is_empty());
         }
@@ -5513,9 +5569,12 @@ mod tests {
             "branch",
         );
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(result.unwrap_err().to_string().contains("sandbox settings"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("computer settings"));
         assert_eq!(record_ids(&paths), [ID]);
-        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        assert_eq!(read_metadata(&paths.metadata).unwrap().computers.len(), 1);
         assert!(assignments.github.lock().unwrap().is_empty());
         assert!(assignments.secrets.lock().unwrap().is_empty());
         assert_eq!(
@@ -5557,7 +5616,7 @@ mod tests {
     }
 
     #[test]
-    fn current_state_fork_captures_under_the_source_lane_and_writes_under_the_computer_lane() {
+    fn current_state_fork_captures_under_the_source_lane_and_writes_under_the_device_lane() {
         let _test_state = crate::test_support::global_state();
         struct LaneRunner {
             gate: &'static super::super::operation_gate::OperationGate,
@@ -5572,11 +5631,15 @@ mod tests {
                 _: Duration,
             ) -> Result<CommandOutput, RuntimeError> {
                 let running = self.gate.snapshot().running;
-                let lane = running.first().and_then(|entry| entry.vm_id.clone());
-                // Another VM can start while this lane is held only if it is not computer-wide.
-                let other_vm_free = std::thread::scope(|scope| {
+                let lane = running.first().and_then(|entry| entry.computer_id.clone());
+                // Another computer can start while this lane is held only if it is not device-wide.
+                let other_computer_free = std::thread::scope(|scope| {
                     scope
-                        .spawn(|| self.gate.try_vm("other-vm", "other", "Starting").is_ok())
+                        .spawn(|| {
+                            self.gate
+                                .try_computer("other-computer", "other", "Starting")
+                                .is_ok()
+                        })
                         .join()
                         .unwrap()
                 });
@@ -5588,7 +5651,7 @@ mod tests {
                 self.lanes
                     .lock()
                     .unwrap()
-                    .push((command.clone(), lane, other_vm_free));
+                    .push((command.clone(), lane, other_computer_free));
                 let stdout = match command.as_str() {
                     "inspect" => serde_json::json!({"name":"dev","status":"Running","config":{
                         "labels":{"silo.managed":"true","silo.machine-id":ID},
@@ -5634,37 +5697,37 @@ mod tests {
         );
         assert!(
             create.2,
-            "other sandboxes are not queued behind the capture"
+            "other computers are not queued behind the capture"
         );
         let last = lanes.last().unwrap();
         assert_eq!(last.0, "snapshot list");
         assert_eq!(
             last.1, None,
-            "the inventory write holds the computer-wide lane"
+            "the inventory write holds the device-wide lane"
         );
         assert!(!last.2);
         assert!(read_metadata(&paths.metadata)
             .unwrap()
-            .machines
+            .computers
             .iter()
-            .any(|machine| machine.name() == "branch"));
+            .any(|configuration| configuration.name() == "branch"));
     }
 
     /// A fake native store that enforces MicroSandbox's children and head guards.
     struct Store {
         members: Mutex<Vec<(String, String, String, Option<String>)>>,
         heads: Mutex<HashMap<String, String>>,
-        sandboxes: Vec<(&'static str, Option<&'static str>)>,
+        computers: Vec<(&'static str, Option<&'static str>)>,
         fail_create_after_publish: bool,
         fail_remove: bool,
         calls: Mutex<Vec<Vec<String>>>,
     }
     impl Store {
-        fn new(sandboxes: Vec<(&'static str, Option<&'static str>)>) -> Self {
+        fn new(computers: Vec<(&'static str, Option<&'static str>)>) -> Self {
             Self {
                 members: Mutex::new(Vec::new()),
                 heads: Mutex::new(HashMap::new()),
-                sandboxes,
+                computers,
                 fail_create_after_publish: false,
                 fail_remove: false,
                 calls: Mutex::new(Vec::new()),
@@ -5713,15 +5776,15 @@ mod tests {
                 })
             };
             match (args[0].as_str(), args.get(1).map(String::as_str)) {
-                ("list", _) => ok(serde_json::Value::Array(self.sandboxes.iter().map(|(name, _)| serde_json::json!({"name": name})).collect()).to_string()),
+                ("list", _) => ok(serde_json::Value::Array(self.computers.iter().map(|(name, _)| serde_json::json!({"name": name})).collect()).to_string()),
                 ("inspect", Some(name)) => {
-                    let workspace_id = read_metadata(&paths.metadata)?.machines.into_iter()
-                        .find(|machine| machine.name() == name)
-                        .map(|machine| machine.id().to_owned())
+                    let computer_id = read_metadata(&paths.metadata)?.computers.into_iter()
+                        .find(|configuration| configuration.name() == name)
+                        .map(|configuration| configuration.id().to_owned())
                         .unwrap_or_else(|| ID.into());
-                    let parent = self.sandboxes.iter().find(|(listed, _)| listed == &name).and_then(|(_, parent)| *parent);
+                    let parent = self.computers.iter().find(|(listed, _)| listed == &name).and_then(|(_, parent)| *parent);
                     ok(serde_json::json!({"name": name, "status": "Running", "config": {
-                        "labels": {"silo.managed": "true", "silo.machine-id": workspace_id},
+                        "labels": {"silo.managed": "true", "silo.machine-id": computer_id},
                         "mounts": [{"guest": "/workspace", "type": "Owned", "storage": {"kind": "disk", "capacity_mib": 1024}}],
                         "network": {"policy": {"default_egress": "deny", "default_ingress": "allow", "rules": []}},
                         "snapshot_parent": parent,
@@ -5792,16 +5855,16 @@ mod tests {
         }
     }
 
-    /// `dev` with checkpoints; `fork` adds a second configured sandbox and its record.
+    /// `dev` with checkpoints; `fork` adds a second configured computer and its record.
     fn delete_fixture(
         directory: &tempfile::TempDir,
         entries: Vec<Checkpoint>,
         fork: Option<Record>,
     ) -> RuntimePaths {
         let paths = paths(directory);
-        let mut machines = vec![machine()];
+        let mut computers = vec![computer_configuration()];
         if let Some(record) = &fork {
-            let MachineConfiguration::Vm {
+            let ComputerConfiguration {
                 cpus,
                 max_cpus,
                 memory_gib,
@@ -5810,11 +5873,8 @@ mod tests {
                 runtime_storage_gib,
                 desktop,
                 ..
-            } = machine()
-            else {
-                unreachable!()
-            };
-            machines.push(MachineConfiguration::Vm {
+            } = computer_configuration();
+            computers.push(ComputerConfiguration {
                 id: FORK_ID.into(),
                 name: "branch".into(),
                 cpus,
@@ -5829,9 +5889,9 @@ mod tests {
         }
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines,
+                computers,
             },
         )
         .unwrap();
@@ -5842,12 +5902,12 @@ mod tests {
         paths
     }
 
-    fn cursor(paths: &RuntimePaths, sandbox: &str, snapshot: &str) {
-        let directory = paths.home.join("sandboxes").join(sandbox);
+    fn cursor(paths: &RuntimePaths, computer: &str, snapshot: &str) {
+        let directory = paths.home.join("sandboxes").join(computer);
         fs::create_dir_all(&directory).unwrap();
         fs::write(
             directory.join("snapshot-lineage.json"),
-            serde_json::json!({"sandbox_id": 7, "snapshot_id": snapshot}).to_string(),
+            serde_json::json!({"computer_id": 7, "snapshot_id": snapshot}).to_string(),
         )
         .unwrap();
     }
@@ -5896,8 +5956,8 @@ mod tests {
         let used = HashMap::from([(
             ("dev".to_owned(), B.to_owned()),
             vec![native::Use {
-                workspace_id: FORK_ID.into(),
-                sandbox: "branch".into(),
+                computer_id: FORK_ID.into(),
+                computer: "branch".into(),
                 purpose: native::Purpose::PendingStart,
             }],
         )]);
@@ -5997,7 +6057,7 @@ mod tests {
         fork.snapshot_group = Some("dev".into());
         fork.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: A.into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         let paths = delete_fixture(
@@ -6032,13 +6092,13 @@ mod tests {
             "{failure}"
         );
 
-        // This sandbox restarts from it, or a Restore is unfinished.
+        // This computer restarts from it, or a Restore is unfinished.
         let directory = tempfile::tempdir().unwrap();
         let paths = delete_fixture(&directory, vec![entry(A, "Before deploy", "manual")], None);
         let mut record = load(&paths, ID).unwrap();
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: A.into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         save(&paths, ID, &record).unwrap();
@@ -6129,7 +6189,7 @@ mod tests {
                 Ok(CommandOutput {
                     stdout: serde_json::to_string(
                         &(0..self.count)
-                            .map(|index| serde_json::json!({"name": format!("sandbox-{index}")}))
+                            .map(|index| serde_json::json!({"name": format!("computer-{index}")}))
                             .collect::<Vec<_>>(),
                     )
                     .unwrap(),
@@ -6160,7 +6220,7 @@ mod tests {
                 let usage = usage_with(&fleet, &paths, ID).unwrap();
                 let elapsed = started.elapsed();
                 let calls = fleet.store.calls.lock().unwrap();
-                eprintln!("usage: sandboxes={count} entry={has_entry} survey_calls={} survey={baseline:?} usage_calls={} usage={elapsed:?}", count + 2, calls.len());
+                eprintln!("usage: computers={count} entry={has_entry} survey_calls={} survey={baseline:?} usage_calls={} usage={elapsed:?}", count + 2, calls.len());
                 assert_eq!(usage.total_bytes, Some(0));
                 assert_eq!(usage.checkpoints.len(), usize::from(has_entry));
                 measured_calls.push((calls.len(), usize::from(has_entry)));
@@ -6189,7 +6249,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut pending = Record::default();
         pending.pending_checkpoint_restore = Some(PendingRestore {
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             checkpoint_id: A.into(),
             state: "full".into(),
         });
@@ -6296,7 +6356,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_sandbox_removes_members_only_it_used_and_keeps_what_a_fork_builds_on() {
+    fn deleting_a_computer_removes_members_only_it_used_and_keeps_what_a_fork_builds_on() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut started = Record::default();
@@ -6310,12 +6370,12 @@ mod tests {
         let metadata = read_metadata(&paths.metadata).unwrap();
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: metadata
-                    .machines
+                computers: metadata
+                    .computers
                     .into_iter()
-                    .filter(|machine| machine.id() != ID)
+                    .filter(|configuration| configuration.id() != ID)
                     .collect(),
             },
         )
@@ -6337,7 +6397,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_capture_removes_its_published_member_unless_the_sandbox_builds_on_it() {
+    fn a_failed_capture_removes_its_published_member_unless_the_computer_builds_on_it() {
         let _test_state = crate::test_support::global_state();
         for builds_on_it in [false, true] {
             let directory = tempfile::tempdir().unwrap();
@@ -6433,12 +6493,12 @@ mod tests {
         let metadata = read_metadata(&paths.metadata).unwrap();
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: metadata
-                    .machines
+                computers: metadata
+                    .computers
                     .into_iter()
-                    .filter(|machine| machine.id() != ID)
+                    .filter(|configuration| configuration.id() != ID)
                     .collect(),
             },
         )
@@ -6449,13 +6509,13 @@ mod tests {
         assert_eq!(store.names(), [A]);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![],
+                computers: vec![],
             },
         )
         .unwrap();
-        store.sandboxes.clear();
+        store.computers.clear();
         remove_deleted_snapshots(&store, &paths, FORK_ID, "branch").unwrap();
         assert!(store.names().is_empty());
     }
@@ -6471,12 +6531,12 @@ mod tests {
         let metadata = read_metadata(&paths.metadata).unwrap();
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: metadata
-                    .machines
+                computers: metadata
+                    .computers
                     .into_iter()
-                    .filter(|machine| machine.id() != ID)
+                    .filter(|configuration| configuration.id() != ID)
                     .collect(),
             },
         )
@@ -6498,9 +6558,9 @@ mod tests {
         let paths = delete_fixture(&directory, vec![entry(A, "Delete", "manual")], None);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![],
+                computers: vec![],
             },
         )
         .unwrap();
@@ -6524,9 +6584,9 @@ mod tests {
         let paths = delete_fixture(&directory, vec![entry(A, "Delete", "manual")], None);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![],
+                computers: vec![],
             },
         )
         .unwrap();
@@ -6623,7 +6683,7 @@ mod tests {
         let guard = runner
             .gate
             .kind(super::super::operation_gate::OperationKind::CheckpointCapture)
-            .vm(ID, "dev", "Creating checkpoint")
+            .computer(ID, "dev", "Creating checkpoint")
             .unwrap();
         guard.allow_cancel();
         capture_with(&runner, &paths, ID, "Late cancel", "manual").unwrap();
@@ -6635,7 +6695,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cancelled_full_capture_resumes_the_vm_it_left_paused() {
+    fn a_cancelled_full_capture_resumes_the_computer_it_left_paused() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
@@ -6643,7 +6703,7 @@ mod tests {
         let guard = runner
             .gate
             .kind(super::super::operation_gate::OperationKind::CheckpointCapture)
-            .vm(ID, "dev", "Creating checkpoint")
+            .computer(ID, "dev", "Creating checkpoint")
             .unwrap();
         guard.allow_cancel();
         let failure = capture_with(&runner, &paths, ID, "Cancelled", "manual").unwrap_err();
@@ -6665,7 +6725,8 @@ mod tests {
     }
 
     #[test]
-    fn a_vm_that_cannot_resume_after_a_failed_recovery_capture_is_stopped_instead_of_left_paused() {
+    fn a_computer_that_cannot_resume_after_a_failed_recovery_capture_is_stopped_instead_of_left_paused(
+    ) {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
@@ -6686,7 +6747,7 @@ mod tests {
     }
 
     #[test]
-    fn abandoning_an_unfinished_restore_resumes_the_paused_vm_and_keeps_its_state() {
+    fn abandoning_an_unfinished_restore_resumes_the_paused_computer_and_keeps_its_state() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("capturing", true)));
@@ -6705,7 +6766,7 @@ mod tests {
             .iter()
             .any(|call| call[0] == "remove"));
 
-        // A secured Restore whose original VM was already removed cannot be abandoned.
+        // A secured Restore whose original computer was already removed cannot be abandoned.
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("secured", true)));
         let runner = journal_runner("Stopped", "");
@@ -6738,9 +6799,13 @@ mod tests {
             view,
             serde_json::json!({"checkpointId": "c000000000000000000000000000000", "checkpointName": "Selected", "phase": "capturing"})
         );
-        let failure = start_pending(&journal_runner("Running", ""), &paths, &machine())
-            .unwrap_err()
-            .to_string();
+        let failure = start_pending(
+            &journal_runner("Running", ""),
+            &paths,
+            &computer_configuration(),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(failure.contains("to “Selected” is unfinished"), "{failure}");
 
         // Restoring a different checkpoint names the unfinished one.
@@ -6767,7 +6832,7 @@ mod tests {
         let mut record = load(&paths, ID).unwrap();
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         save(&paths, ID, &record).unwrap();
@@ -6779,22 +6844,22 @@ mod tests {
     }
 
     #[test]
-    fn quit_releases_a_vm_an_unfinished_restore_left_paused() {
+    fn quit_releases_a_computer_an_unfinished_restore_left_paused() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("capturing", true)));
         let runner = journal_runner("Paused", "");
-        release_paused_restore(&runner, &paths, &machine());
+        release_paused_restore(&runner, &paths, &computer_configuration());
         assert_eq!(*runner.state.lock().unwrap(), "Running");
         // Without an unfinished Restore, Quit's own handling applies.
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
         let runner = journal_runner("Paused", "");
-        release_paused_restore(&runner, &paths, &machine());
+        release_paused_restore(&runner, &paths, &computer_configuration());
         assert_eq!(*runner.state.lock().unwrap(), "Paused");
     }
 
-    /// A restore attempt whose VM runs but never verifies, then is stopped (as Quit does).
+    /// A restore attempt whose computer runs but never verifies, then is stopped (as Quit does).
     struct AttemptRunner {
         state: Mutex<&'static str>,
         exists: Mutex<bool>,
@@ -6827,12 +6892,12 @@ mod tests {
                     if self.restore_ok { ok(String::new()) } else { Err(RuntimeError::TimedOut { operation: "restore".into() }) }
                 }
                 "inspect" if *self.exists.lock().unwrap() => ok(serde_json::json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{
-                    // No SILO_GITHUB secret: this VM never passes restore verification.
+                    // No SILO_GITHUB secret: this computer never passes restore verification.
                     "labels":{"silo.managed":"true","silo.machine-id":ID,"silo.restore-attempt":self.attempt.lock().unwrap().clone()},
                     "resources":{"max_cpus":1,"max_memory_mib":1024},
                     "network":{"policy":{"default_egress":"deny","default_ingress":"allow","rules":[]}}
                 }}).to_string()),
-                "inspect" => Err(RuntimeError::Unavailable("sandbox not found: dev".into())),
+                "inspect" => Err(RuntimeError::Unavailable("computer not found: dev".into())),
                 "start" => {
                     *self.state.lock().unwrap() = "Running";
                     ok(String::new())
@@ -6846,9 +6911,9 @@ mod tests {
         let paths = paths(directory);
         write_metadata(
             &paths.metadata,
-            &MachineConfigurationRequest {
+            &ComputerConfigurationRequest {
                 schema_version: 1,
-                machines: vec![machine()],
+                computers: vec![computer_configuration()],
             },
         )
         .unwrap();
@@ -6856,7 +6921,7 @@ mod tests {
         record.snapshot_group = Some("dev".into());
         record.pending_checkpoint_restore = Some(PendingRestore {
             checkpoint_id: "c000000000000000000000000000000".into(),
-            source_workspace: "dev".into(),
+            source_computer: "dev".into(),
             state: "full".into(),
         });
         record.desired_network_policy =
@@ -6878,13 +6943,13 @@ mod tests {
                 attempt: Mutex::new(None),
                 calls: Mutex::new(Vec::new()),
             };
-            start_pending(&runner, &paths, &machine()).unwrap_err();
+            start_pending(&runner, &paths, &computer_configuration()).unwrap_err();
             let stored = load(&paths, ID).unwrap();
             assert!(stored.restore_attempt_ran, "restore_ok={restore_ok}");
-            // Quit stopped the unverified VM; the user then retries Start.
+            // Quit stopped the unverified computer; the user then retries Start.
             *runner.state.lock().unwrap() = "Stopped";
             runner.calls.lock().unwrap().clear();
-            start_pending(&runner, &paths, &machine()).unwrap();
+            start_pending(&runner, &paths, &computer_configuration()).unwrap();
             let calls = runner.calls.lock().unwrap();
             assert!(
                 !calls
@@ -6917,19 +6982,24 @@ mod tests {
                     "snapshot" => Ok(CommandOutput { stdout: serde_json::json!([{"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}]).to_string(), stderr: String::new() }),
                     "list" => Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() }),
                     "restore" => Err(RuntimeError::Failed { operation: "restore".into(), exit_code: Some(1), detail: "incomplete".into() }),
-                    _ => Err(RuntimeError::Unavailable("sandbox not found: dev".into())),
+                    _ => Err(RuntimeError::Unavailable("computer not found: dev".into())),
                 }
             }
         }
         let directory = tempfile::tempdir().unwrap();
         let paths = pending_fixture(&directory);
-        start_pending(&NeverRan(Mutex::new(Vec::new())), &paths, &machine()).unwrap_err();
+        start_pending(
+            &NeverRan(Mutex::new(Vec::new())),
+            &paths,
+            &computer_configuration(),
+        )
+        .unwrap_err();
         assert!(!load(&paths, ID).unwrap().restore_attempt_ran);
     }
 
-    /// Real checkpoint Restore and Fork against the bundled runtime: a running VM is
+    /// Real checkpoint Restore and Fork against the bundled runtime: a running computer is
     /// captured as a full checkpoint, changed, forked (the fork starts from RAM), then
-    /// restored in place. Uses only a disposable /tmp home and `e2e-*` sandboxes. Run
+    /// restored in place. Uses only a disposable /tmp home and `e2e-*` computers. Run
     /// with `SILO_LIVE_TEST_CONFIRM`, `SILO_TEST_MSB` and `SILO_TEST_LIBKRUNFW`.
     #[test]
     #[ignore = "requires the packaged runtime and hardware virtualization"]
@@ -6948,7 +7018,7 @@ mod tests {
             library: std::path::PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").unwrap()),
             home: directory.path().join("runtime"),
             storage_home: None,
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         struct Cleanup<'a>(&'a RuntimePaths);
@@ -6996,22 +7066,22 @@ mod tests {
             .stdout
         };
 
-        let machine =
-            super::super::create_disposable_test_machine(&paths, "e2e-ck-source").unwrap();
+        let configuration =
+            super::super::create_disposable_test_computer(&paths, "e2e-ck-source").unwrap();
         run(&["start", "e2e-ck-source"]);
         write("e2e-ck-source", "before");
-        let checkpoint = capture_for_test(&paths, machine.id(), "Milestone").unwrap();
-        let record = load(&paths, machine.id()).unwrap();
+        let checkpoint = capture_for_test(&paths, configuration.id(), "Milestone").unwrap();
+        let record = load(&paths, configuration.id()).unwrap();
         assert_eq!(record.checkpoints[0].scope, "full");
         write("e2e-ck-source", "after");
         assert_eq!(read("e2e-ck-source").trim(), "after:after");
 
-        // Fork the checkpoint into a new, stopped sandbox and start it from RAM.
+        // Fork the checkpoint into a new, stopped computer and start it from RAM.
         let assignments = FakeAssignments::new(&[]);
         let fork = fork_source(
             &ProcessRunner,
             &paths,
-            machine.id(),
+            configuration.id(),
             Some(&checkpoint),
             "e2e-ck-fork",
         )
@@ -7025,16 +7095,16 @@ mod tests {
         run(&["stop", "e2e-ck-fork"]);
 
         // Restore the checkpoint in place.
-        // Restore leaves the VM stopped with the checkpoint pending; Start resumes it.
+        // Restore leaves the computer stopped with the checkpoint pending; Start resumes it.
         run(&["stop", "e2e-ck-source"]);
-        restore_with(&ProcessRunner, &paths, machine.id(), &checkpoint).unwrap();
+        restore_with(&ProcessRunner, &paths, configuration.id(), &checkpoint).unwrap();
         super::super::start_disposable_test_import(&paths, "e2e-ck-source").unwrap();
         assert_eq!(read("e2e-ck-source").trim(), "before:before");
         eprintln!("Verified live checkpoint fork and restore.");
     }
 
-    /// A built-in VM's whole life against the real runtime: restart, stop and start
-    /// (the app's own actions), then a checkpoint of the running VM, a fork of it and
+    /// A built-in computer's whole life against the real runtime: restart, stop and start
+    /// (the app's own actions), then a checkpoint of the running computer, a fork of it and
     /// an in-place restore. Every boot must end with the desktop session running and
     /// computer use ready, the ChatGPT folder mounted read-only, and the approval mode
     /// kept. Needs the same inputs as the other built-in live tests (see
@@ -7046,17 +7116,17 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let mut fixture = Fixture::new("silo-life-", None, true);
         let (source, fork_name) = ("e2e-life-src", "e2e-life-fork");
-        let machine = fixture.create(source);
+        let configuration = fixture.create(source);
         fixture.track(fork_name);
         crate::computer_use::apply_approval_with(
             std::sync::Arc::new(ProcessRunner),
             &fixture.paths,
-            &machine,
+            &configuration,
             crate::computer_use::Approval::Auto,
             false,
         )
         .unwrap();
-        super::super::start_disposable_test_machine(&fixture.paths, source).unwrap();
+        super::super::start_disposable_test_computer(&fixture.paths, source).unwrap();
         let checks = |name: &str, label: &str| {
             let (status, elapsed) = fixture.wait_ready(name, label);
             eprintln!("RESULT {label}: ready {}s after start", elapsed.as_secs());
@@ -7073,7 +7143,7 @@ mod tests {
         let stopped = fixture.status(source);
         assert_eq!(stopped["sessionState"], "stopped", "{stopped}");
         assert_eq!(stopped["computerUse"]["approval"], "auto", "{stopped}");
-        super::super::start_disposable_test_machine(&fixture.paths, source).unwrap();
+        super::super::start_disposable_test_computer(&fixture.paths, source).unwrap();
         checks(source, "stop-start");
 
         let write = |name: &str, value: &str| {
@@ -7091,18 +7161,21 @@ mod tests {
                 .unwrap()
         };
         write(source, "before");
-        let checkpoint = capture_for_test(&fixture.paths, machine.id(), "Milestone").unwrap();
+        let checkpoint = capture_for_test(&fixture.paths, configuration.id(), "Milestone").unwrap();
         assert_eq!(
-            load(&fixture.paths, machine.id()).unwrap().checkpoints[0].scope,
+            load(&fixture.paths, configuration.id())
+                .unwrap()
+                .checkpoints[0]
+                .scope,
             "full"
         );
         write(source, "after");
 
-        // Fork the checkpoint into a new VM and boot it from RAM.
+        // Fork the checkpoint into a new computer and boot it from RAM.
         let fork = fork_source(
             &ProcessRunner,
             &fixture.paths,
-            machine.id(),
+            configuration.id(),
             Some(&checkpoint),
             fork_name,
         )
@@ -7123,7 +7196,13 @@ mod tests {
 
         // Restore the checkpoint in place; Start resumes it.
         fixture.stop(source);
-        restore_with(&ProcessRunner, &fixture.paths, machine.id(), &checkpoint).unwrap();
+        restore_with(
+            &ProcessRunner,
+            &fixture.paths,
+            configuration.id(),
+            &checkpoint,
+        )
+        .unwrap();
         super::super::start_disposable_test_import(&fixture.paths, source).unwrap();
         checks(source, "restore");
         assert_eq!(read(source), "before");
@@ -7131,7 +7210,7 @@ mod tests {
         eprintln!("Verified the built-in desktop through restart, stop, start, fork and restore.");
     }
 
-    /// A VM created from the previous (v3) guest image is unchanged by the built-in
+    /// A computer created from the previous (v3) guest image is unchanged by the built-in
     /// desktop: no ChatGPT mount, no automatic desktop, no computer-use helper, and its
     /// ordinary flows (restart, stop, start, checkpoint, fork, restore) still work.
     /// `SILO_TEST_V3_GUEST_IMAGE` names a directory with the v3 manifest.json and
@@ -7139,17 +7218,20 @@ mod tests {
     /// the built-in live tests.
     #[test]
     #[ignore = "requires the v3 guest image, hardware virtualization and the packaged runtime"]
-    fn live_pre_v4_vm_gets_no_mount_no_desktop_and_keeps_its_flows() {
+    fn live_pre_v4_computer_gets_no_mount_no_desktop_and_keeps_its_flows() {
         use crate::test_support::computer_use_live::Fixture;
         let _test_state = crate::test_support::global_state();
         let image = std::path::PathBuf::from(std::env::var("SILO_TEST_V3_GUEST_IMAGE").unwrap());
         let mut fixture = Fixture::new("silo-v3-", Some(image), false);
         let (source, fork_name) = ("e2e-v3-src", "e2e-v3-fork");
-        let machine = fixture.create(source);
+        let configuration = fixture.create(source);
         fixture.track(fork_name);
-        assert!(!crate::computer_use::is_built_in(&machine), "{machine:?}");
-        assert!(machine_desktop_absent(&machine), "{machine:?}");
-        let inspected = inspect_workspace(&ProcessRunner, &fixture.paths, source).unwrap();
+        assert!(
+            !crate::computer_use::is_built_in(&configuration),
+            "{configuration:?}"
+        );
+        assert!(computer_desktop_absent(&configuration), "{configuration:?}");
+        let inspected = inspect_computer(&ProcessRunner, &fixture.paths, source).unwrap();
         assert!(!has_chatgpt_mount(&inspected.config));
         let checks = |label: &str| {
             let report = fixture.exec_status(
@@ -7168,14 +7250,14 @@ mod tests {
             assert!(status["computerUse"].is_null(), "{label}: {status}");
             assert_ne!(status["sessionState"], "running", "{label}: {status}");
         };
-        super::super::start_disposable_test_machine(&fixture.paths, source).unwrap();
+        super::super::start_disposable_test_computer(&fixture.paths, source).unwrap();
         std::thread::sleep(Duration::from_secs(45));
         checks("fresh");
         super::super::disposable_test_action(&fixture.paths, source, "restart").unwrap();
         std::thread::sleep(Duration::from_secs(30));
         checks("restart");
         super::super::disposable_test_action(&fixture.paths, source, "stop").unwrap();
-        super::super::start_disposable_test_machine(&fixture.paths, source).unwrap();
+        super::super::start_disposable_test_computer(&fixture.paths, source).unwrap();
         std::thread::sleep(Duration::from_secs(30));
         checks("stop-start");
 
@@ -7194,12 +7276,12 @@ mod tests {
                 .unwrap()
         };
         write(source, "before");
-        let checkpoint = capture_for_test(&fixture.paths, machine.id(), "Milestone").unwrap();
+        let checkpoint = capture_for_test(&fixture.paths, configuration.id(), "Milestone").unwrap();
         write(source, "after");
         let fork = fork_source(
             &ProcessRunner,
             &fixture.paths,
-            machine.id(),
+            configuration.id(),
             Some(&checkpoint),
             fork_name,
         )
@@ -7215,20 +7297,26 @@ mod tests {
         super::super::start_disposable_test_import(&fixture.paths, fork_name).unwrap();
         assert_eq!(read(fork_name), "before");
         assert_eq!(read(source), "after");
-        let fork_machine = fixture.machine(fork_name);
-        assert!(!crate::computer_use::is_built_in(&fork_machine));
-        let inspected = inspect_workspace(&ProcessRunner, &fixture.paths, fork_name).unwrap();
+        let fork_computer = fixture.computer_configuration(fork_name);
+        assert!(!crate::computer_use::is_built_in(&fork_computer));
+        let inspected = inspect_computer(&ProcessRunner, &fixture.paths, fork_name).unwrap();
         assert!(!has_chatgpt_mount(&inspected.config));
         fixture.stop(fork_name);
         fixture.stop(source);
-        restore_with(&ProcessRunner, &fixture.paths, machine.id(), &checkpoint).unwrap();
+        restore_with(
+            &ProcessRunner,
+            &fixture.paths,
+            configuration.id(),
+            &checkpoint,
+        )
+        .unwrap();
         super::super::start_disposable_test_import(&fixture.paths, source).unwrap();
         assert_eq!(read(source), "before");
-        let inspected = inspect_workspace(&ProcessRunner, &fixture.paths, source).unwrap();
+        let inspected = inspect_computer(&ProcessRunner, &fixture.paths, source).unwrap();
         assert!(!has_chatgpt_mount(&inspected.config));
         fixture.stop(source);
         eprintln!(
-            "Verified a pre-v4 VM through restart, stop, start, checkpoint, fork and restore."
+            "Verified a pre-v4 computer through restart, stop, start, checkpoint, fork and restore."
         );
     }
 
@@ -7240,7 +7328,7 @@ mod tests {
         })
     }
 
-    fn machine_desktop_absent(machine: &crate::runtime::MachineConfiguration) -> bool {
-        crate::desktop::configuration(machine).is_none()
+    fn computer_desktop_absent(configuration: &crate::runtime::ComputerConfiguration) -> bool {
+        crate::desktop::configuration(configuration).is_none()
     }
 }

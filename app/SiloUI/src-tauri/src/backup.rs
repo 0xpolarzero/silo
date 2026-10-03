@@ -17,7 +17,7 @@ use std::{
 };
 
 const MAGIC: &[u8; 16] = b"SILO-BACKUP\0\0\0\0\0";
-const FORMAT_VERSION: u32 = 3;
+const FORMAT_VERSION: u32 = 4;
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_COMMAND_OUTPUT: usize = 32 * 1024;
 const MAX_STRUCTURED_OUTPUT: usize = 1024 * 1024;
@@ -30,7 +30,7 @@ const TERMINATE_GRACE: Duration = Duration::from_secs(10);
 const MIN_TRANSFER_BYTES_PER_SECOND: u64 = 16 * 1024 * 1024;
 /// A snapshot archive holds a handful of descriptors per snapshot, its disk
 /// layers, image blobs and 32 MiB memory packs; a quarter million entries is
-/// far beyond any real sandbox chain.
+/// far beyond any real computer chain.
 const MAX_SNAPSHOT_ENTRIES: u64 = 256 * 1024;
 /// Captures advance the source lineage and cannot be safely deleted automatically.
 /// Bound hidden state-export members while allowing reuse of an existing checkpoint.
@@ -201,7 +201,7 @@ fn run_msb_process(
                 let what = if arguments.first().is_some_and(|arg| arg == "snapshot") {
                     "checkpoint index"
                 } else {
-                    "sandbox list"
+                    "computer list"
                 };
                 return Err(BackupError::InvalidRequest(format!(
                     "The runtime {what} exceeds Silo's 1 MiB size safety limit."
@@ -357,7 +357,7 @@ pub(crate) enum BackupError {
         operation: String,
         detail: String,
     },
-    /// A sandbox name is already taken.
+    /// A computer name is already taken.
     Conflict(String),
     /// A file already exists at the given path.
     FileConflict(String),
@@ -384,7 +384,7 @@ impl std::fmt::Display for BackupError {
             Self::CommandFailed { operation, detail } => {
                 write!(formatter, "{operation} failed: {detail}")
             }
-            Self::Conflict(name) => write!(formatter, "A sandbox named {name} already exists."),
+            Self::Conflict(name) => write!(formatter, "A computer named {name} already exists."),
             Self::FileConflict(path) => write!(formatter, "A file already exists at {path}."),
             Self::ImportGroupConflict(group) => write!(
                 formatter,
@@ -422,9 +422,9 @@ pub(crate) struct BackupSource {
     pub(crate) snapshot_group: String,
     pub(crate) was_running: bool,
     pub(crate) runtime_config: Value,
-    pub(crate) machine_config: Value,
+    pub(crate) computer_configuration: Value,
     /// When set, export an already-captured checkpoint member from
-    /// `snapshot_group` instead of capturing the sandbox's current state.
+    /// `snapshot_group` instead of capturing the computer's current state.
     /// `was_running` is irrelevant on this path (no new capture is taken).
     pub(crate) existing_member: Option<String>,
 }
@@ -440,14 +440,14 @@ pub(crate) struct BackupResult {
     pub(crate) created_at_ms: u64,
     pub(crate) destination: PathBuf,
     pub(crate) size_bytes: u64,
-    pub(crate) sandboxes: Vec<String>,
+    pub(crate) computers: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ArchiveInspection {
     pub(crate) created_at_ms: u64,
     pub(crate) size_bytes: u64,
-    pub(crate) sandboxes: Vec<String>,
+    pub(crate) computers: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -462,7 +462,7 @@ pub(crate) struct PreparedRestore {
     pub(crate) source_name: String,
     pub(crate) new_name: String,
     pub(crate) runtime_config: Value,
-    pub(crate) machine_config: Value,
+    pub(crate) computer_configuration: Value,
     pub(crate) snapshot_group: String,
     pub(crate) snapshot_member: String,
     _stage: tempfile::TempDir,
@@ -474,7 +474,7 @@ struct PackageManifest {
     schema_version: u32,
     created_at_ms: u64,
     runtime: RuntimeManifest,
-    sandboxes: Vec<PackageSandbox>,
+    computers: Vec<PackageComputer>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -488,13 +488,13 @@ struct RuntimeManifest {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PackageSandbox {
+struct PackageComputer {
     name: String,
     runtime_config: Value,
-    machine_config: Value,
+    computer_configuration: Value,
     payload_size: u64,
     payload_sha256: String,
-    /// Format 3 reserves this list for separate disk payloads. The workspace
+    /// Format 3 reserves this list for separate disk payloads. The computer
     /// disk travels inside the MicroSandbox snapshot, so it must stay empty.
     volumes: Vec<Value>,
 }
@@ -508,7 +508,7 @@ pub(crate) struct ImportGroupGuard<'a, R: MsbRunner> {
 }
 
 impl<R: MsbRunner> ImportGroupGuard<'_, R> {
-    /// The new sandbox now owns the group.
+    /// The new computer now owns the group.
     pub(crate) fn keep(mut self) {
         self.keep = true;
     }
@@ -568,7 +568,7 @@ impl<R: MsbRunner> BackupService<R> {
 
     /// A command that reads or writes `bytes` of disk data gets the base
     /// timeout plus time for that data at a slow-disk rate, so a
-    /// multi-hundred-GB workspace on slow storage is not killed at one hour.
+    /// multi-hundred-GB computer on slow storage is not killed at one hour.
     fn data_timeout(&self, bytes: u64) -> Duration {
         self.command_timeout
             .saturating_add(Duration::from_secs(bytes / MIN_TRANSFER_BYTES_PER_SECOND))
@@ -648,14 +648,15 @@ impl<R: MsbRunner> BackupService<R> {
 
         for (index, source) in request.sources.iter().enumerate() {
             check_cancelled(cancellation)?;
-            validate_sandbox_name(&source.name)?;
+            validate_computer_name(&source.name)?;
             let mut runtime_config = source.runtime_config.clone();
-            let mut machine_config = source.machine_config.clone();
+            let mut computer_configuration = source.computer_configuration.clone();
             portable_export_network(&source.name, &mut runtime_config)?;
-            validate_export_configs(&source.name, &runtime_config, &machine_config)?;
+            validate_export_configs(&source.name, &runtime_config, &computer_configuration)?;
             let snapshot_group = source.snapshot_group.clone();
-            // Capture, verification and saving read the sandbox's disks.
-            let data_timeout = self.data_timeout(declared_storage_bytes(&source.machine_config));
+            // Capture, verification and saving read the computer's disks.
+            let data_timeout =
+                self.data_timeout(declared_storage_bytes(&source.computer_configuration));
             let flush = if source.was_running {
                 "required"
             } else {
@@ -663,19 +664,23 @@ impl<R: MsbRunner> BackupService<R> {
             };
             let capture_result = (|| {
                 // A checkpoint export reuses an already-captured, immutable member;
-                // a state export captures the sandbox's current disk first.
+                // a state export captures the computer's current disk first.
                 let snapshot = if let Some(member) = &source.existing_member {
                     let snapshot =
                         self.captured_snapshot_path(&snapshot_group, member, cancellation)?;
                     // Describe the checkpoint as it was captured, not the
-                    // sandbox as it is now (E-29).
+                    // computer as it is now (E-29).
                     apply_captured_layout(
                         &source.name,
                         &read_snapshot_descriptor(&snapshot)?,
                         &mut runtime_config,
-                        &mut machine_config,
+                        &mut computer_configuration,
                     )?;
-                    validate_export_configs(&source.name, &runtime_config, &machine_config)?;
+                    validate_export_configs(
+                        &source.name,
+                        &runtime_config,
+                        &computer_configuration,
+                    )?;
                     snapshot
                 } else {
                     let entries =
@@ -691,14 +696,14 @@ impl<R: MsbRunner> BackupService<R> {
                         .count();
                     if captures >= MAX_STATE_EXPORT_CAPTURES {
                         return Err(BackupError::InvalidRequest(format!(
-                            "{} already has {} state-export captures. Export an existing checkpoint instead. Captures are kept until the sandbox is deleted because later checkpoints depend on them.",
+                            "{} already has {} state-export captures. Export an existing checkpoint instead. Captures are kept until the computer is deleted because later checkpoints depend on them.",
                             source.name, MAX_STATE_EXPORT_CAPTURES
                         )));
                     }
                     let snapshot_name = format!("silo-backup-{index}-{}", unique_suffix());
                     capture_intent(source, Some(&snapshot_name))?;
                     self.require_success_with(
-                        "Capturing sandbox disk",
+                        "Capturing computer disk",
                         &[
                             "snapshot".into(),
                             "create".into(),
@@ -720,7 +725,7 @@ impl<R: MsbRunner> BackupService<R> {
                     self.captured_snapshot_path(&snapshot_group, &snapshot_name, cancellation)?
                 };
                 self.require_success_with(
-                    "Verifying captured sandbox disk",
+                    "Verifying captured computer disk",
                     &[
                         "snapshot".into(),
                         "verify".into(),
@@ -729,14 +734,14 @@ impl<R: MsbRunner> BackupService<R> {
                     data_timeout,
                     cancellation,
                 )?;
-                // Once verified, this complete capture becomes the sandbox's lineage
+                // Once verified, this complete capture becomes the computer's lineage
                 // parent. Keep it until its last dependent is deleted.
                 if source.existing_member.is_none() {
                     capture_intent(source, None)?;
                 }
                 let payload_path = stage.path().join(format!("{index}.msb"));
                 self.require_success_with(
-                    "Writing sandbox disks to the export file",
+                    "Writing computer disks to the export file",
                     &[
                         "snapshot".into(),
                         "save".into(),
@@ -757,14 +762,14 @@ impl<R: MsbRunner> BackupService<R> {
                 .filter(|size| *size <= self.max_archive_bytes)
                 .ok_or_else(|| {
                     BackupError::InvalidRequest(
-                        "The selected sandbox checkpoints exceed the export size safety limit."
+                        "The selected computer checkpoints exceed the export size safety limit."
                             .into(),
                     )
                 })?;
             payloads.push((
                 source,
                 runtime_config,
-                machine_config,
+                computer_configuration,
                 payload,
                 payload_size,
             ));
@@ -779,18 +784,20 @@ impl<R: MsbRunner> BackupService<R> {
                 snapshot_format: snapshot_format_for(bundled_runtime_version()),
                 guest_architecture: std::env::consts::ARCH.into(),
             },
-            sandboxes: payloads
+            computers: payloads
                 .iter()
                 .map(
-                    |(source, runtime_config, machine_config, _, payload_size)| PackageSandbox {
-                        name: source.name.clone(),
-                        runtime_config: runtime_config.clone(),
-                        machine_config: machine_config.clone(),
-                        payload_size: *payload_size,
-                        // Filled in while the payload is copied into the archive.
-                        payload_sha256: pending_digest(),
-                        // Format 3 keeps this field; MicroSandbox's snapshot carries the disks.
-                        volumes: Vec::new(),
+                    |(source, runtime_config, computer_configuration, _, payload_size)| {
+                        PackageComputer {
+                            name: source.name.clone(),
+                            runtime_config: runtime_config.clone(),
+                            computer_configuration: computer_configuration.clone(),
+                            payload_size: *payload_size,
+                            // Filled in while the payload is copied into the archive.
+                            payload_sha256: pending_digest(),
+                            // Format 3 keeps this field; MicroSandbox's snapshot carries the disks.
+                            volumes: Vec::new(),
+                        }
                     },
                 )
                 .collect(),
@@ -811,7 +818,7 @@ impl<R: MsbRunner> BackupService<R> {
             created_at_ms: manifest.created_at_ms,
             destination: request.destination,
             size_bytes,
-            sandboxes: request
+            computers: request
                 .sources
                 .into_iter()
                 .map(|source| source.name)
@@ -831,7 +838,7 @@ impl<R: MsbRunner> BackupService<R> {
         let store = self.native_store_root();
         let mut capture_bytes = 0_u64;
         for source in &request.sources {
-            validate_sandbox_name(&source.name)?;
+            validate_computer_name(&source.name)?;
             if source.existing_member.is_none() {
                 capture_bytes = capture_bytes.saturating_add(estimated_tree_bytes(
                     &store.join("sandboxes").join(&source.name),
@@ -841,7 +848,7 @@ impl<R: MsbRunner> BackupService<R> {
         }
         let existing = estimated_tree_bytes(&store.join("snapshots"), cancellation)?
             .saturating_add(estimated_tree_bytes(&store.join("cache"), cancellation)?);
-        // Multiple selected sandboxes can include the same ancestors/image.
+        // Multiple selected computers can include the same ancestors/image.
         let estimate = existing
             .saturating_mul(request.sources.len() as u64)
             .saturating_add(capture_bytes)
@@ -886,7 +893,7 @@ impl<R: MsbRunner> BackupService<R> {
         name: &str,
         cancellation: &Cancellation,
     ) -> Result<PathBuf, BackupError> {
-        let entries = self.snapshot_index("Locating captured sandbox disk", cancellation)?;
+        let entries = self.snapshot_index("Locating captured computer disk", cancellation)?;
         let mut matches = entries.iter().filter(|entry| {
             entry["group"] == group && entry["name"] == name && entry["availability"] == "ready"
         });
@@ -968,11 +975,11 @@ impl<R: MsbRunner> BackupService<R> {
         Ok(ArchiveInspection {
             created_at_ms: package.manifest.created_at_ms,
             size_bytes: package.size_bytes,
-            sandboxes: package
+            computers: package
                 .manifest
-                .sandboxes
+                .computers
                 .iter()
-                .map(|sandbox| sandbox.name.clone())
+                .map(|computer| computer.name.clone())
                 .collect(),
         })
     }
@@ -1002,8 +1009,8 @@ impl<R: MsbRunner> BackupService<R> {
                 "The import checkpoint group name is invalid.".into(),
             ));
         }
-        validate_sandbox_name(&request.new_name)?;
-        let names = self.list_sandbox_names(cancellation)?;
+        validate_computer_name(&request.new_name)?;
+        let names = self.list_computer_names(cancellation)?;
         if names.contains(&request.new_name) {
             return Err(BackupError::Conflict(request.new_name));
         }
@@ -1028,7 +1035,7 @@ impl<R: MsbRunner> BackupService<R> {
         let extracted = package.extracted.as_ref().ok_or_else(|| {
             BackupError::InvalidArchive("checkpoint payload was not extracted".into())
         })?;
-        let source = &package.manifest.sandboxes[extracted.index];
+        let source = &package.manifest.computers[extracted.index];
         let payload_path = &extracted.path;
         // The pre-scan measured exactly what the runtime will unpack; check
         // again now that the private copy is written.
@@ -1075,7 +1082,7 @@ impl<R: MsbRunner> BackupService<R> {
                 source_name: source.name.clone(),
                 new_name: request.new_name,
                 runtime_config: source.runtime_config.clone(),
-                machine_config: source.machine_config.clone(),
+                computer_configuration: source.computer_configuration.clone(),
                 snapshot_group: import_group.into(),
                 snapshot_member,
                 _stage: stage,
@@ -1102,7 +1109,7 @@ impl<R: MsbRunner> BackupService<R> {
     ) -> Result<String, BackupError> {
         let data_timeout = self.data_timeout(unpacked_bytes);
         self.require_success_with(
-            "Loading sandbox disks from the export file",
+            "Loading computer disks from the export file",
             &[
                 "snapshot".into(),
                 "load".into(),
@@ -1181,7 +1188,7 @@ impl<R: MsbRunner> BackupService<R> {
             })?
             .to_owned();
         self.require_success_with(
-            "Verifying imported sandbox disk",
+            "Verifying imported computer disk",
             &[
                 "snapshot".into(),
                 "verify".into(),
@@ -1190,7 +1197,7 @@ impl<R: MsbRunner> BackupService<R> {
             data_timeout,
             cancellation,
         )?;
-        // `msb restore` rebuilds the VM from this descriptor, not from the
+        // `msb restore` rebuilds the computer from this descriptor, not from the
         // export manifest Silo validated, so the two must agree (E-19).
         let descriptor =
             read_snapshot_descriptor(&self.member_artifact(head_member, import_group)?)?;
@@ -1204,7 +1211,7 @@ impl<R: MsbRunner> BackupService<R> {
 
     /// A crash can interrupt Silo after the runtime finished capture but before
     /// its journal was cleared. Verify that complete member before keeping it as
-    /// a live sandbox's lineage parent; incomplete members must be removed.
+    /// a live computer's lineage parent; incomplete members must be removed.
     pub(crate) fn export_capture_ready(
         &self,
         group: &str,
@@ -1231,7 +1238,7 @@ impl<R: MsbRunner> BackupService<R> {
         Ok(true)
     }
 
-    /// Remove a Silo import group that no sandbox uses: after a failed import,
+    /// Remove a Silo import group that no computer uses: after a failed import,
     /// or during relaunch recovery of an interrupted one. Idempotent.
     pub(crate) fn discard_import_group(&self, group: &str) -> Result<(), BackupError> {
         let _guard = self.begin()?;
@@ -1239,7 +1246,7 @@ impl<R: MsbRunner> BackupService<R> {
     }
 
     /// Covers the steps between a successful `prepare_restore` and the saved
-    /// sandbox: unless `keep` is called, dropping the guard discards the group.
+    /// computer: unless `keep` is called, dropping the guard discards the group.
     pub(crate) fn discard_import_on_failure(&self, group: &str) -> ImportGroupGuard<'_, R> {
         ImportGroupGuard {
             service: self,
@@ -1375,23 +1382,23 @@ impl<R: MsbRunner> BackupService<R> {
         })
     }
 
-    fn list_sandbox_names(
+    fn list_computer_names(
         &self,
         cancellation: &Cancellation,
     ) -> Result<HashSet<String>, BackupError> {
         let output = self.require_success(
-            "Checking sandbox name",
+            "Checking computer name",
             &["list".into(), "--format".into(), "json".into()],
             cancellation,
         )?;
         let value: Value =
             serde_json::from_str(&output.stdout).map_err(|_| BackupError::CommandFailed {
-                operation: "Checking sandbox name".into(),
-                detail: "the bundled runtime returned malformed sandbox data".into(),
+                operation: "Checking computer name".into(),
+                detail: "the bundled runtime returned malformed computer data".into(),
             })?;
         let rows = value.as_array().ok_or_else(|| BackupError::CommandFailed {
-            operation: "Checking sandbox name".into(),
-            detail: "the bundled runtime returned an unexpected sandbox list".into(),
+            operation: "Checking computer name".into(),
+            detail: "the bundled runtime returned an unexpected computer list".into(),
         })?;
         rows.iter()
             .map(|row| {
@@ -1399,8 +1406,8 @@ impl<R: MsbRunner> BackupService<R> {
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                     .ok_or_else(|| BackupError::CommandFailed {
-                        operation: "Checking sandbox name".into(),
-                        detail: "the bundled runtime omitted a sandbox name".into(),
+                        operation: "Checking computer name".into(),
+                        detail: "the bundled runtime omitted a computer name".into(),
                     })
             })
             .collect()
@@ -1477,7 +1484,7 @@ fn descriptor_scope_supported(scope: Option<&str>, state_kind: Option<&str>) -> 
 
 /// The restorable configuration a MicroSandbox snapshot carries is its
 /// descriptor: image, root layout, owned volumes, the default user and, for
-/// a full checkpoint, the VM geometry. Env, patches, init, rlimits and
+/// a full checkpoint, the computer geometry. Env, patches, init, rlimits and
 /// host-bound mounts have no descriptor field (it is closed with
 /// `deny_unknown_fields`). Environment defaults are reapplied from the export
 /// manifest on Start; host-bound resources are not portable. The descriptor must match the export
@@ -1742,7 +1749,7 @@ enum PayloadMode<'a> {
     Describe,
     /// Hash every payload: the review inspection and the export's final check.
     VerifyAll,
-    /// Verify, pre-scan and extract only the selected sandbox's payload; skip
+    /// Verify, pre-scan and extract only the selected computer's payload; skip
     /// the others without reading them.
     Extract {
         dir: &'a Path,
@@ -1797,9 +1804,11 @@ fn read_and_verify_package(
     // `validate_manifest` rejects separate volume payloads, so the snapshot
     // payloads are the whole body.
     let payload_total = manifest
-        .sandboxes
+        .computers
         .iter()
-        .try_fold(0_u64, |sum, sandbox| sum.checked_add(sandbox.payload_size))
+        .try_fold(0_u64, |sum, computer| {
+            sum.checked_add(computer.payload_size)
+        })
         .ok_or_else(|| BackupError::InvalidArchive("payload sizes overflow".into()))?;
     let expected_len = header_len
         .checked_add(payload_total)
@@ -1824,14 +1833,14 @@ fn read_and_verify_package(
         }
     };
     let mut extracted = None;
-    for (index, sandbox) in manifest.sandboxes.iter().enumerate() {
-        let label = format!("checkpoint payload for {}", sandbox.name);
+    for (index, computer) in manifest.computers.iter().enumerate() {
+        let label = format!("checkpoint payload for {}", computer.name);
         match extract {
             None => {
                 extract_verified_payload(
                     &mut file,
-                    sandbox.payload_size,
-                    &sandbox.payload_sha256,
+                    computer.payload_size,
+                    &computer.payload_sha256,
                     None,
                     &label,
                     cancellation,
@@ -1841,11 +1850,11 @@ fn read_and_verify_package(
                 // The private copy of the payload must fit where it is staged,
                 // and when that is the runtime's volume it also shrinks what
                 // the runtime can unpack.
-                let staged = sandbox.payload_size.saturating_add(FREE_SPACE_RESERVE);
+                let staged = computer.payload_size.saturating_add(FREE_SPACE_RESERVE);
                 if space.stage_free < staged {
                     return Err(BackupError::InsufficientSpace(format!(
                         "Importing {} needs {} of free space for its private working copy; {} is available.",
-                        sandbox.name,
+                        computer.name,
                         format_bytes(staged),
                         format_bytes(space.stage_free)
                     )));
@@ -1854,28 +1863,28 @@ fn read_and_verify_package(
                     .store_free
                     .saturating_sub(FREE_SPACE_RESERVE)
                     .saturating_sub(if space.shared_volume {
-                        sandbox.payload_size
+                        computer.payload_size
                     } else {
                         0
                     })
                     .min(DEFAULT_MAX_ARCHIVE_BYTES);
                 let (path, scan) = extract_scanned_payload(
                     &mut file,
-                    sandbox.payload_size,
-                    &sandbox.payload_sha256,
+                    computer.payload_size,
+                    &computer.payload_sha256,
                     dir.join(format!("snapshot-{index}.tar.zst")),
                     &label,
                     ScanLimits {
                         max_unpacked_bytes: unpack_budget,
                         max_entries: MAX_SNAPSHOT_ENTRIES,
-                        max_sparse_bytes: largest_declared_disk(&sandbox.machine_config),
+                        max_sparse_bytes: largest_declared_disk(&computer.computer_configuration),
                     },
                     cancellation,
                 )
                 .map_err(|error| match error {
                     BackupError::InsufficientSpace(_) => BackupError::InsufficientSpace(format!(
                         "Importing {} needs more than the {} of free space available to Silo's runtime storage (keeping {} free).",
-                        sandbox.name,
+                        computer.name,
                         format_bytes(unpack_budget),
                         format_bytes(FREE_SPACE_RESERVE)
                     )),
@@ -1884,7 +1893,7 @@ fn read_and_verify_package(
                 extracted = Some(ExtractedPayload { index, path, scan });
             }
             Some(_) => {
-                let skip = i64::try_from(sandbox.payload_size)
+                let skip = i64::try_from(computer.payload_size)
                     .map_err(|_| BackupError::InvalidArchive("payload sizes overflow".into()))?;
                 file.seek(SeekFrom::Current(skip))?;
             }
@@ -1897,22 +1906,22 @@ fn read_and_verify_package(
     })
 }
 
-/// Both disks of a sandbox: an upper bound for the data a capture, check or
+/// Both disks of a computer: an upper bound for the data a capture, check or
 /// save of it reads before compression.
-fn declared_storage_bytes(machine_config: &Value) -> u64 {
+fn declared_storage_bytes(computer_configuration: &Value) -> u64 {
     ["workspaceStorageGiB", "runtimeStorageGiB"]
         .iter()
-        .filter_map(|field| machine_config.get(*field).and_then(Value::as_u64))
+        .filter_map(|field| computer_configuration.get(*field).and_then(Value::as_u64))
         .fold(0_u64, u64::saturating_add)
         .saturating_mul(1024 * 1024 * 1024)
 }
 
-/// Size of the larger of the sandbox's two disks; `validate_machine_config`
+/// Size of the larger of the computer's two disks; `validate_computer_configuration`
 /// has already bounded both.
-fn largest_declared_disk(machine_config: &Value) -> u64 {
+fn largest_declared_disk(computer_configuration: &Value) -> u64 {
     ["workspaceStorageGiB", "runtimeStorageGiB"]
         .iter()
-        .filter_map(|field| machine_config.get(*field).and_then(Value::as_u64))
+        .filter_map(|field| computer_configuration.get(*field).and_then(Value::as_u64))
         .max()
         .unwrap_or(0)
         .saturating_mul(1024 * 1024 * 1024)
@@ -2000,46 +2009,46 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
     let architecture = manifest.runtime.guest_architecture.as_str();
     if !matches!(architecture, "aarch64" | "x86_64") || architecture != std::env::consts::ARCH {
         return Err(BackupError::InvalidArchive(format!(
-            "This export file requires {architecture}; Silo on this computer supports {}. Import it on a computer with the required architecture.",
+            "This export file requires {architecture}; Silo on this device supports {}. Import it on a device with the required architecture.",
             std::env::consts::ARCH
         )));
     }
     check_format_version(manifest.schema_version)?;
     check_runtime_compatibility(&manifest.runtime)?;
-    if manifest.sandboxes.is_empty() || manifest.sandboxes.len() > 64 {
+    if manifest.computers.is_empty() || manifest.computers.len() > 64 {
         return Err(BackupError::InvalidArchive(
-            "the sandbox count is outside supported limits".into(),
+            "the computer count is outside supported limits".into(),
         ));
     }
     let mut names = HashSet::new();
-    for sandbox in &manifest.sandboxes {
-        validate_sandbox_name(&sandbox.name)
-            .map_err(|_| BackupError::InvalidArchive("a sandbox name is invalid".into()))?;
-        if !names.insert(&sandbox.name) {
+    for computer in &manifest.computers {
+        validate_computer_name(&computer.name)
+            .map_err(|_| BackupError::InvalidArchive("a computer name is invalid".into()))?;
+        if !names.insert(&computer.name) {
             return Err(BackupError::InvalidArchive(
-                "sandbox names must be unique".into(),
+                "computer names must be unique".into(),
             ));
         }
         let config_size = serde_json::to_vec(&serde_json::json!({
-            "runtimeConfig": sandbox.runtime_config,
-            "machineConfig": sandbox.machine_config,
+            "runtimeConfig": computer.runtime_config,
+            "computerConfiguration": computer.computer_configuration,
         }))
         .map_err(|_| BackupError::InvalidArchive("checkpoint metadata is malformed".into()))?
         .len() as u64;
-        if sandbox.payload_size == 0
-            || !is_sha256(&sandbox.payload_sha256)
+        if computer.payload_size == 0
+            || !is_sha256(&computer.payload_sha256)
             || config_size > MAX_MANIFEST_BYTES
         {
             return Err(BackupError::InvalidArchive(
                 "checkpoint metadata is invalid".into(),
             ));
         }
-        validate_snapshottable_config(&sandbox.name, &sandbox.runtime_config)
+        validate_snapshottable_config(&computer.name, &computer.runtime_config)
             .map_err(|error| BackupError::InvalidArchive(error.to_string()))?;
-        validate_machine_config(&sandbox.name, &sandbox.machine_config)
+        validate_computer_configuration(&computer.name, &computer.computer_configuration)
             .map_err(|error| BackupError::InvalidArchive(error.to_string()))?;
-        validate_package_volumes(&sandbox.volumes)?;
-        validate_volume_contract(&sandbox.runtime_config, &sandbox.machine_config)?;
+        validate_package_volumes(&computer.volumes)?;
+        validate_volume_contract(&computer.runtime_config, &computer.computer_configuration)?;
     }
     Ok(())
 }
@@ -2047,15 +2056,15 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
 fn validate_export_configs(
     name: &str,
     runtime_config: &Value,
-    machine_config: &Value,
+    computer_configuration: &Value,
 ) -> Result<(), BackupError> {
     validate_snapshottable_config(name, runtime_config)?;
-    validate_machine_config(name, machine_config)?;
-    validate_volume_sources(name, runtime_config, machine_config)
+    validate_computer_configuration(name, computer_configuration)?;
+    validate_volume_sources(name, runtime_config, computer_configuration)
 }
 
-/// A checkpoint export packs the disk (and, for a full checkpoint, the VM
-/// geometry) as captured, while the sandbox may have been changed since.
+/// A checkpoint export packs the disk (and, for a full checkpoint, the computer
+/// geometry) as captured, while the computer may have been changed since.
 /// Take everything the checkpoint's descriptor records from it: the owned
 /// workspace capacity and, for a full checkpoint, CPUs and memory (with the
 /// default /tmp size that follows memory). The root disk size cannot change
@@ -2064,14 +2073,14 @@ fn apply_captured_layout(
     name: &str,
     descriptor: &Value,
     runtime_config: &mut Value,
-    machine_config: &mut Value,
+    computer_configuration: &mut Value,
 ) -> Result<(), BackupError> {
     let unsupported = |detail: &str| {
         BackupError::UnsupportedStorage(format!(
             "The checkpoint of {name} cannot be exported: {detail}."
         ))
     };
-    let workspace = descriptor
+    let computer = descriptor
         .pointer(&format!("/extensions/{OWNED_VOLUMES_EXTENSION}"))
         .and_then(Value::as_array)
         .and_then(|volumes| {
@@ -2080,7 +2089,7 @@ fn apply_captured_layout(
             })
         })
         .ok_or_else(|| unsupported("it does not include the workspace disk"))?;
-    let capacity_mib = workspace
+    let capacity_mib = computer
         .pointer("/mount/storage/capacity_mib")
         .and_then(Value::as_u64)
         .filter(|mib| *mib > 0 && mib % 1024 == 0)
@@ -2096,7 +2105,7 @@ fn apply_captured_layout(
     {
         mount["storage"]["capacity_mib"] = capacity_mib.into();
     }
-    machine_config["workspaceStorageGiB"] = (capacity_mib / 1024).into();
+    computer_configuration["workspaceStorageGiB"] = (capacity_mib / 1024).into();
 
     if descriptor.pointer("/state/kind").and_then(Value::as_str) == Some("checkpoint") {
         let captured = |field: &str| {
@@ -2114,10 +2123,10 @@ fn apply_captured_layout(
         runtime_config["resources"]["max_cpus"] = max_cpus.into();
         runtime_config["resources"]["memory_mib"] = memory_mib.into();
         runtime_config["resources"]["max_memory_mib"] = max_memory_mib.into();
-        machine_config["cpus"] = cpus.into();
-        machine_config["maxCPUs"] = max_cpus.into();
-        machine_config["memoryGiB"] = (memory_mib / 1024).into();
-        machine_config["maxMemoryGiB"] = (max_memory_mib / 1024).into();
+        computer_configuration["cpus"] = cpus.into();
+        computer_configuration["maxCPUs"] = max_cpus.into();
+        computer_configuration["memoryGiB"] = (memory_mib / 1024).into();
+        computer_configuration["maxMemoryGiB"] = (max_memory_mib / 1024).into();
         // Silo sizes the default /tmp from memory; keep that relation.
         if let Some(tmpfs) = runtime_config
             .get_mut("mounts")
@@ -2142,20 +2151,20 @@ fn validate_package_volumes(volumes: &[Value]) -> Result<(), BackupError> {
 fn validate_volume_sources(
     name: &str,
     runtime_config: &Value,
-    machine_config: &Value,
+    computer_configuration: &Value,
 ) -> Result<(), BackupError> {
-    validate_volume_contract(runtime_config, machine_config).map_err(|_| {
+    validate_volume_contract(runtime_config, computer_configuration).map_err(|_| {
         BackupError::UnsupportedStorage(format!(
-            "{name} disk metadata does not match its Silo sandbox configuration."
+            "{name} disk metadata does not match its Silo computer configuration."
         ))
     })
 }
 
 fn validate_volume_contract(
     runtime_config: &Value,
-    machine_config: &Value,
+    computer_configuration: &Value,
 ) -> Result<(), BackupError> {
-    for (runtime_field, machine_field, multiplier) in [
+    for (runtime_field, computer_field, multiplier) in [
         ("cpus", "cpus", 1),
         ("max_cpus", "maxCPUs", 1),
         ("memory_mib", "memoryGiB", 1024),
@@ -2165,17 +2174,17 @@ fn validate_volume_contract(
             .get("resources")
             .and_then(|resources| resources.get(runtime_field))
             .and_then(Value::as_u64);
-        let expected = machine_config
-            .get(machine_field)
+        let expected = computer_configuration
+            .get(computer_field)
             .and_then(Value::as_u64)
             .and_then(|value| value.checked_mul(multiplier));
         if actual != expected || actual.is_none() {
             return Err(BackupError::InvalidArchive(
-                "sandbox resources do not match the saved sandbox settings".into(),
+                "computer resources do not match the saved computer settings".into(),
             ));
         }
     }
-    let workspace_mib = machine_config
+    let workspace_mib = computer_configuration
         .get("workspaceStorageGiB")
         .and_then(Value::as_u64)
         .and_then(|size| size.checked_mul(1024));
@@ -2202,25 +2211,25 @@ fn validate_volume_contract(
         || runtime_config
             .pointer("/image/Oci/root_disk/size_mib")
             .and_then(Value::as_u64)
-            != machine_config
+            != computer_configuration
                 .get("runtimeStorageGiB")
                 .and_then(Value::as_u64)
                 .and_then(|size| size.checked_mul(1024))
     {
         return Err(BackupError::InvalidArchive(
-            "sandbox disk capacities do not match the sandbox settings".into(),
+            "computer disk capacities do not match the computer settings".into(),
         ));
     }
     let workspace_mounts = runtime_config
         .get("mounts")
         .and_then(Value::as_array)
-        .ok_or_else(|| BackupError::InvalidArchive("sandbox mounts are missing".into()))?
+        .ok_or_else(|| BackupError::InvalidArchive("computer mounts are missing".into()))?
         .iter()
         .filter(|mount| mount.get("guest").and_then(Value::as_str) == Some("/workspace"))
         .collect::<Vec<_>>();
     if workspace_mounts.len() != 1 {
         return Err(BackupError::InvalidArchive(
-            "sandbox disk mounts do not match the sandbox settings".into(),
+            "computer disk mounts do not match the computer settings".into(),
         ));
     }
     Ok(())
@@ -2232,15 +2241,15 @@ fn select_restore_source(
 ) -> Result<usize, BackupError> {
     match selected {
         Some(name) => manifest
-            .sandboxes
+            .computers
             .iter()
-            .position(|sandbox| sandbox.name == name)
+            .position(|computer| computer.name == name)
             .ok_or_else(|| {
                 BackupError::InvalidRequest(format!("{name} is not in this export file."))
             }),
-        None if manifest.sandboxes.len() == 1 => Ok(0),
+        None if manifest.computers.len() == 1 => Ok(0),
         None => Err(BackupError::InvalidRequest(
-            "Choose which sandbox to import from this export file.".into(),
+            "Choose which computer to import from this export file.".into(),
         )),
     }
 }
@@ -2248,7 +2257,7 @@ fn select_restore_source(
 fn validate_backup_request(request: &BackupRequest) -> Result<(), BackupError> {
     if request.sources.is_empty() || request.sources.len() > 64 {
         return Err(BackupError::InvalidRequest(
-            "Choose between 1 and 64 sandboxes to export.".into(),
+            "Choose between 1 and 64 computers to export.".into(),
         ));
     }
     if request
@@ -2274,13 +2283,13 @@ fn validate_backup_request(request: &BackupRequest) -> Result<(), BackupError> {
         .any(|source| !names.insert(&source.name))
     {
         return Err(BackupError::InvalidRequest(
-            "Each sandbox may appear only once in an export file.".into(),
+            "Each computer may appear only once in an export file.".into(),
         ));
     }
     Ok(())
 }
 
-fn validate_sandbox_name(name: &str) -> Result<(), BackupError> {
+fn validate_computer_name(name: &str) -> Result<(), BackupError> {
     let valid = !name.is_empty()
         && name.len() <= 32
         && name.as_bytes()[0].is_ascii_lowercase()
@@ -2289,18 +2298,17 @@ fn validate_sandbox_name(name: &str) -> Result<(), BackupError> {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
     if !valid {
         return Err(BackupError::InvalidRequest(
-            "Sandbox names must start with a letter and contain only lowercase letters, numbers, and hyphens.".into(),
+            "Computer names must start with a letter and contain only lowercase letters, numbers, and hyphens.".into(),
         ));
     }
     Ok(())
 }
 
-fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError> {
+fn validate_computer_configuration(name: &str, config: &Value) -> Result<(), BackupError> {
     let object = config.as_object().ok_or_else(|| {
-        BackupError::InvalidRequest(format!("{name} has invalid Silo sandbox metadata."))
+        BackupError::InvalidRequest(format!("{name} has invalid Silo computer metadata."))
     })?;
     const FIELDS: &[&str] = &[
-        "kind",
         "id",
         "name",
         "cpus",
@@ -2317,7 +2325,6 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
         || object.get("desktop").is_some_and(|desktop| {
             serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err()
         })
-        || object.get("kind").and_then(Value::as_str) != Some("vm")
         || object.get("name").and_then(Value::as_str) != Some(name)
         || object
             .get("id")
@@ -2325,28 +2332,20 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
             .is_none_or(|id| uuid::Uuid::try_parse(id).is_err())
     {
         return Err(BackupError::InvalidRequest(format!(
-            "{name} has invalid Silo sandbox metadata."
+            "{name} has invalid Silo computer metadata."
         )));
     }
     let number = |field: &str| object.get(field).and_then(Value::as_u64);
-    let (
-        Some(cpus),
-        Some(max_cpus),
-        Some(memory),
-        Some(max_memory),
-        Some(workspace),
-        Some(runtime),
-    ) = (
+    let (Some(cpus), Some(max_cpus), Some(memory), Some(max_memory), Some(computer), Some(runtime)) = (
         number("cpus"),
         number("maxCPUs"),
         number("memoryGiB"),
         number("maxMemoryGiB"),
         number("workspaceStorageGiB"),
         number("runtimeStorageGiB"),
-    )
-    else {
+    ) else {
         return Err(BackupError::InvalidRequest(format!(
-            "{name} has invalid Silo sandbox metadata."
+            "{name} has invalid Silo computer metadata."
         )));
     };
     if cpus == 0
@@ -2355,15 +2354,15 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
         || memory == 0
         || memory > max_memory
         || max_memory > u32::MAX as u64
-        || workspace == 0
+        || computer == 0
         || runtime == 0
-        || workspace
+        || computer
             .checked_add(runtime)
             .and_then(|gib| gib.checked_mul(1024))
             .is_none_or(|mib| mib > u32::MAX as u64)
     {
         return Err(BackupError::InvalidRequest(format!(
-            "{name} has invalid Silo sandbox metadata."
+            "{name} has invalid Silo computer metadata."
         )));
     }
     Ok(())
@@ -2466,12 +2465,12 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
         .and_then(Value::as_object)
         .ok_or_else(|| {
             BackupError::UnsupportedStorage(format!(
-                "{name} is not an OCI-rooted sandbox with a managed disk."
+                "{name} is not an OCI-rooted computer with a managed disk."
             ))
         })?;
     let oci = image.get("Oci").and_then(Value::as_object).ok_or_else(|| {
         BackupError::UnsupportedStorage(format!(
-            "{name} is not an OCI-rooted sandbox with a managed disk."
+            "{name} is not an OCI-rooted computer with a managed disk."
         ))
     })?;
     match oci.get("root_disk") {
@@ -2483,9 +2482,9 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
     }
 }
 
-// Silo currently creates Ubuntu VMs with these runtime defaults. Reject overrides
+// Silo currently creates Ubuntu computers with these runtime defaults. Reject overrides
 // that the restore command does not reproduce instead of silently changing them.
-// Only the exact credential-free profile installed during Silo VM creation is
+// Only the exact credential-free profile installed during Silo computer creation is
 // restorable here. Custom policies, host secret references and values stay blocked.
 pub(crate) fn default_github_network(network: &Value) -> bool {
     with_profile_defaults(network) == github_network_defaults()
@@ -2516,19 +2515,19 @@ fn strict_is_inert(network: &Value) -> bool {
         })
 }
 
-/// Silo creates sandboxes with `strict` on, the profile's value, and the runtime
+/// Silo creates computers with `strict` on, the profile's value, and the runtime
 /// gives restores and forks its current default (also on). The saved value
 /// still differs by origin: MicroSandbox 0.7.2 saved its then-default (off), and
 /// a configuration saved by 0.6.17 holds none until a newer runtime rewrites it.
 /// Archives exported before the profile changed carry the 0.7.2 value as well.
 /// Where it cannot change anything (see `strict_is_inert`), and imports create
-/// every sandbox with the profile's value anyway, such a network counts as
+/// every computer with the profile's value anyway, such a network counts as
 /// having the profile's value. Anything else, such as a value that is not a
 /// boolean, stays as it is and fails the comparison.
 fn with_profile_defaults(network: &Value) -> Value {
     let mut network = network.clone();
     // MicroSandbox 0.7.5 and later save two more fields, both at their runtime
-    // defaults for a sandbox Silo created or restored: readable denial responses
+    // defaults for a computer Silo created or restored: readable denial responses
     // (opt-in, off) and the NAT64 prefix. Earlier runtimes save neither, so the
     // profile omits them and a default value counts as absent. A changed value
     // stays and fails the comparison as a custom network setting.
@@ -2908,7 +2907,7 @@ fn scan_snapshot_archive(
             }
             if kind.is_gnu_sparse() && entry.size() > limits.max_sparse_bytes {
                 return Err(ScanFailure::Unsafe(format!(
-                    "{} is larger than any disk this sandbox declares",
+                    "{} is larger than any disk this computer declares",
                     path.display()
                 )));
             }
@@ -3219,7 +3218,7 @@ fn pending_digest() -> String {
 
 /// Writes the archive, hashing each payload while it is copied (one read per
 /// payload), then verifies the whole written file once before publishing it.
-/// `payloads[i]` is the open, already-measured payload of `manifest.sandboxes[i]`.
+/// `payloads[i]` is the open, already-measured payload of `manifest.computers[i]`.
 fn write_immutable_package(
     destination: &Path,
     manifest: &mut PackageManifest,
@@ -3231,14 +3230,14 @@ fn write_immutable_package(
     let parent = destination.parent().ok_or_else(|| {
         BackupError::InvalidRequest("The export destination has no parent directory.".into())
     })?;
-    if payloads.len() != manifest.sandboxes.len() {
+    if payloads.len() != manifest.computers.len() {
         return Err(BackupError::InvalidRequest(
             "The export payloads do not match its manifest.".into(),
         ));
     }
     fs::create_dir_all(parent)?;
-    for sandbox in &mut manifest.sandboxes {
-        sandbox.payload_sha256 = pending_digest();
+    for computer in &mut manifest.computers {
+        computer.payload_sha256 = pending_digest();
     }
     let manifest_bytes = serde_json::to_vec(manifest)?;
     if manifest_bytes.is_empty() || manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
@@ -3249,11 +3248,11 @@ fn write_immutable_package(
     // Check the destination before copying possibly hundreds of gigabytes;
     // an external or nearly full volume would otherwise fail at the end.
     let archive_size = manifest
-        .sandboxes
+        .computers
         .iter()
         .try_fold(
             (MAGIC.len() + 4 + 8 + manifest_bytes.len()) as u64,
-            |sum, sandbox| sum.checked_add(sandbox.payload_size),
+            |sum, computer| sum.checked_add(computer.payload_size),
         )
         .ok_or_else(|| {
             BackupError::InvalidRequest("The export size cannot be represented.".into())
@@ -3280,7 +3279,7 @@ fn write_immutable_package(
     let manifest_offset = (MAGIC.len() + 4 + 8) as u64;
     temporary.write_all(&manifest_bytes)?;
     let mut buffer = [0_u8; 128 * 1024];
-    for (sandbox, mut input) in manifest.sandboxes.iter_mut().zip(payloads) {
+    for (computer, mut input) in manifest.computers.iter_mut().zip(payloads) {
         let mut hasher = Sha256::new();
         let mut copied = 0_u64;
         loop {
@@ -3293,13 +3292,13 @@ fn write_immutable_package(
             temporary.write_all(&buffer[..count])?;
             copied += count as u64;
         }
-        if copied != sandbox.payload_size {
+        if copied != computer.payload_size {
             return Err(BackupError::InvalidRequest(format!(
                 "The checkpoint export file for {} changed while it was being exported.",
-                sandbox.name
+                computer.name
             )));
         }
-        sandbox.payload_sha256 = format!("sha256:{:x}", hasher.finalize());
+        computer.payload_sha256 = format!("sha256:{:x}", hasher.finalize());
     }
     let final_manifest = serde_json::to_vec(manifest)?;
     if final_manifest.len() != manifest_bytes.len() {
@@ -3812,28 +3811,27 @@ mod tests {
 
     #[test]
     fn backup_preserves_optional_desktop_preferences_and_rejects_unknown_settings() {
-        let mut config = machine_config("dev");
-        assert!(validate_machine_config("dev", &config).is_ok());
-        config["desktop"] = serde_json::json!({"startWithSandbox":false});
-        validate_machine_config("dev", &config).unwrap();
-        let decoded: crate::runtime::MachineConfiguration =
+        let mut config = computer_configuration("dev");
+        assert!(validate_computer_configuration("dev", &config).is_ok());
+        config["desktop"] = serde_json::json!({"startWithComputer":false});
+        validate_computer_configuration("dev", &config).unwrap();
+        let decoded: crate::runtime::ComputerConfiguration =
             serde_json::from_value(config.clone()).unwrap();
         assert_eq!(
             crate::desktop::configuration(&decoded)
                 .unwrap()
-                .start_with_sandbox,
+                .start_with_computer,
             false
         );
         assert_eq!(serde_json::to_value(decoded).unwrap(), config);
         config["desktop"]["password"] = serde_json::json!("unexpected");
-        assert!(validate_machine_config("dev", &config).is_err());
-        config["desktop"] = serde_json::json!({"startWithSandbox":"false"});
-        assert!(validate_machine_config("dev", &config).is_err());
+        assert!(validate_computer_configuration("dev", &config).is_err());
+        config["desktop"] = serde_json::json!({"startWithComputer":"false"});
+        assert!(validate_computer_configuration("dev", &config).is_err());
     }
 
-    fn machine_config(name: &str) -> Value {
+    fn computer_configuration(name: &str) -> Value {
         serde_json::json!({
-            "kind": "vm",
             "id": "2f6b739d-ff7a-4be8-aa5e-f6694e4ab0d8",
             "name": name,
             "cpus": 4,
@@ -3922,7 +3920,7 @@ mod tests {
                     snapshot_group: snapshot_group.into(),
                     was_running: running,
                     runtime_config,
-                    machine_config: machine_config("dev"),
+                    computer_configuration: computer_configuration("dev"),
                     existing_member: None,
                 }],
             },
@@ -3930,7 +3928,7 @@ mod tests {
         )
     }
 
-    /// A finished export of the sandbox `dev` at `destination`, for tests of code
+    /// A finished export of the computer `dev` at `destination`, for tests of code
     /// that finds an export file after the process that wrote it was interrupted.
     pub(crate) fn write_finished_export(destination: &Path) {
         let temp = tempfile::tempdir().unwrap();
@@ -4186,11 +4184,11 @@ mod tests {
     #[test]
     fn backup_contract_requires_owned_workspace_snapshot_and_real_root_capacity() {
         let config = managed_config("dev");
-        let machine = machine_config("dev");
-        assert!(validate_volume_contract(&config, &machine).is_ok());
+        let configuration = computer_configuration("dev");
+        assert!(validate_volume_contract(&config, &configuration).is_ok());
         let mut wrong_root = config.clone();
         wrong_root["image"]["Oci"]["root_disk"]["size_mib"] = Value::from(8192);
-        assert!(validate_volume_contract(&wrong_root, &machine).is_err());
+        assert!(validate_volume_contract(&wrong_root, &configuration).is_err());
         let mut extra_disk = config;
         extra_disk["mounts"]
             .as_array_mut()
@@ -4245,7 +4243,7 @@ mod tests {
         let inspection = service
             .inspect_archive(&destination, &Cancellation::default())
             .unwrap();
-        assert_eq!(inspection.sandboxes, ["dev"]);
+        assert_eq!(inspection.computers, ["dev"]);
         assert_eq!(inspection.size_bytes, result.size_bytes);
         let first = fs::read(&destination).unwrap();
         let conflict = create_one(&service, destination.clone(), false);
@@ -4255,7 +4253,7 @@ mod tests {
             message.starts_with("A file already exists at "),
             "{message}"
         );
-        assert!(!message.contains("VM named"), "{message}");
+        assert!(!message.contains("Computer named"), "{message}");
         assert_eq!(fs::read(destination).unwrap(), first);
         let calls = service.runner.calls.lock().unwrap();
         assert!(calls
@@ -4285,7 +4283,7 @@ mod tests {
                         // Irrelevant on the checkpoint path: no fresh capture runs.
                         was_running: true,
                         runtime_config: managed_config("dev"),
-                        machine_config: machine_config("dev"),
+                        computer_configuration: computer_configuration("dev"),
                         existing_member: Some(member.into()),
                     }],
                 },
@@ -4328,7 +4326,7 @@ mod tests {
                         snapshot_group: "dev".into(),
                         was_running: false,
                         runtime_config: managed_config_with_default_tmpfs("dev"),
-                        machine_config: machine_config("dev"),
+                        computer_configuration: computer_configuration("dev"),
                         existing_member: Some(member.into()),
                     }],
                 },
@@ -4350,7 +4348,7 @@ mod tests {
     #[test]
     fn checkpoint_export_describes_the_checkpoint_as_captured() {
         // Captured with 2 of 6 CPUs, 1 of 32 GiB memory and a 30 GiB
-        // workspace; the sandbox now has 4 CPUs, 16 GiB and 60 GiB.
+        // computer; the computer now has 4 CPUs, 16 GiB and 60 GiB.
         let mut descriptor = loaded_descriptor_for(&managed_config("dev"));
         descriptor["scope"] = "checkpoint".into();
         descriptor["state"] = serde_json::json!({
@@ -4366,14 +4364,14 @@ mod tests {
         *runner.member_descriptor.lock().unwrap() = Some(descriptor.clone());
         let (_temp, manifest) = export_checkpoint(runner);
         let manifest = manifest.unwrap();
-        let sandbox = &manifest.sandboxes[0];
-        assert_eq!(sandbox.machine_config["cpus"], 2);
-        assert_eq!(sandbox.machine_config["maxCPUs"], 6);
-        assert_eq!(sandbox.machine_config["memoryGiB"], 1);
-        assert_eq!(sandbox.machine_config["workspaceStorageGiB"], 30);
-        assert_eq!(sandbox.machine_config["runtimeStorageGiB"], 80);
-        assert_eq!(sandbox.runtime_config["resources"]["memory_mib"], 1024);
-        let tmpfs = sandbox.runtime_config["mounts"]
+        let computer = &manifest.computers[0];
+        assert_eq!(computer.computer_configuration["cpus"], 2);
+        assert_eq!(computer.computer_configuration["maxCPUs"], 6);
+        assert_eq!(computer.computer_configuration["memoryGiB"], 1);
+        assert_eq!(computer.computer_configuration["workspaceStorageGiB"], 30);
+        assert_eq!(computer.computer_configuration["runtimeStorageGiB"], 80);
+        assert_eq!(computer.runtime_config["resources"]["memory_mib"], 1024);
+        let tmpfs = computer.runtime_config["mounts"]
             .as_array()
             .unwrap()
             .iter()
@@ -4386,15 +4384,15 @@ mod tests {
         assert!(compare_loaded_descriptor(
             &descriptor,
             "snap_11111111111111111111111111111111",
-            &sandbox.runtime_config
+            &computer.runtime_config
         )
         .is_ok());
 
         let runner = FakeRunner::default();
-        let mut without_workspace = loaded_descriptor_for(&managed_config("dev"));
-        without_workspace["extensions"] = serde_json::json!({});
-        without_workspace["requires"] = serde_json::json!([]);
-        *runner.member_descriptor.lock().unwrap() = Some(without_workspace);
+        let mut without_computer = loaded_descriptor_for(&managed_config("dev"));
+        without_computer["extensions"] = serde_json::json!({});
+        without_computer["requires"] = serde_json::json!([]);
+        *runner.member_descriptor.lock().unwrap() = Some(without_computer);
         let (_temp, manifest) = export_checkpoint(runner);
         assert!(
             matches!(manifest, Err(BackupError::UnsupportedStorage(message)) if message.contains("workspace disk"))
@@ -4402,7 +4400,7 @@ mod tests {
     }
 
     #[test]
-    fn running_vm_is_snapshotted_live_with_required_guest_flush() {
+    fn running_computer_is_snapshotted_live_with_required_guest_flush() {
         let temp = tempfile::tempdir().unwrap();
         let runner = FakeRunner::default();
         let service = service(&temp, runner);
@@ -4445,7 +4443,7 @@ mod tests {
                         snapshot_group: "dev".into(),
                         was_running: false,
                         runtime_config: managed_config("dev"),
-                        machine_config: machine_config("dev"),
+                        computer_configuration: computer_configuration("dev"),
                         existing_member: None,
                     }],
                 },
@@ -4560,7 +4558,7 @@ mod tests {
                         snapshot_group: "dev".into(),
                         was_running: false,
                         runtime_config,
-                        machine_config: machine_config("dev"),
+                        computer_configuration: computer_configuration("dev"),
                         existing_member: None,
                     }],
                 },
@@ -4604,7 +4602,7 @@ mod tests {
         config["network"]["ports"] = serde_json::json!([{"host": 8080, "guest": 80}]);
         assert!(validate_snapshottable_config("dev", &config).is_err());
         let manifest = export_with_runtime(config).unwrap();
-        let network = &manifest.sandboxes[0].runtime_config["network"];
+        let network = &manifest.computers[0].runtime_config["network"];
         assert!(imported_deny_network(network), "{network}");
         assert!(!network.to_string().contains("OPENAI_API_KEY"));
     }
@@ -4636,7 +4634,7 @@ mod tests {
     /// import-style deny-all restore, the restores with Silo's policy
     /// arguments. 0.7.6 also saves `http` and `nat64_prefixes`, at their
     /// defaults. `created-0.7.2` comes from 0.7.2 and
-    /// `migrated-from-*` from an old-layout sandbox after the 0.7.4 `adopt-disk`
+    /// `migrated-from-*` from an old-layout computer after the 0.7.4 `adopt-disk`
     /// that migration runs.
     fn captured_network(origin: &str) -> Value {
         let text = match origin {
@@ -4695,7 +4693,7 @@ mod tests {
     }
 
     #[test]
-    fn export_accepts_the_network_of_sandboxes_from_every_origin() {
+    fn export_accepts_the_network_of_computers_from_every_origin() {
         let profile_strict = github_network_defaults()["strict"].clone();
         for (origin, _) in CAPTURED_NETWORKS {
             let mut config = managed_config("dev");
@@ -4705,7 +4703,7 @@ mod tests {
             config["network"]["interface"] = serde_json::json!({});
             let manifest = export_with_runtime(config)
                 .unwrap_or_else(|error| panic!("{origin} cannot be exported: {error}"));
-            let network = &manifest.sandboxes[0].runtime_config["network"];
+            let network = &manifest.computers[0].runtime_config["network"];
             assert!(
                 default_github_network(network) || imported_deny_network(network),
                 "{origin}: {network}"
@@ -4716,9 +4714,9 @@ mod tests {
     }
 
     #[test]
-    fn the_profile_is_what_silo_creates_sandboxes_with() {
+    fn the_profile_is_what_silo_creates_computers_with() {
         // `msb create` in runtime.rs passes `--net-strict=true`; the runtime
-        // saves that value, and an export of the sandbox must accept it as is.
+        // saves that value, and an export of the computer must accept it as is.
         let mut config = managed_config("dev");
         config["network"] = captured_network("created-0.7.4");
         assert_eq!(config["network"]["strict"], true);
@@ -4787,7 +4785,7 @@ mod tests {
                 // which an export resets like any other.
                 let manifest = export_with_rule(origin, true.into(), hostname).unwrap();
                 assert!(imported_deny_network(
-                    &manifest.sandboxes[0].runtime_config["network"]
+                    &manifest.computers[0].runtime_config["network"]
                 ));
             }
             // Without a hostname rule the value changes nothing.
@@ -4798,7 +4796,7 @@ mod tests {
             )
             .unwrap();
             assert!(imported_deny_network(
-                &manifest.sandboxes[0].runtime_config["network"]
+                &manifest.computers[0].runtime_config["network"]
             ));
         }
         // A value that is not a boolean is never accepted.
@@ -4864,7 +4862,7 @@ mod tests {
                         snapshot_group: "dev".into(),
                         was_running: false,
                         runtime_config: managed_config("dev"),
-                        machine_config: machine_config("dev"),
+                        computer_configuration: computer_configuration("dev"),
                         existing_member: None,
                     }],
                 },
@@ -4919,7 +4917,7 @@ mod tests {
                 .unwrap()
                 .push(("dev".into(), format!("silo-backup-0-{index}-1")));
         }
-        // Other groups do not count toward this sandbox's cap.
+        // Other groups do not count toward this computer's cap.
         runner
             .existing_members
             .lock()
@@ -4950,7 +4948,7 @@ mod tests {
                         snapshot_group: "dev".into(),
                         was_running: false,
                         runtime_config: managed_config("dev"),
-                        machine_config: machine_config("dev"),
+                        computer_configuration: computer_configuration("dev"),
                         existing_member: Some("silo-backup-0-0-1".into()),
                     }],
                 },
@@ -4996,11 +4994,11 @@ mod tests {
     }
 
     #[test]
-    fn large_sandbox_list_is_read_whole_and_oversized_json_fails_explicitly() {
-        // 2000 sandboxes produce ~60 KiB of JSON, well past the 32 KiB log tail.
+    fn large_computer_list_is_read_whole_and_oversized_json_fails_explicitly() {
+        // 2000 computers produce ~60 KiB of JSON, well past the 32 KiB log tail.
         let directory = tempfile::tempdir().unwrap();
         let rows = (0..2000)
-            .map(|index| format!("{{\"name\":\"sandbox-{index:05}\",\"status\":\"Stopped\"}}"))
+            .map(|index| format!("{{\"name\":\"computer-{index:05}\",\"status\":\"Stopped\"}}"))
             .collect::<Vec<_>>()
             .join(",");
         let listing = directory.path().join("listing.json");
@@ -5020,7 +5018,7 @@ mod tests {
         assert!(output.stdout.len() > MAX_COMMAND_OUTPUT);
         let parsed: Vec<Value> = serde_json::from_str(&output.stdout).unwrap();
         assert_eq!(parsed.len(), 2000);
-        assert_eq!(parsed[0]["name"], "sandbox-00000");
+        assert_eq!(parsed[0]["name"], "computer-00000");
 
         fs::write(&listing, vec![b' '; MAX_STRUCTURED_OUTPUT + 1]).unwrap();
         let error = SystemMsbRunner
@@ -5107,7 +5105,7 @@ mod tests {
                 .unwrap_err()
                 .to_string()
         };
-        for old in [1, 2] {
+        for old in [1, 2, 3] {
             let message = with_format(old);
             assert!(
                 message.contains(&format!("earlier Silo export format (version {old})"))
@@ -5115,7 +5113,7 @@ mod tests {
                 "{message}"
             );
         }
-        let message = with_format(4);
+        let message = with_format(5);
         assert!(
             message.contains("newer version of Silo") && message.contains("Update Silo"),
             "{message}"
@@ -5260,8 +5258,8 @@ mod tests {
         assert_eq!(restored.source_name, "dev");
         assert_eq!(restored.new_name, "dev-restored");
         assert_eq!(restored.runtime_config["name"], "dev");
-        assert_eq!(restored.machine_config["workspaceStorageGiB"], 60);
-        assert_eq!(restored.machine_config["runtimeStorageGiB"], 80);
+        assert_eq!(restored.computer_configuration["workspaceStorageGiB"], 60);
+        assert_eq!(restored.computer_configuration["runtimeStorageGiB"], 80);
         assert!(restored.snapshot_group.starts_with("silo-import-"));
         assert_eq!(restored.snapshot_member, "imported-member");
         let calls = service.runner.calls.lock().unwrap();
@@ -5597,7 +5595,7 @@ mod tests {
             snapshot_group: name.into(),
             was_running: false,
             runtime_config: managed_config(name),
-            machine_config: machine_config(name),
+            computer_configuration: computer_configuration(name),
             existing_member: None,
         };
         service
@@ -5618,13 +5616,13 @@ mod tests {
     }
 
     #[test]
-    fn import_extracts_and_verifies_only_the_selected_sandbox() {
+    fn import_extracts_and_verifies_only_the_selected_computer() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("two.silo-backup");
         let service = service(&temp, FakeRunner::default());
         create_two(&service, archive.clone());
-        // Damage the first sandbox's payload; the review inspection sees it,
-        // but importing the second sandbox never reads that payload.
+        // Damage the first computer's payload; the review inspection sees it,
+        // but importing the second computer never reads that payload.
         let mut bytes = fs::read(&archive).unwrap();
         let offset = first_payload_offset(&bytes);
         bytes[offset + 5] ^= 0xff;
@@ -5668,7 +5666,7 @@ mod tests {
         let described = service
             .describe_archive(&archive, &Cancellation::default())
             .unwrap();
-        assert_eq!(described.sandboxes, ["dev", "second"]);
+        assert_eq!(described.computers, ["dev", "second"]);
         assert_eq!(described.size_bytes, bytes.len() as u64);
         // The header, manifest and length are still checked.
         bytes.truncate(bytes.len() - 1);
@@ -5684,10 +5682,10 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let payload_path = temp.path().join("payload.msb");
         fs::write(&payload_path, b"\x28\xb5\x2f\xfdpayload").unwrap();
-        let sandbox = |size: u64| PackageSandbox {
+        let computer = |size: u64| PackageComputer {
             name: "dev".into(),
             runtime_config: managed_config("dev"),
-            machine_config: machine_config("dev"),
+            computer_configuration: computer_configuration("dev"),
             payload_size: size,
             payload_sha256: pending_digest(),
             volumes: Vec::new(),
@@ -5701,7 +5699,7 @@ mod tests {
                 snapshot_format: snapshot_format_for(bundled_runtime_version()),
                 guest_architecture: std::env::consts::ARCH.into(),
             },
-            sandboxes: vec![sandbox(size)],
+            computers: vec![computer(size)],
         };
         let destination = temp.path().join("out.silo-backup");
         let mut stale = manifest(4);
@@ -5744,7 +5742,7 @@ mod tests {
             "sha256:{:x}",
             Sha256::digest(fs::read(&payload_path).unwrap())
         );
-        assert_eq!(current.sandboxes[0].payload_sha256, expected);
+        assert_eq!(current.computers[0].payload_sha256, expected);
         let written = read_and_verify_package(
             &destination,
             DEFAULT_MAX_ARCHIVE_BYTES,
@@ -5752,7 +5750,7 @@ mod tests {
             PayloadMode::VerifyAll,
         )
         .unwrap();
-        assert_eq!(written.manifest.sandboxes[0].payload_sha256, expected);
+        assert_eq!(written.manifest.computers[0].payload_sha256, expected);
     }
 
     /// Export an archive whose snapshot payload is `payload`, then try to import it.
@@ -6169,7 +6167,7 @@ mod tests {
                 .map(|(_, timeout)| *timeout)
                 .collect::<Vec<_>>()
         };
-        // 60 GiB workspace + 80 GiB runtime at 16 MiB/s is 8960 s on top of the hour.
+        // 60 GiB computer + 80 GiB runtime at 16 MiB/s is 8960 s on top of the hour.
         let export = DEFAULT_COMMAND_TIMEOUT + Duration::from_secs(140 * 1024 / 16);
         assert_eq!(timeout("create"), [export]);
         assert_eq!(timeout("save"), [export]);
@@ -6393,7 +6391,7 @@ mod tests {
     }
 
     #[test]
-    fn import_guard_discards_unless_the_sandbox_was_saved() {
+    fn import_guard_discards_unless_the_computer_was_saved() {
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("dev.silo-backup");
         let service = service(&temp, FakeRunner::default());
@@ -6424,9 +6422,9 @@ mod tests {
     }
 
     #[test]
-    fn manifest_does_not_allow_path_like_sandbox_names() {
-        assert!(validate_sandbox_name("../victim").is_err());
-        assert!(validate_sandbox_name("/absolute").is_err());
-        assert!(validate_sandbox_name("valid-name").is_ok());
+    fn manifest_does_not_allow_path_like_computer_names() {
+        assert!(validate_computer_name("../victim").is_err());
+        assert!(validate_computer_name("/absolute").is_err());
+        assert!(validate_computer_name("valid-name").is_ok());
     }
 }

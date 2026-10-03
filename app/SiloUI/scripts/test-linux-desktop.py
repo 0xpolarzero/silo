@@ -312,7 +312,7 @@ def run_lifecycle():
     app_data = data_home / identifier
     app_config = config_home / identifier
     settings = app_config / "settings.json"
-    if not settings.is_file() or not (app_data / "runtime/machines.json").is_file():
+    if not settings.is_file() or not (app_data / "runtime/computers.json").is_file():
         raise RuntimeError("The supplied isolated XDG roots do not contain the seeded settings and legacy VM metadata")
     if not Path(environment["SILO_LINUX_MSB"]).is_file() or not Path(environment["SILO_LINUX_MSB_LIBRARY"]).is_file():
         raise RuntimeError("The supplied bundled MicroSandbox executable or library is missing")
@@ -515,8 +515,8 @@ def run_lifecycle():
             if checkpoint_id := os.environ.get("SILO_LINUX_RESTORE_SOURCE_CHECKPOINT"):
                 # Recover a disposable source through Silo's normal Restore and
                 # explicit Start after a failed export exposed a missing ancestor.
-                metadata = json.loads((app_data / "runtime-checkpoints-converted/machines.json").read_text())
-                matches = [machine for machine in metadata["machines"] if machine["name"] == name]
+                metadata = json.loads((app_data / "runtime-checkpoints-converted/computers.json").read_text())
+                matches = [machine for machine in metadata["computers"] if machine["name"] == name]
                 assert len(matches) == 1, "Recovery source identity is ambiguous"
                 machine_id = matches[0]["id"]
                 checkpoint_record = json.loads((app_data / f"runtime-checkpoints-converted/checkpoints/{machine_id}.json").read_text())
@@ -745,7 +745,7 @@ def run_lifecycle():
                 browser.find_element(By.CSS_SELECTOR, "input[aria-label='Fork name']").send_keys(recovery_name)
                 click(browser, wait, By.XPATH, "//button[normalize-space()='Create stopped fork']")
                 wait.until(lambda _: has_button(browser, f"Start {recovery_name}") and
-                           browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{recovery_name}']").is_displayed())
+                           browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{recovery_name}']").is_displayed())
                 report.append("Recovery checkpoint fork was created while the pending-restore source runtime was absent")
                 click(browser, wait, By.CSS_SELECTOR, f"button[aria-label='Start {recovery_name}']")
                 wait.until(lambda _: has_button(browser, f"Stop {recovery_name}"))
@@ -795,7 +795,7 @@ def run_lifecycle():
             browser.find_element(By.CSS_SELECTOR, "input[aria-label='Fork name']").send_keys(fork_name)
             click(browser, wait, By.XPATH, "//button[normalize-space()='Create stopped fork']")
             wait.until(lambda _: has_button(browser, f"Start {fork_name}") and
-                       browser.find_element(By.CSS_SELECTOR, f"[data-sandbox-name='{fork_name}']").is_displayed())
+                       browser.find_element(By.CSS_SELECTOR, f"[data-computer-name='{fork_name}']").is_displayed())
             after_fork = read_application_state_when_idle()
             child_matches = [workspace for workspace in after_fork["workspaces"]
                              if workspace["machine"]["name"] == fork_name]

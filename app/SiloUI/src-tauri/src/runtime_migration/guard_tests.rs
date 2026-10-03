@@ -2,13 +2,13 @@
 //! may name, run `msb` against, or open the previous runtime generation: a newer
 //! `msb` upgrades the database it opens in place (the released one then refuses it),
 //! and a live one can tear the conversion's copy. After "Continue" the previous
-//! generation holds the only copy of unconverted sandboxes.
+//! generation holds the only copy of unconverted computers.
 use super::*;
 use std::collections::BTreeMap;
 
 const UNFINISHED: [&str; 3] = ["scanning", "running", "failed"];
 const FINISHED: [&str; 2] = ["complete", "not-required"];
-const VM_ID: &str = "fcfbc268-ae3f-40ff-8dfa-8af78911e52f";
+const COMPUTER_ID: &str = "fcfbc268-ae3f-40ff-8dfa-8af78911e52f";
 
 fn app_data() -> tempfile::TempDir {
     // The runtime alias must keep Unix socket paths short, so use /tmp, not TMPDIR.
@@ -18,20 +18,20 @@ fn app_data() -> tempfile::TempDir {
         .unwrap()
 }
 
-/// A previous generation: one VM's settings, a database, and the backup journal.
+/// A previous generation: one computer's settings, a database, and the backup journal.
 fn previous(app_data: &Path) -> PathBuf {
     let old = app_data.join("runtime");
     fs::create_dir_all(old.join("microsandbox/db")).unwrap();
     fs::create_dir_all(old.join("volumes/dev")).unwrap();
-    let vm: runtime::MachineConfigurationRequest = serde_json::from_value(serde_json::json!({
+    let computer: runtime::ComputerConfigurationRequest = serde_json::from_value(serde_json::json!({
         "schemaVersion": 1,
-        "machines": [{"kind":"vm","id":VM_ID,"name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
+        "computers": [{"id":COMPUTER_ID,"name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
     }))
     .unwrap();
-    runtime::write_metadata(&old.join("machines.json"), &vm).unwrap();
+    runtime::write_metadata(&old.join("computers.json"), &computer).unwrap();
     fs::write(old.join("microsandbox/db/msb.db"), b"released database").unwrap();
     fs::write(old.join("microsandbox/db/msb.db-wal"), b"released wal").unwrap();
-    fs::write(old.join("volumes/dev/workspace.raw"), b"workspace").unwrap();
+    fs::write(old.join("volumes/dev/workspace.raw"), b"computer").unwrap();
     old
 }
 
@@ -72,7 +72,7 @@ fn paths_in(app_data: &Path, storage: &Path) -> runtime::RuntimePaths {
         home: runtime::runtime_home_alias(app_data, &storage_home),
         storage_home: Some(storage_home),
         library,
-        metadata: storage.join("machines.json"),
+        metadata: storage.join("computers.json"),
         volumes: storage.join("volumes"),
     }
 }
@@ -105,7 +105,7 @@ fn nothing_names_the_previous_generation_until_the_migration_finishes() {
     for status in UNFINISHED {
         assert_eq!(
             usable_storage(dir.path(), true, status).unwrap_err(),
-            "Finish the Silo runtime migration before using sandboxes.",
+            "Finish the Silo runtime migration before using computers.",
             "{status}"
         );
     }
@@ -198,7 +198,7 @@ fn continuing_into_a_fresh_runtime_never_names_the_previous_generation_again() {
     assert_eq!(
         snapshot(&old),
         before,
-        "the only copy of the unconverted sandboxes stays exactly as it was"
+        "the only copy of the unconverted computers stays exactly as it was"
     );
 }
 
@@ -243,7 +243,7 @@ fn work_that_must_settle_during_migration_cannot_start_msb() {
     assert_eq!(
         runtime::read_metadata(&paths.metadata)
             .unwrap()
-            .machines
+            .computers
             .len(),
         1
     );
@@ -281,7 +281,7 @@ impl runtime::RuntimeRunner for Recording {
             serde_json::json!({"guest":"/workspace","type":"DiskImage","host":self.old_runtime.join("volumes/dev/workspace.raw")})
         };
         Ok(runtime::CommandOutput {
-            stdout: serde_json::json!({"name":"dev","status":"Stopped","config":{"labels":{"silo.machine-id":VM_ID},"mounts":[mount]}}).to_string(),
+            stdout: serde_json::json!({"name":"dev","status":"Stopped","config":{"labels":{"silo.machine-id":COMPUTER_ID},"mounts":[mount]}}).to_string(),
             stderr: String::new(),
         })
     }
@@ -297,7 +297,7 @@ fn the_staged_conversion_still_runs_while_every_other_caller_is_refused() {
     assert!(usable_storage(app_data, true, "running").is_err());
     let staged = app_data.join(CONVERTED);
     let mut paths = paths_in(app_data, &staged);
-    paths.metadata = staged.join("machines.json");
+    paths.metadata = staged.join("computers.json");
     let runner = Recording {
         storage: Mutex::new(Vec::new()),
         old_runtime: old.clone(),
@@ -317,7 +317,7 @@ fn the_staged_conversion_still_runs_while_every_other_caller_is_refused() {
             Some(staged.join("microsandbox").as_path()),
             "{command}"
         );
-        assert_eq!(metadata, &staged.join("machines.json"), "{command}");
+        assert_eq!(metadata, &staged.join("computers.json"), "{command}");
     }
     assert_eq!(selected_runtime_storage(app_data).unwrap(), staged);
     assert_eq!(
@@ -368,7 +368,7 @@ fn only_the_gate_can_name_a_runtime_and_only_the_migration_names_the_previous_on
         }
         if relative != "runtime_migration.rs" {
             assert!(
-                !text.contains("join(\"runtime\")") && !text.contains("runtime/machines.json"),
+                !text.contains("join(\"runtime\")") && !text.contains("runtime/computers.json"),
                 "{relative} names the previous runtime generation; only the migration may"
             );
         }

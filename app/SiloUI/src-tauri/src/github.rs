@@ -35,11 +35,11 @@ fn serialize(lock: &'static Mutex<()>) -> MutexGuard<'static, ()> {
 fn try_serialize(lock: &'static Mutex<()>) -> Option<MutexGuard<'static, ()>> {
     crate::sync::try_lock_or_recover(lock, "GitHub")
 }
-/// Runtime work that can take minutes (a guest command that may boot the VM, or
+/// Runtime work that can take minutes (a guest command that may boot the computer, or
 /// `msb modify`) never holds STATE, so saves, Disable access, disconnect, cancel and
 /// forks are not held behind it. `check` runs under STATE and returns `None` when the
 /// work is no longer current; the caller re-takes STATE and re-checks before recording
-/// the result. The runtime's per-VM revision lock rejects an older attach that arrives
+/// the result. The runtime's per-computer revision lock rejects an older attach that arrives
 /// after a newer one.
 fn outside_state<P, W>(
     check: impl FnOnce() -> Result<Option<P>, String>,
@@ -91,7 +91,7 @@ fn schedule(delay: Duration) {
 static WORKER_WOKEN: Mutex<bool> = Mutex::new(false);
 static WORKER_WAKE: Condvar = Condvar::new();
 /// Longest worker sleep: bounds deadlines measured on the wall clock (which can jump,
-/// for example after the computer sleeps) and ones not announced by `schedule`.
+/// for example after the device sleeps) and ones not announced by `schedule`.
 const WORKER_MAX_SLEEP: Duration = Duration::from_secs(60);
 const WORKER_MIN_SLEEP: Duration = Duration::from_millis(100);
 fn wake_worker() {
@@ -112,8 +112,8 @@ fn worker_sleep_with(timeout: Duration, before_wait: impl FnOnce()) {
     *woken = false;
 }
 static RESTORED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// A sandbox just started from a checkpoint; its GitHub settings must be applied once.
-pub(crate) fn workspace_restored(name: &str) {
+/// A computer just started from a checkpoint; its GitHub settings must be applied once.
+pub(crate) fn computer_restored(name: &str) {
     if let Ok(mut restored) = RESTORED.lock() {
         if !restored.iter().any(|n| n == name) {
             restored.push(name.into());
@@ -131,8 +131,8 @@ fn take_restored(name: &str) -> bool {
 fn active() -> &'static Mutex<std::collections::HashMap<String, Vec<RuntimeGrant>>> {
     ACTIVE.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
-fn active_key(app: &tauri::AppHandle, workspace: &str) -> Result<String, String> {
-    Ok(format!("{}:{workspace}", path(app)?.display()))
+fn active_key(app: &tauri::AppHandle, computer: &str) -> Result<String, String> {
+    Ok(format!("{}:{computer}", path(app)?.display()))
 }
 static SESSION: OnceLock<String> = OnceLock::new();
 fn session() -> &'static str {
@@ -488,7 +488,7 @@ struct Document {
     access_enabled: bool,
     account: Option<String>,
     #[serde(default)]
-    workspaces: Vec<Value>,
+    computers: Vec<Value>,
     #[serde(default)]
     repositories: Vec<Value>,
     #[serde(default)]
@@ -516,7 +516,7 @@ struct Document {
     /// Server-imposed waiting deadlines per GitHub rate class, kept across relaunch.
     #[serde(default)]
     rate_retry: std::collections::BTreeMap<String, u64>,
-    /// Per sandbox name: which revision last changed its saved choices, and from which
+    /// Per computer name: which revision last changed its saved choices, and from which
     /// view. Kept after a policy is removed so a stale save cannot bring it back.
     #[serde(default)]
     policy_stamps: std::collections::BTreeMap<String, PolicyStamp>,
@@ -528,28 +528,28 @@ struct Document {
 struct PolicyStamp {
     revision: u64,
     /// The `policyRevision` the writer's view was based on; `None` for changes Silo made
-    /// itself (a fork copying an assignment, a sandbox deletion).
+    /// itself (a fork copying an assignment, a computer deletion).
     #[serde(default)]
     base: Option<u64>,
 }
-/// Record that `workspace`'s choices changed in the document's current revision.
-fn stamp(d: &mut Document, workspace: &str, base: Option<u64>) {
+/// Record that `computer`'s choices changed in the document's current revision.
+fn stamp(d: &mut Document, computer: &str, base: Option<u64>) {
     d.policy_stamps.insert(
-        workspace.into(),
+        computer.into(),
         PolicyStamp {
             revision: d.revision,
             base,
         },
     );
-    // Bound stamps of removed sandboxes; the oldest are the least likely to be raced.
+    // Bound stamps of removed computers; the oldest are the least likely to be raced.
     while d.policy_stamps.len() > 256 {
         let oldest = d
             .policy_stamps
             .iter()
             .filter(|(name, _)| {
-                !d.workspaces
+                !d.computers
                     .iter()
-                    .any(|w| w["workspace"].as_str() == Some(name.as_str()))
+                    .any(|w| w["computer"].as_str() == Some(name.as_str()))
             })
             .min_by_key(|(_, stamp)| stamp.revision)
             .map(|(name, _)| name.clone());
@@ -563,10 +563,10 @@ fn stamp(d: &mut Document, workspace: &str, base: Option<u64>) {
 /// made after that view (a fork's copied assignment, a deletion), or a save from a newer
 /// view. Saves from the same or an older view (such as rapid edits sent before the page
 /// saw the previous result) are the user's own ordered intent and apply in order.
-fn stale_save(d: &Document, workspace: &str, base: Option<u64>) -> bool {
+fn stale_save(d: &Document, computer: &str, base: Option<u64>) -> bool {
     let Some(base) = base else { return false };
     d.policy_stamps
-        .get(workspace)
+        .get(computer)
         .is_some_and(|stamp| stamp.revision > base && stamp.base.is_none_or(|writer| writer > base))
 }
 
@@ -580,16 +580,16 @@ pub(crate) fn fork_assignment(
     let _state = serialize(&STATE);
     let mut document = load(app)?;
     if let Some(mut assignment) = document
-        .workspaces
+        .computers
         .iter()
-        .find(|value| value["workspace"].as_str() == Some(source))
+        .find(|value| value["computer"].as_str() == Some(source))
         .cloned()
     {
-        assignment["workspace"] = json!(target);
+        assignment["computer"] = json!(target);
         document
-            .workspaces
-            .retain(|value| value["workspace"].as_str() != Some(target));
-        document.workspaces.push(assignment);
+            .computers
+            .retain(|value| value["computer"].as_str() != Some(target));
+        document.computers.push(assignment);
         document.revision = next_policy_revision(document.revision)?;
         stamp(&mut document, target, None);
         if !document.access_pending.iter().any(|name| name == target) {
@@ -606,50 +606,50 @@ pub(crate) fn fork_assignment(
 pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Result<(), String> {
     let _state = serialize(&STATE);
     let mut document = load(app)?;
-    forget_workspace(&mut document, target);
+    forget_computer(&mut document, target);
     document.revision = next_policy_revision(document.revision)?;
     stamp(&mut document, target, None);
     save(app, &document)
 }
 
-/// Remove every saved choice and pending result for a sandbox. Returns whether any existed.
-fn forget_workspace(d: &mut Document, workspace: &str) -> bool {
-    let named = |value: &Value| value["workspace"].as_str() == Some(workspace);
-    let existed = d.workspaces.iter().any(named)
+/// Remove every saved choice and pending result for a computer. Returns whether any existed.
+fn forget_computer(d: &mut Document, computer: &str) -> bool {
+    let named = |value: &Value| value["computer"].as_str() == Some(computer);
+    let existed = d.computers.iter().any(named)
         || d.operations.iter().any(named)
         || d.access_pending
             .iter()
             .chain(&d.identity_pending)
-            .any(|name| name == workspace)
-        || d.access_errors.contains_key(workspace)
-        || d.identity_errors.contains_key(workspace);
-    d.workspaces.retain(|value| !named(value));
+            .any(|name| name == computer)
+        || d.access_errors.contains_key(computer)
+        || d.identity_errors.contains_key(computer);
+    d.computers.retain(|value| !named(value));
     d.operations.retain(|value| !named(value));
-    d.access_pending.retain(|name| name != workspace);
-    d.identity_pending.retain(|name| name != workspace);
-    d.access_errors.remove(workspace);
-    d.identity_errors.remove(workspace);
+    d.access_pending.retain(|name| name != computer);
+    d.identity_pending.retain(|name| name != computer);
+    d.access_errors.remove(computer);
+    d.identity_errors.remove(computer);
     existed
 }
 
-/// A sandbox was deleted. GitHub choices are keyed by sandbox name, so a new sandbox
+/// A computer was deleted. GitHub choices are keyed by computer name, so a new computer
 /// reusing the name must not inherit its repository or write access: remove its policy
 /// and pending work, drop its cached attachments, and let the worker revoke the tokens
 /// issued to it (they stay in the retirement ledger until GitHub confirms).
-pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
+pub(crate) fn computer_removed(computer: &str) -> Result<(), String> {
     let Some(document) = document_path() else {
         return Ok(());
     };
     {
         let _state = serialize(&STATE);
         let mut d = load_at(&document)?;
-        if forget_workspace(&mut d, workspace) {
+        if forget_computer(&mut d, computer) {
             d.revision = next_policy_revision(d.revision)?;
-            stamp(&mut d, workspace, None);
+            stamp(&mut d, computer, None);
             save_at(&document, &d)?;
         }
     }
-    let key = format!("{}:{workspace}", document.display());
+    let key = format!("{}:{computer}", document.display());
     active()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -662,7 +662,7 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
     RESTORED
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .retain(|name| name != workspace);
+        .retain(|name| name != computer);
     if let Some(app) = OBSERVATION_APP.get() {
         let _ = app.emit("silo://application-state-changed", ());
     }
@@ -1129,22 +1129,22 @@ fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
     Err("GitHub installation catalog exceeds the supported size.".into())
 }
 
-/// The host Git identity without waiting for Git: snapshots are taken on every state
+/// The device Git identity without waiting for Git: snapshots are taken on every state
 /// refresh and sometimes under GitHub locks, so they never spawn Git themselves.
-fn host_identity() -> Option<crate::host_identity::HostIdentity> {
-    crate::host_identity::cached(|| {
+fn device_identity() -> Option<crate::device_identity::DeviceIdentity> {
+    crate::device_identity::cached(|| {
         if let Some(app) = OBSERVATION_APP.get() {
             let _ = app.emit("silo://application-state-changed", ());
         }
     })
 }
 pub fn snapshot(app: &tauri::AppHandle) -> Result<Value, String> {
-    let mut value = observed_snapshot(load(app)?, observed_credential(), host_identity());
-    // Saved choices for a sandbox that has no runtime yet are not a failure; they apply
+    let mut value = observed_snapshot(load(app)?, observed_credential(), device_identity());
+    // Saved choices for a computer that has no runtime yet are not a failure; they apply
     // once it starts.
-    if let Some(operations) = value["workspaceOperations"].as_array_mut() {
+    if let Some(operations) = value["computerOperations"].as_array_mut() {
         operations.retain(|op| {
-            !op["workspace"]
+            !op["computer"]
                 .as_str()
                 .is_some_and(|name| is_pending_restore(app, name))
         });
@@ -1154,7 +1154,7 @@ pub fn snapshot(app: &tauri::AppHandle) -> Result<Value, String> {
 fn observed_snapshot(
     document: Document,
     observed: CredentialObservation,
-    identity: Option<crate::host_identity::HostIdentity>,
+    identity: Option<crate::device_identity::DeviceIdentity>,
 ) -> Value {
     let waiting = observed.is_none();
     let mut value = public_snapshot(
@@ -1171,7 +1171,7 @@ fn observed_snapshot(
 fn public_snapshot(
     mut d: Document,
     stored: Result<Option<u64>, String>,
-    identity: Option<crate::host_identity::HostIdentity>,
+    identity: Option<crate::device_identity::DeviceIdentity>,
 ) -> Value {
     let connected = match stored {
         Ok(expires_at) => expires_at.is_some_and(|expiry| expiry > now()),
@@ -1181,10 +1181,10 @@ fn public_snapshot(
         }
     };
     if d.session != session() {
-        d.operations = d.workspaces.iter().map(|w|json!({"workspace":w["workspace"],"status":"failed","message":"GitHub access must be verified for this app session.","canRetry":true})).collect();
+        d.operations = d.computers.iter().map(|w|json!({"computer":w["computer"],"status":"failed","message":"GitHub access must be verified for this app session.","canRetry":true})).collect();
     }
 
-    json!({"policyRevision":d.revision,"personalToken":personal_token::status(),"state":if CONNECTING.load(Ordering::SeqCst){"connecting"}else if connected{"connected"}else{"disconnected"},"account":d.account,"accessEnabled":d.access_enabled,"hostIdentity":identity,"repositoryCatalog":d.repositories.iter().filter_map(|r|r["name"].as_str()).collect::<Vec<_>>(),"repositoryCatalogStatus":match &d.catalog_error { Some(message)=>json!({"status":"unavailable","message":message,"canRetry":true}),None=>json!({"status":"available"})},"workspaces":d.workspaces,"workspaceOperations":d.operations})
+    json!({"policyRevision":d.revision,"personalToken":personal_token::status(),"state":if CONNECTING.load(Ordering::SeqCst){"connecting"}else if connected{"connected"}else{"disconnected"},"account":d.account,"accessEnabled":d.access_enabled,"deviceIdentity":identity,"repositoryCatalog":d.repositories.iter().filter_map(|r|r["name"].as_str()).collect::<Vec<_>>(),"repositoryCatalogStatus":match &d.catalog_error { Some(message)=>json!({"status":"unavailable","message":message,"canRetry":true}),None=>json!({"status":"available"})},"computers":d.computers,"computerOperations":d.operations})
 }
 type TokenLedger = std::collections::HashMap<String, Vec<String>>;
 fn ledger_entry() -> Result<keyring::Entry, String> {
@@ -1216,9 +1216,9 @@ fn save_ledger(entry: &keyring::Entry, ledger: &TokenLedger) -> Result<(), Strin
 }
 // Record each successful issuance before making another network request. A
 // later partial failure must not lose the only copy needed for revocation.
-fn remember_token(app: &tauri::AppHandle, workspace: &str, token: &str) -> Result<(), String> {
+fn remember_token(app: &tauri::AppHandle, computer: &str, token: &str) -> Result<(), String> {
     let entry = ledger_entry()?;
-    append_ledger_token(&LEDGER_SECRET, &entry, workspace, token)?;
+    append_ledger_token(&LEDGER_SECRET, &entry, computer, token)?;
     let _state = serialize(&STATE);
     let mut document = load(app)?;
     document.grants_issued = true;
@@ -1227,8 +1227,8 @@ fn remember_token(app: &tauri::AppHandle, workspace: &str, token: &str) -> Resul
 fn profile(grants: &[RuntimeGrant]) -> Value {
     json!({"version":1,"owners":grants.iter().filter(|g| !g.read_token.is_empty()).map(|g|json!({"login":g.owner_login,"repositoryIds":g.repository_ids,"readToken":g.read_token,"writeToken":g.write_token,"expiresAt":g.expires_at})).collect::<Vec<_>>()})
 }
-fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> {
-    let key = active_key(app, workspace)?;
+fn retire_unused(app: &tauri::AppHandle, computer: &str) -> Result<(), String> {
+    let key = active_key(app, computer)?;
     let retained: Vec<String> = active()
         .lock()
         .map_err(|_| "GitHub state is unavailable.")?
@@ -1237,13 +1237,13 @@ fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> 
         .flatten()
         .flat_map(|g| std::iter::once(g.read_token.clone()).chain(g.write_token.clone()))
         .collect();
-    let mut live = crate::runtime::scoped_cached_tokens(app, workspace)?;
+    let mut live = crate::runtime::scoped_cached_tokens(app, computer)?;
     live.extend(retained);
     let d = load(app)?;
     let scopes = d
-        .workspaces
+        .computers
         .iter()
-        .find(|w| w["workspace"].as_str() == Some(workspace))
+        .find(|w| w["computer"].as_str() == Some(computer))
         .and_then(|w| scopes(&d, w).ok())
         .unwrap_or_default();
     if let Some(tokens) = issued()
@@ -1263,7 +1263,7 @@ fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> 
     retire_ledger_tokens(
         &LEDGER_SECRET,
         &entry,
-        workspace,
+        computer,
         |token| {
             live.contains(token)
                 || retirement()
@@ -1278,13 +1278,13 @@ fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> 
 fn append_ledger_token(
     secret: &SessionSecret<TokenLedger>,
     entry: &keyring::Entry,
-    workspace: &str,
+    computer: &str,
     token: &str,
 ) -> Result<(), String> {
     secret.update(
         || read_ledger(entry),
         |ledger| {
-            let tokens = ledger.entry(workspace.into()).or_default();
+            let tokens = ledger.entry(computer.into()).or_default();
             if !tokens.iter().any(|previous| previous == token) {
                 tokens.push(token.into());
             }
@@ -1295,12 +1295,12 @@ fn append_ledger_token(
 fn retire_ledger_tokens(
     secret: &SessionSecret<TokenLedger>,
     entry: &keyring::Entry,
-    workspace: &str,
+    computer: &str,
     live: impl Fn(&str) -> bool,
     mut revoke: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
     let ledger = secret.read(|| read_ledger(entry))?;
-    let tokens = ledger.get(workspace).cloned().unwrap_or_default();
+    let tokens = ledger.get(computer).cloned().unwrap_or_default();
     let mut failure = None;
     let mut revoked = Vec::new();
     for token in tokens {
@@ -1314,23 +1314,23 @@ fn retire_ledger_tokens(
             }
         }
     }
-    forget_ledger_tokens(secret, entry, workspace, &revoked)?;
+    forget_ledger_tokens(secret, entry, computer, &revoked)?;
     failure.map_or(Ok(()), Err)
 }
 
 fn forget_ledger_tokens(
     secret: &SessionSecret<TokenLedger>,
     entry: &keyring::Entry,
-    workspace: &str,
+    computer: &str,
     revoked: &[String],
 ) -> Result<(), String> {
     secret.update(
         || read_ledger(entry),
         |ledger| {
-            if let Some(tokens) = ledger.get_mut(workspace) {
+            if let Some(tokens) = ledger.get_mut(computer) {
                 tokens.retain(|token| !revoked.contains(token));
                 if tokens.is_empty() {
-                    ledger.remove(workspace);
+                    ledger.remove(computer);
                 }
             }
         },
@@ -1358,9 +1358,9 @@ fn finish_application(
     (combined, identity)
 }
 
-/// Settings are re-applied when the user changed them, once per app session, after a sandbox
-/// restore, or when this sandbox's own grants are about to expire or its last attempt failed.
-/// A global deadline reached by another sandbox's retry must not re-apply unchanged settings.
+/// Settings are re-applied when the user changed them, once per app session, after a computer
+/// restore, or when this computer's own grants are about to expire or its last attempt failed.
+/// A global deadline reached by another computer's retry must not re-apply unchanged settings.
 fn access_update_due(
     d: &Document,
     name: &str,
@@ -1377,17 +1377,17 @@ fn access_update_due(
     let verified = d
         .operations
         .iter()
-        .any(|op| op["workspace"].as_str() == Some(name) && op["status"] == "succeeded");
+        .any(|op| op["computer"].as_str() == Some(name) && op["status"] == "succeeded");
     !verified
         || previous
             .iter()
             .any(|g| g.expires_at.saturating_sub(120) <= at)
 }
-/// Whether `identity` is still the saved Git identity for this sandbox.
+/// Whether `identity` is still the saved Git identity for this computer.
 fn identity_is_current(d: &Document, name: &str, identity: &Value) -> bool {
-    d.workspaces
+    d.computers
         .iter()
-        .any(|w| w["workspace"].as_str() == Some(name) && w["identity"] == *identity)
+        .any(|w| w["computer"].as_str() == Some(name) && w["identity"] == *identity)
 }
 /// How long the worker can sleep before `worker_due` can next become true for `d`.
 fn worker_wait(d: &Document, pending: Option<Instant>, at: u64, instant: Instant) -> Duration {
@@ -1417,7 +1417,7 @@ fn is_pending_restore(app: &tauri::AppHandle, name: &str) -> bool {
 fn apply(
     app: &tauri::AppHandle,
     _document: &mut Document,
-    workspace: Option<&str>,
+    computer: Option<&str>,
     apply_identity: bool,
 ) -> Result<(), String> {
     let d = {
@@ -1437,13 +1437,13 @@ fn apply(
     } else {
         now() + 3600
     };
-    for w in &d.workspaces {
-        let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
-        if workspace.is_some_and(|target| target != name) {
+    for w in &d.computers {
+        let name = w["computer"].as_str().ok_or("Invalid computer policy.")?;
+        if computer.is_some_and(|target| target != name) {
             continue;
         }
-        // A sandbox pending checkpoint restore has no runtime yet. Its saved choices stay
-        // pending and apply when it starts (`workspace_restored`); this is not a failure.
+        // A computer pending checkpoint restore has no runtime yet. Its saved choices stay
+        // pending and apply when it starts (`computer_restored`); this is not a failure.
         if is_pending_restore(app, name) {
             let _state = serialize(&STATE);
             let mut current = load(app)?;
@@ -1451,11 +1451,11 @@ fn apply(
                 && current
                     .operations
                     .iter()
-                    .any(|op| op["workspace"].as_str() == Some(name))
+                    .any(|op| op["computer"].as_str() == Some(name))
             {
                 current
                     .operations
-                    .retain(|op| op["workspace"].as_str() != Some(name));
+                    .retain(|op| op["computer"].as_str() != Some(name));
                 save(app, &current)?;
             }
             continue;
@@ -1505,7 +1505,7 @@ fn apply(
             }
         }
         let result = if access_requested {
-            let result = if let Some(error) = narrowing_error.for_workspace(name) {
+            let result = if let Some(error) = narrowing_error.for_computer(name) {
                 Err(error.clone())
             } else if personal_token::selected(w) {
                 personal_token::apply(app, name, d.revision)
@@ -1581,7 +1581,7 @@ fn apply(
         .0;
         let operation = match result {
             Ok(()) => {
-                json!({"workspace":name,"status":"succeeded","message":"GitHub access verified."})
+                json!({"computer":name,"status":"succeeded","message":"GitHub access verified."})
             }
             Err(message) => {
                 let retry = crate::github_http::retry_at();
@@ -1590,12 +1590,12 @@ fn apply(
                 } else {
                     now() + 300
                 });
-                json!({"workspace":name,"status":"failed","message":message,"canRetry":true})
+                json!({"computer":name,"status":"failed","message":message,"canRetry":true})
             }
         };
         current
             .operations
-            .retain(|op| op["workspace"].as_str() != Some(name));
+            .retain(|op| op["computer"].as_str() != Some(name));
         current.operations.push(operation);
         current.session = session().into();
         current.refresh_at = refresh_at;
@@ -1604,16 +1604,16 @@ fn apply(
     Ok(())
 }
 
-fn validate(workspaces: &[Value]) -> Result<(), String> {
-    if workspaces.len() > 64 {
-        return Err("Too many sandbox policies.".into());
+fn validate(computers: &[Value]) -> Result<(), String> {
+    if computers.len() > 64 {
+        return Err("Too many computer policies.".into());
     };
     let mut names = std::collections::HashSet::new();
-    for w in workspaces {
-        let fields = w.as_object().ok_or("Invalid sandbox policy.")?;
+    for w in computers {
+        let fields = w.as_object().ok_or("Invalid computer policy.")?;
         if fields.keys().any(|k| {
             ![
-                "workspace",
+                "computer",
                 "identity",
                 "repositories",
                 "repositoryMode",
@@ -1622,15 +1622,15 @@ fn validate(workspaces: &[Value]) -> Result<(), String> {
             ]
             .contains(&k.as_str())
         }) {
-            return Err("Unknown sandbox policy field.".into());
+            return Err("Unknown computer policy field.".into());
         }
         if serde_json::to_vec(w).map_or(true, |b| b.len() > 1024 * 1024) {
-            return Err("Sandbox policy is too large.".into());
+            return Err("Computer policy is too large.".into());
         }
-        let name = w["workspace"]
+        let name = w["computer"]
             .as_str()
             .filter(|s| !s.is_empty() && s.len() <= 200)
-            .ok_or("Missing sandbox name.")?;
+            .ok_or("Missing computer name.")?;
         crate::runtime::validate_name(name).map_err(|error| error.to_string())?;
         let identity = w["identity"]
             .as_object()
@@ -1650,7 +1650,7 @@ fn validate(workspaces: &[Value]) -> Result<(), String> {
             return Err("Invalid Git identity settings.".into());
         }
         if !names.insert(name) {
-            return Err("Duplicate sandbox policy.".into());
+            return Err("Duplicate computer policy.".into());
         };
         if !matches!(w["repositoryMode"].as_str(), Some("all" | "selected")) {
             return Err("Choose selected or all repositories.".into());
@@ -1828,9 +1828,9 @@ fn runtime_grants_for(
             }
             mint(
                 app,
-                policy["workspace"]
+                policy["computer"]
                     .as_str()
-                    .ok_or("Invalid sandbox policy.")?,
+                    .ok_or("Invalid computer policy.")?,
                 credential.as_ref().ok_or("Connect GitHub first.")?,
                 scope,
                 write,
@@ -1885,12 +1885,12 @@ fn reconcile_grants(
 
 fn mint(
     app: &tauri::AppHandle,
-    workspace: &str,
+    computer: &str,
     c: &Credential,
     s: &GrantScope,
     write: bool,
 ) -> Result<(String, u64), String> {
-    let key = active_key(app, workspace)?;
+    let key = active_key(app, computer)?;
     if let Some(token) = issued()
         .lock()
         .map_err(|_| "GitHub state is unavailable.")?
@@ -1900,18 +1900,18 @@ fn mint(
     {
         return Ok((token.token, token.expires_at));
     }
-    let response = crate::github_tokens::execute_for_workspace(
+    let response = crate::github_tokens::execute_for_computer(
         &token_configuration()?,
         Operation::Scope,
         json!({"accessToken":c.access_token,"ownerId":s.owner,"repositoryIds":if s.all{vec![]}else if write{s.writes.clone()}else{s.ids.clone()},"allRepositories":s.all,"allowChanges":write}),
-        workspace,
+        computer,
     )?;
     let token = response["accessToken"]
         .as_str()
         .filter(|s| !s.is_empty())
         .ok_or("GitHub returned no restricted credential.")?
         .to_owned();
-    if let Err(error) = remember_token(app, workspace, &token) {
+    if let Err(error) = remember_token(app, computer, &token) {
         let _ = token_operation(Operation::RevokeToken, json!({"accessToken":token}));
         return Err(error);
     }
@@ -1968,33 +1968,33 @@ fn narrow(grants: &[RuntimeGrant], desired: &[GrantScope]) -> Vec<RuntimeGrant> 
         })
         .collect()
 }
-/// Per-workspace narrowing failures. One VM's failure never leaves other VMs with
-/// authority, and never blocks grants for the other VMs.
+/// Per-computer narrowing failures. One computer's failure never leaves other computers with
+/// authority, and never blocks grants for the other computers.
 #[derive(Default, Debug)]
 pub(super) struct NarrowErrors {
-    workspaces: std::collections::BTreeMap<String, String>,
+    computers: std::collections::BTreeMap<String, String>,
     all: Option<String>,
 }
 impl NarrowErrors {
-    pub(super) fn record(&mut self, workspace: &str, error: String) {
-        self.workspaces.entry(workspace.into()).or_insert(error);
+    pub(super) fn record(&mut self, computer: &str, error: String) {
+        self.computers.entry(computer.into()).or_insert(error);
     }
-    /// A failure that is not specific to one workspace.
+    /// A failure that is not specific to one computer.
     pub(super) fn record_all(&mut self, error: String) {
         self.all.get_or_insert(error);
     }
-    fn for_workspace(&self, workspace: &str) -> Option<&String> {
-        self.workspaces.get(workspace).or(self.all.as_ref())
+    fn for_computer(&self, computer: &str) -> Option<&String> {
+        self.computers.get(computer).or(self.all.as_ref())
     }
     pub(super) fn into_result(self) -> Result<(), String> {
-        match self.all.or_else(|| self.workspaces.into_values().next()) {
+        match self.all.or_else(|| self.computers.into_values().next()) {
             Some(error) => Err(error),
             None => Ok(()),
         }
     }
 }
-/// Run `detach` for every workspace, recording each failure under its own workspace.
-pub(super) fn each_workspace<'a, T: 'a>(
+/// Run `detach` for every computer, recording each failure under its own computer.
+pub(super) fn each_computer<'a, T: 'a>(
     items: impl IntoIterator<Item = (&'a str, T)>,
     errors: &mut NarrowErrors,
     mut detach: impl FnMut(&str, T) -> Result<(), String>,
@@ -2005,12 +2005,12 @@ pub(super) fn each_workspace<'a, T: 'a>(
         }
     }
 }
-/// A removed VM has no authority left to detach. Its cache entry is dropped instead of
+/// A removed computer has no authority left to detach. Its cache entry is dropped instead of
 /// failing every later narrowing until the app restarts.
-fn vm_removed(app: &tauri::AppHandle, name: &str) -> bool {
+fn is_device_removed(app: &tauri::AppHandle, name: &str) -> bool {
     crate::runtime::runtime_paths(app).is_ok_and(|paths| {
         matches!(
-            crate::runtime::resolve_vm_id(&paths, name),
+            crate::runtime::resolve_computer_id(&paths, name),
             Err(crate::runtime::RuntimeError::Invalid(_))
         )
     })
@@ -2021,7 +2021,7 @@ pub(super) fn detach_result(
     result: Result<(), String>,
 ) -> Result<(), String> {
     match result {
-        Err(_) if vm_removed(app, name) => Ok(()),
+        Err(_) if is_device_removed(app, name) => Ok(()),
         other => other,
     }
 }
@@ -2030,7 +2030,7 @@ fn narrow_now(app: &tauri::AppHandle, d: &mut Document) -> Result<(), String> {
 }
 fn narrow_each(app: &tauri::AppHandle, d: &Document) -> NarrowErrors {
     let mut errors = NarrowErrors::default();
-    // Token VMs and OAuth VMs are narrowed independently; neither blocks the other.
+    // Token computers and OAuth computers are narrowed independently; neither blocks the other.
     personal_token::narrow(app, d, &mut errors);
     let prefix = match path(app) {
         Ok(path) => format!("{}:", path.display()),
@@ -2040,8 +2040,8 @@ fn narrow_each(app: &tauri::AppHandle, d: &Document) -> NarrowErrors {
         }
     };
     if d.session != session() && d.grants_issued {
-        for w in &d.workspaces {
-            if let Some(name) = w["workspace"].as_str() {
+        for w in &d.computers {
+            if let Some(name) = w["computer"].as_str() {
                 let attached = match active_key(app, name).and_then(|key| {
                     Ok(active()
                         .lock()
@@ -2076,9 +2076,9 @@ fn narrow_each(app: &tauri::AppHandle, d: &Document) -> NarrowErrors {
     for (key, previous) in cached.iter().filter(|(key, _)| key.starts_with(&prefix)) {
         let name = &key[prefix.len()..];
         let desired = d
-            .workspaces
+            .computers
             .iter()
-            .find(|w| w["workspace"].as_str() == Some(name))
+            .find(|w| w["computer"].as_str() == Some(name))
             .map(|w| scopes(d, w))
             .transpose()
             .map(Option::unwrap_or_default);
@@ -2091,7 +2091,7 @@ fn narrow_each(app: &tauri::AppHandle, d: &Document) -> NarrowErrors {
         if retained != *previous {
             let result =
                 crate::runtime::apply_github_policy(app, name, d.revision, &profile(&retained));
-            if result.is_err() && vm_removed(app, name) {
+            if result.is_err() && is_device_removed(app, name) {
                 if let Ok(mut active) = active().lock() {
                     active.remove(key);
                 }
@@ -2177,7 +2177,7 @@ impl HostPushCredential {
 }
 impl Drop for HostPushCredential {
     fn drop(&mut self) {
-        if let Some((_app, workspace)) = self.retire.take() {
+        if let Some((_app, computer)) = self.retire.take() {
             let result = retire_host_push_token(
                 &self.token,
                 |token| {
@@ -2186,7 +2186,7 @@ impl Drop for HostPushCredential {
                 },
                 |token| {
                     let entry = ledger_entry()?;
-                    forget_ledger_tokens(&LEDGER_SECRET, &entry, &workspace, &[token.into()])
+                    forget_ledger_tokens(&LEDGER_SECRET, &entry, &computer, &[token.into()])
                 },
             );
             if let Err(error) = result {
@@ -2238,7 +2238,7 @@ fn host_push_scope(access_token: &str, owner: u64, repository_id: u64) -> Value 
 /// Explicit host Push only: does not grant write access to the guest or modify its policy.
 pub(crate) fn host_push_credential(
     app: &tauri::AppHandle,
-    workspace: &str,
+    computer: &str,
     repository: &str,
 ) -> Result<HostPushCredential, String> {
     let _guard = crate::sync::lock_or_recover(&OPERATION, "GitHub operation");
@@ -2247,10 +2247,10 @@ pub(crate) fn host_push_credential(
         load(app)?
     };
     let policy = d
-        .workspaces
+        .computers
         .iter()
-        .find(|w| w["workspace"].as_str() == Some(workspace))
-        .ok_or("This sandbox has no GitHub repository authorization.")?;
+        .find(|w| w["computer"].as_str() == Some(computer))
+        .ok_or("This computer has no GitHub repository authorization.")?;
     validate(std::slice::from_ref(policy))?;
     // Disable access and the per-repository push grant apply to every sign-in method.
     if !d.access_enabled {
@@ -2311,10 +2311,10 @@ pub(crate) fn host_push_credential(
                 token,
                 repository: name,
                 expires_at: None,
-                retire: Some((app.clone(), workspace.into())),
+                retire: Some((app.clone(), computer.into())),
             };
             begin_host_push_token(retirement(), &credential.token, || {
-                remember_token(app, workspace, &credential.token)
+                remember_token(app, computer, &credential.token)
             })?;
             credential.expires_at = Some(token_expiry(&response)?);
             Ok(credential)
@@ -2334,7 +2334,7 @@ fn issue_host_push<T>(
     Ok(credential)
 }
 
-/// Host push publishes changes, so the sandbox needs a push (write) grant for
+/// Host push publishes changes, so the computer needs a push (write) grant for
 /// the repository, not only read access. GitHub names are case-insensitive.
 fn push_authorized(policy: &Value, repository: &str) -> Result<(), String> {
     let allowed = if policy["repositoryMode"].as_str() == Some("all") {
@@ -2352,7 +2352,7 @@ fn push_authorized(policy: &Value, repository: &str) -> Result<(), String> {
     if allowed {
         Ok(())
     } else {
-        Err("This sandbox is not allowed to push to this repository.".into())
+        Err("This computer is not allowed to push to this repository.".into())
     }
 }
 
@@ -2727,15 +2727,15 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         // Reconnecting creates a new account authorization. Never reuse old
         // grants, even if the account name and repository choices are identical.
         let prefix = format!("{}:", path(app)?.display());
-        // Best effort per VM: a stale policy (removed VM, VM needing recreation) must not
-        // drop the new credential. Failing VMs get a per-workspace error and are re-applied
+        // Best effort per computer: a stale policy (removed computer, computer needing recreation) must not
+        // drop the new credential. Failing computers get a per-computer error and are re-applied
         // with the new grants by the worker, which replaces the old profile.
         let mut detach_errors = NarrowErrors::default();
-        each_workspace(
-            d.workspaces
+        each_computer(
+            d.computers
                 .iter()
                 .filter(|w| !personal_token::selected(w))
-                .filter_map(|w| w["workspace"].as_str())
+                .filter_map(|w| w["computer"].as_str())
                 .map(|name| (name, ())),
             &mut detach_errors,
             |name, ()| {
@@ -2758,7 +2758,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             .as_deref()
             .is_some_and(|login| same_account(d.account.as_deref(), login));
         record_connection(&mut d, account, repos)?;
-        for (name, error) in detach_errors.workspaces {
+        for (name, error) in detach_errors.computers {
             d.access_errors.insert(name, error);
         }
         save(app, &d)?;
@@ -2830,8 +2830,8 @@ fn sweep_retirement(
 /// Re-establish host-only grants after relaunch and renew them before expiry.
 pub fn install(app: &tauri::AppHandle) {
     let _ = OBSERVATION_APP.set(app.clone());
-    // Start the first host identity read now so the first GitHub view already has it.
-    host_identity();
+    // Start the first device identity read now so the first GitHub view already has it.
+    device_identity();
     if let Ok(document) = load(app) {
         crate::github_http::restore_retry_floors(&document.rate_retry);
     }
@@ -2885,10 +2885,10 @@ pub fn install(app: &tauri::AppHandle) {
                                     Ok(repos) => {
                                         if current.repositories != repos {
                                             current.access_pending = current
-                                                .workspaces
+                                                .computers
                                                 .iter()
                                                 .filter_map(|w| {
-                                                    w["workspace"].as_str().map(str::to_owned)
+                                                    w["computer"].as_str().map(str::to_owned)
                                                 })
                                                 .collect();
                                         }
@@ -2952,7 +2952,7 @@ pub fn install(app: &tauri::AppHandle) {
                         let _state = serialize(&STATE);
                         if let Ok(mut current) = load(&app) {
                             current.session = session().into();
-                            if current.workspaces.is_empty() {
+                            if current.computers.is_empty() {
                                 current.refresh_at = now() + 3600;
                             }
                             let retry = crate::github_http::retry_at();
@@ -3232,24 +3232,24 @@ fn access_choice(policy: &Value) -> Value {
 fn mark_pending_for(d: &mut Document, names: &[String]) {
     for name in names {
         d.operations
-            .retain(|op| op["workspace"].as_str() != Some(name));
+            .retain(|op| op["computer"].as_str() != Some(name));
         d.operations.push(
-            json!({"workspace":name,"status":"applying","message":"Applying GitHub settings."}),
+            json!({"computer":name,"status":"applying","message":"Applying GitHub settings."}),
         );
     }
 }
 fn mark_pending(d: &mut Document) {
     d.access_pending = d
-        .workspaces
+        .computers
         .iter()
-        .filter_map(|w| w["workspace"].as_str().map(str::to_owned))
+        .filter_map(|w| w["computer"].as_str().map(str::to_owned))
         .collect();
     mark_pending_for(d, &d.access_pending.clone());
 }
-/// Apply saved sandbox choices as per-sandbox patches: sandboxes not listed keep their
+/// Apply saved computer choices as per-computer patches: computers not listed keep their
 /// choices (for example an assignment a fork just copied), and a patch built from a view
 /// older than a change it would overwrite is refused (see `stale_save`). Returns the
-/// sandboxes now pending, or `None` when nothing changed.
+/// computers now pending, or `None` when nothing changed.
 fn apply_patches(
     d: &mut Document,
     patches: &[Value],
@@ -3261,11 +3261,11 @@ fn apply_patches(
     let mut access_changed = d.access_pending.clone();
     let mut identity_changed = Vec::new();
     for w in patches {
-        let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
+        let name = w["computer"].as_str().ok_or("Invalid computer policy.")?;
         let previous = d
-            .workspaces
+            .computers
             .iter()
-            .find(|old| old["workspace"] == w["workspace"]);
+            .find(|old| old["computer"] == w["computer"]);
         if previous == Some(w) {
             continue;
         }
@@ -3288,22 +3288,22 @@ fn apply_patches(
     if changed_policies.is_empty() {
         return Ok(None);
     }
-    let mut workspaces = d.workspaces.clone();
+    let mut computers = d.computers.clone();
     for w in &changed_policies {
-        match workspaces
+        match computers
             .iter_mut()
-            .find(|old| old["workspace"] == w["workspace"])
+            .find(|old| old["computer"] == w["computer"])
         {
             Some(slot) => *slot = (*w).clone(),
-            None => workspaces.push((*w).clone()),
+            None => computers.push((*w).clone()),
         }
     }
-    validate(&workspaces)?;
+    validate(&computers)?;
     let revision = next_policy_revision(d.revision)?;
-    d.workspaces = workspaces;
+    d.computers = computers;
     d.revision = revision;
     for w in &changed_policies {
-        if let Some(name) = w["workspace"].as_str() {
+        if let Some(name) = w["computer"].as_str() {
             stamp(d, name, base);
         }
     }
@@ -3320,7 +3320,7 @@ fn apply_patches(
     d.access_pending = access_changed;
     Ok(Some(changed))
 }
-/// Save sandbox choices: `workspaces` holds only the sandboxes the caller changed, and
+/// Save computer choices: `computers` holds only the computers the caller changed, and
 /// `baseRevision` the `policyRevision` its view was based on. Access on/off is never
 /// changed here (a stale save must not undo Disable access); use
 /// `set_github_access_enabled`. An `accessEnabled` field is ignored.
@@ -3331,9 +3331,9 @@ pub async fn save_github_configuration(
     configuration: Value,
 ) -> Result<Value, String> {
     require_main(window.label())?;
-    let ws = configuration["workspaces"]
+    let ws = configuration["computers"]
         .as_array()
-        .ok_or("Missing sandbox policies.")?;
+        .ok_or("Missing computer policies.")?;
     validate(ws)?;
     let base = match &configuration["baseRevision"] {
         Value::Null => None,
@@ -3341,9 +3341,9 @@ pub async fn save_github_configuration(
     };
     let ticket = INTENTS.ticket();
     tauri::async_runtime::spawn_blocking(move || {
-        let ws = configuration["workspaces"]
+        let ws = configuration["computers"]
             .as_array()
-            .ok_or("Missing sandbox policies.")?;
+            .ok_or("Missing computer policies.")?;
         let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
@@ -3367,7 +3367,7 @@ pub async fn save_github_configuration(
         schedule(Duration::from_millis(500));
         if let Err(message) = result {
             for op in d.operations.iter_mut().filter(|op| {
-                op["workspace"]
+                op["computer"]
                     .as_str()
                     .is_some_and(|name| changed.iter().any(|changed| changed == name))
             }) {
@@ -3382,12 +3382,12 @@ pub async fn save_github_configuration(
     .await
     .map_err(|_| "GitHub operation failed.")?
 }
-fn prepare_retry(d: &mut Document, workspace: Option<&str>) {
+fn prepare_retry(d: &mut Document, computer: Option<&str>) {
     let names: Vec<String> = d
-        .workspaces
+        .computers
         .iter()
-        .filter_map(|w| w["workspace"].as_str())
-        .filter(|name| workspace.is_none_or(|target| target == *name))
+        .filter_map(|w| w["computer"].as_str())
+        .filter(|name| computer.is_none_or(|target| target == *name))
         .map(str::to_owned)
         .collect();
     for name in &names {
@@ -3405,7 +3405,7 @@ fn prepare_retry(d: &mut Document, workspace: Option<&str>) {
 pub async fn retry_github_configuration(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
-    workspace: Option<String>,
+    computer: Option<String>,
 ) -> Result<Value, String> {
     require_main(window.label())?;
     retry_credential_access();
@@ -3415,12 +3415,12 @@ pub async fn retry_github_configuration(
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
         let mut d = load(&app)?;
-        if let Some(workspace) = workspace.as_deref() {
-            crate::github_http::reset_workspace_retries(workspace);
+        if let Some(computer) = computer.as_deref() {
+            crate::github_http::reset_computer_retries(computer);
         } else {
             crate::github_http::reset_retries();
         }
-        prepare_retry(&mut d, workspace.as_deref());
+        prepare_retry(&mut d, computer.as_deref());
         save(&app, &d)?;
         schedule(Duration::ZERO);
         snapshot(&app)
@@ -3465,7 +3465,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let mut errors = super::NarrowErrors::default();
         let mut detached = Vec::new();
-        super::each_workspace([("a", 1), ("b", 2), ("c", 3)], &mut errors, |name, _| {
+        super::each_computer([("a", 1), ("b", 2), ("c", 3)], &mut errors, |name, _| {
             detached.push(name.to_owned());
             if name == "b" {
                 Err("b failed".into())
@@ -3475,20 +3475,20 @@ mod tests {
         });
         assert_eq!(detached, ["a", "b", "c"]);
         assert_eq!(
-            errors.for_workspace("b").map(String::as_str),
+            errors.for_computer("b").map(String::as_str),
             Some("b failed")
         );
-        assert_eq!(errors.for_workspace("a"), None);
-        assert_eq!(errors.for_workspace("c"), None);
+        assert_eq!(errors.for_computer("a"), None);
+        assert_eq!(errors.for_computer("c"), None);
         assert_eq!(errors.into_result(), Err("b failed".into()));
     }
     #[test]
-    fn a_general_narrowing_failure_applies_to_every_workspace() {
+    fn a_general_narrowing_failure_applies_to_every_computer() {
         let _test_state = crate::test_support::global_state();
         let mut errors = super::NarrowErrors::default();
         errors.record_all("storage".into());
         assert_eq!(
-            errors.for_workspace("any").map(String::as_str),
+            errors.for_computer("any").map(String::as_str),
             Some("storage")
         );
     }
@@ -3701,7 +3701,7 @@ mod tests {
         ));
     }
     fn saved_policy(name: &str, all: bool) -> Value {
-        json!({"workspace":name,"repositoryMode":if all {"all"} else {"selected"},"allRepositoriesAllowChanges":all,
+        json!({"computer":name,"repositoryMode":if all {"all"} else {"selected"},"allRepositoriesAllowChanges":all,
             "repositories":[],"identity":{"name":"","email":"","apply":false}})
     }
     #[test]
@@ -3713,7 +3713,7 @@ mod tests {
             "revision": 4,
             "accessEnabled": false,
             "account": "fixture-account",
-            "workspaces": [saved_policy("dev", false)],
+            "computers": [saved_policy("dev", false)],
             "futurePreference": {"mode": "newer", "enabled": true}
         });
         let bytes = serde_json::to_vec(&saved).unwrap();
@@ -3724,7 +3724,7 @@ mod tests {
         save_at(&path, &document).unwrap();
         let reloaded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
-        assert_eq!(reloaded["workspaces"], saved["workspaces"]);
+        assert_eq!(reloaded["computers"], saved["computers"]);
         assert_eq!(reloaded["account"], saved["account"]);
         assert!(load_at(&path).unwrap().access_enabled);
     }
@@ -3738,14 +3738,14 @@ mod tests {
         let document = load_at(&path).unwrap();
         assert!(!document.access_enabled);
         assert!(document.account.is_none());
-        assert!(document.workspaces.is_empty());
+        assert!(document.computers.is_empty());
         assert!(document.policy_stamps.is_empty());
         assert!(!document.grants_issued);
         save_at(&path, &document).unwrap();
         let reloaded = load_at(&path).unwrap();
         assert!(!reloaded.access_enabled);
         assert!(reloaded.account.is_none());
-        assert!(reloaded.workspaces.is_empty());
+        assert!(reloaded.computers.is_empty());
         assert!(reloaded.policy_stamps.is_empty());
         assert!(!reloaded.grants_issued);
     }
@@ -3771,7 +3771,7 @@ mod tests {
         for revision in [9_007_199_254_740_991, u64::MAX] {
             let mut d = Document {
                 revision,
-                workspaces: vec![saved_policy("dev", false)],
+                computers: vec![saved_policy("dev", false)],
                 ..Default::default()
             };
             let before = serde_json::to_value(&d).unwrap();
@@ -3788,7 +3788,7 @@ mod tests {
         let path = directory.path().join("github.json");
         let mut d = Document {
             revision: 9_007_199_254_740_990,
-            workspaces: vec![saved_policy("dev", false)],
+            computers: vec![saved_policy("dev", false)],
             ..Default::default()
         };
         assert!(
@@ -3806,23 +3806,23 @@ mod tests {
         );
     }
     #[test]
-    fn a_save_patches_only_its_sandboxes_and_never_changes_access() {
+    fn a_save_patches_only_its_computers_and_never_changes_access() {
         let _test_state = crate::test_support::global_state();
         let mut d = Document {
             revision: 5,
             access_enabled: false,
-            workspaces: vec![saved_policy("dev", false)],
+            computers: vec![saved_policy("dev", false)],
             ..Default::default()
         };
         // A fork copied its source's assignment after the page last read the settings.
-        d.workspaces.push(saved_policy("fork", true));
+        d.computers.push(saved_policy("fork", true));
         stamp(&mut d, "fork", None);
         let changed = apply_patches(&mut d, &[saved_policy("dev", true)], Some(4), true, false)
             .unwrap()
             .unwrap();
         assert_eq!(changed, vec!["dev".to_string()]);
         assert_eq!(
-            d.workspaces,
+            d.computers,
             vec![saved_policy("dev", true), saved_policy("fork", true)],
             "the fork's copied assignment was dropped"
         );
@@ -3850,7 +3850,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let mut d = Document {
             revision: 5,
-            workspaces: vec![saved_policy("fork", true)],
+            computers: vec![saved_policy("fork", true)],
             ..Default::default()
         };
         stamp(&mut d, "fork", None);
@@ -3858,7 +3858,7 @@ mod tests {
         assert!(
             apply_patches(&mut d, &[saved_policy("fork", false)], Some(4), true, false).is_err()
         );
-        assert_eq!(d.workspaces, vec![saved_policy("fork", true)]);
+        assert_eq!(d.computers, vec![saved_policy("fork", true)]);
         assert_eq!(d.revision, 5);
         // After seeing it, the same edit applies.
         assert!(
@@ -3872,7 +3872,7 @@ mod tests {
         assert!(apply_patches(&mut d, &[edit.clone()], Some(5), true, false)
             .unwrap()
             .is_some());
-        assert_eq!(d.workspaces, vec![edit.clone()]);
+        assert_eq!(d.computers, vec![edit.clone()]);
         // A save from a newer view wins over a later-arriving one from an older view.
         assert!(
             apply_patches(&mut d, &[saved_policy("fork", true)], Some(7), true, false)
@@ -3880,14 +3880,14 @@ mod tests {
                 .is_some()
         );
         assert!(apply_patches(&mut d, &[edit], Some(5), true, false).is_err());
-        // A deleted sandbox's stale choices are not brought back for a new one with its name.
-        forget_workspace(&mut d, "fork");
+        // A deleted computer's stale choices are not brought back for a new one with its name.
+        forget_computer(&mut d, "fork");
         d.revision += 1;
         stamp(&mut d, "fork", None);
         assert!(
             apply_patches(&mut d, &[saved_policy("fork", true)], Some(8), true, false).is_err()
         );
-        assert!(d.workspaces.is_empty());
+        assert!(d.computers.is_empty());
         // A caller without a base revision is not checked.
         assert!(
             apply_patches(&mut d, &[saved_policy("fork", true)], None, true, false)
@@ -3896,22 +3896,22 @@ mod tests {
         );
     }
     #[test]
-    fn a_deleted_sandbox_leaves_no_assignment_or_attachment_for_a_new_one_with_its_name() {
+    fn a_deleted_computer_leaves_no_assignment_or_attachment_for_a_new_one_with_its_name() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let document = directory.path().join("github.json");
         let policy = |name: &str| {
-            json!({"workspace":name,"repositoryMode":"all","allRepositoriesAllowChanges":true,"repositories":[],
+            json!({"computer":name,"repositoryMode":"all","allRepositoriesAllowChanges":true,"repositories":[],
             "identity":{"name":"","email":"","apply":false}})
         };
         let d = Document {
             revision: 4,
             access_enabled: true,
-            workspaces: vec![policy("dev"), policy("other")],
+            computers: vec![policy("dev"), policy("other")],
             access_pending: vec!["dev".into()],
             identity_pending: vec!["dev".into()],
             operations: vec![
-                json!({"workspace":"dev","status":"failed","message":"old","canRetry":true}),
+                json!({"computer":"dev","status":"failed","message":"old","canRetry":true}),
             ],
             access_errors: [("dev".to_string(), "old".to_string())].into(),
             identity_errors: [("dev".to_string(), "old".to_string())].into(),
@@ -3935,11 +3935,11 @@ mod tests {
             }],
         );
         use_test_document(Some(document.clone()));
-        let result = workspace_removed("dev");
+        let result = computer_removed("dev");
         use_test_document(None);
         result.unwrap();
         let after = load_at(&document).unwrap();
-        assert_eq!(after.workspaces, vec![policy("other")]);
+        assert_eq!(after.computers, vec![policy("other")]);
         assert!(after.access_pending.is_empty() && after.identity_pending.is_empty());
         assert!(
             after.operations.is_empty()
@@ -3947,14 +3947,14 @@ mod tests {
                 && after.identity_errors.is_empty()
         );
         assert!(after.revision > 4);
-        // No grant or issued token of the deleted sandbox is reused or kept live; the
+        // No grant or issued token of the deleted computer is reused or kept live; the
         // retirement ledger revokes them because no policy names "dev" any more.
         assert!(!active().lock().unwrap().contains_key(&key));
         assert!(!issued().lock().unwrap().contains_key(&key));
-        assert!(after.workspaces.iter().all(|w| w["workspace"] != "dev"));
+        assert!(after.computers.iter().all(|w| w["computer"] != "dev"));
         *PENDING.get_or_init(|| Mutex::new(None)).lock().unwrap() = None;
         // Without an installed document there is nothing to forget.
-        assert!(workspace_removed("dev").is_ok());
+        assert!(computer_removed("dev").is_ok());
     }
     #[test]
     fn idle_worker_sleeps_until_its_next_deadline_instead_of_polling() {
@@ -4027,13 +4027,13 @@ mod tests {
         assert_eq!(d.refresh_at, 160);
     }
     #[test]
-    fn verified_sandbox_is_not_reapplied_at_another_sandboxs_retry_deadline() {
+    fn verified_computer_is_not_reapplied_at_another_sandboxs_retry_deadline() {
         let _test_state = crate::test_support::global_state();
         let mut d = Document {
             session: session().into(),
             refresh_at: 160,
             operations: vec![
-                json!({"workspace":"dev","status":"succeeded","message":"GitHub access verified."}),
+                json!({"computer":"dev","status":"succeeded","message":"GitHub access verified."}),
             ],
             ..Document::default()
         };
@@ -4065,9 +4065,9 @@ mod tests {
         assert!(access_update_due(&d, "dev", 100, false, &[grant(3600)]));
     }
     #[test]
-    fn restored_sandbox_is_taken_once() {
+    fn restored_computer_is_taken_once() {
         let _test_state = crate::test_support::global_state();
-        workspace_restored("restored-once");
+        computer_restored("restored-once");
         assert!(take_restored("restored-once"));
         assert!(!take_restored("restored-once"));
     }
@@ -4080,7 +4080,7 @@ mod tests {
             account: Some("owner".into()),
             refresh_at: 3600,
             catalog_refresh_at: 300,
-            workspaces: vec![json!({"repositoryMode":"all"})],
+            computers: vec![json!({"repositoryMode":"all"})],
             ..Default::default()
         };
         assert!(!worker_due(&d, None, 299, Instant::now()));
@@ -4267,11 +4267,11 @@ mod tests {
         let old = json!({"name":"Old","email":"old@example.test","apply":true});
         let new = json!({"name":"New","email":"new@example.test","apply":true});
         let mut d = Document {
-            workspaces: vec![json!({"workspace":"dev","identity":old.clone()})],
+            computers: vec![json!({"computer":"dev","identity":old.clone()})],
             ..Default::default()
         };
         assert!(identity_is_current(&d, "dev", &old));
-        d.workspaces[0]["identity"] = new.clone();
+        d.computers[0]["identity"] = new.clone();
         assert!(!identity_is_current(&d, "dev", &old));
         assert!(identity_is_current(&d, "dev", &new));
         assert!(!identity_is_current(&d, "other", &new));
@@ -4514,16 +4514,16 @@ mod tests {
         let mut d = Document {
             session: session().into(),
             refresh_at: now() + 3600,
-            workspaces: vec![
+            computers: vec![
                 saved_policy("retry", false),
                 saved_policy("pending", false),
                 saved_policy("healthy", false),
             ],
             access_pending: vec!["pending".into()],
             operations: vec![
-                json!({"workspace":"retry","status":"failed"}),
-                json!({"workspace":"pending","status":"applying"}),
-                json!({"workspace":"healthy","status":"succeeded"}),
+                json!({"computer":"retry","status":"failed"}),
+                json!({"computer":"pending","status":"applying"}),
+                json!({"computer":"healthy","status":"succeeded"}),
             ],
             ..Default::default()
         };
@@ -4532,19 +4532,19 @@ mod tests {
         assert!(access_update_due(&d, "pending", now(), false, &[]));
         assert!(access_update_due(&d, "retry", now(), false, &[]));
         assert_eq!(
-            d.operations.iter().find(|op| op["workspace"] == "healthy"),
+            d.operations.iter().find(|op| op["computer"] == "healthy"),
             Some(&healthy)
         );
         assert!(!access_update_due(&d, "healthy", now(), false, &[]));
     }
 
     #[test]
-    fn unrelated_owner_and_vm_status_stays_unchanged() {
+    fn unrelated_owner_and_computer_status_stays_unchanged() {
         let _test_state = crate::test_support::global_state();
         let mut d = Document {
             operations: vec![
-                json!({"workspace":"dev","status":"succeeded"}),
-                json!({"workspace":"other","status":"succeeded"}),
+                json!({"computer":"dev","status":"succeeded"}),
+                json!({"computer":"other","status":"succeeded"}),
             ],
             ..Default::default()
         };
@@ -4552,7 +4552,7 @@ mod tests {
         assert_eq!(
             d.operations
                 .iter()
-                .find(|op| op["workspace"] == "other")
+                .find(|op| op["computer"] == "other")
                 .unwrap()["status"],
             "succeeded"
         );
@@ -4614,7 +4614,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let d = Document {
             session: session().into(),
-            operations: vec![json!({"workspace":"dev","status":"succeeded"})],
+            operations: vec![json!({"computer":"dev","status":"succeeded"})],
             ..Default::default()
         };
         let state = public_snapshot(
@@ -4624,7 +4624,7 @@ mod tests {
         );
         assert_eq!(state["state"], "disconnected");
         assert_eq!(state["repositoryCatalogStatus"]["status"], "unavailable");
-        assert_eq!(state["workspaceOperations"][0]["status"], "succeeded");
+        assert_eq!(state["computerOperations"][0]["status"], "succeeded");
     }
     #[test]
     fn pending_push_retirement_retries_without_grant_renewal_or_enabled_access() {
@@ -4639,7 +4639,7 @@ mod tests {
                 access_enabled: enabled,
                 refresh_at: 3600,
                 catalog_refresh_at: 3600,
-                workspaces: vec![json!({"workspace":"dev"})],
+                computers: vec![json!({"computer":"dev"})],
                 ..Document::default()
             };
             assert!(!worker_due(&d, None, 30, Instant::now()));
@@ -4888,12 +4888,12 @@ mod tests {
         let mut document = Document::default();
         record_connection(&mut document, Some("account".into()), vec![]).unwrap();
         assert!(document.access_enabled);
-        assert!(document.workspaces.is_empty());
+        assert!(document.computers.is_empty());
         assert!(document.access_pending.is_empty());
 
         document.access_enabled = false;
         document.disconnect_pending = true;
-        document.workspaces = vec![json!({"workspace":"dev"})];
+        document.computers = vec![json!({"computer":"dev"})];
         record_connection(&mut document, Some("account".into()), vec![]).unwrap();
         assert!(document.access_enabled);
         assert!(!document.disconnect_pending);
@@ -4908,16 +4908,16 @@ mod tests {
             session: session().into(),
             access_enabled: true,
             account: Some("owner".into()),
-            workspaces: vec![json!({"repositoryMode":"all"})],
+            computers: vec![json!({"repositoryMode":"all"})],
             catalog_refresh_at: 100,
             refresh_at: 3600,
             ..Default::default()
         };
         assert!(!catalog_refresh_due(&d, 99));
         assert!(catalog_refresh_due(&d, 100));
-        d.workspaces[0]["repositoryMode"] = json!("selected");
+        d.computers[0]["repositoryMode"] = json!("selected");
         assert!(worker_due(&d, None, 100, Instant::now()));
-        d.workspaces.clear();
+        d.computers.clear();
         assert!(worker_due(&d, None, 100, Instant::now()));
         d.access_enabled = false;
         assert!(!catalog_refresh_due(&d, 100));
@@ -5283,13 +5283,13 @@ mod tests {
     #[test]
     fn reject_ambiguous_policy() {
         let _test_state = crate::test_support::global_state();
-        assert!(validate(&[json!({"workspace":"a","repositoryMode":"all","allRepositoriesAllowChanges":false,"repositories":[],"identity":{"name":"","email":"","apply":false}})]).is_ok());
-        assert!(validate(&[json!({"workspace":"a","repositoryMode":"anything","allRepositoriesAllowChanges":false,"repositories":[]})]).is_err());
+        assert!(validate(&[json!({"computer":"a","repositoryMode":"all","allRepositoriesAllowChanges":false,"repositories":[],"identity":{"name":"","email":"","apply":false}})]).is_ok());
+        assert!(validate(&[json!({"computer":"a","repositoryMode":"anything","allRepositoriesAllowChanges":false,"repositories":[]})]).is_err());
     }
     #[test]
     fn rejects_unknown_nested_policy_data_and_invalid_identity() {
         let _test_state = crate::test_support::global_state();
-        let good = json!({"workspace":"dev","repositoryMode":"selected","allRepositoriesAllowChanges":false,
+        let good = json!({"computer":"dev","repositoryMode":"selected","allRepositoriesAllowChanges":false,
             "repositories":[{"repository":"owner/repo","allowPushes":false}],
             "identity":{"name":"Name","email":"name@example.invalid","apply":true}});
         assert!(validate(&[good.clone()]).is_ok());
@@ -5388,12 +5388,12 @@ mod tests {
     #[test]
     fn nullable_github_authentication_matches_wire_contract() {
         let _test_state = crate::test_support::global_state();
-        let workspaces = [Value::Null, json!("oauth"), json!("token")]
+        let computers = [Value::Null, json!("oauth"), json!("token")]
             .into_iter()
             .enumerate()
             .map(|(index, method)| {
                 json!({
-                    "workspace": format!("dev-{index}"),
+                    "computer": format!("dev-{index}"),
                     "authenticationMethod": method,
                     "repositoryMode": "selected",
                     "allRepositoriesAllowChanges": false,
@@ -5402,10 +5402,10 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-        validate(&workspaces).unwrap();
+        validate(&computers).unwrap();
         let document = Document {
             session: session().into(),
-            workspaces,
+            computers,
             ..Default::default()
         };
         let state = public_snapshot(document, Ok(None), None);
@@ -5424,9 +5424,9 @@ mod tests {
                 access_enabled: true,
                 account: Some("test-account".into()),
                 session: session().into(),
-                workspaces: expected["workspaces"].as_array().unwrap().clone(),
+                computers: expected["computers"].as_array().unwrap().clone(),
                 repositories: vec![json!({"id":1,"ownerId":2,"name":"test-owner/repo"})],
-                operations: expected["workspaceOperations"].as_array().unwrap().clone(),
+                operations: expected["computerOperations"].as_array().unwrap().clone(),
                 ..Default::default()
             };
             let stored = if expected["state"] == "connected" {

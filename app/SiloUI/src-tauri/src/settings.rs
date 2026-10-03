@@ -248,7 +248,7 @@ fn valid_setting(key: &str, value: &Value) -> Option<bool> {
         "launchAtLogin"
         | "onboardingComplete"
         | "alphaNoticeDismissed"
-        | "startWorkspacesAtLaunch"
+        | "startComputersAtLaunch"
         | "reduceMotion"
         | "computerUseAutoApproval"
         | "notificationsEnabled"
@@ -271,11 +271,11 @@ fn valid_setting(key: &str, value: &Value) -> Option<bool> {
                         .as_str()
                         .is_some_and(|path| Path::new(path).is_absolute()))
         }
-        "startupWorkspaceIds" => value.as_array().is_some_and(|ids| {
+        "startupComputerIds" => value.as_array().is_some_and(|ids| {
             ids.len() <= 256 && ids.iter().all(|id| bounded_string(id, 256, false))
         }),
-        // This computer's sandbox list order, local and remote; the UI owns the keys.
-        "sandboxOrder" => value.as_array().is_some_and(|keys| {
+        // This device's computer list order, local and remote; the UI owns the keys.
+        "computerOrder" => value.as_array().is_some_and(|keys| {
             keys.len() <= 1024 && keys.iter().all(|key| bounded_string(key, 512, false))
         }),
         _ => return None,
@@ -313,93 +313,64 @@ fn valid_name(value: &Value) -> bool {
     })
 }
 
-fn valid_machine(value: &Value, unfinished: bool) -> bool {
-    let Some(machine) = value.as_object() else {
+fn valid_computer(value: &Value, unfinished: bool) -> bool {
+    let Some(configuration) = value.as_object() else {
         return false;
     };
-    let fields = match machine.get("kind").and_then(Value::as_str) {
-        Some("vm") => &[
-            "id",
-            "kind",
-            "name",
-            "cpus",
-            "maxCPUs",
-            "memoryGiB",
-            "maxMemoryGiB",
-            "workspaceStorageGiB",
-            "runtimeStorageGiB",
-        ][..],
-        Some("ssh") => &["id", "kind", "name", "host", "user", "port"][..],
-        _ => return false,
-    };
-    let optional = if machine["kind"] == "vm" {
-        &["desktop"][..]
-    } else {
-        &[][..]
-    };
-    if !only_fields(machine, fields, optional)
-        || machine.get("desktop").is_some_and(|desktop| {
-            desktop.get("startWithSandbox").is_none()
+    let fields = &[
+        "id",
+        "name",
+        "cpus",
+        "maxCPUs",
+        "memoryGiB",
+        "maxMemoryGiB",
+        "workspaceStorageGiB",
+        "runtimeStorageGiB",
+    ][..];
+    if !only_fields(configuration, fields, &["desktop"])
+        || configuration.get("desktop").is_some_and(|desktop| {
+            desktop.get("startWithComputer").is_none()
                 || serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone())
                     .is_err()
         })
-        || !valid_uuid(&machine["id"])
+        || !valid_uuid(&configuration["id"])
         || !(if unfinished {
-            machine["name"].is_string()
+            configuration["name"].is_string()
         } else {
-            valid_name(&machine["name"])
+            valid_name(&configuration["name"])
         })
     {
         return false;
     }
-    if machine["kind"] == "vm" {
-        return [
-            "cpus",
-            "maxCPUs",
-            "memoryGiB",
-            "maxMemoryGiB",
-            "workspaceStorageGiB",
-            "runtimeStorageGiB",
-        ]
-        .iter()
-        .all(|key| {
-            if unfinished {
-                machine[*key].as_f64().is_some_and(f64::is_finite)
-            } else {
-                machine[*key]
-                    .as_u64()
-                    .is_some_and(|value| (1..=u64::from(u32::MAX)).contains(&value))
-            }
-        }) && (unfinished
-            || (machine["cpus"].as_u64() <= machine["maxCPUs"].as_u64()
-                && machine["memoryGiB"].as_u64() <= machine["maxMemoryGiB"].as_u64()
-                && machine["workspaceStorageGiB"]
-                    .as_u64()
-                    .unwrap_or(u64::MAX)
-                    .checked_add(machine["runtimeStorageGiB"].as_u64().unwrap_or(u64::MAX))
-                    .is_some_and(|total| total <= u64::from(u32::MAX) / 1024)));
-    }
-
-    if unfinished {
-        return machine["host"].is_string()
-            && machine["user"].is_string()
-            && machine["port"].is_number();
-    }
-    machine["host"].as_str().is_some_and(|host| {
-        !host.trim().is_empty()
-            && host.trim().encode_utf16().count() <= 253
-            && !host.trim().chars().any(char::is_whitespace)
-    }) && machine["user"].as_str().is_some_and(|user| {
-        let user = user.trim().as_bytes();
-        !user.is_empty()
-            && user.len() <= 64
-            && (user[0].is_ascii_alphabetic() || user[0] == b'_')
-            && user
-                .iter()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(byte))
-    }) && machine["port"]
-        .as_f64()
-        .is_some_and(|port| port.fract() == 0. && (1. ..=65535.).contains(&port))
+    [
+        "cpus",
+        "maxCPUs",
+        "memoryGiB",
+        "maxMemoryGiB",
+        "workspaceStorageGiB",
+        "runtimeStorageGiB",
+    ]
+    .iter()
+    .all(|key| {
+        if unfinished {
+            configuration[*key].as_f64().is_some_and(f64::is_finite)
+        } else {
+            configuration[*key]
+                .as_u64()
+                .is_some_and(|value| (1..=u64::from(u32::MAX)).contains(&value))
+        }
+    }) && (unfinished
+        || (configuration["cpus"].as_u64() <= configuration["maxCPUs"].as_u64()
+            && configuration["memoryGiB"].as_u64() <= configuration["maxMemoryGiB"].as_u64()
+            && configuration["workspaceStorageGiB"]
+                .as_u64()
+                .unwrap_or(u64::MAX)
+                .checked_add(
+                    configuration["runtimeStorageGiB"]
+                        .as_u64()
+                        .unwrap_or(u64::MAX),
+                )
+                .is_some_and(|total| total <= u64::from(u32::MAX) / 1024)))
 }
 
 // This boundary accepts unfinished text, but never accepts credentials, runtime state, or arbitrary fields.
@@ -416,40 +387,40 @@ fn valid_draft(value: &Value) -> bool {
             draft,
             &[
                 "currentStep",
-                "machines",
-                "unfinishedMachineEditor",
-                "workspaceSelections",
-                "workspaceIdentities",
+                "computers",
+                "unfinishedComputerEditor",
+                "computerSelections",
+                "computerIdentities",
             ],
-            &["workspaceRepositoryAccess"],
+            &["computerRepositoryAccess"],
         )
     {
         return false;
     }
     if !matches!(
         draft["currentStep"].as_str(),
-        Some("dependencies" | "workspaces" | "github" | "review")
-    ) || !draft["machines"].as_array().is_some_and(|machines| {
+        Some("dependencies" | "computers" | "github" | "review")
+    ) || !draft["computers"].as_array().is_some_and(|computers| {
         let mut ids = HashSet::new();
         let mut names = HashSet::new();
-        machines.len() <= 64
-            && machines.iter().all(|machine| {
-                valid_machine(machine, false)
-                    && ids.insert(machine["id"].as_str().unwrap())
-                    && names.insert(machine["name"].as_str().unwrap().to_lowercase())
+        computers.len() <= 64
+            && computers.iter().all(|configuration| {
+                valid_computer(configuration, false)
+                    && ids.insert(configuration["id"].as_str().unwrap())
+                    && names.insert(configuration["name"].as_str().unwrap().to_lowercase())
             })
     }) {
         return false;
     }
-    if !draft["unfinishedMachineEditor"].is_null() {
-        let Some(editor) = draft["unfinishedMachineEditor"].as_object() else {
+    if !draft["unfinishedComputerEditor"].is_null() {
+        let Some(editor) = draft["unfinishedComputerEditor"].as_object() else {
             return false;
         };
         if !only_fields(
             editor,
             &["draft", "insertAt"],
             &["originalID", "displayAfterID"],
-        ) || !valid_machine(&editor["draft"], true)
+        ) || !valid_computer(&editor["draft"], true)
             || !editor["insertAt"].as_f64().is_some_and(|position| {
                 position.fract() == 0. && (0. ..=9007199254740991.).contains(&position)
             })
@@ -460,32 +431,29 @@ fn valid_draft(value: &Value) -> bool {
             return false;
         }
     }
-    if draft
-        .get("workspaceRepositoryAccess")
-        .is_some_and(|access| {
-            !access.as_object().is_some_and(|workspaces| {
-                workspaces.values().all(|value| {
-                    value.as_object().is_some_and(|policy| {
-                        only_fields(
-                            policy,
-                            &["repositoryMode", "allRepositoriesAllowChanges"],
-                            &["authenticationMethod"],
-                        ) && matches!(policy["repositoryMode"].as_str(), Some("selected" | "all"))
-                            && policy["allRepositoriesAllowChanges"].is_boolean()
-                            && policy.get("authenticationMethod").is_none_or(|method| {
-                                matches!(method.as_str(), Some("oauth" | "token"))
-                            })
-                    })
+    if draft.get("computerRepositoryAccess").is_some_and(|access| {
+        !access.as_object().is_some_and(|computers| {
+            computers.values().all(|value| {
+                value.as_object().is_some_and(|policy| {
+                    only_fields(
+                        policy,
+                        &["repositoryMode", "allRepositoriesAllowChanges"],
+                        &["authenticationMethod"],
+                    ) && matches!(policy["repositoryMode"].as_str(), Some("selected" | "all"))
+                        && policy["allRepositoriesAllowChanges"].is_boolean()
+                        && policy
+                            .get("authenticationMethod")
+                            .is_none_or(|method| matches!(method.as_str(), Some("oauth" | "token")))
                 })
             })
         })
-    {
+    }) {
         return false;
     }
-    let Some(selections) = draft["workspaceSelections"].as_object() else {
+    let Some(selections) = draft["computerSelections"].as_object() else {
         return false;
     };
-    let Some(identities) = draft["workspaceIdentities"].as_object() else {
+    let Some(identities) = draft["computerIdentities"].as_object() else {
         return false;
     };
     selections.values().all(|value| {
@@ -572,7 +540,7 @@ struct ShutdownProgress {
     phase: u8,
     generation: u64,
     restarting: bool,
-    /// Logout, shutdown or SIGTERM: stop VMs by this time and never cancel the exit.
+    /// Logout, shutdown or SIGTERM: stop computers by this time and never cancel the exit.
     session_deadline: Option<Instant>,
 }
 
@@ -709,12 +677,12 @@ impl ShutdownState {
 #[derive(Debug, PartialEq, Eq)]
 enum ExitRequest {
     /// `AppHandle::restart` (update installation). Tauri ignores `prevent_exit()`
-    /// here, and the installer already stopped sandboxes and saved settings, so
-    /// the Quit flow (overlay, flush request, VM shutdown) must not start.
+    /// here, and the installer already stopped computers and saved settings, so
+    /// the Quit flow (overlay, flush request, computer shutdown) must not start.
     Restart,
     /// The graceful Quit path finished; let Tauri exit.
     Approved,
-    /// Hold the exit until settings are saved and local VMs are stopped.
+    /// Hold the exit until settings are saved and local computers are stopped.
     Gated,
 }
 
@@ -880,16 +848,16 @@ pub async fn flush_settings(app: AppHandle, window: WebviewWindow) -> Result<(),
     result
 }
 
-/// Stop local VMs, bounded by `deadline` when the session is ending.
-fn stop_local_vms(app: &AppHandle, deadline: Option<Instant>) -> Result<(), String> {
+/// Stop local computers, bounded by `deadline` when the session is ending.
+fn stop_local_computers(app: &AppHandle, deadline: Option<Instant>) -> Result<(), String> {
     let Some(deadline) = deadline else {
         crate::startup::cancel_and_wait(app);
-        return crate::runtime::shutdown::stop_local_vms(app);
+        return crate::runtime::shutdown::stop_local_computers(app);
     };
     let app = app.clone();
     run_before(deadline, move || {
         crate::startup::cancel_and_wait(&app);
-        crate::runtime::shutdown::stop_local_vms(&app)
+        crate::runtime::shutdown::stop_local_computers(&app)
     })
 }
 
@@ -905,7 +873,7 @@ fn run_before<T: Send + 'static>(
     });
     receiver
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .unwrap_or_else(|_| Err("Local VMs did not finish stopping in time.".into()))
+        .unwrap_or_else(|_| Err("Local computers did not finish stopping in time.".into()))
 }
 
 fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64>) {
@@ -913,15 +881,15 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64
     if !state.claim_exit_for(frontend_completed, generation) {
         return;
     }
-    let stopped = stop_local_vms(app, state.session_deadline());
+    let stopped = stop_local_computers(app, state.session_deadline());
     if state.approved() {
         return;
     }
-    // Read the session state again: logout can begin while a Quit is stopping VMs.
+    // Read the session state again: logout can begin while a Quit is stopping computers.
     let session_end = state.session_deadline().is_some();
     if let Err(error) = stopped {
         if !session_end {
-            cancel_exit(app, format!("Silo stayed open because its local VMs could not shut down safely.\n\n{error}\n\nCheck the affected VMs and choose Quit Silo again. VMs on other computers were not stopped."));
+            cancel_exit(app, format!("Silo stayed open because its local computers could not shut down safely.\n\n{error}\n\nCheck the affected computers and choose Quit Silo again. Computers on other devices were not stopped."));
             return;
         }
         eprintln!("Silo is exiting because the session ended: {error}");
@@ -938,7 +906,7 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64
         });
     if let Err(error) = saved {
         if !session_end {
-            cancel_exit(app, format!("Local VMs stopped, but Silo could not save its settings.\n\n{error}\n\nResolve the storage issue and choose Quit Silo again."));
+            cancel_exit(app, format!("Local computers stopped, but Silo could not save its settings.\n\n{error}\n\nResolve the storage issue and choose Quit Silo again."));
             return;
         }
         eprintln!("Silo is exiting because the session ended; settings were not saved: {error}");
@@ -957,7 +925,7 @@ fn cancel_exit(app: &AppHandle, message: String) {
     }) {
         return;
     }
-    // Startup remains cancelled: a failed Quit must not automatically restart VMs
+    // Startup remains cancelled: a failed Quit must not automatically restart computers
     // that have already stopped. Manual controls become available again.
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -1002,7 +970,7 @@ fn begin_exit(app: &AppHandle) {
     });
 }
 
-/// Startup failed before this process took ownership of local VMs: any later exit
+/// Startup failed before this process took ownership of local computers: any later exit
 /// request (tray, menu, dialog) exits directly instead of stopping them.
 pub(crate) fn exit_without_shutdown(app: &AppHandle) {
     if let Some(state) = app.try_state::<ShutdownState>() {
@@ -1010,11 +978,11 @@ pub(crate) fn exit_without_shutdown(app: &AppHandle) {
     }
 }
 
-/// Logout, restart, shutdown or SIGTERM (decision 7): no prompt, local VMs stop
+/// Logout, restart, shutdown or SIGTERM (decision 7): no prompt, local computers stop
 /// within `budget`, and a failed stop or save never cancels the exit.
 pub(crate) fn end_session(app: &AppHandle, budget: Duration) {
     let Some(state) = app.try_state::<ShutdownState>() else {
-        // Setup has not started: Silo owns no VMs yet.
+        // Setup has not started: Silo owns no computers yet.
         crate::system_shutdown::exit(app);
         return;
     };
@@ -1024,7 +992,7 @@ pub(crate) fn end_session(app: &AppHandle, budget: Duration) {
     }
     state.begin_session_end(Instant::now() + budget);
     let deadline = state.session_deadline().unwrap();
-    // A user Quit may already be blocked stopping VMs or saving settings. Its
+    // A user Quit may already be blocked stopping computers or saving settings. Its
     // worker stays the sole stop owner; session termination cannot wait for it.
     let deadline_app = app.clone();
     std::thread::spawn(move || {
@@ -1056,7 +1024,7 @@ pub(crate) fn accepts_terminate_request(app: &AppHandle) -> bool {
 }
 
 /// `RunEvent::Exit` without the graceful path (for example AppKit terminated
-/// Silo without asking): stop local VMs within a bound before the process ends.
+/// Silo without asking): stop local computers within a bound before the process ends.
 pub(crate) fn exit_backstop(app: &AppHandle) {
     let Some(state) = app.try_state::<ShutdownState>() else {
         return;
@@ -1067,7 +1035,7 @@ pub(crate) fn exit_backstop(app: &AppHandle) {
     crate::startup::cancel(app);
     crate::runtime::shutdown::begin();
     let deadline = Instant::now() + crate::system_shutdown::SESSION_END_BUDGET;
-    if let Err(error) = stop_local_vms(app, Some(deadline)) {
+    if let Err(error) = stop_local_computers(app, Some(deadline)) {
         eprintln!("Silo exited without its Quit path: {error}");
     }
 }
@@ -1093,8 +1061,8 @@ struct QuitRequests {
 #[serde(rename_all = "camelCase")]
 struct QuitRequest {
     request_id: u64,
-    /// Running local sandbox names. Empty means their status could not be read.
-    sandboxes: Vec<String>,
+    /// Running local computer names. Empty means their status could not be read.
+    computers: Vec<String>,
 }
 
 impl QuitConfirmation {
@@ -1110,11 +1078,11 @@ impl QuitConfirmation {
         if !state.enabled || state.session_ending {
             return None;
         }
-        let sandboxes = match running {
+        let computers = match running {
             Ok(names) if names.is_empty() => return None,
             Ok(names) => names,
             Err(error) => {
-                eprintln!("Silo quit: sandbox status is unavailable: {error}");
+                eprintln!("Silo quit: computer status is unavailable: {error}");
                 Vec::new()
             }
         };
@@ -1128,7 +1096,7 @@ impl QuitConfirmation {
         };
         Some(QuitRequest {
             request_id,
-            sandboxes,
+            computers,
         })
     }
     /// The session is ending: the open prompt no longer applies.
@@ -1149,7 +1117,7 @@ impl QuitConfirmation {
 }
 
 /// Every user Quit entry point (menus and ⌘Q, tray, status panel, and window close
-/// on Linux without a tray) calls this. When local sandboxes are running it shows
+/// on Linux without a tray) calls this. When local computers are running it shows
 /// the main window and emits `silo://quit-requested`; the UI answers with
 /// `answer_quit_request`. Otherwise it enters the graceful exit path directly.
 pub(crate) fn request_quit(app: &AppHandle) {
@@ -1226,11 +1194,11 @@ pub fn cancel_settings_flush(app: AppHandle, window: WebviewWindow) -> Result<()
     require_main(window.label())?;
     let state = app.state::<ShutdownState>();
     if state.session_deadline().is_some() {
-        // The session is ending: stop VMs and exit without the unsaved changes.
+        // The session is ending: stop computers and exit without the unsaved changes.
         let app = app.clone();
         std::thread::spawn(move || finish_exit(&app, true, None));
     } else if state.claim_exit(true) {
-        cancel_exit(&app, "Silo stayed open because pending changes could not be saved. Check the reported save error, then choose Quit Silo again. Local VMs have not been shut down.".into());
+        cancel_exit(&app, "Silo stayed open because pending changes could not be saved. Check the reported save error, then choose Quit Silo again. Local computers have not been shut down.".into());
     }
     Ok(())
 }
@@ -1370,7 +1338,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         let patch = json!({
             "theme": "light", "launchAtLogin": false,
-            "startWorkspacesAtLaunch": false, "startupWorkspaceIds": [],
+            "startComputersAtLaunch": false, "startupComputerIds": [],
             "terminal": "iTerm", "editor": "Cursor", "browser": "Firefox",
             "reduceMotion": true, "notificationsEnabled": false,
             "notifyHealth": true, "notifyActions": false, "notifyBackup": true,
@@ -1484,13 +1452,13 @@ mod tests {
     }
 
     #[test]
-    fn quit_asks_only_when_sandboxes_run_and_a_ui_can_answer() {
+    fn quit_asks_only_when_computers_run_and_a_ui_can_answer() {
         let quit = QuitConfirmation::default();
         assert_eq!(quit.ask(Ok(vec!["dev".into()])), None, "no UI has opted in");
         quit.0.lock().unwrap().enabled = true;
         assert_eq!(quit.ask(Ok(vec![])), None, "nothing is running");
         let request = quit.ask(Ok(vec!["dev".into(), "api".into()])).unwrap();
-        assert_eq!(request.sandboxes, vec!["dev", "api"]);
+        assert_eq!(request.computers, vec!["dev", "api"]);
         let again = quit.ask(Ok(vec!["dev".into()])).unwrap();
         assert_eq!(
             again.request_id, request.request_id,
@@ -1506,7 +1474,7 @@ mod tests {
             "an answered request is closed"
         );
         let unknown = quit.ask(Err("inspect failed".into())).unwrap();
-        assert!(unknown.sandboxes.is_empty());
+        assert!(unknown.computers.is_empty());
         assert_ne!(unknown.request_id, request.request_id);
         assert_eq!(quit.answer(unknown.request_id, true), Ok(true));
     }
@@ -1590,7 +1558,7 @@ mod tests {
             json!({"theme":"light", "reduceMotion":"yes"}),
             json!({"theme":"light", "credentials":"secret"}),
             json!({"terminal":""}),
-            json!({"startupWorkspaceIds":[""]}),
+            json!({"startupComputerIds":[""]}),
         ] {
             assert!(store.update(patch.as_object().unwrap().clone()).is_err());
             assert_eq!(store.snapshot().revision, 0);
@@ -1630,14 +1598,16 @@ mod tests {
 
     fn unfinished_draft() -> Value {
         json!({
-            "currentStep":"workspaces", "machines": [{
-                "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"ssh", "name":"dev",
-                "host":"server.local", "user":"dev", "port":22
-            }], "unfinishedMachineEditor": {
-                "draft": {"id":"025da8eb-56bf-4519-85cb-3316b2feb549", "kind":"ssh", "name":"",
-                    "host":"", "user":"", "port":0}, "insertAt":1
-            }, "workspaceSelections":{"dev":[{"repository":"owner/repo", "allowPushes":false}]},
-            "workspaceIdentities":{"dev":{"name":"", "email":"unfinished@", "apply":false}}
+            "currentStep":"computers", "computers": [{
+                "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "name":"dev",
+                "cpus":2,"maxCPUs":4,"memoryGiB":4,"maxMemoryGiB":8,
+                "workspaceStorageGiB":10,"runtimeStorageGiB":10
+            }], "unfinishedComputerEditor": {
+                "draft": {"id":"025da8eb-56bf-4519-85cb-3316b2feb549", "name":"",
+                    "cpus":0,"maxCPUs":0,"memoryGiB":0,"maxMemoryGiB":0,
+                    "workspaceStorageGiB":0,"runtimeStorageGiB":0}, "insertAt":1
+            }, "computerSelections":{"dev":[{"repository":"owner/repo", "allowPushes":false}]},
+            "computerIdentities":{"dev":{"name":"", "email":"unfinished@", "apply":false}}
         })
     }
 
@@ -1648,7 +1618,7 @@ mod tests {
         let mut store = SettingsStore::load(Some(path.clone()));
         let mut draft = unfinished_draft();
         for method in ["token", "oauth"] {
-            draft["workspaceRepositoryAccess"] = json!({"dev":{
+            draft["computerRepositoryAccess"] = json!({"dev":{
                 "repositoryMode":"selected","allRepositoriesAllowChanges":false,
                 "authenticationMethod":method
             }});
@@ -1661,11 +1631,11 @@ mod tests {
             );
         }
         for invalid in [json!("unknown"), json!(null), json!(true), json!(1)] {
-            draft["workspaceRepositoryAccess"]["dev"]["authenticationMethod"] = invalid;
+            draft["computerRepositoryAccess"]["dev"]["authenticationMethod"] = invalid;
             assert!(!valid_draft(&draft));
         }
-        draft["workspaceRepositoryAccess"]["dev"]["authenticationMethod"] = json!("token");
-        draft["workspaceRepositoryAccess"]["dev"]["token"] = json!("secret");
+        draft["computerRepositoryAccess"]["dev"]["authenticationMethod"] = json!("token");
+        draft["computerRepositoryAccess"]["dev"]["token"] = json!("secret");
         assert!(!valid_draft(&draft));
     }
 
@@ -1675,7 +1645,7 @@ mod tests {
         let path = directory.path().join("settings.json");
         let mut store = SettingsStore::load(Some(path.clone()));
         let mut draft = unfinished_draft();
-        draft["workspaceRepositoryAccess"] =
+        draft["computerRepositoryAccess"] =
             json!({"dev":{"repositoryMode":"all","allRepositoriesAllowChanges":false}});
         store.update_draft(draft.clone()).unwrap();
         assert_eq!(
@@ -1688,7 +1658,7 @@ mod tests {
             json!({"dev":{"repositoryMode":"all","allRepositoriesAllowChanges":"yes"}}),
             json!({"dev":{"repositoryMode":"all","allRepositoriesAllowChanges":false,"token":"secret"}}),
         ] {
-            draft["workspaceRepositoryAccess"] = invalid;
+            draft["computerRepositoryAccess"] = invalid;
             assert!(!valid_draft(&draft));
         }
     }
@@ -1710,15 +1680,15 @@ mod tests {
     }
 
     #[test]
-    fn deleting_the_last_onboarding_machine_survives_restart() {
+    fn deleting_the_last_onboarding_computer_survives_restart() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
         let mut store = SettingsStore::load(Some(path.clone()));
         let mut draft = unfinished_draft();
         store.update_draft(draft.clone()).unwrap();
-        draft["machines"] = json!([]);
-        for editor in [Value::Null, draft["unfinishedMachineEditor"].clone()] {
-            draft["unfinishedMachineEditor"] = editor;
+        draft["computers"] = json!([]);
+        for editor in [Value::Null, draft["unfinishedComputerEditor"].clone()] {
+            draft["unfinishedComputerEditor"] = editor;
             store.update_draft(draft.clone()).unwrap();
             let snapshot = SettingsStore::load(Some(path.clone())).snapshot();
             assert_eq!(snapshot.onboarding_draft, draft);
@@ -1735,7 +1705,7 @@ mod tests {
             assert!(store.update_draft(draft).is_err());
         }
         let mut draft = unfinished_draft();
-        draft["unfinishedMachineEditor"]["draft"]["password"] = json!("secret");
+        draft["unfinishedComputerEditor"]["draft"]["password"] = json!("secret");
         assert!(store.update_draft(draft).is_err());
         assert!(store.snapshot().onboarding_draft.is_null());
     }
@@ -1748,7 +1718,7 @@ mod tests {
         let threads: Vec<_> = [
             json!({"theme":"dark"}),
             json!({"editor":"Cursor"}),
-            json!({"startupWorkspaceIds":[]}),
+            json!({"startupComputerIds":[]}),
         ]
         .into_iter()
         .map(|patch| {
@@ -1770,7 +1740,7 @@ mod tests {
         assert_eq!(revisions, [1, 2, 3]);
         assert_eq!(
             SettingsStore::load(Some(path)).snapshot().settings,
-            json!({"theme":"dark","editor":"Cursor","startupWorkspaceIds":[]})
+            json!({"theme":"dark","editor":"Cursor","startupComputerIds":[]})
                 .as_object()
                 .unwrap()
                 .clone()
@@ -1835,10 +1805,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_saved_machine_semantics_protect_the_entire_original_file() {
+    fn invalid_saved_computer_semantics_protect_the_entire_original_file() {
         let mut candidates = Vec::new();
         let mut malformed = unfinished_draft();
-        malformed["machines"] = json!({});
+        malformed["computers"] = json!({});
         candidates.push(malformed);
         for (field, invalid) in [
             ("id", json!("not-a-uuid")),
@@ -1848,12 +1818,15 @@ mod tests {
             ("port", json!(0)),
         ] {
             let mut draft = unfinished_draft();
-            draft["machines"][0][field] = invalid;
+            draft["computers"][0][field] = invalid;
             candidates.push(draft);
         }
         let mut duplicate = unfinished_draft();
-        let machine = duplicate["machines"][0].clone();
-        duplicate["machines"].as_array_mut().unwrap().push(machine);
+        let configuration = duplicate["computers"][0].clone();
+        duplicate["computers"]
+            .as_array_mut()
+            .unwrap()
+            .push(configuration);
         candidates.push(duplicate);
         for draft in candidates {
             let directory = tempfile::tempdir().unwrap();
@@ -1875,35 +1848,35 @@ mod tests {
     }
 
     #[test]
-    fn unfinished_vm_resources_allow_custom_input_but_saved_limits_are_checked() {
+    fn unfinished_computer_resources_allow_custom_input_but_saved_limits_are_checked() {
         let mut draft = unfinished_draft();
-        let vm = json!({
-            "id":"025da8eb-56bf-4519-85cb-3316b2feb549", "kind":"vm", "name":"unfinished name",
+        let computer = json!({
+            "id":"025da8eb-56bf-4519-85cb-3316b2feb549", "name":"unfinished name",
             "cpus":12,"maxCPUs":4,"memoryGiB":48,"maxMemoryGiB":16,
             "workspaceStorageGiB":60,"runtimeStorageGiB":80
         });
-        draft["unfinishedMachineEditor"]["draft"] = vm.clone();
+        draft["unfinishedComputerEditor"]["draft"] = computer.clone();
         assert!(valid_draft(&draft));
-        draft["unfinishedMachineEditor"]["draft"]["cpus"] = json!("invalid");
+        draft["unfinishedComputerEditor"]["draft"]["cpus"] = json!("invalid");
         assert!(!valid_draft(&draft));
-        let mut saved = vm;
+        let mut saved = computer;
         saved["name"] = json!("dev");
-        assert!(!valid_machine(&saved, false));
+        assert!(!valid_computer(&saved, false));
         saved["maxCPUs"] = json!(12);
         saved["maxMemoryGiB"] = json!(48);
-        assert!(valid_machine(&saved, false));
+        assert!(valid_computer(&saved, false));
     }
 
     #[test]
     fn malformed_saved_desktop_policy_protects_the_original_draft() {
         let mut draft = unfinished_draft();
-        draft["machines"][0] = json!({
-            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"vm", "name":"dev",
+        draft["computers"][0] = json!({
+            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "name":"dev",
             "cpus":2,"maxCPUs":4,"memoryGiB":4,"maxMemoryGiB":8,
             "workspaceStorageGiB":60,"runtimeStorageGiB":80
         });
         for desktop in [json!({}), json!({"builtIn":true})] {
-            draft["machines"][0]["desktop"] = desktop;
+            draft["computers"][0]["desktop"] = desktop;
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("settings.json");
             let original = serde_json::to_vec(&json!({
@@ -1918,10 +1891,10 @@ mod tests {
             assert_eq!(fs::read(path).unwrap(), original);
         }
         for desktop in [
-            json!({"startWithSandbox":false}),
-            json!({"startWithSandbox":true,"builtIn":true}),
+            json!({"startWithComputer":false}),
+            json!({"startWithComputer":true,"builtIn":true}),
         ] {
-            draft["machines"][0]["desktop"] = desktop;
+            draft["computers"][0]["desktop"] = desktop;
             assert!(valid_draft(&draft));
         }
     }
@@ -1932,21 +1905,21 @@ mod tests {
         let path = directory.path().join("settings.json");
         let mut store = SettingsStore::load(Some(path.clone()));
         let mut draft = unfinished_draft();
-        draft["machines"][0] = json!({
-            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"vm", "name":"dev",
+        draft["computers"][0] = json!({
+            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "name":"dev",
             "cpus":3,"maxCPUs":5,"memoryGiB":10,"maxMemoryGiB":12,
-            "workspaceStorageGiB":35,"runtimeStorageGiB":25,"desktop":{"startWithSandbox":false}
+            "workspaceStorageGiB":35,"runtimeStorageGiB":25,"desktop":{"startWithComputer":false}
         });
         store.update_draft(draft.clone()).unwrap();
         assert_eq!(
             SettingsStore::load(Some(path)).snapshot().onboarding_draft,
             draft
         );
-        draft["unfinishedMachineEditor"]["draft"] = draft["machines"][0].clone();
-        draft["unfinishedMachineEditor"]["draft"]["memoryGiB"] = json!(0);
+        draft["unfinishedComputerEditor"]["draft"] = draft["computers"][0].clone();
+        draft["unfinishedComputerEditor"]["draft"]["memoryGiB"] = json!(0);
         assert!(valid_draft(&draft));
         for invalid in [json!(0), json!(-1), json!(1.5), json!(4294967296_u64)] {
-            draft["machines"][0]["memoryGiB"] = invalid;
+            draft["computers"][0]["memoryGiB"] = invalid;
             assert!(!valid_draft(&draft));
         }
     }
@@ -1954,32 +1927,29 @@ mod tests {
     #[test]
     fn startup_id_limit_matches_the_typescript_boundary() {
         let ids = vec![json!("temporarily-unavailable-id"); 256];
+        assert_eq!(valid_setting("startupComputerIds", &json!(ids)), Some(true));
         assert_eq!(
-            valid_setting("startupWorkspaceIds", &json!(ids)),
-            Some(true)
-        );
-        assert_eq!(
-            valid_setting("startupWorkspaceIds", &json!(vec!["id"; 257])),
+            valid_setting("startupComputerIds", &json!(vec!["id"; 257])),
             Some(false)
         );
     }
 
     #[test]
-    fn sandbox_order_limit_matches_the_typescript_boundary() {
+    fn computer_order_limit_matches_the_typescript_boundary() {
         let key = "remote:".to_owned() + &"a".repeat(505);
         assert_eq!(
-            valid_setting("sandboxOrder", &json!(vec![key.as_str(); 1024])),
+            valid_setting("computerOrder", &json!(vec![key.as_str(); 1024])),
             Some(true)
         );
         assert_eq!(
-            valid_setting("sandboxOrder", &json!(vec!["local:id"; 1025])),
+            valid_setting("computerOrder", &json!(vec!["local:id"; 1025])),
             Some(false)
         );
         assert_eq!(
-            valid_setting("sandboxOrder", &json!([key.clone() + "a"])),
+            valid_setting("computerOrder", &json!([key.clone() + "a"])),
             Some(false)
         );
-        assert_eq!(valid_setting("sandboxOrder", &json!([""])), Some(false));
+        assert_eq!(valid_setting("computerOrder", &json!([""])), Some(false));
     }
 
     #[test]
@@ -2162,7 +2132,7 @@ mod tests {
         assert!(!state.cancel_with(|| reopened = true));
         assert!(
             !reopened,
-            "session termination must not reopen VM admission"
+            "session termination must not reopen computer admission"
         );
         assert_eq!(state.session_deadline(), Some(deadline));
         assert!(state.expire_session(deadline));
@@ -2183,7 +2153,7 @@ mod tests {
         });
         assert_eq!(
             late,
-            Err("Local VMs did not finish stopping in time.".into())
+            Err("Local computers did not finish stopping in time.".into())
         );
         assert!(started.elapsed() < Duration::from_secs(1));
     }

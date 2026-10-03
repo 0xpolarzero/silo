@@ -1,7 +1,7 @@
 //! Fixed system-owned helper; no command, source URL, or package name comes from the UI.
 //!
 //! The helper authenticates, checks Silo's source, refreshes and downloads first,
-//! then prints `ready` and waits for `install` on stdin. Silo stops its sandboxes
+//! then prints `ready` and waits for `install` on stdin. Silo stops its computers
 //! only at that point, so a cancelled prompt, a disabled source, a busy package
 //! lock or a missing candidate never stops or restarts anything.
 use std::{
@@ -13,9 +13,9 @@ use std::{
 };
 const HELPER: &str = "/usr/lib/silo/silo-system-update";
 /// Authentication, the refresh and the download can each wait on the user or the
-/// network while sandboxes keep running and new operations are refused.
+/// network while computers keep running and new operations are refused.
 pub(super) const PREPARE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-const TIMED_OUT: &str = "Silo stopped waiting for the system update to authenticate and download. No sandboxes were stopped.";
+const TIMED_OUT: &str = "Silo stopped waiting for the system update to authenticate and download. No computers were stopped.";
 
 pub(super) fn preflight() -> Result<(), String> {
     if !cfg!(target_os = "linux")
@@ -48,7 +48,7 @@ fn command(version: &str) -> Result<Command, String> {
     ]);
     Ok(command)
 }
-/// `prepare` runs once the package is downloaded and must stop the sandboxes.
+/// `prepare` runs once the package is downloaded and must stop the computers.
 /// If it fails, the helper is told to cancel and installs nothing.
 pub(super) fn install(
     version: &str,
@@ -115,7 +115,7 @@ fn execute(
                 let Some(prepare) = prepare.take() else {
                     continue;
                 };
-                status("Preparing to install. Running sandboxes stop now…");
+                status("Preparing to install. Running computers stop now…");
                 if let Err(error) = prepare() {
                     if let Some(mut input) = input.take() {
                         let _ = input.write_all(b"cancel\n");
@@ -186,7 +186,7 @@ pub(super) fn failure_message(details: &str) -> &'static str {
     if details.contains("Authentication was cancelled") {
         "Update cancelled. Click Retry to authenticate."
     } else if details.starts_with(TIMED_OUT) {
-        "The system update took too long. No sandboxes were stopped. Try again."
+        "The system update took too long. No computers were stopped. Try again."
     } else if details.contains("Software & Updates") {
         "Enable Silo’s software source in Software & Updates, then retry."
     } else if details.contains("Could not get lock") || details.contains("Unable to acquire") {
@@ -262,20 +262,20 @@ mod tests {
             &mut shell(&format!("printf '\\303\\251%s' '{tail}' >&2; exit 1")),
             |_| {},
             PATIENT,
-            || panic!("a failed helper must not stop sandboxes"),
+            || panic!("a failed helper must not stop computers"),
         )
         .unwrap_err();
         assert!(error.contains(sentinel), "lost diagnostic: {error}");
     }
     #[test]
-    fn sandboxes_stop_only_after_authentication_refresh_and_download_succeed() {
+    fn computers_stop_only_after_authentication_refresh_and_download_succeed() {
         let events = std::cell::RefCell::new(vec![]);
         execute(
             &mut shell(INSTALLS_ON_GO_AHEAD),
             |stage| events.borrow_mut().push(stage.to_string()),
             PATIENT,
             || {
-                events.borrow_mut().push("stop sandboxes".into());
+                events.borrow_mut().push("stop computers".into());
                 Ok(())
             },
         )
@@ -283,7 +283,7 @@ mod tests {
         let events = events.into_inner();
         let stopped = events
             .iter()
-            .position(|event| event == "stop sandboxes")
+            .position(|event| event == "stop computers")
             .unwrap();
         assert!(events[..stopped]
             .iter()
@@ -293,7 +293,7 @@ mod tests {
             .any(|event| event.contains("Installing")));
     }
     #[test]
-    fn failures_before_the_install_stage_never_stop_sandboxes() {
+    fn failures_before_the_install_stage_never_stop_computers() {
         for script in [
             "exit 126",
             "printf 'Enable Silo software source in Software & Updates, then retry.' >&2; exit 1",
@@ -303,7 +303,7 @@ mod tests {
             "printf 'refreshing\\ndownloading\\n'",
         ] {
             let error = execute(&mut shell(script), |_| {}, PATIENT, || {
-                panic!("sandboxes must keep running: {script}")
+                panic!("computers must keep running: {script}")
             })
             .unwrap_err();
             assert!(!error.is_empty(), "{script}");
@@ -334,27 +334,27 @@ mod tests {
             &mut shell("exec 1>&-; exec sleep 2"),
             |_| {},
             Duration::from_millis(100),
-            || panic!("sandboxes must keep running"),
+            || panic!("computers must keep running"),
         )
         .unwrap_err();
         assert!(error.starts_with(TIMED_OUT), "{error}");
         assert!(started.elapsed() < Duration::from_secs(1));
     }
     #[test]
-    fn a_stalled_authentication_or_download_times_out_without_stopping_sandboxes() {
+    fn a_stalled_authentication_or_download_times_out_without_stopping_computers() {
         let started = std::time::Instant::now();
         let error = execute(
             &mut shell("printf 'refreshing\\n'; exec sleep 30"),
             |_| {},
             Duration::from_millis(300),
-            || panic!("sandboxes must keep running"),
+            || panic!("computers must keep running"),
         )
         .unwrap_err();
-        assert!(error.contains("No sandboxes were stopped"), "{error}");
+        assert!(error.contains("No computers were stopped"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(10));
         assert_eq!(
             failure_message(&error),
-            "The system update took too long. No sandboxes were stopped. Try again."
+            "The system update took too long. No computers were stopped. Try again."
         );
     }
 }

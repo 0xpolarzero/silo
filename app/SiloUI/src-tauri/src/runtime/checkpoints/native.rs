@@ -5,7 +5,7 @@
 //! note). Beyond MicroSandbox's own children and head guards, Silo keeps a member that:
 //! - any Silo record references (a checkpoint, a capture in progress, a Restore's
 //!   recovery point, or a fork or import that has not started yet);
-//! - is a live sandbox's lineage position: the snapshot its next capture names as parent.
+//! - is a live computer's lineage position: the snapshot its next capture names as parent.
 //!   Exports save captures `--with-parents`, which fails when an ancestor is missing.
 use super::*;
 use std::collections::{HashMap, HashSet};
@@ -74,7 +74,7 @@ fn read_inventory(
 /// What a Silo record uses a native member for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Purpose {
-    /// A checkpoint in the sandbox's history: `(Silo checkpoint id, display name)`.
+    /// A checkpoint in the computer's history: `(Silo checkpoint id, display name)`.
     Checkpoint(String, String),
     /// A checkpoint capture that has not been recorded yet.
     Capturing,
@@ -86,17 +86,17 @@ pub(crate) enum Purpose {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Use {
-    pub(crate) workspace_id: String,
-    pub(crate) sandbox: String,
+    pub(crate) computer_id: String,
+    pub(crate) computer: String,
     pub(crate) purpose: Purpose,
 }
 
 /// Every member one record references. Checkpoints live in the record's lineage group.
-pub(crate) fn record_uses(record: &Record, sandbox: &str) -> Vec<(Key, Purpose)> {
+pub(crate) fn record_uses(record: &Record, computer: &str) -> Vec<(Key, Purpose)> {
     let group = record
         .snapshot_group
         .clone()
-        .unwrap_or_else(|| sandbox.to_owned());
+        .unwrap_or_else(|| computer.to_owned());
     let mut uses: Vec<(Key, Purpose)> = record
         .checkpoints
         .iter()
@@ -125,7 +125,7 @@ pub(crate) fn record_uses(record: &Record, sandbox: &str) -> Vec<(Key, Purpose)>
     if let Some(pending) = &record.pending_checkpoint_restore {
         uses.push((
             (
-                pending.source_workspace.clone(),
+                pending.source_computer.clone(),
                 pending.checkpoint_id.clone(),
             ),
             Purpose::PendingStart,
@@ -134,19 +134,19 @@ pub(crate) fn record_uses(record: &Record, sandbox: &str) -> Vec<(Key, Purpose)>
     uses
 }
 
-/// References from every configured sandbox's record. Fails closed: a record that cannot
+/// References from every configured computer's record. Fails closed: a record that cannot
 /// be read might reference any member.
 pub(crate) fn uses(
     paths: &RuntimePaths,
-    metadata: &MachineConfigurationRequest,
+    metadata: &ComputerConfigurationRequest,
 ) -> Result<HashMap<Key, Vec<Use>>, RuntimeError> {
     let mut all: HashMap<Key, Vec<Use>> = HashMap::new();
-    for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
-        let record = load(paths, machine.id())?;
-        for (key, purpose) in record_uses(&record, machine.name()) {
+    for configuration in metadata.computers.iter() {
+        let record = load(paths, configuration.id())?;
+        for (key, purpose) in record_uses(&record, configuration.name()) {
             all.entry(key).or_default().push(Use {
-                workspace_id: machine.id().into(),
-                sandbox: machine.name().into(),
+                computer_id: configuration.id().into(),
+                computer: configuration.name().into(),
                 purpose,
             });
         }
@@ -154,9 +154,9 @@ pub(crate) fn uses(
     Ok(all)
 }
 
-/// Snapshot ids that live sandboxes build on, mapped to one such sandbox's name: the
-/// snapshot a sandbox was restored from and its latest capture. MicroSandbox names that
-/// snapshot as the parent of the sandbox's next capture. Fails closed.
+/// Snapshot ids that live computers build on, mapped to one such computer's name: the
+/// snapshot a computer was restored from and its latest capture. MicroSandbox names that
+/// snapshot as the parent of the computer's next capture. Fails closed.
 pub(crate) fn lineage_positions(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
@@ -167,37 +167,37 @@ pub(crate) fn lineage_positions(
         READ_TIMEOUT,
     )?;
     let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
-        .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
+        .map_err(|_| error("The runtime returned an invalid computer list."))?;
     let mut positions = HashMap::new();
-    for sandbox in listed {
-        let inspected = inspect_workspace(runner, paths, &sandbox.name)?;
+    for computer in listed {
+        let inspected = inspect_computer(runner, paths, &computer.name)?;
         for config in std::iter::once(&inspected.config).chain(inspected.active_config.as_ref()) {
             if let Some(parent) = config.get("snapshot_parent").and_then(Value::as_str) {
-                positions.insert(parent.to_owned(), sandbox.name.clone());
+                positions.insert(parent.to_owned(), computer.name.clone());
             }
         }
-        // MicroSandbox's per-sandbox capture cursor. Read, never written; any snapshot id in
+        // MicroSandbox's per-computer capture cursor. Read, never written; any snapshot id in
         // it is treated as a position so a format change keeps members rather than losing them.
         let cursor = paths
             .home
             .join("sandboxes")
-            .join(&sandbox.name)
+            .join(&computer.name)
             .join("snapshot-lineage.json");
         match fs::symlink_metadata(&cursor) {
             Ok(metadata) if metadata.is_file() && metadata.len() <= 4096 => {
                 let bytes = fs::read(&cursor)
-                    .map_err(|_| error("A sandbox's checkpoint lineage could not be read."))?;
+                    .map_err(|_| error("A computer's checkpoint lineage could not be read."))?;
                 let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
-                    error("A sandbox's checkpoint lineage is not in a known format.")
+                    error("A computer's checkpoint lineage is not in a known format.")
                 })?;
                 let mut ids = Vec::new();
                 snapshot_ids(&value, &mut ids);
                 for id in ids {
-                    positions.insert(id, sandbox.name.clone());
+                    positions.insert(id, computer.name.clone());
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            _ => return Err(error("A sandbox's checkpoint lineage could not be read.")),
+            _ => return Err(error("A computer's checkpoint lineage could not be read.")),
         }
     }
     Ok(positions)
@@ -218,7 +218,7 @@ pub(crate) enum Blocker {
     Used(Vec<Use>),
     /// Members saved later that name this one as their parent.
     Children(Vec<Member>),
-    /// A live sandbox builds on it.
+    /// A live computer builds on it.
     Lineage(String),
 }
 
@@ -244,8 +244,8 @@ pub(crate) fn plan(
         let key = member.key().unwrap();
         if let Some(used) = uses.get(&key).filter(|used| !used.is_empty()) {
             kept.push((member.clone(), Blocker::Used(used.clone())));
-        } else if let Some(sandbox) = positions.get(&member.snapshot_id) {
-            kept.push((member.clone(), Blocker::Lineage(sandbox.clone())));
+        } else if let Some(computer) = positions.get(&member.snapshot_id) {
+            kept.push((member.clone(), Blocker::Lineage(computer.clone())));
         } else {
             pending.push(member.clone());
         }

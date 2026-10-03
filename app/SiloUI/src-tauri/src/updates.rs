@@ -54,7 +54,7 @@ pub(crate) struct Snapshot {
     release_url: String,
     error: Option<String>,
     error_details: Option<String>,
-    running_sandboxes: Vec<String>,
+    running_computers: Vec<String>,
     can_install: bool,
     install_block_reason: Option<String>,
     install_status: Option<String>,
@@ -191,14 +191,14 @@ fn fail(app: &AppHandle, message: &str, details: impl ToString) -> Result<Snapsh
 pub(crate) fn recovery_failed(app: &AppHandle, message: String) {
     let _ = fail(
         app,
-        "Some sandboxes could not resume after updating. Relaunch Silo to retry.",
+        "Some computers could not resume after updating. Relaunch Silo to retry.",
         &message,
     );
     crate::notifications::notify(
         app,
         crate::notifications::failure(
             "update:resume",
-            "Sandboxes couldn\u{2019}t resume after updating",
+            "Computers couldn\u{2019}t resume after updating",
             &message,
             None,
         ),
@@ -210,9 +210,9 @@ fn busy(phase: &str) -> bool {
 fn ready(app: &AppHandle) -> Result<(), String> {
     readiness(|| {
         crate::backup_controller::update_ready(app)?;
-        // Fast readiness check only: refuse if any sandbox operation is active or queued.
+        // Fast readiness check only: refuse if any computer operation is active or queued.
         if !crate::runtime::OPERATIONS.is_idle() {
-            return Err("Wait for sandbox operations to finish before updating.".into());
+            return Err("Wait for computer operations to finish before updating.".into());
         }
         crate::runtime::shutdown::ensure_accepting_operations()
     })
@@ -264,7 +264,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
                 release_url: RELEASE_URL.into(),
                 error,
                 error_details: None,
-                running_sandboxes: vec![],
+                running_computers: vec![],
                 can_install: false,
                 install_block_reason: None,
                 install_status: None,
@@ -305,14 +305,15 @@ pub(crate) async fn get_update_state(app: AppHandle) -> Result<Snapshot, String>
         // Do not compete with an active runtime mutation just to refresh a settings card.
         let running = readiness.and_then(|_| {
             crate::runtime::update_recovery::running_names(&app).map_err(|_| {
-                "Silo could not verify sandbox status. Check Sandboxes before updating.".to_string()
+                "Silo could not verify computer status. Check Computers before updating."
+                    .to_string()
             })
         });
         modify(&app, |s| {
             s.snapshot.can_install = running.is_ok();
             s.snapshot.install_block_reason = running.as_ref().err().cloned();
             if let Ok(names) = running {
-                s.snapshot.running_sandboxes = names;
+                s.snapshot.running_computers = names;
             }
         })
     })
@@ -652,7 +653,7 @@ fn available_install_space(parent: &Path) -> Result<u64, String> {
 
 /// How an installation that did not restart Silo ended.
 enum InstallError {
-    /// Nothing was installed (sandboxes were restored where possible); retry the install.
+    /// Nothing was installed (computers were restored where possible); retry the install.
     Failed(String),
 }
 impl From<String> for InstallError {
@@ -661,7 +662,7 @@ impl From<String> for InstallError {
     }
 }
 /// `exec` skips exit cleanup, so close helpers and release the instance claim first.
-/// A failed replacement must exit without reopening admission or restoring sandboxes:
+/// A failed replacement must exit without reopening admission or restoring computers:
 /// this process no longer owns the claim. Startup restores the saved running set.
 fn restart_after_install(close: impl FnOnce(), restart: impl FnOnce() -> String) -> ! {
     close();
@@ -669,12 +670,12 @@ fn restart_after_install(close: impl FnOnce(), restart: impl FnOnce() -> String)
     use std::io::Write;
     let _ = writeln!(
         std::io::stderr().lock(),
-        "{error}\nSilo has closed. Reopen Silo to finish the update and restore its sandboxes."
+        "{error}\nSilo has closed. Reopen Silo to finish the update and restore its computers."
     );
     std::process::exit(1)
 }
 /// Debian installs through APT with system authentication. Authentication, the
-/// source check, the refresh and the download all happen while sandboxes keep
+/// source check, the refresh and the download all happen while computers keep
 /// running; they are stopped only once the package is ready to install, and
 /// restored if installation then fails.
 fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), InstallError> {
@@ -694,11 +695,11 @@ fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), I
             let _ = modify(app, |s| s.snapshot.install_status = Some(status.into()));
         },
         || {
-            // Only now wait for computer-wide work, so Quit is never queued behind
+            // Only now wait for device-wide work, so Quit is never queued behind
             // an authentication prompt or a download.
             let guard = crate::runtime::OPERATIONS
                 .kind(crate::runtime::operation_gate::OperationKind::Shutdown)
-                .computer("Installing update")
+                .device("Installing update")
                 .map_err(|e| e.to_string())?;
             runtime = Some(guard);
             crate::runtime::shutdown::ensure_accepting_operations()?;
@@ -707,11 +708,11 @@ fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), I
         },
     );
     if let Err(error) = result {
-        // Sandboxes can only have stopped once the install stage took the gate.
+        // Computers can only have stopped once the install stage took the gate.
         if runtime.is_some() {
             if let Err(resume) = crate::runtime::update_recovery::restore_locked(app) {
                 return Err(InstallError::Failed(format!(
-                    "{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry."
+                    "{error}\nComputers could not resume: {resume}. Relaunch Silo to retry."
                 )));
             }
         }
@@ -736,7 +737,7 @@ fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), I
 #[tauri::command]
 pub(crate) async fn install_update(
     app: AppHandle,
-    stop_sandboxes: bool,
+    stop_computers: bool,
 ) -> Result<Snapshot, String> {
     let (update, bytes, is_debian) = {
         let controller = app.state::<Controller>();
@@ -774,7 +775,7 @@ pub(crate) async fn install_update(
     let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), InstallError> {
         crate::startup::cancel_and_wait(&worker);
         if is_debian {
-            return install_debian(&worker, &update.version, stop_sandboxes);
+            return install_debian(&worker, &update.version, stop_computers);
         }
         // Reservation uses the same atomic gate as backup/restore admission.
         let admission = (|| {
@@ -782,10 +783,10 @@ pub(crate) async fn install_update(
             let backup = crate::backup_controller::update_guard(&worker)?;
             let github = crate::github::update_guard()?;
             let secrets = crate::secrets::update_guard()?;
-            // The installer waits its turn for computer-wide work before stopping VMs.
+            // The installer waits its turn for device-wide work before stopping computers.
             let runtime = crate::runtime::OPERATIONS
                 .kind(crate::runtime::operation_gate::OperationKind::Shutdown)
-                .computer("Installing update").map_err(|e| e.to_string())?;
+                .device("Installing update").map_err(|e| e.to_string())?;
             crate::runtime::shutdown::ensure_accepting_operations()?;
             Ok::<_, String>((admission, backup, github, secrets, runtime))
         })();
@@ -795,12 +796,12 @@ pub(crate) async fn install_update(
         };
         let result = installation_preflight(&bytes)
             .and_then(|_| crate::settings::flush_for_update(&worker))
-            .and_then(|_| crate::runtime::update_recovery::prepare(&worker, stop_sandboxes))
+            .and_then(|_| crate::runtime::update_recovery::prepare(&worker, stop_computers))
             .and_then(|_| update.install(&bytes).map_err(|e| e.to_string()));
         if let Err(error) = result {
             let restore = crate::runtime::update_recovery::restore_locked(&worker);
             let _ = modify(&worker, |s| s.bytes = Some(bytes));
-            return Err(match restore { Ok(()) => error, Err(resume) => format!("{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry.") }.into());
+            return Err(match restore { Ok(()) => error, Err(resume) => format!("{error}\nComputers could not resume: {resume}. Relaunch Silo to retry.") }.into());
         }
         // Settings are flushed before installation and the UI stays inert.
         // Tauri restart cannot be deferred by the ordinary exit flush handler.
@@ -809,7 +810,7 @@ pub(crate) async fn install_update(
         crate::runtime::shutdown::begin();
         drop((_admission, _backup, _github, _secrets, _runtime));
         worker.restart()
-    }).await.unwrap_or_else(|_| Err(InstallError::Failed("Update installation was interrupted. Relaunch Silo to restore the saved sandbox state, then download the update again.".into())));
+    }).await.unwrap_or_else(|_| Err(InstallError::Failed("Update installation was interrupted. Relaunch Silo to restore the saved computer state, then download the update again.".into())));
     match result {
         Ok(()) => get_update_state(app).await,
         Err(InstallError::Failed(e)) => fail(
@@ -863,7 +864,7 @@ mod tests {
             release_url: RELEASE_URL.into(),
             error: None,
             error_details: None,
-            running_sandboxes: vec![],
+            running_computers: vec![],
             can_install: false,
             install_block_reason: None,
             install_status: None,
@@ -1161,7 +1162,7 @@ mod tests {
         }
 
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("sandboxes.json");
+        let path = directory.path().join("computers.json");
         fs::File::create(&path)
             .unwrap()
             .set_len(128 * 1024 * 1024)

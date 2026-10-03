@@ -126,7 +126,7 @@ def validate_account():
     try:
         info = POLICY.lstat()
     except FileNotFoundError:
-        raise RuntimeError('LCU requires the Silo working account; migrate this VM or create a new VM') from None
+        raise RuntimeError('LCU requires the Silo working account; migrate this computer or create a new computer') from None
     if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise RuntimeError('Invalid Silo working account policy permissions')
     if json.loads(POLICY.read_text()) != dict(schemaVersion=1, user='silo', home='/home/silo'):

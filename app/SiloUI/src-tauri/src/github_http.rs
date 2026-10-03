@@ -37,7 +37,7 @@ struct Failure {
     until: Option<u64>,
     message: String,
     class: String,
-    workspace: Option<String>,
+    computer: Option<String>,
     safe: bool,
 }
 fn now() -> u64 {
@@ -82,13 +82,13 @@ fn rate_class(authentication: &Authentication) -> String {
         Authentication::App { client_id, .. } => format!("app:{client_id}"),
     }
 }
-fn key(route: &str, body: &[u8], workspace: Option<&str>) -> String {
+fn key(route: &str, body: &[u8], computer: Option<&str>) -> String {
     // Only hashes identify failed requests; credentials never appear in diagnostics.
     let mut hash = Sha256::new();
-    if let Some(workspace) = workspace {
-        hash.update(b"silo-github-workspace\0");
-        hash.update(workspace.len().to_le_bytes());
-        hash.update(workspace);
+    if let Some(computer) = computer {
+        hash.update(b"silo-github-computer\0");
+        hash.update(computer.len().to_le_bytes());
+        hash.update(computer);
     }
     hash.update(route);
     hash.update(body);
@@ -178,7 +178,7 @@ impl Gates {
                 until: retry.then_some(until),
                 message: message.clone(),
                 class: class.into(),
-                workspace: None,
+                computer: None,
                 safe: persistent,
             },
         );
@@ -214,16 +214,16 @@ pub(crate) fn reset_bearer_retries(token: &str) {
     let class = rate_class(&Authentication::Bearer(token.into()));
     gates().requests.retain(|_, failure| failure.class != class);
 }
-pub(crate) fn reset_workspace_retries(workspace: &str) {
+pub(crate) fn reset_computer_retries(computer: &str) {
     gates()
         .requests
-        .retain(|_, failure| failure.workspace.as_deref() != Some(workspace));
+        .retain(|_, failure| failure.computer.as_deref() != Some(computer));
 }
 pub(crate) fn reset_catalog_retries(token: &str) {
     let class = rate_class(&Authentication::Bearer(token.into()));
-    gates().requests.retain(|_, failure| {
-        failure.class != class || failure.workspace.is_some() || !failure.safe
-    });
+    gates()
+        .requests
+        .retain(|_, failure| failure.class != class || failure.computer.is_some() || !failure.safe);
 }
 fn preflight(key: &str, class: &str) -> Result<(), String> {
     gates().check(key, class, now())
@@ -232,7 +232,7 @@ fn preflight(key: &str, class: &str) -> Result<(), String> {
 struct RequestGate<'a> {
     key: &'a str,
     class: &'a str,
-    workspace: Option<&'a str>,
+    computer: Option<&'a str>,
 }
 fn failure(
     request: RequestGate<'_>,
@@ -255,7 +255,7 @@ fn failure(
         message,
         safe,
     );
-    g.requests.get_mut(request.key).unwrap().workspace = request.workspace.map(str::to_owned);
+    g.requests.get_mut(request.key).unwrap().computer = request.computer.map(str::to_owned);
     message
 }
 fn number(headers: &HeaderMap, name: &str) -> Option<u64> {
@@ -416,10 +416,10 @@ pub(crate) struct Request {
 pub(crate) fn send(request: Request) -> Result<Value, String> {
     send_scoped(request, None)
 }
-pub(crate) fn send_for_workspace(request: Request, workspace: &str) -> Result<Value, String> {
-    send_scoped(request, Some(workspace))
+pub(crate) fn send_for_computer(request: Request, computer: &str) -> Result<Value, String> {
+    send_scoped(request, Some(computer))
 }
-fn send_scoped(request: Request, workspace: Option<&str>) -> Result<Value, String> {
+fn send_scoped(request: Request, computer: Option<&str>) -> Result<Value, String> {
     let url = reqwest::Url::parse(&request.url).map_err(|_| "Invalid GitHub destination.")?;
     if url.scheme() != "https"
         || !matches!(url.host_str(), Some("api.github.com" | "github.com"))
@@ -456,7 +456,7 @@ fn send_scoped(request: Request, workspace: Option<&str>) -> Result<Value, Strin
     let key = key(
         &format!("{} {}", request.method, request.url),
         &bytes,
-        workspace,
+        computer,
     );
     preflight(&key, &class)?;
     if !request.body.is_null() {
@@ -466,7 +466,7 @@ fn send_scoped(request: Request, workspace: Option<&str>) -> Result<Value, Strin
         RequestGate {
             key: &key,
             class: &class,
-            workspace,
+            computer,
         },
         builder.send(),
         request.safe,
@@ -541,19 +541,19 @@ mod tests {
         let other_class = rate_class(&Authentication::Bearer(uuid::Uuid::new_v4().to_string()));
         let read = uuid::Uuid::new_v4().to_string();
         let write = uuid::Uuid::new_v4().to_string();
-        let workspace_read = uuid::Uuid::new_v4().to_string();
+        let computer_read = uuid::Uuid::new_v4().to_string();
         let other_read = uuid::Uuid::new_v4().to_string();
         {
             let mut g = gates();
             for (key, owner, safe) in [
                 (&read, &class, true),
                 (&write, &class, false),
-                (&workspace_read, &class, true),
+                (&computer_read, &class, true),
                 (&other_read, &other_class, true),
             ] {
                 g.fail(key.clone(), owner, 100, false, 0, false, 0, "failed", safe);
             }
-            g.requests.get_mut(&workspace_read).unwrap().workspace = Some("workspace".into());
+            g.requests.get_mut(&computer_read).unwrap().computer = Some("computer".into());
             g.restore_floor(&class, 5000);
         }
         reset_catalog_retries(&token);
@@ -561,15 +561,15 @@ mod tests {
         assert!(g.check(&read, &class, 5000).is_ok());
         assert!(g.check(&read, &class, 4999).is_err());
         assert!(g.check(&write, &class, u64::MAX).is_err());
-        assert!(g.check(&workspace_read, &class, u64::MAX).is_err());
+        assert!(g.check(&computer_read, &class, u64::MAX).is_err());
         assert!(g.check(&other_read, &other_class, u64::MAX).is_err());
-        for key in [&write, &workspace_read, &other_read] {
+        for key in [&write, &computer_read, &other_read] {
             g.requests.remove(key);
         }
         g.rate_until.remove(&class);
     }
     #[test]
-    fn workspace_retry_preserves_other_workspaces_and_account_operations() {
+    fn computer_retry_preserves_other_computers_and_account_operations() {
         let _test_state = crate::test_support::global_state();
         let target = uuid::Uuid::new_v4().to_string();
         let other = uuid::Uuid::new_v4().to_string();
@@ -579,7 +579,7 @@ mod tests {
         let account_key = key("POST /mint", b"same-body", None);
         assert_ne!(target_key, other_key);
         assert_ne!(target_key, account_key);
-        for (key, workspace) in [
+        for (key, computer) in [
             (&target_key, Some(target.as_str())),
             (&other_key, Some(other.as_str())),
             (&account_key, None),
@@ -588,7 +588,7 @@ mod tests {
                 RequestGate {
                     key,
                     class: &class,
-                    workspace,
+                    computer,
                 },
                 "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
                     .into(),
@@ -598,7 +598,7 @@ mod tests {
             .unwrap_err();
         }
         gates().restore_floor(&class, 5000);
-        reset_workspace_retries(&target);
+        reset_computer_retries(&target);
         let mut g = gates();
         assert!(g.check(&target_key, &class, 5000).is_ok());
         assert!(g.check(&target_key, &class, 4999).is_err());
@@ -682,7 +682,7 @@ mod tests {
             RequestGate {
                 key,
                 class,
-                workspace: None,
+                computer: None,
             },
             reply,
             safe,

@@ -1,9 +1,9 @@
 //! Keep image VMDK descriptors pointing into the runtime they belong to.
 //!
-//! MicroSandbox boots a VM's image from a VMDK descriptor that names its EROFS files
+//! MicroSandbox boots a computer's image from a VMDK descriptor that names its EROFS files
 //! (`cache/fsmeta/…`, `cache/layers/…`) by absolute path. Copying a runtime, as the
 //! checkpoint-runtime conversion does, keeps those paths, so the converted runtime
-//! still reads the previous runtime's files; once that runtime is removed, its VMs
+//! still reads the previous runtime's files; once that runtime is removed, its computers
 //! cannot boot ("Data storage file … No such file or directory"). The same files exist
 //! in the copied cache, so each missing extent is pointed at its copy here. Sector
 //! counts and offsets are kept as they are. MicroSandbox's own `rebind_vmdk` (Silo's
@@ -91,7 +91,7 @@ fn is_descriptor(path: &Path) -> bool {
 }
 
 /// Whether any image descriptor in `cache` still names a file below `runtime`, so removing
-/// that runtime would break the VMs that boot from this cache. A descriptor that cannot be
+/// that runtime would break the computers that boot from this cache. A descriptor that cannot be
 /// read, is redirected, or exceeds the descriptor size limit counts as unverifiable
 /// and fails, since it might name such a file.
 pub(crate) fn reads_from(cache: &Path, runtime: &Path) -> Result<bool, String> {

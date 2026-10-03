@@ -114,7 +114,7 @@ pub fn discover() -> Result<ApplicationCatalog, String> {
             continue;
         }
         let [terminal, editor, browser] = roles(info.categories().as_deref().unwrap_or(""));
-        // Suggest only terminals and editors Silo can hand a sandbox to (G-07).
+        // Suggest only terminals and editors Silo can hand a computer to (G-07).
         let terminal = terminal && launchable_terminal(&path);
         let editor = editor && entry_editor(&info).is_ok();
         for (included, applications) in [

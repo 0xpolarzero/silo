@@ -245,7 +245,7 @@ fn lock_rejects_plain_http_and_foreign_hosts() {
 }
 
 #[test]
-fn a_fresh_computer_downloads_without_any_prior_step() {
+fn a_fresh_device_downloads_without_any_prior_step() {
     // No notice, no stored choice: the first call on an empty storage directory
     // downloads, verifies and publishes.
     let dir = tempfile::tempdir().unwrap();
@@ -609,16 +609,16 @@ fn path_and_link_rules() {
 }
 
 #[test]
-fn commands_address_a_computer_not_a_sandbox() {
-    // No computer (or an empty one) means this computer.
-    assert_eq!(remote_host(None), Ok(None));
-    assert_eq!(remote_host(Some("")), Ok(None));
-    // A remote computer is addressed by its host id.
-    let host = "00000000-0000-4000-8000-0000000000aa";
-    assert_eq!(remote_host(Some(host)), Ok(Some(host.to_owned())));
-    // Neither a sandbox target (the old placeholder routing) nor garbage falls back to this computer.
-    assert!(remote_host(Some(&format!("silo-remote:{host}:{host}"))).is_err());
-    assert!(remote_host(Some("dev")).is_err());
+fn commands_address_a_device_not_a_computer() {
+    // No device (or an empty one) means this device.
+    assert_eq!(remote_device(None), Ok(None));
+    assert_eq!(remote_device(Some("")), Ok(None));
+    // A remote device is addressed by its device id.
+    let device = "00000000-0000-4000-8000-0000000000aa";
+    assert_eq!(remote_device(Some(device)), Ok(Some(device.to_owned())));
+    // Neither a computer target (the old placeholder routing) nor garbage falls back to this device.
+    assert!(remote_device(Some(&format!("silo-remote:{device}:{device}"))).is_err());
+    assert!(remote_device(Some("dev")).is_err());
 }
 
 #[test]
@@ -631,19 +631,19 @@ fn an_owner_without_computer_use_reports_unknown_not_an_error() {
     );
     // Other failures are not hidden, and a real status passes through untouched.
     assert_eq!(
-        remote_status(Err("Computer disconnected.".into())),
-        Err("Computer disconnected.".into())
+        remote_status(Err("Device disconnected.".into())),
+        Err("Device disconnected.".into())
     );
     let ready = serde_json::json!({"state": "ready", "path": "/p", "version": "1"});
     assert_eq!(remote_status(Ok(ready.clone())), Ok(ready));
 }
 
 #[test]
-fn an_older_silo_on_the_owning_computer_gets_a_clear_message() {
+fn an_older_silo_on_the_owning_device_gets_a_clear_message() {
     use crate::bridge_error::{BridgeError, ErrorCode};
     assert_eq!(
         owner_error(BridgeError::unsupported()),
-        "Update Silo on that computer to use computer use."
+        "Update Silo on that device to use computer use."
     );
     assert_eq!(
         owner_error(BridgeError::new(ErrorCode::Internal, "Disk is full.")),
@@ -703,7 +703,7 @@ fn live_download_of_the_pinned_arm64_package() {
     let arch = DebArch::host().unwrap();
     crate::test_support::live::require_confirmation();
     let dir = tempfile::tempdir().unwrap();
-    // `SILO_LIVE_CHATGPT_ROOT` keeps the published app for a manual VM check.
+    // `SILO_LIVE_CHATGPT_ROOT` keeps the published app for a manual computer check.
     let root = std::env::var_os("SILO_LIVE_CHATGPT_ROOT")
         .map_or_else(|| dir.path().join("chatgpt"), PathBuf::from);
     let lock = Lock::bundled().unwrap();
@@ -754,23 +754,23 @@ fn live_download_of_the_pinned_arm64_package() {
 }
 
 #[test]
-fn status_events_identify_their_computer() {
+fn status_events_identify_their_device() {
     let local = event_payload(serde_json::to_value(Status::Verifying).unwrap(), None);
     assert_eq!(
         local,
-        serde_json::json!({ "state": "verifying", "computer": null })
+        serde_json::json!({ "state": "verifying", "device": null })
     );
     let remote = event_payload(
         serde_json::json!({ "state": "downloading", "receivedBytes": 1, "totalBytes": 2 }),
         Some("host-1"),
     );
-    assert_eq!(remote["computer"], "host-1");
+    assert_eq!(remote["device"], "host-1");
     assert_eq!(remote["state"], "downloading");
     assert_eq!(remote["receivedBytes"], 1);
 }
 
 #[test]
-fn collection_holds_the_computer_gate_so_a_start_cannot_slip_between_check_and_delete() {
+fn collection_holds_the_device_gate_so_a_start_cannot_slip_between_check_and_delete() {
     use crate::runtime::operation_gate::OperationGate;
     use std::sync::mpsc;
     let dir = root();
@@ -779,11 +779,11 @@ fn collection_holds_the_computer_gate_so_a_start_cannot_slip_between_check_and_d
     let old = root_dir.join("published").join("0.9.0-arm64");
     fs::create_dir_all(old.join("sub")).unwrap();
     let gate = OperationGate::new();
-    let vm = "00000000-0000-4000-8000-000000000001";
+    let computer = "00000000-0000-4000-8000-000000000001";
 
     // A start already in flight: collection is skipped and nothing is removed.
     {
-        let _starting = gate.vm(vm, "dev", "Starting dev").unwrap();
+        let _starting = gate.computer(computer, "dev", "Starting dev").unwrap();
         assert!(!collect_unused_gated(
             &gate,
             &root_dir,
@@ -809,7 +809,7 @@ fn collection_holds_the_computer_gate_so_a_start_cannot_slip_between_check_and_d
         });
         inspecting_seen.recv().unwrap();
         assert!(
-            gate.try_vm(vm, "dev", "Starting dev").is_err(),
+            gate.try_computer(computer, "dev", "Starting dev").is_err(),
             "a start was admitted between the inventory and the deletion"
         );
         assert!(old.exists());
@@ -817,7 +817,7 @@ fn collection_holds_the_computer_gate_so_a_start_cannot_slip_between_check_and_d
         assert!(collector.join().unwrap());
     });
     assert!(!old.exists());
-    let _starting = gate.vm(vm, "dev", "Starting dev").unwrap();
+    let _starting = gate.computer(computer, "dev", "Starting dev").unwrap();
     assert!(root_dir.join("published").exists());
 }
 
@@ -831,7 +831,7 @@ fn collection_never_waits_for_a_download_holding_the_storage_lock() {
     let old = root_dir.join("published").join("0.9.0-arm64");
     fs::create_dir_all(old.join("sub")).unwrap();
     let gate = OperationGate::new();
-    let vm = "00000000-0000-4000-8000-000000000001";
+    let computer = "00000000-0000-4000-8000-000000000001";
 
     // A download or extraction holds the storage lock.
     let download = RootLock::take(&root_dir).unwrap();
@@ -848,16 +848,16 @@ fn collection_never_waits_for_a_download_holding_the_storage_lock() {
             ))
             .unwrap();
         });
-        // A blocking implementation would hold the computer gate until the download ended.
+        // A blocking implementation would hold the device gate until the download ended.
         let ran = finished
             .recv_timeout(Duration::from_secs(10))
             .expect("collection returned while the storage lock was busy");
         assert!(!ran, "a skipped collection reports that it did not run");
     });
     assert!(old.exists(), "nothing was removed");
-    // The computer gate was released: lifecycle operations and Quit are not stuck behind it.
+    // The device gate was released: lifecycle operations and Quit are not stuck behind it.
     drop(
-        gate.vm(vm, "dev", "Starting dev")
+        gate.computer(computer, "dev", "Starting dev")
             .expect("the gate is free"),
     );
     assert!(gate.is_idle());
@@ -1007,8 +1007,8 @@ fn consent_era_owners_report_unknown_not_a_status_that_never_progresses() {
         serde_json::json!({"state": "unknown"})
     );
     assert_eq!(
-        owner_status(Err("This computer is offline.".into()), unreached).unwrap_err(),
-        "This computer is offline."
+        owner_status(Err("This device is offline.".into()), unreached).unwrap_err(),
+        "This device is offline."
     );
 }
 

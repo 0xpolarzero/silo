@@ -32,7 +32,7 @@ struct Archive {
     completed_label: String,
     size: String,
     destination: String,
-    sandboxes: Vec<String>,
+    computers: Vec<String>,
     /// The checkpoint an export packages, so titles do not depend on UI memory (E-52).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     checkpoint_name: Option<String>,
@@ -315,7 +315,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Startup runs this in its background worker before other recovery or optional
-/// starts. An interrupted import may still own a checkpoint record for a sandbox
+/// starts. An interrupted import may still own a checkpoint record for a computer
 /// whose settings were never saved; its recovery is short and never repeats the
 /// import. An interrupted export's recovery only checks its own files, so
 /// startup does not wait for it (E-31).
@@ -385,17 +385,17 @@ fn wait_for_controller_recovery(
         }
         if !controller.busy.load(Ordering::Acquire) {
             if migration {
-                return Err("An interrupted export or import could not be settled. Relaunch Silo to try again. No sandbox data was changed.".into());
+                return Err("An interrupted export or import could not be settled. Relaunch Silo to try again. No computer data was changed.".into());
             }
             // Recovery failed and published its error in the export/import
             // view, where the user can retry by relaunching or abandon it.
-            // Exports no longer stop sandboxes and imports stay pending until
+            // Exports no longer stop computers and imports stay pending until
             // an explicit Start, so the rest of startup may proceed (E-43).
             return Ok(());
         }
         if started.elapsed() >= RESTORE_TIMEOUT {
             return Err(
-                "Export or import recovery is still running. Automatic sandbox startup was deferred.".into(),
+                "Export or import recovery is still running. Automatic computer startup was deferred.".into(),
             );
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -405,7 +405,7 @@ fn wait_for_controller_recovery(
 fn require_main(window: &WebviewWindow) -> Result<(), String> {
     (window.label() == "main")
         .then_some(())
-        .ok_or_else(|| "Only the main Silo window can export or import sandboxes.".into())
+        .ok_or_else(|| "Only the main Silo window can export or import computers.".into())
 }
 
 fn publish(app: &AppHandle, controller: &Controller) {
@@ -441,7 +441,7 @@ fn archive_from(path: &Path, inspected: &backup::ArchiveInspection) -> Archive {
             .unwrap_or(Path::new(""))
             .to_string_lossy()
             .into_owned(),
-        sandboxes: inspected.sandboxes.clone(),
+        computers: inspected.computers.clone(),
         checkpoint_name: None,
     }
 }
@@ -617,7 +617,7 @@ fn inspection_worker(
                         .unwrap_or(Path::new(""))
                         .to_string_lossy()
                         .into_owned(),
-                    sandboxes: Vec::new(),
+                    computers: Vec::new(),
                     checkpoint_name: None,
                 },
                 valid: false,
@@ -731,9 +731,9 @@ pub(crate) async fn reveal_backup_archive(
     .map_err(|error| error.to_string())?
 }
 
-fn unique_archive(destination: &Path, sandboxes: &[String], checkpoint: bool) -> PathBuf {
-    // A single-sandbox export reads as "<sandbox>-<date>"; a checkpoint export of
-    // that sandbox reads as "<sandbox>-checkpoint-<date>"; a multi-sandbox export
+fn unique_archive(destination: &Path, computers: &[String], checkpoint: bool) -> PathBuf {
+    // A single-computer export reads as "<computer>-<date>"; a checkpoint export of
+    // that computer reads as "<computer>-checkpoint-<date>"; a multi-computer export
     // keeps a generic base. The UTC date avoids a local-offset dependency.
     let today = time::OffsetDateTime::now_utc();
     let date = format!(
@@ -742,7 +742,7 @@ fn unique_archive(destination: &Path, sandboxes: &[String], checkpoint: bool) ->
         today.month() as u8,
         today.day()
     );
-    let base_name = match (sandboxes, checkpoint) {
+    let base_name = match (computers, checkpoint) {
         ([only], true) => format!("{only}-checkpoint-{date}"),
         ([only], false) => format!("{only}-{date}"),
         _ => format!("Silo-Export-{date}"),
@@ -784,7 +784,7 @@ pub(crate) async fn start_backup(
     window: WebviewWindow,
     controller: State<'_, Arc<Controller>>,
     destination: String,
-    sandboxes: Vec<String>,
+    computers: Vec<String>,
     checkpoint_id: Option<String>,
 ) -> Result<String, String> {
     require_main(&window)?;
@@ -795,7 +795,7 @@ pub(crate) async fn start_backup(
         window,
         controller,
         destination,
-        sandboxes,
+        computers,
         checkpoint_id,
     )
     .await
@@ -806,7 +806,7 @@ async fn start_backup_inner(
     window: WebviewWindow,
     controller: State<'_, Arc<Controller>>,
     destination: String,
-    sandboxes: Vec<String>,
+    computers: Vec<String>,
     checkpoint_id: Option<String>,
 ) -> Result<String, String> {
     require_main(&window)?;
@@ -814,7 +814,7 @@ async fn start_backup_inner(
     // Resolving the destination, reading settings and saving the journal all
     // block on the file system; keep them off the async workers (E-39).
     tauri::async_runtime::spawn_blocking(move || {
-        begin_export(app, controller, destination, sandboxes, checkpoint_id)
+        begin_export(app, controller, destination, computers, checkpoint_id)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -824,7 +824,7 @@ fn begin_export(
     app: AppHandle,
     controller: Arc<Controller>,
     destination: String,
-    sandboxes: Vec<String>,
+    computers: Vec<String>,
     checkpoint_id: Option<String>,
 ) -> Result<String, String> {
     let selected_destination = controller
@@ -841,31 +841,31 @@ fn begin_export(
     if selected_destination.as_deref() != Some(canonical.as_path()) {
         return Err("Choose the export destination again before starting.".into());
     }
-    // Sandbox names become part of the archive file name, so validate them before
+    // Computer names become part of the archive file name, so validate them before
     // building the path to keep the archive inside the chosen destination.
-    for name in &sandboxes {
+    for name in &computers {
         runtime::validate_name(name).map_err(|error| error.to_string())?;
     }
-    // A checkpoint export packages one sandbox's stored checkpoint. Resolve its
+    // A checkpoint export packages one computer's stored checkpoint. Resolve its
     // name up front so the operation phase can name it and unknown ids fail early.
     let checkpoint_name = if let Some(checkpoint_id) = &checkpoint_id {
-        let [sandbox] = sandboxes.as_slice() else {
-            return Err("Choose exactly one sandbox to export from a checkpoint.".into());
+        let [computer] = computers.as_slice() else {
+            return Err("Choose exactly one computer to export from a checkpoint.".into());
         };
         let paths = runtime::runtime_paths(&app)?;
         let metadata =
             runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
-        let machine = metadata
-            .machines
+        let configuration = metadata
+            .computers
             .iter()
-            .find(|machine| machine.is_vm() && machine.name() == sandbox)
+            .find(|configuration| configuration.name() == computer)
             .ok_or_else(|| {
                 format!(
-                    "Sandbox '{sandbox}' is not managed by Silo. Choose a Silo sandbox to export."
+                    "Computer '{computer}' is not managed by Silo. Choose a Silo computer to export."
                 )
             })?;
         let (_group, _member, _scope, name) =
-            runtime::checkpoints::export_source(&paths, machine.id(), checkpoint_id)
+            runtime::checkpoints::export_source(&paths, configuration.id(), checkpoint_id)
                 .map_err(|error| error.to_string())?;
         Some(name)
     } else {
@@ -880,7 +880,7 @@ fn begin_export(
         &controller,
         &canonical,
         destination,
-        &sandboxes,
+        &computers,
         checkpoint_id.clone(),
         checkpoint_name.as_deref(),
     )?;
@@ -892,7 +892,7 @@ fn begin_export(
             work_app,
             work_controller,
             archive_path,
-            sandboxes,
+            computers,
             checkpoint_id,
             cancellation,
             pending_archive,
@@ -922,7 +922,7 @@ fn claim_export(
     controller: &Controller,
     destination_directory: &Path,
     destination: String,
-    sandboxes: &[String],
+    computers: &[String],
     checkpoint_id: Option<String>,
     checkpoint_name: Option<&str>,
 ) -> Result<ClaimedExport, String> {
@@ -930,7 +930,7 @@ fn claim_export(
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Another export or import is running.".to_string())?;
-    let archive_path = unique_archive(destination_directory, sandboxes, checkpoint_id.is_some());
+    let archive_path = unique_archive(destination_directory, computers, checkpoint_id.is_some());
     let archive = Archive {
         name: archive_path
             .file_name()
@@ -941,10 +941,10 @@ fn claim_export(
         completed_label: "In progress".into(),
         size: "Unknown".into(),
         destination,
-        sandboxes: sandboxes.to_vec(),
+        computers: computers.to_vec(),
         checkpoint_name: checkpoint_name.map(Into::into),
     };
-    let journal = recovery::Journal::backup(archive.clone(), sandboxes.to_vec(), checkpoint_id);
+    let journal = recovery::Journal::backup(archive.clone(), computers.to_vec(), checkpoint_id);
     let operation_id = journal.identity().to_string();
     if let Err(error) = recovery::begin(controller, journal) {
         finish(controller);
@@ -966,7 +966,7 @@ fn claim_export(
         },
         None => Phase {
             title: "Capture and verify".into(),
-            detail: "Silo is capturing and verifying the sandbox disks for this export file."
+            detail: "Silo is capturing and verifying the computer disks for this export file."
                 .into(),
             tone: "running",
         },
@@ -1036,7 +1036,7 @@ fn run_backup(
     app: AppHandle,
     controller: Arc<Controller>,
     archive_path: PathBuf,
-    sandboxes: Vec<String>,
+    computers: Vec<String>,
     checkpoint_id: Option<String>,
     cancellation: backup::Cancellation,
     pending_archive: Archive,
@@ -1046,7 +1046,7 @@ fn run_backup(
         &app,
         &controller,
         &archive_path,
-        &sandboxes,
+        &computers,
         checkpoint_id.as_deref(),
         &cancellation,
     );
@@ -1061,7 +1061,7 @@ fn run_backup(
             target_name: None,
             outcome: "success",
             title: "Export complete".into(),
-            message: "Sandbox exported.".into(),
+            message: "Computer exported.".into(),
             detail: None,
         },
         Err(error) => failed_transfer("backup", pending_archive, None, error),
@@ -1100,14 +1100,14 @@ impl TransferError {
     fn after_unpacking(mut self) -> Self {
         if !self.preserve_import {
             self.detail =
-                Some("No sandbox was added. Data unpacked for it may still use disk space.");
+                Some("No computer was added. Data unpacked for it may still use disk space.");
         }
         self
     }
 
     fn uncertain_import(mut self) -> Self {
         self.preserve_import = true;
-        self.detail = Some("Silo could not verify whether the sandbox was saved. Its imported disks were kept for recovery.");
+        self.detail = Some("Silo could not verify whether the computer was saved. Its imported disks were kept for recovery.");
         self
     }
 }
@@ -1159,7 +1159,7 @@ fn failed_transfer(
     let detail = error.detail.unwrap_or(if export {
         "No export file was saved."
     } else {
-        "No sandbox was added. The export file was not changed."
+        "No computer was added. The export file was not changed."
     });
     let (outcome, title, message) = match (error.cancelled, export) {
         (true, true) => (
@@ -1187,8 +1187,8 @@ fn failed_transfer(
     }
 }
 
-/// Shown while an export or import waits behind other sandbox work (E-52).
-const QUEUED_PHASE: &str = "Waiting for other sandbox work";
+/// Shown while an export or import waits behind other computer work (E-52).
+const QUEUED_PHASE: &str = "Waiting for other computer work";
 
 /// Marks a running export as queued: a waiting phase leads, its work waits.
 fn show_queued(controller: &Controller) {
@@ -1210,7 +1210,7 @@ fn show_queued(controller: &Controller) {
             0,
             Phase {
                 title: QUEUED_PHASE.into(),
-                detail: "Starts when earlier sandbox changes finish.".into(),
+                detail: "Starts when earlier computer changes finish.".into(),
                 tone: "running",
             },
         );
@@ -1239,7 +1239,7 @@ fn show_admitted(controller: &Controller) -> bool {
     true
 }
 
-/// Waits for the computer-wide operation turn. `on_queued` runs once if the
+/// Waits for the device-wide operation turn. `on_queued` runs once if the
 /// turn is not immediate; it runs under the gate's lock, so keep it short.
 fn mutation_guard(
     cancellation: &backup::Cancellation,
@@ -1248,7 +1248,7 @@ fn mutation_guard(
     cancellable: bool,
     on_queued: &dyn Fn(),
 ) -> Result<runtime::operation_gate::OperationGuard<'static>, TransferError> {
-    // Export and import change shared state and wait their turn (computer scope).
+    // Export and import change shared state and wait their turn (device scope).
     // A queued export stays cancellable and gives up if the work ahead never ends.
     if cancellation.cancelled() {
         return Err(TransferError::cancelled());
@@ -1257,23 +1257,18 @@ fn mutation_guard(
     let queued = std::cell::Cell::new(false);
     let mut guard = runtime::OPERATIONS
         .kind(kind)
-        .acquire_while(
-            runtime::operation_gate::Scope::Computer,
-            None,
-            label,
-            &|| {
-                if !queued.replace(true) {
-                    on_queued();
-                }
-                !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
-            },
-        )
+        .acquire_while(runtime::operation_gate::Scope::Device, None, label, &|| {
+            if !queued.replace(true) {
+                on_queued();
+            }
+            !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
+        })
         .map_err(|error| match error {
             runtime::operation_gate::GateError::Abandoned if cancellation.cancelled() => {
                 TransferError::cancelled()
             }
             runtime::operation_gate::GateError::Abandoned => TransferError::from(
-                "The previous sandbox operation did not finish. Relaunch Silo to retry.",
+                "The previous computer operation did not finish. Relaunch Silo to retry.",
             ),
             error => error.into(),
         })?;
@@ -1299,7 +1294,7 @@ fn backup_work(
     let _guard = mutation_guard(
         cancellation,
         runtime::operation_gate::OperationKind::Export,
-        "Exporting sandbox",
+        "Exporting computer",
         true,
         &|| {
             show_queued(controller);
@@ -1331,45 +1326,51 @@ fn backup_at_paths(
 ) -> Result<Archive, TransferError> {
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if names.is_empty() {
-        return Err("Choose at least one sandbox to export.".into());
+        return Err("Choose at least one computer to export.".into());
     }
     if checkpoint_id.is_some() && names.len() != 1 {
-        return Err("Exporting from a checkpoint supports one sandbox at a time.".into());
+        return Err("Exporting from a checkpoint supports one computer at a time.".into());
     }
     let mut sources = Vec::new();
     for name in names {
         runtime::validate_name(name).map_err(|error| error.to_string())?;
-        let machine = metadata
-            .machines
+        let configuration = metadata
+            .computers
             .iter()
-            .find(|machine| machine.is_vm() && machine.name() == name)
+            .find(|configuration| configuration.name() == name)
             .ok_or_else(|| {
-                format!("Sandbox '{name}' is not managed by Silo. Choose a Silo sandbox to export.")
+                format!(
+                    "Computer '{name}' is not managed by Silo. Choose a Silo computer to export."
+                )
             })?;
         let mut inspected = inspect(paths, name)?;
         runtime::ensure_managed(&inspected).map_err(|error| error.to_string())?;
         canonicalize_backup_runtime(&mut inspected.config)?;
         // The computer-use mount is host-specific and rebuilt on import; `builtIn` carries it.
         crate::computer_use::strip_mount_for_export(&mut inspected.config)?;
-        backup_volumes(machine, &mut inspected)?;
+        backup_volumes(configuration, &mut inspected)?;
         // A checkpoint export reuses the checkpoint's immutable member from its
-        // lineage group; a state export captures the sandbox's current disk.
+        // lineage group; a state export captures the computer's current disk.
         let (snapshot_group, existing_member) = match checkpoint_id {
             Some(checkpoint_id) => {
                 let (_group, member, _scope, _name) =
-                    runtime::checkpoints::export_source(paths, machine.id(), checkpoint_id)
+                    runtime::checkpoints::export_source(paths, configuration.id(), checkpoint_id)
                         .map_err(|error| error.to_string())?;
                 let group = runtime::checkpoints::ensure_snapshot_group(
                     paths,
-                    machine.id(),
-                    machine.name(),
+                    configuration.id(),
+                    configuration.name(),
                 )
                 .map_err(|error| error.to_string())?;
                 (group, Some(member))
             }
             None => (
-                runtime::checkpoints::ensure_snapshot_group(paths, machine.id(), machine.name())
-                    .map_err(|error| error.to_string())?,
+                runtime::checkpoints::ensure_snapshot_group(
+                    paths,
+                    configuration.id(),
+                    configuration.name(),
+                )
+                .map_err(|error| error.to_string())?,
                 None,
             ),
         };
@@ -1378,7 +1379,8 @@ fn backup_at_paths(
             snapshot_group,
             was_running: existing_member.is_none() && inspected.status == "Running",
             runtime_config: inspected.config,
-            machine_config: serde_json::to_value(machine).map_err(|error| error.to_string())?,
+            computer_configuration: serde_json::to_value(configuration)
+                .map_err(|error| error.to_string())?,
             existing_member,
         });
     }
@@ -1402,28 +1404,25 @@ fn backup_at_paths(
             return Err(error.into());
         }
     };
-    // Exports capture running sandboxes in place; they never stop or restart one.
+    // Exports capture running computers in place; they never stop or restart one.
     let inspection = backup::ArchiveInspection {
         created_at_ms: result.created_at_ms,
         size_bytes: result.size_bytes,
-        sandboxes: result.sandboxes,
+        computers: result.computers,
     };
     Ok(archive_from(&result.destination, &inspection))
 }
 
 fn backup_volumes(
-    machine: &runtime::MachineConfiguration,
+    configuration: &runtime::ComputerConfiguration,
     inspected: &mut runtime::InspectedSandbox,
 ) -> Result<(), String> {
-    let runtime::MachineConfiguration::Vm {
+    let runtime::ComputerConfiguration {
         name,
         workspace_storage_gib,
         runtime_storage_gib,
         ..
-    } = machine
-    else {
-        return Err("Only local sandboxes have exportable disk storage.".into());
-    };
+    } = configuration;
     if !normalize_backup_root_capacity(
         &mut inspected.config,
         u64::from(*runtime_storage_gib) * 1024,
@@ -1447,20 +1446,17 @@ fn backup_volumes(
             "{name} uses host-linked storage that cannot be included in a portable checkpoint."
         ));
     }
-    let workspace = mounts
+    let computer = mounts
         .iter()
         .filter(|mount| {
             mount.get("guest").and_then(Value::as_str) == Some(runtime::WORKSPACE_MOUNT)
         })
         .collect::<Vec<_>>();
     let capacity_mib = u64::from(*workspace_storage_gib).checked_mul(1024);
-    if workspace.len() != 1
-        || workspace[0].get("type").and_then(Value::as_str) != Some("Owned")
-        || workspace[0]
-            .pointer("/storage/kind")
-            .and_then(Value::as_str)
-            != Some("disk")
-        || workspace[0]
+    if computer.len() != 1
+        || computer[0].get("type").and_then(Value::as_str) != Some("Owned")
+        || computer[0].pointer("/storage/kind").and_then(Value::as_str) != Some("disk")
+        || computer[0]
             .pointer("/storage/capacity_mib")
             .and_then(Value::as_u64)
             != capacity_mib
@@ -1470,7 +1466,7 @@ fn backup_volumes(
         ));
     }
     // MicroSandbox's snapshot already captures this owned disk with the root;
-    // a second Silo payload would duplicate it and could diverge from the VM.
+    // a second Silo payload would duplicate it and could diverge from the computer.
     Ok(())
 }
 
@@ -1484,7 +1480,7 @@ fn normalize_backup_root_capacity(config: &mut Value, expected_mib: u64) -> bool
     if let Some(size) = root.get("size_mib") {
         return size.as_u64() == Some(expected_mib);
     }
-    // MicroSandbox 0.7.4 (e36ffc0, sdk/rust/lib/sandbox/config.rs) uses
+    // MicroSandbox 0.7.4 (e36ffc0, sdk/rust/lib/computer/config.rs) uses
     // 4096 MiB for an omitted managed OCI upper size. Materialize that
     // effective value in the archive; strict import validation stays intact.
     if root.get("kind").and_then(Value::as_str) != Some("managed") || expected_mib != 4096 {
@@ -1497,10 +1493,10 @@ fn normalize_backup_root_capacity(config: &mut Value, expected_mib: u64) -> bool
 fn canonicalize_backup_runtime(config: &mut Value) -> Result<(), String> {
     let object = config
         .as_object_mut()
-        .ok_or("The runtime returned invalid sandbox settings.")?;
+        .ok_or("The runtime returned invalid computer settings.")?;
     if let Some(policy) = object.remove("external_mount_policy") {
         if policy != "strict" {
-            return Err("The sandbox uses an unsupported external mount policy.".into());
+            return Err("The computer uses an unsupported external mount policy.".into());
         }
     }
     if let Some(parent) = object.remove("snapshot_parent") {
@@ -1510,7 +1506,7 @@ fn canonicalize_backup_runtime(config: &mut Value) -> Result<(), String> {
             })
         });
         if !valid {
-            return Err("The sandbox has invalid checkpoint ancestry.".into());
+            return Err("The computer has invalid checkpoint ancestry.".into());
         }
     }
     if let Some(interface) = object
@@ -1541,7 +1537,7 @@ fn canonicalize_backup_runtime(config: &mut Value) -> Result<(), String> {
                     })
                 && interface.get("mtu").and_then(Value::as_u64) == Some(1500);
             if !valid {
-                return Err("The sandbox has an unsupported network interface.".into());
+                return Err("The computer has an unsupported network interface.".into());
             }
             interface.clear();
         }
@@ -1562,7 +1558,7 @@ fn inspect(paths: &runtime::RuntimePaths, name: &str) -> Result<runtime::Inspect
     )
     .map_err(|error| error.to_string())?;
     serde_json::from_str(&output.stdout)
-        .map_err(|_| format!("The bundled runtime returned invalid state for sandbox '{name}'."))
+        .map_err(|_| format!("The bundled runtime returned invalid state for computer '{name}'."))
 }
 
 #[tauri::command]
@@ -1597,34 +1593,34 @@ fn notify_transfer(app: &AppHandle, operation: &Operation, elapsed: std::time::D
     };
     let names: Vec<&str> = match target_name {
         Some(name) => vec![name.as_str()],
-        None => archive.sandboxes.iter().map(String::as_str).collect(),
+        None => archive.computers.iter().map(String::as_str).collect(),
     };
-    let sandbox = match names.as_slice() {
-        [only] => sandbox_identity(app, only),
+    let computer = match names.as_slice() {
+        [only] => computer_identity(app, only),
         _ => None,
     };
     let label = match names.as_slice() {
         [only] => (*only).to_string(),
-        [] => "sandboxes".to_string(),
-        many => format!("{} sandboxes", many.len()),
+        [] => "computers".to_string(),
+        many => format!("{} computers", many.len()),
     };
     if let Some(notice) =
-        crate::notifications::transfer_notice(kind, &label, sandbox, elapsed, outcome, message)
+        crate::notifications::transfer_notice(kind, &label, computer, elapsed, outcome, message)
     {
         crate::notifications::notify_native(app, notice);
     }
 }
 
-/// Best-effort stable id for a sandbox name, so the notice can route and be cleared.
-fn sandbox_identity(app: &AppHandle, name: &str) -> Option<crate::notifications::NoticeSandbox> {
+/// Best-effort stable id for a computer name, so the notice can route and be cleared.
+fn computer_identity(app: &AppHandle, name: &str) -> Option<crate::notifications::NoticeComputer> {
     let paths = runtime::runtime_paths(app).ok()?;
     let metadata = runtime::read_metadata(&paths.metadata).ok()?;
     metadata
-        .machines
+        .computers
         .iter()
-        .find(|machine| machine.is_vm() && machine.name() == name)
-        .map(|machine| crate::notifications::NoticeSandbox {
-            id: machine.id().to_string(),
+        .find(|configuration| configuration.name() == name)
+        .map(|configuration| crate::notifications::NoticeComputer {
+            id: configuration.id().to_string(),
             name: name.to_string(),
         })
 }
@@ -1681,7 +1677,7 @@ fn begin_import(
             .unwrap_or(Path::new(""))
             .to_string_lossy()
             .into_owned(),
-        sandboxes: source_name.iter().cloned().collect(),
+        computers: source_name.iter().cloned().collect(),
         checkpoint_name: None,
     };
     if let Err(error) = recovery::begin(
@@ -1751,7 +1747,7 @@ fn run_restore(
         // The review already hashed the whole file and the import verifies
         // the selected payload as it unpacks, so read only the manifest (E-26).
         let inspection = controller.service.describe_archive(&path, &cancellation)?;
-        let selected = select_archive_source(&inspection.sandboxes, source_name.as_deref())?;
+        let selected = select_archive_source(&inspection.computers, source_name.as_deref())?;
         archive = archive_from(&path, &inspection);
         if let Ok(mut view) = controller.view.lock() {
             if let Some(Operation::Running {
@@ -1779,7 +1775,7 @@ fn run_restore(
             target_name: Some(new_name.clone()),
             outcome: "success",
             title: "Import complete".into(),
-            message: "Sandbox imported.".into(),
+            message: "Computer imported.".into(),
             detail: None,
         },
         Err(error) => failed_transfer("restore", archive, Some(new_name), error),
@@ -1794,9 +1790,9 @@ fn run_restore(
 fn select_archive_source(names: &[String], selected: Option<&str>) -> Result<String, String> {
     match selected {
         Some(name) if names.iter().any(|candidate| candidate == name) => Ok(name.into()),
-        Some(_) => Err("The selected sandbox is not in this export.".into()),
+        Some(_) => Err("The selected computer is not in this export.".into()),
         None if names.len() == 1 => Ok(names[0].clone()),
-        None => Err("Choose which sandbox to import from this export.".into()),
+        None => Err("Choose which computer to import from this export.".into()),
     }
 }
 
@@ -1851,17 +1847,17 @@ fn restore_at_paths(
     let _guard = mutation_guard(
         cancellation,
         runtime::operation_gate::OperationKind::Import,
-        "Importing sandbox",
+        "Importing computer",
         false,
         &|| progress(QUEUED_PHASE),
     )?;
     let original = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if original
-        .machines
+        .computers
         .iter()
-        .any(|machine| machine.name().eq_ignore_ascii_case(new_name))
+        .any(|configuration| configuration.name().eq_ignore_ascii_case(new_name))
     {
-        return Err(format!("A sandbox named {new_name} already exists.").into());
+        return Err(format!("A computer named {new_name} already exists.").into());
     }
     let listed = runtime::run_msb(
         &paths,
@@ -1870,14 +1866,14 @@ fn restore_at_paths(
     )
     .map_err(|error| error.to_string())?;
     let listed: Vec<Value> = serde_json::from_str(&listed.stdout)
-        .map_err(|_| "The bundled runtime returned an invalid sandbox list.".to_string())?;
-    if listed.iter().any(|sandbox| {
-        sandbox
+        .map_err(|_| "The bundled runtime returned an invalid computer list.".to_string())?;
+    if listed.iter().any(|computer| {
+        computer
             .get("name")
             .and_then(Value::as_str)
             .is_some_and(|name| name.eq_ignore_ascii_case(new_name))
     }) {
-        return Err(format!("A runtime sandbox named {new_name} already exists.").into());
+        return Err(format!("A runtime computer named {new_name} already exists.").into());
     }
     progress("Unpacking export");
     let result = unpack_and_save(
@@ -1915,7 +1911,7 @@ fn unpack_and_save(
     new_name: &str,
     cancellation: &backup::Cancellation,
     progress: &dyn Fn(&str),
-    original: runtime::MachineConfigurationRequest,
+    original: runtime::ComputerConfigurationRequest,
 ) -> Result<(), TransferError> {
     let group = backup::new_import_group();
     let prepared = controller.service.prepare_restore_in_group(
@@ -1931,36 +1927,36 @@ fn unpack_and_save(
                 .map_err(backup::BackupError::InvalidRequest)
         },
     )?;
-    // Until the new sandbox is saved, a failure removes the loaded import
+    // Until the new computer is saved, a failure removes the loaded import
     // group instead of stranding it in the native store (E-23).
     let import_group = controller
         .service
         .discard_import_on_failure(&prepared.snapshot_group);
     if prepared.source_name != source_name || prepared.new_name != new_name {
-        return Err("The imported sandbox identity does not match the verified export file. Choose the export file again and retry the import.".into());
+        return Err("The imported computer identity does not match the verified export file. Choose the export file again and retry the import.".into());
     }
     if prepared.runtime_config.get("name").and_then(Value::as_str) != Some(source_name) {
-        return Err("The sandbox name in the export file does not match its settings. Choose another export file.".into());
+        return Err("The computer name in the export file does not match its settings. Choose another export file.".into());
     }
-    let mut machine_value = prepared.machine_config.clone();
-    let object = machine_value
+    let mut computer_value = prepared.computer_configuration.clone();
+    let object = computer_value
         .as_object_mut()
-        .ok_or("The export file has invalid sandbox settings. Choose another export file or export the original sandbox again.")?;
+        .ok_or("The export file has invalid computer settings. Choose another export file or export the original computer again.")?;
     let id = uuid::Uuid::new_v4().to_string();
     object.insert("id".into(), Value::String(id.clone()));
     object.insert("name".into(), Value::String(new_name.into()));
-    let machine: runtime::MachineConfiguration = serde_json::from_value(machine_value)
-        .map_err(|_| "The export file has invalid sandbox settings. Choose another export file or export the original sandbox again.".to_string())?;
-    if !matches!(machine, runtime::MachineConfiguration::Vm { .. }) {
-        return Err("The export file does not contain settings for a local sandbox. Choose another export file.".into());
+    let configuration: runtime::ComputerConfiguration = serde_json::from_value(computer_value)
+        .map_err(|_| "The export file has invalid computer settings. Choose another export file or export the original computer again.".to_string())?;
+    if !matches!(configuration, runtime::ComputerConfiguration { .. }) {
+        return Err("The export file does not contain settings for a local computer. Choose another export file.".into());
     }
     enter_commit(controller, cancellation)?;
-    progress("Saving stopped sandbox");
+    progress("Saving stopped computer");
     let committed = commit_import(
         paths,
         controller,
         original,
-        machine,
+        configuration,
         &id,
         &prepared.snapshot_group,
         &prepared.snapshot_member,
@@ -1979,7 +1975,7 @@ fn finish_import_commit(
     committed
 }
 
-/// Saves an imported sandbox. Its id and snapshot group are journaled first,
+/// Saves an imported computer. Its id and snapshot group are journaled first,
 /// so a relaunch can tell a finished import (settings saved: the commit point)
 /// from one to clean up (E-24). A failure before the commit removes the
 /// checkpoint record; if that cleanup fails, the journal keeps the identity
@@ -1987,8 +1983,8 @@ fn finish_import_commit(
 fn commit_import(
     paths: &runtime::RuntimePaths,
     controller: &Controller,
-    original: runtime::MachineConfigurationRequest,
-    machine: runtime::MachineConfiguration,
+    original: runtime::ComputerConfigurationRequest,
+    configuration: runtime::ComputerConfiguration,
     id: &str,
     group: &str,
     member: &str,
@@ -2010,7 +2006,7 @@ fn commit_import(
     }
     save_import_metadata(
         original,
-        machine,
+        configuration,
         id,
         &|updated| {
             runtime::write_metadata(&paths.metadata, updated).map_err(|error| error.to_string())
@@ -2026,17 +2022,24 @@ fn commit_import(
 }
 
 fn save_import_metadata(
-    mut original: runtime::MachineConfigurationRequest,
-    machine: runtime::MachineConfiguration,
+    mut original: runtime::ComputerConfigurationRequest,
+    configuration: runtime::ComputerConfiguration,
     id: &str,
-    write: &dyn Fn(&runtime::MachineConfigurationRequest) -> Result<(), String>,
-    read: &dyn Fn() -> Result<runtime::MachineConfigurationRequest, String>,
+    write: &dyn Fn(&runtime::ComputerConfigurationRequest) -> Result<(), String>,
+    read: &dyn Fn() -> Result<runtime::ComputerConfigurationRequest, String>,
 ) -> Result<(), TransferError> {
-    original.machines.push(machine);
+    original.computers.push(configuration);
     if let Err(error) = write(&original) {
-        // A late failure (after the file was replaced) still saved the sandbox.
+        // A late failure (after the file was replaced) still saved the computer.
         return match read() {
-            Ok(metadata) if metadata.machines.iter().any(|machine| machine.id() == id) => Ok(()),
+            Ok(metadata)
+                if metadata
+                    .computers
+                    .iter()
+                    .any(|configuration| configuration.id() == id) =>
+            {
+                Ok(())
+            }
             Ok(_) => Err(error.into()),
             Err(read_error) => {
                 Err(TransferError::from(format!("{error} {read_error}")).uncertain_import())
@@ -2089,7 +2092,7 @@ fn cancel_operation(controller: &Controller) -> Result<(), String> {
     Ok(())
 }
 
-/// Past this point an import saves its new sandbox and is no longer
+/// Past this point an import saves its new computer and is no longer
 /// cancelled. Marking it under the state lock orders it against
 /// `cancel_operation`: a cancel either lands first and wins, or is refused
 /// and the UI stops offering it (E-28).
@@ -2247,7 +2250,7 @@ mod tests {
 
     /// What the launch after the migration does with the journal in `app_data`: ordinary
     /// recovery with `paths` of the converted generation. `runner` is the runtime for the
-    /// sandboxes it removes, and a script in `scripts` stands for the `msb` the backup
+    /// computers it removes, and a script in `scripts` stands for the `msb` the backup
     /// service runs for snapshot data: it logs the runtime home of every call to
     /// `scripts/calls` and lists the two members of an import group. `None` when there is
     /// no journal to recover or it already holds its result, as `resume` finds it; the
@@ -2399,7 +2402,7 @@ mod tests {
             completed_label: "Verified archive".into(),
             size: "1 GiB".into(),
             destination: "/backups".into(),
-            sandboxes: vec!["dev".into()],
+            computers: vec!["dev".into()],
             checkpoint_name: None,
         }
     }
@@ -2409,7 +2412,7 @@ mod tests {
         use std::os::unix::ffi::OsStringExt;
 
         let path = PathBuf::from(std::ffi::OsString::from_vec(
-            b"/backups/sandbox-\xff.silo-backup".to_vec(),
+            b"/backups/computer-\xff.silo-backup".to_vec(),
         ));
         assert!(selected_path_text(&path).is_err());
         assert!(selected_path_text(path.parent().unwrap()).is_ok());
@@ -2419,7 +2422,7 @@ mod tests {
 
     #[test]
     fn backup_picker_preserves_spaces_unicode_and_leading_dashes() {
-        let path = "/backups/日本語 dossier/-sandbox.silo-backup";
+        let path = "/backups/日本語 dossier/-computer.silo-backup";
         assert_eq!(selected_path_text(Path::new(path)).unwrap(), path);
     }
 
@@ -2738,10 +2741,10 @@ mod tests {
     }
 
     #[test]
-    fn the_real_config_of_a_sandbox_created_with_silos_arguments_passes_the_export_check() {
+    fn the_real_config_of_a_computer_created_with_silos_arguments_passes_the_export_check() {
         let _test_state = crate::test_support::global_state();
-        // `msb inspect --format json` of a sandbox created by the bundled MicroSandbox
-        // 0.7.4 with the argument list of `runtime::create_machine` (smaller disks),
+        // `msb inspect --format json` of a computer created by the bundled MicroSandbox
+        // 0.7.4 with the argument list of `runtime::create_computer` (smaller disks),
         // including `--net-strict=true`.
         let mut inspected: Value = serde_json::from_str(include_str!(
             "test_support/msb-inspect/created-by-silo-0.7.4-config.json"
@@ -2751,14 +2754,14 @@ mod tests {
         canonicalize_backup_runtime(&mut inspected).unwrap();
         assert!(normalize_backup_root_capacity(&mut inspected, 4096));
         backup::validate_snapshottable_config("e2e-new-silo", &inspected).unwrap();
-        // Without any tolerance for `strict`: the sandbox's network is the profile.
+        // Without any tolerance for `strict`: the computer's network is the profile.
         let profile: Value =
             serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
         assert_eq!(inspected["network"], profile);
     }
 
     #[test]
-    fn the_real_network_of_a_forked_sandbox_exports_after_its_addresses_are_cleared() {
+    fn the_real_network_of_a_forked_computer_exports_after_its_addresses_are_cleared() {
         let _test_state = crate::test_support::global_state();
         // `msb inspect` of a forked (full) restore from MicroSandbox 0.7.4: it keeps the
         // interface addresses of the checkpoint, and `strict` is the runtime's default.
@@ -2961,7 +2964,7 @@ mod tests {
             serde_json::json!({
                 "version": version,
                 "id": "5b0c8e3e-3b8e-4c4c-9a0b-1f0f5f2d2b77",
-                "archive": {"name": "dev.silo-backup", "archivePath": "/exports/dev.silo-backup", "completedLabel": "In progress", "size": "Unknown", "destination": "/exports", "sandboxes": ["dev"]},
+                "archive": {"name": "dev.silo-backup", "archivePath": "/exports/dev.silo-backup", "completedLabel": "In progress", "size": "Unknown", "destination": "/exports", "computers": ["dev"]},
                 "request": {"kind": "backup", "names": ["dev"]},
                 "cancelled": false,
                 "terminal": null,
@@ -3206,7 +3209,7 @@ mod tests {
                 can_cancel: Some(false),
                 phases: vec![Phase {
                     title: "Import".into(),
-                    detail: "Creating sandbox".into(),
+                    detail: "Creating computer".into(),
                     tone: "running",
                 }],
             },
@@ -3218,7 +3221,7 @@ mod tests {
                 outcome: "failed",
                 title: "Import failed".into(),
                 message: "Runtime refused creation".into(),
-                detail: Some("No new sandbox was retained".into()),
+                detail: Some("No new computer was retained".into()),
             },
         ];
         crate::runtime::contract_tests::assert_fixture("backup-operations.json", operations);
@@ -3270,7 +3273,7 @@ mod tests {
                 target_name: Some("restored".into()),
                 outcome: "success",
                 title: "Restored".into(),
-                message: "Sandbox restored successfully.".into(),
+                message: "Computer restored successfully.".into(),
                 detail: None,
             },
         )
@@ -3280,16 +3283,16 @@ mod tests {
     }
 
     #[test]
-    fn resumed_work_waits_for_other_sandbox_changes_and_can_cancel_while_waiting() {
+    fn resumed_work_waits_for_other_computer_changes_and_can_cancel_while_waiting() {
         let _test_state = crate::test_support::global_state();
-        let guard = runtime::OPERATIONS.computer("Contended work").unwrap();
+        let guard = runtime::OPERATIONS.device("Contended work").unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let (queued, waiting) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
             let result = mutation_guard(
                 &backup::Cancellation::default(),
                 runtime::operation_gate::OperationKind::Export,
-                "Exporting sandbox",
+                "Exporting computer",
                 true,
                 &|| queued.send(()).unwrap(),
             )
@@ -3301,7 +3304,7 @@ mod tests {
             .snapshot()
             .waiting
             .iter()
-            .any(|entry| entry.label == "Exporting sandbox"));
+            .any(|entry| entry.label == "Exporting computer"));
         assert!(matches!(
             receiver.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Empty)
@@ -3362,7 +3365,7 @@ mod tests {
             target_name: Some(name.into()),
             outcome: "success",
             title: "Restore complete".into(),
-            message: "Sandbox restored successfully.".into(),
+            message: "Computer restored successfully.".into(),
             detail: None,
         };
         let old = serde_json::to_value(result("first")).unwrap();
@@ -3403,7 +3406,7 @@ mod tests {
             target_name: None,
             outcome: "success",
             title: "Export complete".into(),
-            message: "Sandbox exported.".into(),
+            message: "Computer exported.".into(),
             detail: None,
         };
         set_operation(&controller, previous).unwrap();
@@ -3430,7 +3433,7 @@ mod tests {
             target_name: None,
             outcome: "success",
             title: "Export complete".into(),
-            message: "Sandbox exported.".into(),
+            message: "Computer exported.".into(),
             detail: None,
         };
         recovery::complete(&controller, current);
@@ -3501,7 +3504,7 @@ mod tests {
     }
 
     #[test]
-    fn archive_name_uses_the_sandbox_for_single_exports_and_a_generic_base_otherwise() {
+    fn archive_name_uses_the_computer_for_single_exports_and_a_generic_base_otherwise() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let date = {
@@ -3523,14 +3526,14 @@ mod tests {
             multiple.file_name().unwrap().to_str().unwrap(),
             format!("Silo-Export-{date}.silo-backup")
         );
-        // A same-day second export of the same sandbox falls back to a "-2" suffix.
+        // A same-day second export of the same computer falls back to a "-2" suffix.
         fs::write(&single, b"first").unwrap();
         let next = unique_archive(directory.path(), &["dev".into()], false);
         assert_eq!(
             next.file_name().unwrap().to_str().unwrap(),
             format!("dev-{date}-2.silo-backup")
         );
-        // A checkpoint export of a single sandbox carries the "-checkpoint-" marker
+        // A checkpoint export of a single computer carries the "-checkpoint-" marker
         // and keeps the same "-2" suffix fallback.
         let checkpoint = unique_archive(directory.path(), &["dev".into()], true);
         assert_eq!(
@@ -3593,13 +3596,13 @@ mod tests {
             home: directory.join("home"),
             storage_home: None,
             library: directory.join("library"),
-            metadata: directory.join("runtime/machines.json"),
+            metadata: directory.join("runtime/computers.json"),
             volumes: directory.join("volumes"),
         }
     }
 
-    fn imported_machine(id: &str) -> runtime::MachineConfiguration {
-        serde_json::from_value(serde_json::json!({"kind":"vm","id":id,"name":"copy","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1})).unwrap()
+    fn imported_computer(id: &str) -> runtime::ComputerConfiguration {
+        serde_json::from_value(serde_json::json!({"id":id,"name":"copy","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1})).unwrap()
     }
 
     const GROUP: &str = "silo-import-0123456789abcdef0123456789abcdef";
@@ -3623,7 +3626,7 @@ mod tests {
             &paths,
             &controller,
             original,
-            imported_machine(&id),
+            imported_computer(&id),
             &id,
             GROUP,
             MEMBER,
@@ -3632,9 +3635,9 @@ mod tests {
         .unwrap();
         assert!(runtime::read_metadata(&paths.metadata)
             .unwrap()
-            .machines
+            .computers
             .iter()
-            .any(|machine| machine.id() == id));
+            .any(|configuration| configuration.id() == id));
         let record: Value = serde_json::from_slice(
             &fs::read(
                 paths
@@ -3657,12 +3660,12 @@ mod tests {
     fn a_failed_readback_keeps_a_possibly_committed_import() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("machines.json");
+        let path = directory.path().join("computers.json");
         let id = uuid::Uuid::new_v4().to_string();
         let original = runtime::read_metadata(&path).unwrap();
         let error = save_import_metadata(
             original,
-            imported_machine(&id),
+            imported_computer(&id),
             &id,
             &|updated| {
                 runtime::write_metadata(&path, updated).unwrap();
@@ -3677,22 +3680,22 @@ mod tests {
         );
         assert!(runtime::read_metadata(&path)
             .unwrap()
-            .machines
+            .computers
             .iter()
-            .any(|machine| machine.id() == id));
+            .any(|configuration| configuration.id() == id));
         let error = error.after_unpacking();
-        assert!(!error.detail.unwrap().contains("No sandbox was added"));
+        assert!(!error.detail.unwrap().contains("No computer was added"));
     }
 
     #[test]
     fn a_readable_import_commit_is_kept_and_verified_absence_allows_cleanup() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("machines.json");
+        let path = directory.path().join("computers.json");
         let id = uuid::Uuid::new_v4().to_string();
         save_import_metadata(
             runtime::read_metadata(&path).unwrap(),
-            imported_machine(&id),
+            imported_computer(&id),
             &id,
             &|updated| {
                 runtime::write_metadata(&path, updated).unwrap();
@@ -3704,7 +3707,7 @@ mod tests {
         fs::remove_file(&path).unwrap();
         let error = save_import_metadata(
             runtime::read_metadata(&path).unwrap(),
-            imported_machine(&id),
+            imported_computer(&id),
             &id,
             &|_| Err("Could not replace settings".into()),
             &|| runtime::read_metadata(&path).map_err(|error| error.to_string()),
@@ -3766,7 +3769,7 @@ mod tests {
             &paths,
             &controller,
             original,
-            imported_machine(&id),
+            imported_computer(&id),
             &id,
             GROUP,
             MEMBER,
@@ -3832,7 +3835,7 @@ mod tests {
         assert_eq!(outcome, "failed");
         assert_eq!(
             detail,
-            "No sandbox was added. The export file was not changed."
+            "No computer was added. The export file was not changed."
         );
         let unpacked = failed_transfer(
             "restore",
@@ -3991,7 +3994,7 @@ mod tests {
         )];
         assert_eq!(titles(&controller), work);
 
-        let other = runtime::OPERATIONS.computer("Other sandbox work").unwrap();
+        let other = runtime::OPERATIONS.device("Other computer work").unwrap();
         let (queued, admitted) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
         let (worker_controller, cancellation) = (controller.clone(), claimed.cancellation.clone());
         let (queued_sender, admitted_sender) = (queued.0, admitted.0);
@@ -3999,7 +4002,7 @@ mod tests {
             let guard = mutation_guard(
                 &cancellation,
                 runtime::operation_gate::OperationKind::Export,
-                "Exporting sandbox",
+                "Exporting computer",
                 true,
                 &|| {
                     show_queued(&worker_controller);
@@ -4015,7 +4018,7 @@ mod tests {
         assert_eq!(
             titles(&controller),
             vec![
-                ("Waiting for other sandbox work".to_string(), "running"),
+                ("Waiting for other computer work".to_string(), "running"),
                 (work[0].0.clone(), "waiting"),
             ]
         );
@@ -4025,7 +4028,7 @@ mod tests {
         assert_eq!(
             titles(&controller),
             vec![
-                ("Waiting for other sandbox work".to_string(), "succeeded"),
+                ("Waiting for other computer work".to_string(), "succeeded"),
                 (work[0].0.clone(), "running"),
             ]
         );
@@ -4053,7 +4056,7 @@ mod tests {
         let guard = mutation_guard(
             &claimed.cancellation,
             runtime::operation_gate::OperationKind::Export,
-            "Exporting sandbox",
+            "Exporting computer",
             true,
             &|| panic!("not queued"),
         )
@@ -4162,7 +4165,7 @@ mod tests {
             home: directory.path().join("home"),
             storage_home: Some(directory.path().join("storage")),
             library: PathBuf::new(),
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         let journal = recovery::load(&controller.history_path).unwrap().unwrap();
@@ -4187,7 +4190,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_vm_restore_requires_an_explicit_source() {
+    fn multi_computer_restore_requires_an_explicit_source() {
         let _test_state = crate::test_support::global_state();
         let names = vec!["first".into(), "second".into()];
         assert!(select_archive_source(&names, None).is_err());
@@ -4202,7 +4205,7 @@ mod tests {
     /// Runs real production operations only in a disposable home; excluded from app builds.
     #[test]
     #[ignore = "requires the packaged runtime and hardware virtualization"]
-    fn real_backup_restore_preserves_root_and_workspace_without_original_cache() {
+    fn real_backup_restore_preserves_root_and_computer_without_original_cache() {
         crate::test_support::live::require_confirmation();
         let _test_state = crate::test_support::global_state();
         // The live runtime control socket requires a short root (104 bytes on macOS).
@@ -4219,7 +4222,7 @@ mod tests {
             ),
             home: directory.path().join("runtime"),
             storage_home: None,
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         struct GuestCleanup<'a>(&'a runtime::RuntimePaths);
@@ -4251,7 +4254,7 @@ mod tests {
             )
             .unwrap()
         };
-        let machine = runtime::create_disposable_test_machine(&paths, name).unwrap();
+        let configuration = runtime::create_disposable_test_computer(&paths, name).unwrap();
         assert_eq!(inspect(&paths, name).unwrap().status, "Stopped");
         run(&["start", name]);
         run(&[
@@ -4272,7 +4275,8 @@ mod tests {
         // Prepare the runtime configuration exactly as `backup_work` does.
         canonicalize_backup_runtime(&mut inspected.config).unwrap();
         crate::computer_use::strip_mount_for_export(&mut inspected.config).unwrap();
-        let second_machine = runtime::create_disposable_test_machine(&paths, second_name).unwrap();
+        let second_computer =
+            runtime::create_disposable_test_computer(&paths, second_name).unwrap();
         assert_eq!(inspect(&paths, second_name).unwrap().status, "Stopped");
         run(&["start", second_name]);
         run(&[
@@ -4323,7 +4327,7 @@ mod tests {
                             snapshot_group: name.into(),
                             was_running: true,
                             runtime_config: inspected.config.clone(),
-                            machine_config: serde_json::to_value(&machine).unwrap(),
+                            computer_configuration: serde_json::to_value(&configuration).unwrap(),
                             existing_member: None,
                         },
                         backup::BackupSource {
@@ -4331,7 +4335,7 @@ mod tests {
                             snapshot_group: second_name.into(),
                             was_running: false,
                             runtime_config: second_inspected.config.clone(),
-                            machine_config: serde_json::to_value(&second_machine).unwrap(),
+                            computer_configuration: serde_json::to_value(&second_computer).unwrap(),
                             existing_member: None,
                         },
                     ],
@@ -4354,7 +4358,7 @@ mod tests {
         )
         .unwrap();
         // Archive publication succeeded, but app death preceded the result.
-        // Relaunch verifies the published file and never restarts sandboxes.
+        // Relaunch verifies the published file and never restarts computers.
         run(&["stop", name]);
         let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
         let recovered = recovery::recover_at_paths(
@@ -4373,7 +4377,7 @@ mod tests {
         ));
         assert_eq!(inspect(&paths, name).unwrap().status, "Stopped");
         assert_eq!(inspect(&paths, second_name).unwrap().status, "Stopped");
-        let _ = (inspected, second_inspected, machine, second_machine);
+        let _ = (inspected, second_inspected, configuration, second_computer);
         run(&["remove", "--force", "--quiet", name]);
         run(&["remove", "--force", "--quiet", second_name]);
         fs::remove_dir_all(&paths.home).unwrap();
@@ -4387,7 +4391,7 @@ mod tests {
             home: directory.path().join("cold-target"),
             storage_home: None,
             volumes: directory.path().join("cold-volumes"),
-            metadata: directory.path().join("cold-machines.json"),
+            metadata: directory.path().join("cold-computers.json"),
         };
         let _cold_cleanup = GuestCleanup(&paths);
         let controller = make_controller(&paths);
@@ -4404,7 +4408,7 @@ mod tests {
         };
         fs::create_dir_all(&paths.home).unwrap();
         fs::create_dir_all(&paths.volumes).unwrap();
-        // A deleted sandbox from an older build can leave this empty folder.
+        // A deleted computer from an older build can leave this empty folder.
         fs::create_dir(paths.volumes.join(restored_name)).unwrap();
         let checked = controller
             .service
@@ -4419,7 +4423,7 @@ mod tests {
             ),
         )
         .unwrap();
-        // Emulate process death after the import journaled its new sandbox but
+        // Emulate process death after the import journaled its new computer but
         // before its settings were saved: relaunch forgets it and adds nothing.
         let interrupted_id = uuid::Uuid::new_v4().to_string();
         recovery::save_restore_identity(
@@ -4481,7 +4485,7 @@ mod tests {
             [
                 "Preparing import",
                 "Unpacking export",
-                "Saving stopped sandbox",
+                "Saving stopped computer",
             ]
         );
         assert!(runtime::is_pending_restore(&paths, restored_name));
@@ -4489,14 +4493,14 @@ mod tests {
             serde_json::from_str(&run(&["list", "--format", "json"]).stdout).unwrap();
         assert!(native
             .iter()
-            .all(|sandbox| sandbox["name"] != restored_name));
+            .all(|computer| computer["name"] != restored_name));
         // Settings were saved, but process death preceded the success result.
         // Relaunch adopts the import under its journaled identity without booting it.
         let restored_id = runtime::read_metadata(&paths.metadata)
             .unwrap()
-            .machines
+            .computers
             .into_iter()
-            .find(|machine| machine.name() == restored_name)
+            .find(|configuration| configuration.name() == restored_name)
             .unwrap()
             .id()
             .to_owned();
@@ -4517,15 +4521,15 @@ mod tests {
         ));
         assert!(runtime::read_metadata(&paths.metadata)
             .unwrap()
-            .machines
+            .computers
             .iter()
-            .any(|machine| machine.id() == restored_id));
+            .any(|configuration| configuration.id() == restored_id));
 
         runtime::start_disposable_test_import(&paths, restored_name).unwrap();
         assert!(!runtime::is_pending_restore(&paths, restored_name));
         let restored = inspect(&paths, restored_name).unwrap();
         assert_eq!(restored.status, "Running");
-        // `msb restore` builds the VM from the descriptor with the runtime's default pull
+        // `msb restore` builds the computer from the descriptor with the runtime's default pull
         // policy (`IfMissing`; no restore code sets `Never` in 0.7.4 or 0.7.6). The import
         // validation accepts either value (`validate_snapshottable_config`).
         assert!(
@@ -4590,7 +4594,10 @@ mod tests {
             &["stop".into(), restored_name.into()],
             Duration::from_secs(60),
         );
-        assert!(stopped.is_ok(), "restored VM cleanup failed: {stopped:?}");
+        assert!(
+            stopped.is_ok(),
+            "restored computer cleanup failed: {stopped:?}"
+        );
         assert!(
             proof.stdout.contains("root-proof:workspace-proof"),
             "{}",
@@ -4610,7 +4617,7 @@ mod tests {
             home: directory.path().join("warm-target"),
             storage_home: None,
             volumes: directory.path().join("warm-volumes"),
-            metadata: directory.path().join("warm-machines.json"),
+            metadata: directory.path().join("warm-computers.json"),
         };
         let _warm_cleanup = GuestCleanup(&paths);
         let controller = make_controller(&paths);
@@ -4626,7 +4633,7 @@ mod tests {
             .unwrap()
         };
         let existing_name = "silo-proof-existing";
-        runtime::create_disposable_test_machine(&paths, existing_name).unwrap();
+        runtime::create_disposable_test_computer(&paths, existing_name).unwrap();
         let cache_hashes = || {
             use sha2::{Digest, Sha256};
             fs::read_dir(paths.home.join("cache/vmdk"))
@@ -4686,13 +4693,13 @@ mod tests {
         )
         .unwrap();
         eprintln!(
-            "Verified stopped restore without original VM/cache; both root and workspace files survived."
+            "Verified stopped restore without original computer/cache; both root and workspace files survived."
         );
     }
 
-    /// Exports a real full checkpoint, imports it as a new sandbox, cold-boots the
+    /// Exports a real full checkpoint, imports it as a new computer, cold-boots the
     /// imported disk, and asserts the checkpoint-time marker survived. Uses only a
-    /// disposable /tmp home; never touches the user's Silo data or running VMs.
+    /// disposable /tmp home; never touches the user's Silo data or running computers.
     #[test]
     #[ignore = "requires the packaged runtime and hardware virtualization"]
     fn real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk() {
@@ -4714,7 +4721,7 @@ mod tests {
             library: library.clone(),
             home: directory.path().join("runtime"),
             storage_home: None,
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         let cold = runtime::RuntimePaths {
@@ -4723,7 +4730,7 @@ mod tests {
             library,
             home: directory.path().join("cold"),
             storage_home: None,
-            metadata: directory.path().join("cold-machines.json"),
+            metadata: directory.path().join("cold-computers.json"),
             volumes: directory.path().join("cold-volumes"),
         };
         let source_name = "silo-ckpt-source";
@@ -4751,7 +4758,7 @@ mod tests {
             .unwrap()
         };
 
-        let machine = runtime::create_disposable_test_machine(&paths, source_name).unwrap();
+        let configuration = runtime::create_disposable_test_computer(&paths, source_name).unwrap();
         run(&paths, &["start", source_name]);
         run(
             &paths,
@@ -4784,7 +4791,8 @@ mod tests {
         ).stdout.trim().parse::<u32>().unwrap();
         // Capture a FULL checkpoint of the running guest via the production path.
         let checkpoint_id =
-            runtime::checkpoints::capture_for_test(&paths, machine.id(), "Milestone").unwrap();
+            runtime::checkpoints::capture_for_test(&paths, configuration.id(), "Milestone")
+                .unwrap();
         // Overwrite the marker after the checkpoint. This later content must NOT
         // appear in the exported checkpoint.
         run(
@@ -4795,17 +4803,18 @@ mod tests {
                 "--",
                 "sh",
                 "-c",
-                "printf post-workspace > /workspace/silo-ckpt-proof; printf post-root > /root/silo-ckpt-proof; sync",
+                "printf post-computer > /workspace/silo-ckpt-proof; printf post-root > /root/silo-ckpt-proof; sync",
             ],
         );
         run(&paths, &["stop", source_name]);
         // Prepare the runtime configuration exactly as `backup_work` does.
         let mut inspected = inspect(&paths, source_name).unwrap();
         canonicalize_backup_runtime(&mut inspected.config).unwrap();
-        backup_volumes(&machine, &mut inspected).unwrap();
+        backup_volumes(&configuration, &mut inspected).unwrap();
 
         let (group, member, scope, _display) =
-            runtime::checkpoints::export_source(&paths, machine.id(), &checkpoint_id).unwrap();
+            runtime::checkpoints::export_source(&paths, configuration.id(), &checkpoint_id)
+                .unwrap();
         assert_eq!(scope, "full");
 
         let make_controller = |paths: &runtime::RuntimePaths| Controller {
@@ -4842,7 +4851,7 @@ mod tests {
                         snapshot_group: group,
                         was_running: false,
                         runtime_config: inspected.config.clone(),
-                        machine_config: serde_json::to_value(&machine).unwrap(),
+                        computer_configuration: serde_json::to_value(&configuration).unwrap(),
                         existing_member: Some(member),
                     }],
                 },
@@ -4851,7 +4860,7 @@ mod tests {
             .unwrap();
 
         // Import into a fresh cold home. This installs a stopped, pending-restore
-        // workspace and never touches the source home.
+        // computer and never touches the source home.
         fs::create_dir_all(&cold.home).unwrap();
         fs::create_dir_all(&cold.volumes).unwrap();
         let cold_controller = make_controller(&cold);
@@ -4868,7 +4877,7 @@ mod tests {
 
         assert!(runtime::is_pending_restore(&cold, restored_name));
         // Use the app's explicit Start path; it consumes the pending import only
-        // after the runtime verifies the new sandbox's identity and policy.
+        // after the runtime verifies the new computer's identity and policy.
         runtime::start_disposable_test_import(&cold, restored_name).unwrap();
         assert!(!runtime::is_pending_restore(&cold, restored_name));
         let restored_boot_id = run(
@@ -4920,7 +4929,7 @@ mod tests {
     /// Imports a checkpoint export written by another Silo/runtime version
     /// (`SILO_TEST_ARCHIVE`, for example one produced by Silo with MicroSandbox 0.7.4 from
     /// `real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk`) into a cold
-    /// disposable home and cold-boots it. Uses the sandbox name of that test.
+    /// disposable home and cold-boots it. Uses the computer name of that test.
     #[test]
     #[ignore = "requires the packaged runtime, hardware virtualization and SILO_TEST_ARCHIVE"]
     fn live_older_checkpoint_export_imports_and_cold_boots() {
@@ -4938,7 +4947,7 @@ mod tests {
             library: PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").unwrap()),
             home: directory.path().join("cold"),
             storage_home: None,
-            metadata: directory.path().join("cold-machines.json"),
+            metadata: directory.path().join("cold-computers.json"),
             volumes: directory.path().join("cold-volumes"),
         };
         let restored_name = "e2e-old-restored";
@@ -5028,7 +5037,7 @@ mod tests {
     }
 
     /// Built-in computer use against the real runtime, through the production export and
-    /// import paths. A VM from the v4 image gets the read-only ChatGPT folder and sets
+    /// import paths. A computer from the v4 image gets the read-only ChatGPT folder and sets
     /// itself up; its approval is switched to `auto`; it is exported (`backup_at_paths`,
     /// the code behind the export command) from one runtime home and imported
     /// (`restore_at_paths`, the import command's code) into a separate home with a
@@ -5039,7 +5048,7 @@ mod tests {
     /// a directory with manifest.json and image.tar.gz), a published ChatGPT folder
     /// (`SILO_TEST_PUBLISHED`, `<root>/published` of a prepared app), a signed msb
     /// (`SILO_TEST_MSB`, `SILO_TEST_LIBKRUNFW`) and `SILO_LIVE_TEST_CONFIRM`. Uses only
-    /// disposable /tmp homes and `e2e-*` sandboxes.
+    /// disposable /tmp homes and `e2e-*` computers.
     #[test]
     #[ignore = "requires the v4 guest image, a published ChatGPT app and hardware virtualization"]
     fn live_built_in_computer_use_sets_up_and_survives_export_and_import() {
@@ -5052,7 +5061,7 @@ mod tests {
             .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let guest_image = PathBuf::from(std::env::var("SILO_TEST_GUEST_IMAGE").unwrap());
-        // Two computers: each has its own runtime home, metadata and published folder.
+        // Two devices: each has its own runtime home, metadata and published folder.
         let source_published = crate::chatgpt_app::ensure_published_dir(
             PathBuf::from(std::env::var("SILO_TEST_PUBLISHED").unwrap())
                 .parent()
@@ -5085,7 +5094,7 @@ mod tests {
             library: library.clone(),
             home: directory.path().join(name),
             storage_home: None,
-            metadata: directory.path().join(format!("{name}-machines.json")),
+            metadata: directory.path().join(format!("{name}-computers.json")),
             volumes: directory.path().join(format!("{name}-volumes")),
         };
         let make_controller = |paths: &runtime::RuntimePaths| Controller {
@@ -5157,13 +5166,13 @@ mod tests {
         let wait_ready = |paths: &runtime::RuntimePaths, name: &str| -> Value {
             let started = std::time::Instant::now();
             loop {
-                let machine = runtime::read_metadata(&paths.metadata)
+                let configuration = runtime::read_metadata(&paths.metadata)
                     .unwrap()
-                    .machines
+                    .computers
                     .into_iter()
-                    .find(|machine| machine.name() == name)
+                    .find(|configuration| configuration.name() == name)
                     .unwrap();
-                let status = crate::desktop::test_status(paths, &machine).unwrap();
+                let status = crate::desktop::test_status(paths, &configuration).unwrap();
                 let state = status["computerUse"]["state"]
                     .as_str()
                     .unwrap_or("")
@@ -5206,16 +5215,20 @@ mod tests {
             .unwrap()
         };
 
-        // 1. The source computer: a new v4 VM is built in, mounts its folder, sets itself up.
+        // 1. The source device: a new v4 computer is built in, mounts its folder, sets itself up.
         crate::computer_use::set_test_published_dir(Some(source_published.clone()));
-        let machine = runtime::create_disposable_desktop_machine(&source, source_name).unwrap();
-        assert!(crate::computer_use::is_built_in(&machine), "{machine:?}");
+        let configuration =
+            runtime::create_disposable_desktop_computer(&source, source_name).unwrap();
+        assert!(
+            crate::computer_use::is_built_in(&configuration),
+            "{configuration:?}"
+        );
         let inspected = inspect(&source, source_name).unwrap();
         assert!(crate::computer_use::mount_present(
             &inspected.config,
-            &machine
+            &configuration
         ));
-        runtime::start_disposable_test_machine(&source, source_name).unwrap();
+        runtime::start_disposable_test_computer(&source, source_name).unwrap();
         let status = wait_ready(&source, source_name);
         eprintln!("source status: {status}");
         assert_eq!(status["computerUse"]["state"], "ready");
@@ -5225,7 +5238,7 @@ mod tests {
         if let Some(apply) = crate::computer_use::apply_approval_with(
             std::sync::Arc::new(runtime::ProcessRunner),
             &source,
-            &machine,
+            &configuration,
             crate::computer_use::Approval::Auto,
             true,
         )
@@ -5233,7 +5246,7 @@ mod tests {
         {
             apply.join().unwrap();
         }
-        let source_policy = crate::computer_use::settings(&source, machine.id());
+        let source_policy = crate::computer_use::settings(&source, configuration.id());
         let source_guest = applied(&source, source_name);
         eprintln!("source guest receipt: {source_guest}");
         assert_eq!(source_guest["approval"], "auto");
@@ -5258,7 +5271,7 @@ mod tests {
             let _gate = mutation_guard(
                 &backup::Cancellation::default(),
                 runtime::operation_gate::OperationKind::Export,
-                "Exporting sandbox",
+                "Exporting computer",
                 true,
                 &|| {},
             )
@@ -5275,7 +5288,7 @@ mod tests {
         }
         assert!(archive_path.is_file());
 
-        // 4. Import into the other computer (separate runtime home, metadata, folder).
+        // 4. Import into the other device (separate runtime home, metadata, folder).
         let target_controller = make_controller(&target);
         restore_at_paths(
             &target,
@@ -5290,15 +5303,15 @@ mod tests {
         assert!(runtime::is_pending_restore(&target, target_name));
         let imported = runtime::read_metadata(&target.metadata)
             .unwrap()
-            .machines
+            .computers
             .into_iter()
-            .find(|machine| machine.name() == target_name)
+            .find(|configuration| configuration.name() == target_name)
             .unwrap();
         assert!(
             crate::computer_use::is_built_in(&imported),
             "builtIn was lost by the import: {imported:?}"
         );
-        assert_ne!(imported.id(), machine.id());
+        assert_ne!(imported.id(), configuration.id());
 
         // 5. A target without its published folder refuses to start the import, and
         // the pending restore survives for a later Start.
@@ -5382,9 +5395,9 @@ mod tests {
         crate::chatgpt_app::set_test_cache(None);
     }
 
-    /// Boots one built-in VM repeatedly through the real Start path: a fresh VM, then
+    /// Boots one built-in computer repeatedly through the real Start path: a fresh computer, then
     /// `SILO_BOOT_LOOP_ROUNDS` stop and start cycles, then imports of its export into a
-    /// second computer (default 3 each). Every boot must end with the desktop session
+    /// second device (default 3 each). Every boot must end with the desktop session
     /// running and computer use ready, and a failure prints the guest's state. Same
     /// inputs as the export and import test above.
     #[test]
@@ -5433,7 +5446,7 @@ mod tests {
             library: library.clone(),
             home: directory.path().join(name),
             storage_home: None,
-            metadata: directory.path().join(format!("{name}-machines.json")),
+            metadata: directory.path().join(format!("{name}-computers.json")),
             volumes: directory.path().join(format!("{name}-volumes")),
         };
         let make_controller = |paths: &runtime::RuntimePaths| Controller {
@@ -5507,13 +5520,13 @@ mod tests {
             let mut last = String::new();
             let mut session_failed_since = None;
             loop {
-                let machine = runtime::read_metadata(&paths.metadata)
+                let configuration = runtime::read_metadata(&paths.metadata)
                     .unwrap()
-                    .machines
+                    .computers
                     .into_iter()
-                    .find(|machine| machine.name() == name)
+                    .find(|configuration| configuration.name() == name)
                     .unwrap();
-                if let Ok(status) = crate::desktop::test_status(paths, &machine) {
+                if let Ok(status) = crate::desktop::test_status(paths, &configuration) {
                     let state = status["computerUse"]["state"].as_str().unwrap_or("");
                     let line = format!(
                         "session {} stream {} computerUse {state} {}",
@@ -5577,17 +5590,18 @@ mod tests {
         let mut boots = 0;
         crate::computer_use::set_test_published_dir(Some(source_published.clone()));
         let source_name = "e2e-boot-source";
-        let machine = runtime::create_disposable_desktop_machine(&source, source_name).unwrap();
-        assert!(crate::computer_use::is_built_in(&machine));
+        let configuration =
+            runtime::create_disposable_desktop_computer(&source, source_name).unwrap();
+        assert!(crate::computer_use::is_built_in(&configuration));
         let _a = Cleanup(&source, source_name.into());
-        runtime::start_disposable_test_machine(&source, source_name).unwrap();
+        runtime::start_disposable_test_computer(&source, source_name).unwrap();
         boots += 1;
         if !boot_outcome(&source, source_name, "fresh") {
             failures.push("fresh".to_owned());
         }
         for round in 1..=rounds {
             stop(&source, source_name);
-            runtime::start_disposable_test_machine(&source, source_name).unwrap();
+            runtime::start_disposable_test_computer(&source, source_name).unwrap();
             boots += 1;
             let label = format!("restart-{round}");
             if !boot_outcome(&source, source_name, &label) {
@@ -5600,7 +5614,7 @@ mod tests {
             let _gate = mutation_guard(
                 &backup::Cancellation::default(),
                 runtime::operation_gate::OperationKind::Export,
-                "Exporting sandbox",
+                "Exporting computer",
                 true,
                 &|| {},
             )
@@ -5636,9 +5650,9 @@ mod tests {
             if !boot_outcome(&target, &target_name, &label) {
                 failures.push(label);
             }
-            // The imported VM boots once more from its own disk, like a user's next Start.
+            // The imported computer boots once more from its own disk, like a user's next Start.
             stop(&target, &target_name);
-            runtime::start_disposable_test_machine(&target, &target_name).unwrap();
+            runtime::start_disposable_test_computer(&target, &target_name).unwrap();
             boots += 1;
             let label = format!("import-{round}-restart");
             if !boot_outcome(&target, &target_name, &label) {

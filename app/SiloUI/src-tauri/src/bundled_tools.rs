@@ -70,7 +70,7 @@ mod tests {
             };
             assert_eq!(directory, expected);
             // Never the executable's own directory, whose tool is unrelated. The fixed
-            // package path is not inspected: a machine with Silo installed has files there.
+            // package path is not inspected: a computer with Silo installed has files there.
             assert_ne!(directory, executable.parent().unwrap());
             if bundle == BundleType::AppImage {
                 assert!(!directory.join("git").exists());

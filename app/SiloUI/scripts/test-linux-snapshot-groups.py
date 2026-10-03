@@ -276,11 +276,11 @@ def seed_archive_for_run(browser):
 
 
 def start_stop(browser, name):
-    invoke(browser, "workspace_action", {"action": "start", "name": name, "path": None})
+    invoke(browser, "computer_action", {"action": "start", "name": name, "path": None})
     state = records_for_state(read_state(browser))
     if name not in state or state[name]["state"] != "running":
         raise AssertionError(f"{name} did not start: {state.get(name)}")
-    invoke(browser, "workspace_action", {"action": "stop", "name": name, "path": None})
+    invoke(browser, "computer_action", {"action": "stop", "name": name, "path": None})
     state = records_for_state(read_state(browser))
     if name not in state or state[name]["state"] != "stopped":
         raise AssertionError(f"{name} did not stop: {state.get(name)}")
@@ -405,7 +405,7 @@ def run():
         _, imported_record, group_after_start = snapshot_record(records_for_state(state)[imported_name])
         if group_after_start != imported_group or records_for_state(state)[imported_name].get("pendingCheckpointRestore"):
             raise AssertionError("Imported lineage changed or remained pending after Start")
-        invoke(browser, "workspace_action", {"action": "start", "name": imported_name, "path": None})
+        invoke(browser, "computer_action", {"action": "start", "name": imported_name, "path": None})
         state = read_state(browser)
         imported_workspace = records_for_state(state)[imported_name]
         if imported_workspace["state"] != "running":
@@ -427,7 +427,7 @@ def run():
                           if item.get("name") == checkpoint_name]
         if len(checkpoint_ids) != 1:
             raise AssertionError(f"Expected one created checkpoint; found {checkpoint_ids}")
-        invoke(browser, "workspace_action", {"action": "stop", "name": imported_name, "path": None})
+        invoke(browser, "computer_action", {"action": "stop", "name": imported_name, "path": None})
         forked_state = invoke(browser, "fork_checkpoint", {
             "workspaceId": imported_workspace["machine"]["id"],
             "checkpointId": checkpoint_ids[0], "newName": fork_name,
@@ -456,7 +456,7 @@ def run():
         for name in (SOURCE_NAME, imported_name, fork_name):
             current = records_for_state(read_state(browser)).get(name)
             if current and current["state"] == "running":
-                invoke(browser, "workspace_action", {"action": "stop", "name": name, "path": None})
+                invoke(browser, "computer_action", {"action": "stop", "name": name, "path": None})
         browser.quit()
         browser = None
         stop_app(environment)

@@ -1,4 +1,4 @@
-//! Workspace discard maintenance. Never deletes guest files or starts a VM.
+//! Computer discard maintenance. Never deletes guest files or starts a computer.
 use super::*;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,7 +17,7 @@ fn verified_starts() -> &'static Mutex<VerifiedStarts> {
 }
 fn verified_worker(
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     observed: &InspectedSandbox,
 ) -> bool {
     observed
@@ -25,7 +25,7 @@ fn verified_worker(
         .as_ref()
         .is_some_and(|instance| {
             verified_starts().lock().is_ok_and(|starts| {
-                starts.get(&(paths.home.clone(), machine.id().into())) == Some(instance)
+                starts.get(&(paths.home.clone(), configuration.id().into())) == Some(instance)
             })
         })
 }
@@ -62,9 +62,9 @@ pub struct StorageState {
     history: Vec<ReclaimEntry>,
     /// Host allocation of the workspace disk and its layers; `None` when it could not be found.
     workspace_host_bytes: Option<u64>,
-    /// Host allocation of the runtime root disks; `None` when the sandbox directory is missing.
+    /// Host allocation of the runtime root disks; `None` when the computer directory is missing.
     runtime_host_bytes: Option<u64>,
-    /// Host allocation of the sandbox's checkpoints; `None` when it could not be measured.
+    /// Host allocation of the computer's checkpoints; `None` when it could not be measured.
     checkpoint_host_bytes: Option<u64>,
     checkpoint_count: usize,
     workspace_used_bytes: Option<u64>,
@@ -149,34 +149,42 @@ fn due(record: &Record, at: u64, interval: u64) -> bool {
             .last_trim_at
             .is_none_or(|last| at.saturating_sub(last) >= interval)
 }
-fn machine(paths: &RuntimePaths, id: &str) -> Result<MachineConfiguration, RuntimeError> {
-    uuid::Uuid::parse_str(id).map_err(|_| failure("Invalid workspace identity."))?;
+fn computer_configuration(
+    paths: &RuntimePaths,
+    id: &str,
+) -> Result<ComputerConfiguration, RuntimeError> {
+    uuid::Uuid::parse_str(id).map_err(|_| failure("Invalid computer identity."))?;
     read_metadata(&paths.metadata)?
-        .machines
+        .computers
         .into_iter()
-        .find(|m| m.is_vm() && m.id() == id)
-        .ok_or_else(|| failure("Storage maintenance is available only for a configured local VM."))
+        .find(|m| m.id() == id)
+        .ok_or_else(|| {
+            failure("Storage maintenance is available only for a configured local computer.")
+        })
 }
-fn verify(machine: &MachineConfiguration, observed: &InspectedSandbox) -> Result<(), RuntimeError> {
-    validate_name(machine.name())?;
+fn verify(
+    configuration: &ComputerConfiguration,
+    observed: &InspectedSandbox,
+) -> Result<(), RuntimeError> {
+    validate_name(configuration.name())?;
     ensure_managed(observed)?;
-    if observed.name != machine.name()
+    if observed.name != configuration.name()
         || observed
             .config
             .pointer("/labels/silo.machine-id")
             .and_then(Value::as_str)
-            != Some(machine.id())
+            != Some(configuration.id())
     {
         return Err(failure(
-            "The workspace identity changed. No storage operation was performed.",
+            "The computer identity changed. No storage operation was performed.",
         ));
     }
     Ok(())
 }
-/// The owned `/workspace` volume's directory. A fresh VM keeps one `disk.raw` there; a full
-/// checkpoint rolls it onto qcow2 layers, and a VM restored from a checkpoint has only sealed
+/// The owned `/workspace` volume's directory. A fresh computer keeps one `disk.raw` there; a full
+/// checkpoint rolls it onto qcow2 layers, and a computer restored from a checkpoint has only sealed
 /// layers and a writable qcow2 head (MicroSandbox `restore/owned.rs`).
-fn workspace_disk_dir(paths: &RuntimePaths, machine: &MachineConfiguration) -> PathBuf {
+fn workspace_disk_dir(paths: &RuntimePaths, configuration: &ComputerConfiguration) -> PathBuf {
     let mut mount_id = String::from("workspace_");
     for byte in Sha256::digest(WORKSPACE_MOUNT.as_bytes()).iter().take(4) {
         use std::fmt::Write as _;
@@ -185,7 +193,7 @@ fn workspace_disk_dir(paths: &RuntimePaths, machine: &MachineConfiguration) -> P
     paths
         .home
         .join("sandboxes")
-        .join(machine.name())
+        .join(configuration.name())
         .join("owned-volumes")
         .join(mount_id)
 }
@@ -193,9 +201,9 @@ const MAX_DISK_FILES: usize = 256;
 /// Regular (never symlinked) disk files of the workspace volume; `None` when it is missing.
 fn workspace_disk_files(
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<Option<Vec<PathBuf>>, RuntimeError> {
-    let directory = workspace_disk_dir(paths, machine);
+    let directory = workspace_disk_dir(paths, configuration);
     match fs::symlink_metadata(&directory) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => return Err(failure("The workspace disk location is not a directory.")),
@@ -223,9 +231,9 @@ fn workspace_disk_files(
 }
 fn workspace_host_bytes(
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
 ) -> Result<Option<u64>, RuntimeError> {
-    let Some(files) = workspace_disk_files(paths, machine)? else {
+    let Some(files) = workspace_disk_files(paths, configuration)? else {
         return Ok(None);
     };
     if files.is_empty() {
@@ -240,10 +248,10 @@ fn workspace_host_bytes(
 }
 fn workspace_mount(
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     observed: &InspectedSandbox,
 ) -> bool {
-    let backing_is_file = workspace_disk_files(paths, machine)
+    let backing_is_file = workspace_disk_files(paths, configuration)
         .ok()
         .flatten()
         .is_some_and(|files| {
@@ -279,10 +287,10 @@ fn allocated(path: &Path) -> Result<u64, RuntimeError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_file() => Ok(metadata.blocks().saturating_mul(512)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-        _ => Err(failure("The VM disk is not a readable regular file.")),
+        _ => Err(failure("The computer disk is not a readable regular file.")),
     }
 }
-/// Root disks live beside the sandbox record: `upper.ext4`, a flat `rootfs.raw`, and
+/// Root disks live beside the computer record: `upper.ext4`, a flat `rootfs.raw`, and
 /// the qcow2 layers a checkpoint or restore adds.
 fn runtime_allocated(paths: &RuntimePaths, name: &str) -> Result<Option<u64>, RuntimeError> {
     let dir = paths.home.join("sandboxes").join(name);
@@ -338,28 +346,29 @@ fn stats(output: &str) -> Result<(u64, u64), RuntimeError> {
 fn state(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     observed: &InspectedSandbox,
 ) -> Result<StorageState, RuntimeError> {
-    verify(machine, observed)?;
-    let record = load(paths, machine.id())?;
+    verify(configuration, observed)?;
+    let record = load(paths, configuration.id())?;
     let (checkpoint_host_bytes, checkpoint_count) =
-        checkpoints::storage_totals(runner, paths, machine.id(), machine.name());
+        checkpoints::storage_totals(runner, paths, configuration.id(), configuration.name());
     let mut state = StorageState {
         checkpoint_host_bytes,
         checkpoint_count,
         history: record.history,
-        workspace_host_bytes: workspace_host_bytes(paths, machine)?,
-        runtime_host_bytes: runtime_allocated(paths, machine.name())?,
+        workspace_host_bytes: workspace_host_bytes(paths, configuration)?,
+        runtime_host_bytes: runtime_allocated(paths, configuration.name())?,
         workspace_used_bytes: None,
         workspace_capacity_bytes: None,
         last_reclaimed_bytes: record.last_reclaimed_bytes,
         last_trim_at: record.last_trim_at,
         last_error: record.last_error,
     };
-    if observed.status.eq_ignore_ascii_case("running") && !verified_worker(paths, machine, observed)
+    if observed.status.eq_ignore_ascii_case("running")
+        && !verified_worker(paths, configuration, observed)
     {
-        let restart = "Restart this VM in Silo before reclaiming space so it uses the corrected storage runtime.";
+        let restart = "Restart this computer in Silo before reclaiming space so it uses the corrected storage runtime.";
         state.last_error = Some(
             state
                 .last_error
@@ -367,12 +376,13 @@ fn state(
                 .map_or_else(|| restart.into(), |error| format!("{error} {restart}")),
         );
     }
-    if observed.status.eq_ignore_ascii_case("running") && workspace_mount(paths, machine, observed)
+    if observed.status.eq_ignore_ascii_case("running")
+        && workspace_mount(paths, configuration, observed)
     {
         match runner
             .run(
                 paths,
-                &guest_args(machine.name(), 4, STATS),
+                &guest_args(configuration.name(), 4, STATS),
                 Duration::from_secs(5),
             )
             .and_then(|out| stats(&out.stdout))
@@ -382,7 +392,7 @@ fn state(
                 state.workspace_capacity_bytes = Some(capacity);
             }
             Err(_) => {
-                state.last_error.get_or_insert_with(|| "Guest storage usage is unavailable. Refresh after the VM finishes starting.".into());
+                state.last_error.get_or_insert_with(|| "Guest storage usage is unavailable. Refresh after the computer finishes starting.".into());
             }
         }
     }
@@ -391,44 +401,44 @@ fn state(
 fn trim(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     observed: &InspectedSandbox,
     budget: Duration,
     at: u64,
 ) -> Result<(), RuntimeError> {
-    trim_triggered(runner, paths, machine, observed, budget, at, "manual")
+    trim_triggered(runner, paths, configuration, observed, budget, at, "manual")
 }
 fn trim_triggered(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     observed: &InspectedSandbox,
     budget: Duration,
     at: u64,
     trigger: &str,
 ) -> Result<(), RuntimeError> {
-    verify(machine, observed)?;
+    verify(configuration, observed)?;
     if !observed.status.eq_ignore_ascii_case("running") {
         return Err(failure(
-            "Start the VM before reclaiming unused workspace space.",
+            "Start the computer before reclaiming unused computer space.",
         ));
     }
-    if !workspace_mount(paths, machine, observed) {
+    if !workspace_mount(paths, configuration, observed) {
         return Err(failure(
-            "The VM does not have the expected workspace disk mounted. No space was reclaimed.",
+            "The computer does not have the expected workspace disk mounted. No space was reclaimed.",
         ));
     }
-    if !verified_worker(paths, machine, observed) {
-        return Err(failure("Restart this VM in Silo before reclaiming space so it uses the corrected storage runtime."));
+    if !verified_worker(paths, configuration, observed) {
+        return Err(failure("Restart this computer in Silo before reclaiming space so it uses the corrected storage runtime."));
     }
     let seconds = budget.as_secs();
     if seconds < 4 {
-        return Err(failure("No time remains for workspace reclamation."));
+        return Err(failure("No time remains for computer reclamation."));
     }
     let _command_guard = configuration_recovery::command_lock(paths, Duration::ZERO)?;
     // Hold every layer open so a runtime that shortens any of them is caught and repaired.
     let mut disks = Vec::new();
-    for disk_path in workspace_disk_files(paths, machine)?.unwrap_or_default() {
+    for disk_path in workspace_disk_files(paths, configuration)?.unwrap_or_default() {
         let disk = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -446,14 +456,14 @@ fn trim_triggered(
     }
     if disks.is_empty() {
         return Err(failure(
-            "The VM does not have the expected workspace disk mounted. No space was reclaimed.",
+            "The computer does not have the expected workspace disk mounted. No space was reclaimed.",
         ));
     }
-    let before = workspace_host_bytes(paths, machine)?
+    let before = workspace_host_bytes(paths, configuration)?
         .ok_or_else(|| failure("The owned workspace disk could not be measured."))?;
-    let mut record = load(paths, machine.id())?;
+    let mut record = load(paths, configuration.id())?;
     record.last_attempt_at = Some(at);
-    record.last_error = Some("The previous workspace reclamation did not complete.".into());
+    record.last_error = Some("The previous computer reclamation did not complete.".into());
     record.history.insert(
         0,
         ReclaimEntry {
@@ -465,8 +475,8 @@ fn trim_triggered(
         },
     );
     record.history.truncate(HISTORY_LIMIT);
-    save(paths, machine.id(), &record)?;
-    let mut args = guest_args(machine.name(), seconds - 1, TRIM);
+    save(paths, configuration.id(), &record)?;
+    let mut args = guest_args(configuration.name(), seconds - 1, TRIM);
     args.push(format!("{}s", seconds - 3));
     let result = runner.run(paths, &args, budget).map(|_| ());
     // Check every layer even after the first failure, so each shortened one is repaired.
@@ -480,14 +490,14 @@ fn trim_triggered(
     let result = length_result.and(result);
     match result {
         Ok(_) => {
-            let after = workspace_host_bytes(paths, machine)?
+            let after = workspace_host_bytes(paths, configuration)?
                 .ok_or_else(|| failure("The reclaimed disk could not be measured."))?;
             record.last_trim_at = Some(now());
             record.last_reclaimed_bytes = Some(before.saturating_sub(after));
             record.last_error = None;
         }
         Err(_) => {
-            record.last_error = Some(length_error.unwrap_or_else(|| "Workspace reclamation failed or exceeded its time limit. Your files were preserved; the disk may not support reclamation.".into()));
+            record.last_error = Some(length_error.unwrap_or_else(|| "Computer reclamation failed or exceeded its time limit. Your files were preserved; the disk may not support reclamation.".into()));
         }
     }
     record.history[0].error = record.last_error.clone();
@@ -496,7 +506,7 @@ fn trim_triggered(
     } else {
         None
     };
-    save(paths, machine.id(), &record)?;
+    save(paths, configuration.id(), &record)?;
     result.map_err(|_| failure(record.last_error.as_deref().unwrap()))
 }
 
@@ -507,7 +517,7 @@ fn preserve_length(disk: &File, original_length: u64, qcow2: bool) -> Result<(),
         .len();
     if length < original_length {
         disk.set_len(original_length).and_then(|_| disk.sync_all())
-            .map_err(|_| failure("The runtime shortened the workspace disk and its length could not be restored. Keep the VM stopped and repair its disk."))?;
+            .map_err(|_| failure("The runtime shortened the workspace disk and its length could not be restored. Keep the computer stopped and repair its disk."))?;
         return Err(failure("The runtime shortened the workspace disk; its original length was restored. Update the runtime before reclaiming again."));
     }
     // A qcow2 file grows as the running guest allocates host clusters; its file
@@ -558,10 +568,12 @@ pub(super) fn after_start(
     if !observed.status.eq_ignore_ascii_case("running") {
         return;
     }
-    let Ok(machine) = machine(paths, id) else {
+    let Ok(configuration) = computer_configuration(paths, id) else {
         return;
     };
-    if verify(&machine, observed).is_err() || !workspace_mount(paths, &machine, observed) {
+    if verify(&configuration, observed).is_err()
+        || !workspace_mount(paths, &configuration, observed)
+    {
         return;
     }
     if !runner
@@ -600,20 +612,20 @@ fn automatic(
     else {
         return;
     };
-    let Ok(machine) = machine(paths, id) else {
+    let Ok(configuration) = computer_configuration(paths, id) else {
         return;
     };
     let Ok(record) = load(paths, id) else {
         return;
     };
-    if !due(&record, now(), interval) || !workspace_mount(paths, &machine, observed) {
+    if !due(&record, now(), interval) || !workspace_mount(paths, &configuration, observed) {
         return;
     }
-    // Maintenance failure must never veto stopping a VM.
+    // Maintenance failure must never veto stopping a computer.
     let _ = trim_triggered(
         runner,
         paths,
-        &machine,
+        &configuration,
         observed,
         budget,
         now(),
@@ -631,19 +643,15 @@ fn periodic(
     unresolved: &HashMap<String, RuntimeError>,
 ) -> Result<bool, RuntimeError> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let mut machines: Vec<_> = read_metadata(&paths.metadata)?
-        .machines
-        .into_iter()
-        .filter(MachineConfiguration::is_vm)
-        .collect();
-    if machines.is_empty() {
+    let mut computers = read_metadata(&paths.metadata)?.computers;
+    if computers.is_empty() {
         return Ok(false);
     }
-    let offset = NEXT.fetch_add(1, Ordering::Relaxed) % machines.len();
-    machines.rotate_left(offset);
+    let offset = NEXT.fetch_add(1, Ordering::Relaxed) % computers.len();
+    computers.rotate_left(offset);
     let deadline = Instant::now() + TRIM_BUDGET;
-    for machine in machines {
-        if unresolved.contains_key(machine.id()) {
+    for configuration in computers {
+        if unresolved.contains_key(configuration.id()) {
             continue;
         }
         if shutdown::ensure_accepting_operations().is_err() {
@@ -653,7 +661,7 @@ fn periodic(
         if remaining.as_secs() < 4 {
             return Ok(false);
         }
-        let Ok(record) = load(paths, machine.id()) else {
+        let Ok(record) = load(paths, configuration.id()) else {
             continue;
         };
         if !due(&record, now(), WEEK) {
@@ -663,7 +671,7 @@ fn periodic(
             paths,
             &[
                 "inspect".into(),
-                machine.name().into(),
+                configuration.name().into(),
                 "--format".into(),
                 "json".into(),
             ],
@@ -674,7 +682,9 @@ fn periodic(
         let Ok(observed) = serde_json::from_str::<InspectedSandbox>(&output.stdout) else {
             continue;
         };
-        if verify(&machine, &observed).is_err() || !workspace_mount(paths, &machine, &observed) {
+        if verify(&configuration, &observed).is_err()
+            || !workspace_mount(paths, &configuration, &observed)
+        {
             continue;
         }
         if !observed.status.eq_ignore_ascii_case("running") {
@@ -683,11 +693,11 @@ fn periodic(
         let budget = deadline
             .saturating_duration_since(Instant::now())
             .min(shutdown::maintenance_budget());
-        // One VM per tick keeps the global mutation lock available for user actions.
+        // One computer per tick keeps the global mutation lock available for user actions.
         trim_triggered(
             runner,
             paths,
-            &machine,
+            &configuration,
             &observed,
             budget,
             now(),
@@ -706,7 +716,7 @@ fn maintenance_tick(
         eprintln!("Deleted checkpoint data was kept: {failure}");
     }
     for (id, failure) in &recovery.unresolved {
-        eprintln!("Interrupted checkpoint data for sandbox {id} was kept: {failure}");
+        eprintln!("Interrupted checkpoint data for computer {id} was kept: {failure}");
     }
     periodic(runner, paths, &recovery.unresolved)
 }
@@ -716,7 +726,7 @@ pub(crate) fn start_monitor(app: &AppHandle) {
     thread::spawn(move || {
         loop {
             // Periodic background work skips whenever any operation is active or waiting.
-            if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
+            if let Ok(_guard) = OPERATIONS.try_device_hidden("Trimming computer storage") {
                 if shutdown::ensure_accepting_operations().is_ok() {
                     // No paths exist while the storage migration is unfinished, so
                     // neither step below can reach the previous generation.
@@ -735,16 +745,16 @@ pub(crate) fn start_monitor(app: &AppHandle) {
 #[tauri::command]
 pub async fn read_workspace_storage(
     app: AppHandle,
-    workspace_id: String,
+    computer_id: String,
 ) -> Result<StorageState, String> {
-    command(app, workspace_id, false).await
+    command(app, computer_id, false).await
 }
 #[tauri::command]
 pub async fn reclaim_workspace_storage(
     app: AppHandle,
-    workspace_id: String,
+    computer_id: String,
 ) -> Result<StorageState, String> {
-    command(app, workspace_id, true).await
+    command(app, computer_id, true).await
 }
 async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageState, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -754,7 +764,7 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
             Some(
                 OPERATIONS
                     .kind(super::operation_gate::OperationKind::StorageReclaim)
-                    .computer("Reclaiming sandbox storage")
+                    .device("Reclaiming computer storage")
                     .map_err(|e| e.to_string())?,
             )
         } else {
@@ -778,22 +788,22 @@ fn storage_with(
     id: &str,
     reclaim: bool,
 ) -> Result<StorageState, RuntimeError> {
-    let machine = machine(paths, id)?;
-    let absent = if checkpoints::pending_view(paths, machine.id(), false)? {
+    let configuration = computer_configuration(paths, id)?;
+    let absent = if checkpoints::pending_view(paths, configuration.id(), false)? {
         let exists = list_managed(runner, paths)?
             .iter()
-            .any(|entry| entry.name == machine.name());
-        checkpoints::pending_view(paths, machine.id(), exists)?
+            .any(|entry| entry.name == configuration.name());
+        checkpoints::pending_view(paths, configuration.id(), exists)?
     } else {
         false
     };
     if absent {
         if reclaim {
-            return Err(failure(&format!("Start {} first.", machine.name())));
+            return Err(failure(&format!("Start {} first.", configuration.name())));
         }
-        let record = load(paths, machine.id())?;
+        let record = load(paths, configuration.id())?;
         let (checkpoint_host_bytes, checkpoint_count) =
-            checkpoints::storage_totals(runner, paths, machine.id(), machine.name());
+            checkpoints::storage_totals(runner, paths, configuration.id(), configuration.name());
         return Ok(StorageState {
             checkpoint_host_bytes,
             checkpoint_count,
@@ -807,15 +817,15 @@ fn storage_with(
             last_error: record.last_error,
         });
     }
-    let observed = inspect_workspace(runner, paths, machine.name())?;
-    verify(&machine, &observed)?;
+    let observed = inspect_computer(runner, paths, configuration.name())?;
+    verify(&configuration, &observed)?;
     if reclaim {
-        if checkpoints::needs_explicit_start(paths, machine.id())? {
-            return Err(failure("The sandbox has an unfinished restore. Retry Start before reclaiming workspace space."));
+        if checkpoints::needs_explicit_start(paths, configuration.id())? {
+            return Err(failure("The computer has an unfinished restore. Retry Start before reclaiming computer space."));
         }
-        trim(runner, paths, &machine, &observed, TRIM_BUDGET, now())?;
+        trim(runner, paths, &configuration, &observed, TRIM_BUDGET, now())?;
     }
-    state(runner, paths, &machine, &observed)
+    state(runner, paths, &configuration, &observed)
 }
 
 #[cfg(test)]

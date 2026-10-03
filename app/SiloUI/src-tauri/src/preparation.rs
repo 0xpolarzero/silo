@@ -1,6 +1,6 @@
-//! Background preparation of what each computer needs before sandboxes work well: the
+//! Background preparation of what each device needs before computers work well: the
 //! bundled VM image imported into the runtime and the pinned LCU archive downloaded and
-//! verified. Both start at launch without the computer-wide operation gate. Actions that
+//! verified. Both start at launch without the device-wide operation gate. Actions that
 //! need one call `ensure_image` or `ensure_lcu`, which join the work in flight or run it.
 //! The ChatGPT for Linux download has its own worker (`chatgpt_app`) and status.
 use crate::{
@@ -275,7 +275,7 @@ pub fn ensure_image(paths: &RuntimePaths, report: &dyn Fn(Option<u8>)) -> Result
     )
 }
 
-/// The read-only host folder holding the verified pinned LCU archive for this computer's guest
+/// The read-only host folder holding the verified pinned LCU archive for this device's guest
 /// architecture (file name as in guest/lcu-lock.json's URL), once ready.
 pub fn lcu_folder() -> Option<PathBuf> {
     let root = LCU_ROOT.get()?;

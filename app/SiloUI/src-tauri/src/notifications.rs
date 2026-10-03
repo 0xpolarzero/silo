@@ -4,10 +4,10 @@
 //! - The frontend toast layer owns results of commands it awaited (push, GitHub apply,
 //!   ports, checkpoints, storage reclaim, log export). It mirrors failures and long
 //!   successes to the system through `deliver_notice`; it already shows its own toast.
-//! - The backend owns background work and lifecycle results (sandbox start/stop/restart,
-//!   export/import, sandbox setup, startup, updates) through `notify_native`: the
+//! - The backend owns background work and lifecycle results (computer start/stop/restart,
+//!   export/import, computer setup, startup, updates) through `notify_native`: the
 //!   frontend shows toasts for those from backend state.
-//! - The backend owns events nobody asked for (unexpected sandbox changes, startup
+//! - The backend owns events nobody asked for (unexpected computer changes, startup
 //!   failures without a UI owner) through `notify`: an in-app toast plus a system notice.
 //!
 //! Policy lives here: category preferences, OS authorization, and focus. A system
@@ -32,7 +32,7 @@ pub(crate) const NOTICE_EVENT: &str = "silo://notice";
 pub(crate) enum Category {
     /// Something the user started, or background work, failed.
     Failures,
-    /// A sandbox changed state without a Silo operation causing it.
+    /// A computer changed state without a Silo operation causing it.
     Changes,
     /// Work that ran for at least `LONG_OPERATION` finished successfully.
     Completions,
@@ -44,8 +44,8 @@ pub(crate) const LONG_OPERATION: std::time::Duration = std::time::Duration::from
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct NoticeSandbox {
-    /// Stable VM id, qualified by computer when remote. Routes, groups and clears notices.
+pub(crate) struct NoticeComputer {
+    /// Stable computer id, qualified by device when remote. Routes, groups and clears notices.
     pub id: String,
     /// Display name, shown in notification text.
     pub name: String,
@@ -60,11 +60,11 @@ pub(crate) struct Notice {
     pub key: String,
     pub title: String,
     pub body: String,
-    pub sandbox: Option<NoticeSandbox>,
+    pub computer: Option<NoticeComputer>,
 }
 
 impl Category {
-    /// Stable name, used to group system notifications that have no sandbox.
+    /// Stable name, used to group system notifications that have no computer.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Failures => "failures",
@@ -78,17 +78,17 @@ impl Notice {
     /// Where a click on the system notification opens the app. Same shape as
     /// `desktop/use-main-route.ts`.
     pub(crate) fn route(&self) -> Value {
-        match &self.sandbox {
-            Some(sandbox) => serde_json::json!({"tab": "workspaces", "workspace": sandbox.id}),
-            None => serde_json::json!({"tab": "workspaces"}),
+        match &self.computer {
+            Some(computer) => serde_json::json!({"tab": "computers", "computer": computer.id}),
+            None => serde_json::json!({"tab": "computers"}),
         }
     }
 
     /// Notifications with the same thread collapse together in Notification Center.
     pub(crate) fn thread(&self) -> &str {
-        self.sandbox
+        self.computer
             .as_ref()
-            .map_or(self.category.as_str(), |sandbox| sandbox.id.as_str())
+            .map_or(self.category.as_str(), |computer| computer.id.as_str())
     }
 }
 
@@ -138,7 +138,7 @@ pub(crate) fn notify_native(app: &AppHandle, notice: Notice) {
     tauri::async_runtime::spawn_blocking(move || deliver(&app, pending));
 }
 
-/// Submitted and queued notification keys by sandbox id, so deletion withdraws both.
+/// Submitted and queued notification keys by computer id, so deletion withdraws both.
 #[derive(Default)]
 struct DeliveredIndex {
     keys: HashMap<String, BTreeSet<String>>,
@@ -147,16 +147,16 @@ struct DeliveredIndex {
 
 impl DeliveredIndex {
     fn record(&mut self, notice: &Notice) {
-        if let Some(sandbox) = &notice.sandbox {
+        if let Some(computer) = &notice.computer {
             self.keys
-                .entry(sandbox.id.clone())
+                .entry(computer.id.clone())
                 .or_default()
                 .insert(notice.key.clone());
         }
     }
-    fn take(&mut self, sandbox_id: &str) -> Vec<String> {
+    fn take(&mut self, computer_id: &str) -> Vec<String> {
         self.keys
-            .remove(sandbox_id)
+            .remove(computer_id)
             .map(|keys| keys.into_iter().collect())
             .unwrap_or_default()
     }
@@ -200,9 +200,9 @@ impl DeliveredIndex {
         }
     }
 
-    fn withdraw(&mut self, sandbox_id: &str) -> PendingWithdrawal {
+    fn withdraw(&mut self, computer_id: &str) -> PendingWithdrawal {
         let notices = self
-            .take(sandbox_id)
+            .take(computer_id)
             .into_iter()
             .map(|key| {
                 let gate = self.gate(&key);
@@ -276,13 +276,13 @@ impl PendingWithdrawal {
 
 static DELIVERED: LazyLock<Mutex<DeliveredIndex>> = LazyLock::new(Default::default);
 
-/// Remove delivered system notifications about one sandbox (for example, after deletion).
+/// Remove delivered system notifications about one computer (for example, after deletion).
 /// Runs off the calling thread; failures are ignored.
-pub(crate) fn clear_sandbox(_app: &AppHandle, sandbox_id: &str) {
+pub(crate) fn clear_computer(_app: &AppHandle, computer_id: &str) {
     let pending = DELIVERED
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .withdraw(sandbox_id);
+        .withdraw(computer_id);
     tauri::async_runtime::spawn_blocking(move || {
         pending.clear(crate::system_integrations::clear_notifications);
     });
@@ -296,7 +296,7 @@ fn main_window_focused(app: &AppHandle) -> bool {
 }
 
 fn deliver(app: &AppHandle, pending: PendingDelivery) {
-    // A delivery failure must not change the result of the sandbox/backup operation.
+    // A delivery failure must not change the result of the computer/backup operation.
     pending.deliver(
         |notice| {
             if main_window_focused(app) {
@@ -319,8 +319,8 @@ pub(crate) fn deliver_notice(app: AppHandle, notice: Notice) {
 }
 
 #[tauri::command]
-pub(crate) fn clear_sandbox_notices(app: AppHandle, sandbox_id: String) {
-    clear_sandbox(&app, &sandbox_id);
+pub(crate) fn clear_computer_notices(app: AppHandle, computer_id: String) {
+    clear_computer(&app, &computer_id);
 }
 
 /// Longest body shown in a system notification. Full detail stays in the app.
@@ -353,12 +353,12 @@ fn seconds(elapsed: Duration) -> String {
     format!("Took {} seconds.", elapsed.as_secs())
 }
 
-/// Notice for a sandbox start, stop or restart, local or remote. Failures always notify;
+/// Notice for a computer start, stop or restart, local or remote. Failures always notify;
 /// successes only when the operation was long enough that the user likely looked away.
 pub(crate) fn lifecycle_notice(
     action: &str,
     name: &str,
-    sandbox: Option<NoticeSandbox>,
+    computer: Option<NoticeComputer>,
     elapsed: Duration,
     outcome: Outcome<'_>,
 ) -> Option<Notice> {
@@ -368,9 +368,9 @@ pub(crate) fn lifecycle_notice(
         "restart" => ("restart", format!("{name} restarted")),
         _ => return None,
     };
-    let key = sandbox.as_ref().map_or_else(
+    let key = computer.as_ref().map_or_else(
         || format!("lifecycle:{name}"),
-        |s| format!("vm:{}:lifecycle", s.id),
+        |s| format!("computer:{}:lifecycle", s.id),
     );
     match outcome {
         Outcome::Cancelled | Outcome::AlreadyQueued => None,
@@ -379,14 +379,14 @@ pub(crate) fn lifecycle_notice(
             key,
             title: format!("Couldn\u{2019}t {verb} {name}"),
             body: bounded_body(message),
-            sandbox,
+            computer,
         }),
         Outcome::Succeeded if elapsed >= LONG_OPERATION => Some(Notice {
             category: Category::Completions,
             key,
             title: done,
             body: seconds(elapsed),
-            sandbox,
+            computer,
         }),
         Outcome::Succeeded => None,
     }
@@ -396,7 +396,7 @@ pub(crate) fn lifecycle_notice(
 pub(crate) fn transfer_notice(
     operation: &str,
     label: &str,
-    sandbox: Option<NoticeSandbox>,
+    computer: Option<NoticeComputer>,
     elapsed: Duration,
     outcome: &str,
     message: &str,
@@ -406,9 +406,9 @@ pub(crate) fn transfer_notice(
         "restore" => ("import", "Imported"),
         _ => return None,
     };
-    let key = sandbox.as_ref().map_or_else(
+    let key = computer.as_ref().map_or_else(
         || "transfer".to_string(),
-        |s| format!("vm:{}:transfer", s.id),
+        |s| format!("computer:{}:transfer", s.id),
     );
     let (category, title, body) = match outcome {
         "failed" => (
@@ -428,7 +428,7 @@ pub(crate) fn transfer_notice(
         key,
         title,
         body,
-        sandbox,
+        computer,
     })
 }
 
@@ -437,14 +437,14 @@ pub(crate) fn failure(
     key: &str,
     title: &str,
     message: &str,
-    sandbox: Option<NoticeSandbox>,
+    computer: Option<NoticeComputer>,
 ) -> Notice {
     Notice {
         category: Category::Failures,
         key: key.into(),
         title: title.into(),
         body: bounded_body(message),
-        sandbox,
+        computer,
     }
 }
 
@@ -495,21 +495,21 @@ mod tests {
     fn notice_wire_shape_is_camel_case() {
         let notice = Notice {
             category: Category::Completions,
-            key: "vm:1:lifecycle".into(),
+            key: "computer:1:lifecycle".into(),
             title: "dev is running".into(),
             body: "".into(),
-            sandbox: Some(NoticeSandbox {
+            computer: Some(NoticeComputer {
                 id: "1".into(),
                 name: "dev".into(),
             }),
         };
         assert_eq!(
             serde_json::to_value(&notice).unwrap(),
-            json!({"category": "completions", "key": "vm:1:lifecycle", "title": "dev is running", "body": "", "sandbox": {"id": "1", "name": "dev"}})
+            json!({"category": "completions", "key": "computer:1:lifecycle", "title": "dev is running", "body": "", "computer": {"id": "1", "name": "dev"}})
         );
     }
-    fn sandbox() -> Option<NoticeSandbox> {
-        Some(NoticeSandbox {
+    fn computer() -> Option<NoticeComputer> {
+        Some(NoticeComputer {
             id: "1".into(),
             name: "dev".into(),
         })
@@ -531,11 +531,11 @@ mod tests {
         );
     }
     #[test]
-    fn lifecycle_failures_name_the_sandbox_and_share_a_key() {
+    fn lifecycle_failures_name_the_computer_and_share_a_key() {
         let notice = lifecycle_notice(
             "start",
             "dev",
-            sandbox(),
+            computer(),
             SHORT,
             Outcome::Failed("no memory\nleft"),
         )
@@ -543,19 +543,19 @@ mod tests {
         assert_eq!(notice.category, Category::Failures);
         assert_eq!(notice.title, "Couldn\u{2019}t start dev");
         assert_eq!(notice.body, "no memory left");
-        assert_eq!(notice.key, "vm:1:lifecycle");
-        let done = lifecycle_notice("stop", "dev", sandbox(), LONG, Outcome::Succeeded).unwrap();
+        assert_eq!(notice.key, "computer:1:lifecycle");
+        let done = lifecycle_notice("stop", "dev", computer(), LONG, Outcome::Succeeded).unwrap();
         assert_eq!(done.key, notice.key);
         assert_eq!(done.category, Category::Completions);
         assert_eq!(done.title, "dev stopped");
         assert_eq!(
-            lifecycle_notice("restart", "dev", sandbox(), LONG, Outcome::Succeeded)
+            lifecycle_notice("restart", "dev", computer(), LONG, Outcome::Succeeded)
                 .unwrap()
                 .title,
             "dev restarted"
         );
         assert_eq!(
-            lifecycle_notice("start", "dev", sandbox(), LONG, Outcome::Succeeded)
+            lifecycle_notice("start", "dev", computer(), LONG, Outcome::Succeeded)
                 .unwrap()
                 .title,
             "dev is running"
@@ -563,31 +563,31 @@ mod tests {
     }
     #[test]
     fn lifecycle_successes_notify_only_after_the_long_threshold() {
-        assert!(lifecycle_notice("start", "dev", sandbox(), SHORT, Outcome::Succeeded).is_none());
+        assert!(lifecycle_notice("start", "dev", computer(), SHORT, Outcome::Succeeded).is_none());
         assert!(lifecycle_notice(
             "start",
             "dev",
-            sandbox(),
+            computer(),
             LONG - Duration::from_millis(1),
             Outcome::Succeeded
         )
         .is_none());
-        assert!(lifecycle_notice("start", "dev", sandbox(), LONG, Outcome::Succeeded).is_some());
+        assert!(lifecycle_notice("start", "dev", computer(), LONG, Outcome::Succeeded).is_some());
     }
     #[test]
     fn cancellation_queue_dedupe_and_dismiss_never_notify() {
         for elapsed in [SHORT, LONG] {
             assert!(
-                lifecycle_notice("start", "dev", sandbox(), elapsed, Outcome::Cancelled).is_none()
+                lifecycle_notice("start", "dev", computer(), elapsed, Outcome::Cancelled).is_none()
             );
             assert!(
-                lifecycle_notice("start", "dev", sandbox(), elapsed, Outcome::AlreadyQueued)
+                lifecycle_notice("start", "dev", computer(), elapsed, Outcome::AlreadyQueued)
                     .is_none()
             );
             assert!(lifecycle_notice(
                 "dismiss-error",
                 "dev",
-                sandbox(),
+                computer(),
                 elapsed,
                 Outcome::Succeeded
             )
@@ -595,7 +595,7 @@ mod tests {
             assert!(lifecycle_notice(
                 "dismiss-error",
                 "dev",
-                sandbox(),
+                computer(),
                 elapsed,
                 Outcome::Failed("x")
             )
@@ -606,59 +606,55 @@ mod tests {
     fn lifecycle_without_a_known_id_still_has_a_stable_key() {
         let notice = lifecycle_notice("start", "dev", None, SHORT, Outcome::Failed("x")).unwrap();
         assert_eq!(notice.key, "lifecycle:dev");
-        assert!(notice.sandbox.is_none());
+        assert!(notice.computer.is_none());
     }
     #[test]
     fn transfer_notices_follow_the_outcome() {
         let failed =
-            transfer_notice("backup", "dev", sandbox(), SHORT, "failed", "disk full").unwrap();
+            transfer_notice("backup", "dev", computer(), SHORT, "failed", "disk full").unwrap();
         assert_eq!(
             (failed.category, failed.title.as_str(), failed.key.as_str()),
             (
                 Category::Failures,
                 "Couldn\u{2019}t export dev",
-                "vm:1:transfer"
+                "computer:1:transfer"
             )
         );
         assert_eq!(failed.body, "disk full");
-        assert!(transfer_notice("restore", "dev", sandbox(), SHORT, "success", "").is_none());
-        let long = transfer_notice("restore", "dev", sandbox(), LONG, "success", "").unwrap();
+        assert!(transfer_notice("restore", "dev", computer(), SHORT, "success", "").is_none());
+        let long = transfer_notice("restore", "dev", computer(), LONG, "success", "").unwrap();
         assert_eq!(
             (long.category, long.title.as_str()),
             (Category::Completions, "Imported dev")
         );
         assert_eq!(
-            transfer_notice("backup", "3 sandboxes", None, LONG, "success", "")
+            transfer_notice("backup", "3 computers", None, LONG, "success", "")
                 .unwrap()
                 .key,
             "transfer"
         );
         for operation in ["backup", "restore"] {
-            // Exports no longer stop sandboxes, so there is no restart outcome to report.
+            // Exports no longer stop computers, so there is no restart outcome to report.
             for outcome in ["cancelled", "running", "restart-required"] {
-                assert!(transfer_notice(operation, "dev", sandbox(), LONG, outcome, "x").is_none());
+                assert!(
+                    transfer_notice(operation, "dev", computer(), LONG, outcome, "x").is_none()
+                );
             }
         }
     }
     #[test]
-    fn click_routes_open_the_sandbox_or_the_list() {
-        let mut notice = failure("k", "t", "b", sandbox());
-        assert_eq!(
-            notice.route(),
-            json!({"tab": "workspaces", "workspace": "1"})
-        );
-        notice.sandbox.as_mut().unwrap().name = "renamed".into();
-        assert_eq!(
-            notice.route(),
-            json!({"tab": "workspaces", "workspace": "1"})
-        );
+    fn click_routes_open_the_computer_or_the_list() {
+        let mut notice = failure("k", "t", "b", computer());
+        assert_eq!(notice.route(), json!({"tab": "computers", "computer": "1"}));
+        notice.computer.as_mut().unwrap().name = "renamed".into();
+        assert_eq!(notice.route(), json!({"tab": "computers", "computer": "1"}));
         assert_eq!(notice.thread(), "1");
-        notice.sandbox = None;
-        assert_eq!(notice.route(), json!({"tab": "workspaces"}));
+        notice.computer = None;
+        assert_eq!(notice.route(), json!({"tab": "computers"}));
         assert_eq!(notice.thread(), "failures");
     }
     #[test]
-    fn clearing_remote_notices_preserves_other_computers_with_the_same_vm_id() {
+    fn clearing_remote_notices_preserves_other_devices_with_the_same_computer_id() {
         let mut index = DeliveredIndex::default();
         for id in [
             "same-id",
@@ -666,10 +662,10 @@ mod tests {
             "silo-remote:lab:same-id",
         ] {
             index.record(&failure(
-                &format!("vm:{id}:lifecycle"),
+                &format!("computer:{id}:lifecycle"),
                 "dev is running",
                 "",
-                Some(NoticeSandbox {
+                Some(NoticeComputer {
                     id: id.into(),
                     name: "dev".into(),
                 }),
@@ -677,19 +673,19 @@ mod tests {
         }
         assert_eq!(
             index.take("silo-remote:office:same-id"),
-            ["vm:silo-remote:office:same-id:lifecycle"]
+            ["computer:silo-remote:office:same-id:lifecycle"]
         );
         assert!(index.take("silo-remote:office:same-id").is_empty());
-        assert_eq!(index.take("same-id"), ["vm:same-id:lifecycle"]);
+        assert_eq!(index.take("same-id"), ["computer:same-id:lifecycle"]);
         assert_eq!(
             index.take("silo-remote:lab:same-id"),
-            ["vm:silo-remote:lab:same-id:lifecycle"]
+            ["computer:silo-remote:lab:same-id:lifecycle"]
         );
     }
 
     #[test]
     fn frontend_notice_bodies_are_bounded_before_system_delivery() {
-        let mut notice = failure("vm:1:lifecycle", "t", "b", sandbox());
+        let mut notice = failure("computer:1:lifecycle", "t", "b", computer());
         // Frontend mirrors deserialize Notice directly rather than using failure().
         notice.body = format!("first\nsecond\t{}", "x".repeat(500));
         let pending = DeliveredIndex::default().prepare(notice);
@@ -710,10 +706,11 @@ mod tests {
         use std::sync::{mpsc, Arc};
         let index = Arc::new(Mutex::new(DeliveredIndex::default()));
         let active = Arc::new(Mutex::new(BTreeSet::<String>::new()));
-        let pending = index
-            .lock()
-            .unwrap()
-            .prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let pending =
+            index
+                .lock()
+                .unwrap()
+                .prepare(failure("computer:1:lifecycle", "t", "b", computer()));
         let (entered, receiving) = mpsc::channel();
         let (release, waiting) = mpsc::channel();
         let worker_active = active.clone();
@@ -747,7 +744,7 @@ mod tests {
         });
         assert!(
             active.lock().unwrap().is_empty(),
-            "deleted sandbox still has an OS notification"
+            "deleted computer still has an OS notification"
         );
         assert!(index.lock().unwrap().take("1").is_empty());
     }
@@ -755,10 +752,11 @@ mod tests {
     #[test]
     fn deletion_cancels_a_notice_before_os_submission() {
         let index = Mutex::new(DeliveredIndex::default());
-        let pending = index
-            .lock()
-            .unwrap()
-            .prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let pending =
+            index
+                .lock()
+                .unwrap()
+                .prepare(failure("computer:1:lifecycle", "t", "b", computer()));
         index.lock().unwrap().withdraw("1").clear(|_| {});
         let submitted = std::cell::Cell::new(false);
         pending.deliver(
@@ -775,8 +773,8 @@ mod tests {
     #[test]
     fn reversed_delivery_tasks_cannot_replace_a_newer_notice() {
         let mut index = DeliveredIndex::default();
-        let older = index.prepare(failure("vm:1:lifecycle", "older", "b", sandbox()));
-        let newer = index.prepare(failure("vm:1:lifecycle", "newer", "b", sandbox()));
+        let older = index.prepare(failure("computer:1:lifecycle", "older", "b", computer()));
+        let newer = index.prepare(failure("computer:1:lifecycle", "newer", "b", computer()));
         let visible = std::cell::RefCell::new(String::new());
         newer.deliver(
             |_| true,
@@ -800,12 +798,12 @@ mod tests {
     #[test]
     fn notification_delivery_does_not_block_a_different_key() {
         let mut index = DeliveredIndex::default();
-        let first = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let first = index.prepare(failure("computer:1:lifecycle", "t", "b", computer()));
         let second = index.prepare(failure(
-            "vm:2:lifecycle",
+            "computer:2:lifecycle",
             "t",
             "b",
-            Some(NoticeSandbox {
+            Some(NoticeComputer {
                 id: "2".into(),
                 name: "second".into(),
             }),
@@ -834,7 +832,7 @@ mod tests {
     fn queued_delivery_rechecks_preferences_after_an_in_flight_notice() {
         use std::sync::mpsc;
         let mut index = DeliveredIndex::default();
-        let older = index.prepare(failure("vm:1:lifecycle", "older", "b", sandbox()));
+        let older = index.prepare(failure("computer:1:lifecycle", "older", "b", computer()));
         let submissions = Arc::new(Mutex::new(Vec::new()));
         let worker_submissions = submissions.clone();
         let (entered, wait_entered) = mpsc::channel();
@@ -855,7 +853,7 @@ mod tests {
             );
         });
         wait_entered.recv_timeout(Duration::from_secs(5)).unwrap();
-        let newer = index.prepare(failure("vm:1:lifecycle", "newer", "b", sandbox()));
+        let newer = index.prepare(failure("computer:1:lifecycle", "newer", "b", computer()));
         let preferences_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let worker_preferences = preferences_enabled.clone();
         let worker_submissions = submissions.clone();
@@ -896,7 +894,7 @@ mod tests {
     #[test]
     fn deletion_during_policy_evaluation_prevents_os_submission() {
         let mut index = DeliveredIndex::default();
-        let pending = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let pending = index.prepare(failure("computer:1:lifecycle", "t", "b", computer()));
         let submitted = std::cell::Cell::new(false);
         pending.deliver(
             |_| {
@@ -920,7 +918,7 @@ mod tests {
     fn skipped_replacement_does_not_prevent_withdrawing_an_older_notice() {
         let mut index = DeliveredIndex::default();
         let active = std::cell::Cell::new(false);
-        let older = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let older = index.prepare(failure("computer:1:lifecycle", "t", "b", computer()));
         older.deliver(
             |_| true,
             |_| {
@@ -930,7 +928,7 @@ mod tests {
             |_| active.set(false),
         );
         let withdrawal = index.withdraw("1");
-        let newer = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let newer = index.prepare(failure("computer:1:lifecycle", "t", "b", computer()));
         // macOS permission denial and an absent Linux service both skip submission.
         newer.deliver(
             |_| true,
@@ -948,7 +946,7 @@ mod tests {
     fn delayed_withdrawal_preserves_a_newer_submission_for_the_same_key() {
         let mut index = DeliveredIndex::default();
         let active = std::cell::Cell::new(false);
-        let older = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let older = index.prepare(failure("computer:1:lifecycle", "t", "b", computer()));
         older.deliver(
             |_| true,
             |_| {
@@ -958,7 +956,7 @@ mod tests {
             |_| active.set(false),
         );
         let withdrawal = index.withdraw("1");
-        let newer = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let newer = index.prepare(failure("computer:1:lifecycle", "t", "b", computer()));
         newer.deliver(
             |_| true,
             |_| {
@@ -972,26 +970,29 @@ mod tests {
             active.get(),
             "older withdrawal removed a newer notification"
         );
-        assert_eq!(index.take("1"), ["vm:1:lifecycle"]);
+        assert_eq!(index.take("1"), ["computer:1:lifecycle"]);
     }
 
     #[test]
-    fn delivered_index_tracks_and_clears_per_sandbox() {
+    fn delivered_index_tracks_and_clears_per_computer() {
         let mut index = DeliveredIndex::default();
         let notice = |id: &str, key: &str| Notice {
-            sandbox: Some(NoticeSandbox {
+            computer: Some(NoticeComputer {
                 id: id.into(),
                 name: "n".into(),
             }),
             ..failure(key, "t", "b", None)
         };
-        index.record(&notice("1", "vm:1:lifecycle"));
-        index.record(&notice("1", "vm:1:lifecycle"));
-        index.record(&notice("1", "vm:1:transfer"));
-        index.record(&notice("2", "vm:2:lifecycle"));
+        index.record(&notice("1", "computer:1:lifecycle"));
+        index.record(&notice("1", "computer:1:lifecycle"));
+        index.record(&notice("1", "computer:1:transfer"));
+        index.record(&notice("2", "computer:2:lifecycle"));
         index.record(&failure("startup", "t", "b", None));
-        assert_eq!(index.take("1"), vec!["vm:1:lifecycle", "vm:1:transfer"]);
+        assert_eq!(
+            index.take("1"),
+            vec!["computer:1:lifecycle", "computer:1:transfer"]
+        );
         assert!(index.take("1").is_empty());
-        assert_eq!(index.take("2"), vec!["vm:2:lifecycle"]);
+        assert_eq!(index.take("2"), vec!["computer:2:lifecycle"]);
     }
 }

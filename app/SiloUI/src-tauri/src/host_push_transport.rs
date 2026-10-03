@@ -1,4 +1,4 @@
-//! Private, host-authenticated SSH transport for reading a sandbox repository.
+//! Private, host-authenticated SSH transport for reading a computer repository.
 //! Git and Git LFS receive the same transport; neither receives GitHub credentials.
 use crate::{editor, runtime::RuntimePaths};
 use std::{
@@ -18,25 +18,25 @@ pub(crate) struct Transport {
 
 pub(crate) fn prepare(
     paths: &RuntimePaths,
-    sandbox: &str,
+    computer: &str,
     directory: &Path,
 ) -> Result<Transport, String> {
     if !Path::new("/usr/bin/ssh").is_file() || !Path::new("/usr/bin/ssh-keygen").is_file() {
         return Err(
-            "OpenSSH is required to transfer committed repository data from the sandbox.".into(),
+            "OpenSSH is required to transfer committed repository data from the computer.".into(),
         );
     }
-    let (alias, config) = editor::prepare_private_transport(paths, sandbox, directory)?;
+    let (alias, config) = editor::prepare_private_transport(paths, computer, directory)?;
     if !alias
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
     {
-        return Err("The sandbox SSH alias contains unsupported characters.".into());
+        return Err("The computer SSH alias contains unsupported characters.".into());
     }
     let config_path = config.clone();
     let config = config
         .to_str()
-        .ok_or("The sandbox SSH configuration path is not UTF-8.")?;
+        .ok_or("The computer SSH configuration path is not UTF-8.")?;
     Ok(Transport {
         ssh_command: format!(
             "/usr/bin/ssh -F {} -o ConnectTimeout=15 -o ClearAllForwardings=yes -o RequestTTY=no",
@@ -76,7 +76,7 @@ impl Transport {
                         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
             })
         {
-            return Err("Invalid temporary sandbox transfer directory.".into());
+            return Err("Invalid temporary computer transfer directory.".into());
         }
         let directory = shell_quote(guest_directory)?;
         let script = format!("umask 077; mkdir -m 700 {directory} && cat > {directory}/git-lfs-transfer && chmod 700 {directory}/git-lfs-transfer");
@@ -99,7 +99,7 @@ impl Transport {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|_| "Could not install the Git LFS transfer server in the sandbox.")?;
+            .map_err(|_| "Could not install the Git LFS transfer server in the computer.")?;
         let deadline = Instant::now() + Duration::from_secs(60);
         loop {
             if crate::runtime::operation_gate::cancel_requested() {
@@ -111,7 +111,7 @@ impl Transport {
                 Ok(Some(status)) if status.success() => break,
                 Ok(Some(_)) => {
                     return Err(
-                        "Could not install the Git LFS transfer server in the sandbox.".into(),
+                        "Could not install the Git LFS transfer server in the computer.".into(),
                     )
                 }
                 Ok(None) if Instant::now() < deadline => {
@@ -121,7 +121,7 @@ impl Transport {
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(
-                        "Timed out installing the Git LFS transfer server in the sandbox.".into(),
+                        "Timed out installing the Git LFS transfer server in the computer.".into(),
                     );
                 }
             }
@@ -167,7 +167,7 @@ fn wrapper_script(config: &Path, guest_directory: &str) -> Result<String, String
 
 fn shell_quote(value: &str) -> Result<String, String> {
     if value.chars().any(char::is_control) {
-        return Err("The sandbox SSH configuration path contains control characters.".into());
+        return Err("The computer SSH configuration path contains control characters.".into());
     }
     Ok(format!("'{}'", value.replace('\'', "'\\''")))
 }
@@ -178,7 +178,7 @@ mod tests {
     use std::{fs, os::unix::fs::PermissionsExt, path::PathBuf, process::Command};
 
     #[test]
-    fn repository_paths_are_uri_encoded_and_restricted_to_workspace() {
+    fn repository_paths_are_uri_encoded_and_restricted_to_computer() {
         let transport = Transport {
             ssh_command: String::new(),
             alias: "silo-runtime-dev".into(),
@@ -250,7 +250,7 @@ mod tests {
             home: directory.path().join("runtime"),
             storage_home: None,
             library: directory.path().join("msb"),
-            metadata: directory.path().join("machines.json"),
+            metadata: directory.path().join("computers.json"),
             volumes: directory.path().join("volumes"),
         };
         crate::working_account::test_runtime(&paths.executable);

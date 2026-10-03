@@ -1,17 +1,17 @@
-//! Built-in computer use for VMs created from a v4 or later guest image.
+//! Built-in computer use for computers created from a v4 or later guest image.
 //!
-//! Every such VM mounts the computer's published ChatGPT app folder read-only at
+//! Every such computer mounts the device's published ChatGPT app folder read-only at
 //! `/opt/silo/chatgpt` (see `chatgpt_app`). After each boot, and whenever the app
 //! becomes ready, Silo pushes `guest/silo-computer-use.py` and the pinned
 //! app/LCU pair into the guest and runs its `apply`, which installs LCU against the
-//! mounted app and runs `lcu setup` with the VM's approval mode. The host drives the
+//! mounted app and runs `lcu setup` with the computer's approval mode. The host drives the
 //! guest toward the mode the user chose and remembers how each attempt ended; the guest
 //! is a plain executor. See
 //! `docs/SiloUI-CHATGPT-APP.md` and `docs/SiloUI-COMPUTER-USE-PLAN.md`.
 use crate::{
     chatgpt_app::{self, DebArch, Status},
     desktop,
-    runtime::{self, MachineConfiguration, RuntimeError, RuntimePaths, RuntimeRunner},
+    runtime::{self, ComputerConfiguration, RuntimeError, RuntimePaths, RuntimeRunner},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -29,7 +29,7 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 
-/// Where the guest sees the computer's published ChatGPT app folder.
+/// Where the guest sees the device's published ChatGPT app folder.
 pub(crate) const GUEST_MOUNT: &str = "/opt/silo/chatgpt";
 /// Where the guest finds the host's verified LCU archive, read-only.
 pub(crate) const LCU_GUEST_MOUNT: &str = "/opt/silo/lcu";
@@ -44,7 +44,7 @@ const APPLY_GRACE: Duration = Duration::from_secs(60);
 
 // ------------------------------------------------------------- approval
 
-/// Whether an agent's computer-use actions in a VM ask for approval first.
+/// Whether an agent's computer-use actions in a computer ask for approval first.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Approval {
@@ -70,7 +70,7 @@ impl Approval {
     }
 }
 
-/// What the guest last reported while the VM ran, shown while it is stopped.
+/// What the guest last reported while the computer ran, shown while it is stopped.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Known {
@@ -131,13 +131,13 @@ fn saved_outcome<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Ou
     Ok(Outcome::parse(&value).unwrap_or(Outcome::Failed))
 }
 
-/// The VM's approval policy, kept in `<storage>/computer-use/<id>.json`: the mode the user
+/// The computer's approval policy, kept in `<storage>/computer-use/<id>.json`: the mode the user
 /// chose (`approval`, the desired one), the last mode that was applied completely
 /// (`applied`) and the last attempt. Only a user change, a fork or an apply writes it, all
 /// under one lock, so a status read never changes it. Files of older versions carry a
 /// revision and a generation; they are ignored.
 ///
-/// The switch is a convenience, not a security boundary: agents in the VM have root and
+/// The switch is a convenience, not a security boundary: agents in the computer have root and
 /// can edit their own harness settings. The host therefore only drives the guest toward
 /// the chosen mode and remembers how that went.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,8 +169,8 @@ impl Policy {
     }
 }
 
-/// Per-VM computer-use settings as read: the policy plus the last observation.
-/// Removed with the VM.
+/// Per-computer computer-use settings as read: the policy plus the last observation.
+/// Removed with the computer.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Settings {
     pub(crate) approval: Approval,
@@ -188,9 +188,9 @@ pub(crate) struct Settings {
 static POLICY_LOCK: Mutex<()> = Mutex::new(());
 const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 
-/// The approval mode a sandbox created or imported on this computer starts with: the
+/// The approval mode a computer created or imported on this device starts with: the
 /// `computerUseAutoApproval` app setting, kept here so creation and import need no app handle.
-static NEW_SANDBOX_AUTO: AtomicBool = AtomicBool::new(false);
+static NEW_COMPUTER_AUTO: AtomicBool = AtomicBool::new(false);
 
 /// The initial mode named by the app settings; anything but `true` means ask.
 pub(crate) fn initial_approval_from(settings: &serde_json::Map<String, Value>) -> Approval {
@@ -200,9 +200,9 @@ pub(crate) fn initial_approval_from(settings: &serde_json::Map<String, Value>) -
     }
 }
 
-/// Makes `settings` the source of the initial mode of sandboxes created or imported from now on.
+/// Makes `settings` the source of the initial mode of computers created or imported from now on.
 pub(crate) fn sync_initial_approval(settings: &serde_json::Map<String, Value>) {
-    NEW_SANDBOX_AUTO.store(
+    NEW_COMPUTER_AUTO.store(
         initial_approval_from(settings) == Approval::Auto,
         Ordering::SeqCst,
     );
@@ -227,14 +227,14 @@ pub(crate) fn initial_approval() -> Approval {
     if let Some(mode) = TEST_INITIAL.with(std::cell::Cell::get) {
         return mode;
     }
-    if NEW_SANDBOX_AUTO.load(Ordering::SeqCst) {
+    if NEW_COMPUTER_AUTO.load(Ordering::SeqCst) {
         Approval::Auto
     } else {
         Approval::Ask
     }
 }
 
-/// Gives a new or imported sandbox its starting mode and nothing else, so its first boot
+/// Gives a new or imported computer its starting mode and nothing else, so its first boot
 /// applies it. Only the local setting decides it: an archive never carries a mode.
 pub(crate) fn start_with(paths: &RuntimePaths, id: &str, approval: Approval) {
     if approval == Approval::Ask {
@@ -297,7 +297,7 @@ fn read_policy(paths: &RuntimePaths, id: &str) -> Policy {
     read_policy_checked(paths, id).unwrap_or_default()
 }
 
-/// The stored policy: the default for a VM that has none yet, `None` when a file exists
+/// The stored policy: the default for a computer that has none yet, `None` when a file exists
 /// but cannot be read or parsed (the user's choice is then unknown, not `ask`).
 fn read_policy_checked(paths: &RuntimePaths, id: &str) -> Option<Policy> {
     let Some(path) = policy_path(paths, id) else {
@@ -310,7 +310,7 @@ fn read_policy_checked(paths: &RuntimePaths, id: &str) -> Option<Policy> {
     }
 }
 
-/// The settings of VM `id`; a missing or unreadable file means the defaults (ask).
+/// The settings of computer `id`; a missing or unreadable file means the defaults (ask).
 pub(crate) fn settings(paths: &RuntimePaths, id: &str) -> Settings {
     let checked = read_policy_checked(paths, id);
     let unreadable = checked.is_none();
@@ -332,7 +332,7 @@ fn write_atomic<T: Serialize>(
 ) -> Result<(), RuntimeError> {
     let fail = || RuntimeError::Unavailable("Silo could not save the computer-use setting.".into());
     let path =
-        path.ok_or_else(|| RuntimeError::Invalid("Silo could not identify this sandbox.".into()))?;
+        path.ok_or_else(|| RuntimeError::Invalid("Silo could not identify this computer.".into()))?;
     let directory = directory(paths);
     runtime::prepare_private_directory(&directory).map_err(|_| fail())?;
     let bytes = serde_json::to_vec(value).map_err(|_| fail())?;
@@ -445,7 +445,7 @@ pub(crate) fn inherit_settings(
     )
 }
 
-/// Removes the settings of a deleted VM, or of an imported one: an import or transfer
+/// Removes the settings of a deleted computer, or of an imported one: an import or transfer
 /// starts from the destination's initial mode (`start_with`) with no attempt known, so its
 /// first boot applies it over whatever configuration the imported disk carries.
 pub(crate) fn forget(paths: &RuntimePaths, id: &str) -> Result<(), RuntimeError> {
@@ -476,7 +476,7 @@ fn remember(paths: &RuntimePaths, id: &str, known: Known) {
     }
 }
 
-/// VM id -> the number of applies scheduled or running for it, so the state says
+/// Computer id -> the number of applies scheduled or running for it, so the state says
 /// `pending` while one is on its way.
 static PENDING: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
 
@@ -517,7 +517,7 @@ fn is_pending(id: &str) -> bool {
 /// host retries by itself.
 const RETRYABLE_REASON: &str = "lcu-archive-unavailable";
 
-/// Waits before the automatic retries of a sync that failed because the sandbox's network
+/// Waits before the automatic retries of a sync that failed because the computer's network
 /// was unavailable (the helper has already retried the download for about two minutes).
 /// After the last one the failure stays until the next boot or a manual setup.
 const RETRY_DELAYS: [Duration; 3] = [
@@ -526,7 +526,7 @@ const RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(15 * 60),
 ];
 
-/// VM id -> the cancel token of the retry waiting for it, so the state says `preparing`
+/// Computer id -> the cancel token of the retry waiting for it, so the state says `preparing`
 /// while one is scheduled.
 static RETRIES: Mutex<BTreeMap<String, Arc<std::sync::atomic::AtomicBool>>> =
     Mutex::new(BTreeMap::new());
@@ -563,7 +563,7 @@ impl Drop for RetryGuard {
     }
 }
 
-/// Cancels the VM's scheduled retry, if any: a new apply, a manual setup or a deletion
+/// Cancels the computer's scheduled retry, if any: a new apply, a manual setup or a deletion
 /// takes over.
 fn cancel_retry(id: &str) {
     if let Some(token) = RETRIES.lock().unwrap_or_else(|p| p.into_inner()).remove(id) {
@@ -601,7 +601,7 @@ thread_local! {
     static TEST_PUBLISHED: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Records the canonical published folder VMs mount (see `install`).
+/// Records the canonical published folder computers mount (see `install`).
 fn set_published_dir(dir: PathBuf) {
     *PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()) = Some(dir);
 }
@@ -609,7 +609,7 @@ fn set_published_dir(dir: PathBuf) {
 /// Prepares the published folder under `root` and registers its canonical path for
 /// `mount_args`. Safe to repeat: the app start does it, every preparation attempt does it
 /// again, and `mount_args` does it when no folder is registered, so a start-up that
-/// failed (disk space, permissions) never leaves new VMs without the mount for the rest of
+/// failed (disk space, permissions) never leaves new computers without the mount for the rest of
 /// the session once the cause is gone.
 pub(crate) fn register_published(root: &Path) -> Result<PathBuf, chatgpt_app::Error> {
     *STORAGE_ROOT.lock().unwrap_or_else(|p| p.into_inner()) = Some(root.to_path_buf());
@@ -619,7 +619,7 @@ pub(crate) fn register_published(root: &Path) -> Result<PathBuf, chatgpt_app::Er
 }
 
 /// Registers the folder again from the remembered root without waiting for a download
-/// that holds the storage lock (this runs while a VM is being created).
+/// that holds the storage lock (this runs while a computer is being created).
 fn register_published_now() -> Option<PathBuf> {
     let root = STORAGE_ROOT
         .lock()
@@ -650,9 +650,9 @@ pub(crate) fn set_test_published_dir(dir: Option<PathBuf>) {
     TEST_PUBLISHED.with(|slot| *slot.borrow_mut() = dir);
 }
 
-/// Whether the VM was created with the built-in desktop (v4 image) and so with the mount.
-pub(crate) fn is_built_in(machine: &MachineConfiguration) -> bool {
-    desktop::configuration(machine).is_some_and(|configuration| configuration.built_in)
+/// Whether the computer was created with the built-in desktop (v4 image) and so with the mount.
+pub(crate) fn is_built_in(configuration: &ComputerConfiguration) -> bool {
+    desktop::configuration(configuration).is_some_and(|configuration| configuration.built_in)
 }
 
 /// `uid=0,gid=0` pins the guest owner of every file in the folder. Without it MicroSandbox
@@ -665,25 +665,27 @@ fn mount_spec(dir: &Path) -> String {
 }
 
 /// The `msb create` / `msb restore` arguments that mount the published folder: empty
-/// for a VM without built-in computer use, an error when it needs the folder and
-/// Silo has none (the VM would never get computer use). MicroSandbox refuses a
+/// for a computer without built-in computer use, an error when it needs the folder and
+/// Silo has none (the computer would never get computer use). MicroSandbox refuses a
 /// symlinked mount root, so the path is canonical.
-pub(crate) fn mount_args(machine: &MachineConfiguration) -> Result<Vec<String>, RuntimeError> {
-    mount_args_with(machine, crate::preparation::lcu_folder())
+pub(crate) fn mount_args(
+    configuration: &ComputerConfiguration,
+) -> Result<Vec<String>, RuntimeError> {
+    mount_args_with(configuration, crate::preparation::lcu_folder())
 }
 
 /// `mount_args` with the host folder of the verified LCU archive, when Silo has one. It
-/// is lent read-only beside the app folder to new VMs so the guest installs LCU without
-/// downloading it; a VM without it falls back to the download.
+/// is lent read-only beside the app folder to new computers so the guest installs LCU without
+/// downloading it; a computer without it falls back to the download.
 fn mount_args_with(
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     lcu: Option<PathBuf>,
 ) -> Result<Vec<String>, RuntimeError> {
-    if !is_built_in(machine) {
+    if !is_built_in(configuration) {
         return Ok(Vec::new());
     }
     // Only a missing or unusable folder blocks. An existing folder is mounted whatever it
-    // holds: the ChatGPT app downloads in the background and a VM must not wait for it
+    // holds: the ChatGPT app downloads in the background and a computer must not wait for it
     // (the guest reports the app as not ready until it appears).
     let unavailable = || {
         RuntimeError::Unavailable(
@@ -710,10 +712,10 @@ fn mount_args_with(
     Ok(args)
 }
 
-/// Whether a sandbox's inspected configuration has the read-only computer-use mount
-/// that `machine` needs (always true for a VM without built-in computer use).
-pub(crate) fn mount_present(config: &Value, machine: &MachineConfiguration) -> bool {
-    if !is_built_in(machine) {
+/// Whether a computer's inspected configuration has the read-only computer-use mount
+/// that `computer` needs (always true for a computer without built-in computer use).
+pub(crate) fn mount_present(config: &Value, configuration: &ComputerConfiguration) -> bool {
+    if !is_built_in(configuration) {
         return true;
     }
     config
@@ -737,8 +739,8 @@ fn read_only(mount: &Value) -> bool {
 }
 
 /// Removes the computer-use mount from a configuration about to be exported. Its host
-/// path means nothing on another computer; the importing Silo mounts its own folder
-/// because the VM settings say `builtIn`. A writable mount at that path is refused.
+/// path means nothing on another device; the importing Silo mounts its own folder
+/// because the computer settings say `builtIn`. A writable mount at that path is refused.
 pub(crate) fn strip_mount_for_export(config: &mut Value) -> Result<(), String> {
     let Some(mounts) = config.get_mut("mounts").and_then(Value::as_array_mut) else {
         return Ok(());
@@ -748,7 +750,7 @@ pub(crate) fn strip_mount_for_export(config: &mut Value) -> Result<(), String> {
         .any(|mount| is_computer_use_mount(mount) && !read_only(mount))
     {
         return Err(
-            "The sandbox mounts the shared ChatGPT folder writable, so it cannot be exported."
+            "The computer mounts the shared ChatGPT folder writable, so it cannot be exported."
                 .into(),
         );
     }
@@ -824,7 +826,7 @@ type Run = Result<(Value, Report), RuntimeError>;
 
 /// The pinned runtime ends an `exec` that outlives its `--timeout` with a plain failure,
 /// `exec timed out after <n>s` (crates/cli/lib/commands/exec.rs, `drive_stream`), after
-/// killing the guest command. That is a timeout, not an unreachable sandbox.
+/// killing the guest command. That is a timeout, not an unreachable computer.
 fn timeout_as_timed_out(error: RuntimeError) -> RuntimeError {
     match error {
         RuntimeError::Failed {
@@ -857,7 +859,7 @@ fn run_helper(
     run_helper_with(runner, paths, name, mode, force, boot, false)
 }
 
-/// `run_helper`; `allow_boot` lets the run boot a stopped VM for the call and stop it again
+/// `run_helper`; `allow_boot` lets the run boot a stopped computer for the call and stop it again
 /// (creation, which has no running guest to apply in).
 fn run_helper_with(
     runner: &dyn RuntimeRunner,
@@ -970,8 +972,8 @@ fn run_attempt_with(
     run
 }
 
-/// Sets computer use up as the last step of creating a built-in VM: one deliberate boot with
-/// the desktop session up, the guest helper's apply in the VM's approval mode, and the
+/// Sets computer use up as the last step of creating a built-in computer: one deliberate boot with
+/// the desktop session up, the guest helper's apply in the computer's approval mode, and the
 /// stop that ends every temporary boot. The attempt is recorded like any other, so a
 /// failure is retried by the first start. `Err` is a short reason for the caller to show.
 pub(crate) fn finish_in_creation(
@@ -991,19 +993,19 @@ pub(crate) fn finish_in_creation(
 
 // ---------------------------------------------------------------- hooks
 
-fn built_in_machine(paths: &RuntimePaths, name: &str) -> Option<MachineConfiguration> {
+fn built_in_computer(paths: &RuntimePaths, name: &str) -> Option<ComputerConfiguration> {
     runtime::read_metadata(&paths.metadata)
         .ok()?
-        .machines
+        .computers
         .into_iter()
-        .find(|machine| machine.is_vm() && machine.name() == name && is_built_in(machine))
+        .find(|configuration| configuration.name() == name && is_built_in(configuration))
 }
 
 /// A runner the background apply can own.
 pub(crate) type SharedRunner = Arc<dyn RuntimeRunner + Send + Sync>;
 
-/// A running VM's identity: the runtime instance that is running now and the Silo VM id
-/// its runtime sandbox carries. `None` unless the VM runs, is labelled with `id` and
+/// A running computer's identity: the runtime instance that is running now and the Silo computer id
+/// its runtime computer carries. `None` unless the computer runs, is labelled with `id` and
 /// the runtime names its instance: an identity that cannot be established is never trusted.
 fn running_identity(
     runner: &dyn RuntimeRunner,
@@ -1011,10 +1013,10 @@ fn running_identity(
     name: &str,
     id: &str,
 ) -> Option<String> {
-    // Asks the runtime directly: a VM restored from a checkpoint is still recorded as
-    // pending while the restore that boots it runs `prepare_booted`, and `observe_vm`
+    // Asks the runtime directly: a computer restored from a checkpoint is still recorded as
+    // pending while the restore that boots it runs `prepare_booted`, and `observe_computer`
     // would call it absent.
-    let inspected = runtime::inspect_workspace(runner, paths, name).ok()?;
+    let inspected = runtime::inspect_computer(runner, paths, name).ok()?;
     let labelled = inspected
         .config
         .pointer("/labels/silo.machine-id")
@@ -1036,8 +1038,8 @@ const GATE_WAIT: Duration = Duration::from_secs(10 * 60);
 /// Label of the apply's queue entry; other work is never preempted by an identical one.
 const SYNC_LABEL: &str = "Setting up computer use in";
 
-/// Whether a queued lifecycle operation (its dedup key, `vm:<id>:<action>`) must end the helper's
-/// turn. Only work that takes the VM away does: a stop or restart. A start of a VM that is
+/// Whether a queued lifecycle operation (its dedup key, `computer:<id>:<action>`) must end the helper's
+/// turn. Only work that takes the computer away does: a stop or restart. A start of a computer that is
 /// already running (the helper only runs in one), a dismissed error and any other action can
 /// wait for the helper to finish. An operation without a key says nothing about its action, so it
 /// takes the safe side and preempts.
@@ -1045,19 +1047,19 @@ fn lifecycle_key_preempts(key: Option<&str>, id: &str) -> bool {
     let Some(key) = key else {
         return true;
     };
-    key.strip_prefix("vm:")
+    key.strip_prefix("computer:")
         .and_then(|rest| rest.strip_prefix(id))
         .and_then(|rest| rest.strip_prefix(':'))
         .is_some_and(|action| matches!(action, "stop" | "restart"))
 }
 
 /// Ends the helper's turn quickly when work that must not wait queues for it: a stop or
-/// delete of the same VM (a delete is computer-wide and names its targets, see
-/// `OperationGate::removing`), or a computer-wide shutdown (Quit, update). Sets the running
+/// delete of the same computer (a delete is device-wide and names its targets, see
+/// `OperationGate::removing`), or a device-wide shutdown (Quit, update). Sets the running
 /// operation's cancel flag, which the runtime's polling loops observe by killing the
-/// child. A start of the already-running VM, a dismissed error or any other queued
+/// child. A start of the already-running computer, a dismissed error or any other queued
 /// operation waits instead (`lifecycle_key_preempts`). The cut-short apply is recorded as such and tried again at the next boot or
-/// app start; a stopped VM has nothing to apply.
+/// app start; a stopped computer has nothing to apply.
 struct Preempt {
     done: Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -1077,9 +1079,9 @@ impl Preempt {
             .name("computer-use-preempt".into())
             .spawn(move || {
                 while !flag.load(Ordering::SeqCst) {
-                    // A queued deletion of this VM names it only in its targets.
+                    // A queued deletion of this computer names it only in its targets.
                     let blocked = gate.removal_queued(&id)
-                        // Quit or update: computer-wide, whatever VM it names.
+                        // Quit or update: device-wide, whatever computer it names.
                         || gate
                             .snapshot()
                             .waiting
@@ -1117,12 +1119,12 @@ enum Trigger {
     /// and sets up whatever is missing and is cheap when nothing is.
     Boot,
     /// The user changed the switch, or the app started and found the last attempt
-    /// incomplete: runs only while the VM's policy still needs it when its turn comes, so
+    /// incomplete: runs only while the computer's policy still needs it when its turn comes, so
     /// a queued apply that an earlier one made redundant does nothing.
     Change,
 }
 
-/// After a VM boots (start or restore): installs and configures computer use in the
+/// After a computer boots (start or restore): installs and configures computer use in the
 /// background. Returns at once, never fails the boot, and never waits for the guest:
 /// running the helper happens on a host thread (returned for tests).
 pub(crate) fn after_boot(
@@ -1133,17 +1135,17 @@ pub(crate) fn after_boot(
     apply_with(&runtime::OPERATIONS, runner, paths, name, Trigger::Boot)
 }
 
-/// Drives a running built-in VM's guest toward the VM's chosen approval mode on a host
-/// thread, and returns the thread (for tests); `None` unless the VM is the running,
+/// Drives a running built-in computer's guest toward the computer's chosen approval mode on a host
+/// thread, and returns the thread (for tests); `None` unless the computer is the running,
 /// labelled built-in one.
 ///
-/// The thread takes the VM's operation turn, which is the per-VM lock that serializes
-/// applies (and any other work on the VM) and keeps a stop, delete or recreate from
-/// replacing the VM between the identity check and the helper. Inside the turn it
-/// confirms the VM is the same recorded machine and the same running instance, then reads
+/// The thread takes the computer's operation turn, which is the per-computer lock that serializes
+/// applies (and any other work on the computer) and keeps a stop, delete or recreate from
+/// replacing the computer between the identity check and the helper. Inside the turn it
+/// confirms the computer is the same recorded computer and the same running instance, then reads
 /// the *current* choice and runs the helper synchronously within `APPLY_TIMEOUT`, so a
 /// queued apply never writes an older choice over a newer one. The turn is cancellable:
-/// it yields to a queued stop or delete of this VM and to Quit (`Preempt`). The outcome
+/// it yields to a queued stop or delete of this computer and to Quit (`Preempt`). The outcome
 /// is recorded in every case, and the boot that scheduled the thread never waits for it.
 fn apply_with(
     gate: &'static runtime::operation_gate::OperationGate,
@@ -1164,8 +1166,8 @@ fn apply_with_delays(
     trigger: Trigger,
     delays: &'static [Duration],
 ) -> Option<std::thread::JoinHandle<()>> {
-    let machine = built_in_machine(paths, name)?;
-    let id = machine.id().to_owned();
+    let configuration = built_in_computer(paths, name)?;
+    let id = configuration.id().to_owned();
     let instance = running_identity(runner.as_ref(), paths, name, &id)?;
     // A new apply (a boot, a change of the switch) takes over from a retry still waiting.
     cancel_retry(&id);
@@ -1185,7 +1187,7 @@ fn apply_with_delays(
             let mut _retry: Option<RetryGuard> = None;
             while apply_once(gate, &runner, &paths, &name, &id, &instance, trigger) {
                 // The network was unavailable: try again after a bounded, growing wait,
-                // outside the VM's turn so other work is never held up by it.
+                // outside the computer's turn so other work is never held up by it.
                 let Some(delay) = delays.get(waited).copied() else {
                     return;
                 };
@@ -1196,10 +1198,10 @@ fn apply_with_delays(
                 if !wait_unless_cancelled(delay, &token) {
                     return;
                 }
-                let same_vm = built_in_machine(&paths, &name).is_some_and(|m| m.id() == id)
+                let same_computer = built_in_computer(&paths, &name).is_some_and(|m| m.id() == id)
                     && running_identity(runner.as_ref(), &paths, &name, &id).as_deref()
                         == Some(instance.as_str());
-                if !same_vm || token.load(std::sync::atomic::Ordering::SeqCst) {
+                if !same_computer || token.load(std::sync::atomic::Ordering::SeqCst) {
                     return;
                 }
                 trigger = Trigger::Change;
@@ -1208,7 +1210,7 @@ fn apply_with_delays(
         .ok()
 }
 
-/// One turn of an apply: waits for the VM's operation turn, then runs the helper until the
+/// One turn of an apply: waits for the computer's operation turn, then runs the helper until the
 /// chosen mode is the one applied. Returns whether it ended because the guest could not
 /// download LCU (a failure worth retrying later) and nothing cancelled it.
 fn apply_once(
@@ -1221,13 +1223,13 @@ fn apply_once(
     trigger: Trigger,
 ) -> bool {
     let deadline = std::time::Instant::now() + GATE_WAIT;
-    // The apply is routine background work after every boot: it holds the VM's turn for
-    // correctness but stays out of the queue UI. A failure surfaces in the sandbox panel.
+    // The apply is routine background work after every boot: it holds the computer's turn for
+    // correctness but stays out of the queue UI. A failure surfaces in the computer panel.
     let Ok(turn) = gate
         .kind(runtime::operation_gate::OperationKind::Other)
         .hidden()
         .acquire_while(
-            runtime::operation_gate::Scope::Vm { id: id.to_owned() },
+            runtime::operation_gate::Scope::Computer { id: id.to_owned() },
             Some(name.to_owned()),
             &format!("{SYNC_LABEL} {name}"),
             &|| std::time::Instant::now() < deadline,
@@ -1237,9 +1239,9 @@ fn apply_once(
     };
     turn.allow_cancel();
     let _preempt = Preempt::watch(gate, id, turn.cancel_token());
-    let same_vm = built_in_machine(paths, name).is_some_and(|m| m.id() == id)
+    let same_computer = built_in_computer(paths, name).is_some_and(|m| m.id() == id)
         && running_identity(runner.as_ref(), paths, name, id).as_deref() == Some(instance);
-    if !same_vm {
+    if !same_computer {
         return false;
     }
     let mut trigger = trigger;
@@ -1289,10 +1291,10 @@ fn apply_once(
 }
 
 /// At app start, after the runtime is ready: finishes approval changes whose apply never
-/// ran, failed or was cut short (the app quit, the guest failed, the VM stopped), so a
+/// ran, failed or was cut short (the app quit, the guest failed, the computer stopped), so a
 /// running guest does not keep an old mode. The host never reads the guest to decide:
 /// its own record of the last attempt is enough. Returns the threads started, one per
-/// VM that needs it (for tests).
+/// Computer that needs it (for tests).
 fn reconcile_in(
     gate: &'static runtime::operation_gate::OperationGate,
     runner: &SharedRunner,
@@ -1302,8 +1304,8 @@ fn reconcile_in(
     running
         .iter()
         .filter_map(|name| {
-            let machine = built_in_machine(paths, name)?;
-            read_policy(paths, machine.id())
+            let configuration = built_in_computer(paths, name)?;
+            read_policy(paths, configuration.id())
                 .needs_apply()
                 .then_some(())?;
             apply_with(gate, runner.clone(), paths, name, Trigger::Change)
@@ -1311,7 +1313,7 @@ fn reconcile_in(
         .collect()
 }
 
-/// `reconcile_in` for every running VM of this computer. Returns at once.
+/// `reconcile_in` for every running computer of this device. Returns at once.
 pub(crate) fn reconcile(app: &AppHandle) {
     let Ok(paths) = runtime::runtime_paths(app) else {
         return;
@@ -1333,8 +1335,8 @@ pub(crate) fn reconcile(app: &AppHandle) {
     });
 }
 
-/// The ChatGPT app became ready: running built-in VMs set up computer use now instead
-/// of at their next boot. Stopped VMs do it when they start.
+/// The ChatGPT app became ready: running built-in computers set up computer use now instead
+/// of at their next boot. Stopped computers do it when they start.
 pub(crate) fn app_ready(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
@@ -1356,28 +1358,28 @@ pub(crate) fn app_ready(app: &AppHandle) {
 fn reason_text(code: &str) -> &'static str {
     match code {
         "interrupted" => "Setup was interrupted. Try again.",
-        "doctor-failed" => "LCU's readiness check failed. Details are in /var/log/silo-computer-use.log in the sandbox.",
+        "doctor-failed" => "LCU's readiness check failed. Details are in /var/log/silo-computer-use.log in the computer.",
         "desktop-session-not-running" => "The Linux desktop was not running. Start it, then try again.",
         "timed-out" => "Setup timed out. Try again.",
-        "lcu-archive-unavailable" => "Could not download LCU (network). Silo retries at the next start; check this sandbox's network.",
+        "lcu-archive-unavailable" => "Could not download LCU (network). Silo retries at the next start; check this computer's network.",
         "lcu-archive-mismatch" | "lcu-archive-invalid" => "The LCU package did not pass verification.",
-        "mount-missing" => "This sandbox has no shared ChatGPT folder. Create a new sandbox to use computer use.",
+        "mount-missing" => "This computer has no shared ChatGPT folder. Create a new computer to use computer use.",
         "mount-writable" => "The shared ChatGPT folder is mounted writable; Silo refuses to use it.",
-        _ => "Setup failed. Details are in /var/log/silo-computer-use.log in the sandbox.",
+        _ => "Setup failed. Details are in /var/log/silo-computer-use.log in the computer.",
     }
 }
 
 /// Why applying the approval mode failed or only partly worked, for the panel.
 fn approval_reason_text(code: &str) -> &'static str {
     match code {
-        "cancelled" => "Applying was interrupted. Silo tries again when the sandbox starts.",
-        "timed-out" => "Applying took too long. Silo tries again when the sandbox starts.",
-        "unreachable" => "Silo could not reach the sandbox to apply it. Silo tries again when the sandbox starts.",
+        "cancelled" => "Applying was interrupted. Silo tries again when the computer starts.",
+        "timed-out" => "Applying took too long. Silo tries again when the computer starts.",
+        "unreachable" => "Silo could not reach the computer to apply it. Silo tries again when the computer starts.",
         "state-not-saved" => "Silo could not save the computer-use setting, so it did not apply it. Free some disk space or check permissions, then try again.",
-        "invalid-report" => "The sandbox returned an unreadable answer. Silo tries again when the sandbox starts.",
-        "setup-partial" => "Some agents could not be configured. Details are in /var/log/silo-computer-use.log in the sandbox.",
+        "invalid-report" => "The computer returned an unreadable answer. Silo tries again when the computer starts.",
+        "setup-partial" => "Some agents could not be configured. Details are in /var/log/silo-computer-use.log in the computer.",
         "mount-missing" | "mount-writable" => reason_text(code),
-        _ => "Silo could not configure the agents' approval settings. Details are in /var/log/silo-computer-use.log in the sandbox.",
+        _ => "Silo could not configure the agents' approval settings. Details are in /var/log/silo-computer-use.log in the computer.",
     }
 }
 
@@ -1391,20 +1393,20 @@ fn compat(value: Option<&str>) -> &'static str {
 
 /// Inputs to `computer_use_state` that do not need a guest.
 pub(crate) struct Inputs<'a> {
-    /// The ChatGPT app status on this computer; `None` until it was first checked.
+    /// The ChatGPT app status on this device; `None` until it was first checked.
     pub(crate) app: Option<&'a Status>,
-    pub(crate) vm_running: bool,
-    /// The helper's `status` output, when the VM runs and reported one.
+    pub(crate) computer_running: bool,
+    /// The helper's `status` output, when the computer runs and reported one.
     pub(crate) guest: Option<&'a Value>,
     pub(crate) settings: &'a Settings,
     /// An apply of the chosen mode is scheduled or running.
     pub(crate) pending: bool,
-    /// A retry of a failed network download is scheduled for this VM.
+    /// A retry of a failed network download is scheduled for this computer.
     pub(crate) retrying: bool,
 }
 
 /// How applying the chosen mode stands: `applied`, `pending` (scheduled, running, or
-/// waiting for the sandbox to start), `failed` or `partial`. Judged against the *last
+/// waiting for the computer to start), `failed` or `partial`. Judged against the *last
 /// attempt*, never the guest: a failed or partial attempt stays visible until a later one
 /// applies completely, and an attempt for another mode says nothing about this one.
 fn approval_apply(settings: &Settings, pending: bool) -> &'static str {
@@ -1496,7 +1498,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
                 None,
             )
         }
-        // Silo retries a retryable failure by itself, so the sandbox is still preparing.
+        // Silo retries a retryable failure by itself, so the computer is still preparing.
         Some(Status::Failed {
             reason,
             retryable: true,
@@ -1515,7 +1517,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
         }
         Some(Status::Ready { .. }) => {}
     }
-    if !inputs.vm_running {
+    if !inputs.computer_running {
         return match known.filter(|known| matches!(known.state.as_str(), "ready" | "failed")) {
             Some(known) => {
                 let reason = (known.state == "failed").then(|| reason_text("setup-failed"));
@@ -1527,7 +1529,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
             None => (
                 state_object(
                     "unavailable",
-                    Some("Start the sandbox to set up computer use."),
+                    Some("Start the computer to set up computer use."),
                     inputs,
                     known,
                 ),
@@ -1577,7 +1579,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
         ),
         "needs-app" => (
             "preparing",
-            Some("Waiting for the ChatGPT folder inside the sandbox.".into()),
+            Some("Waiting for the ChatGPT folder inside the computer.".into()),
         ),
         _ => (
             "unavailable",
@@ -1594,60 +1596,62 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
     )
 }
 
-/// The `computerUse` object for `machine`, or `None` for a VM without built-in
+/// The `computerUse` object for `computer`, or `None` for a computer without built-in
 /// computer use. Reads only cached state; `guest` is the helper's status output.
 pub(crate) fn desktop_state(
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
-    vm_running: bool,
+    configuration: &ComputerConfiguration,
+    computer_running: bool,
     guest: Option<&Value>,
 ) -> Option<Value> {
-    if !is_built_in(machine) {
+    if !is_built_in(configuration) {
         return None;
     }
-    let current = settings(paths, machine.id());
+    let current = settings(paths, configuration.id());
     let app = chatgpt_app::cached_status();
     let (state, remembered) = computer_use_state(&Inputs {
         app: app.as_ref(),
-        vm_running,
+        computer_running,
         guest,
         settings: &current,
-        pending: is_pending(machine.id()),
-        retrying: retry_scheduled(machine.id()),
+        pending: is_pending(configuration.id()),
+        retrying: retry_scheduled(configuration.id()),
     });
     if let Some(known) = remembered {
-        remember(paths, machine.id(), known);
+        remember(paths, configuration.id(), known);
     }
     Some(state)
 }
 
 // -------------------------------------------------------- commands
 
-/// Runs setup (or re-runs it for agents installed later) in a running VM and returns
-/// the helper's status. The caller holds the VM's operation turn (`cancel` is its token), so this cannot overlap
+/// Runs setup (or re-runs it for agents installed later) in a running computer and returns
+/// the helper's status. The caller holds the computer's operation turn (`cancel` is its token), so this cannot overlap
 /// a background apply; the run applies the chosen mode and records how that went.
 pub(crate) fn setup_with(
     gate: &'static runtime::operation_gate::OperationGate,
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     force: bool,
     cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Value, RuntimeError> {
-    // Like an apply, the run yields to a queued stop or delete of this VM and to Quit.
+    // Like an apply, the run yields to a queued stop or delete of this computer and to Quit.
     // A manual setup takes over from a scheduled retry.
-    cancel_retry(machine.id());
-    let _preempt = Preempt::watch(gate, machine.id(), cancel.clone());
-    let policy = policy_for_apply(paths, machine.id());
+    cancel_retry(configuration.id());
+    let _preempt = Preempt::watch(gate, configuration.id(), cancel.clone());
+    let policy = policy_for_apply(paths, configuration.id());
     let mut mode = policy.approval;
     let mut force = force;
-    let _pending = policy.needs_apply().then(|| Pending::begin(machine.id()));
+    let _pending = policy
+        .needs_apply()
+        .then(|| Pending::begin(configuration.id()));
     loop {
         let run = run_attempt(
             runner,
             paths,
-            machine.id(),
-            machine.name(),
+            configuration.id(),
+            configuration.name(),
             mode,
             force,
             false,
@@ -1658,22 +1662,22 @@ pub(crate) fn setup_with(
             &run,
             Err(RuntimeError::Cancelled { .. }) | Ok((_, Report::NotReady))
         ) || cancel.load(std::sync::atomic::Ordering::SeqCst)
-            || read_policy(paths, machine.id()).approval == mode
+            || read_policy(paths, configuration.id()).approval == mode
         {
             return run.map(|(status, _)| status);
         }
-        mode = policy_for_apply(paths, machine.id()).approval;
+        mode = policy_for_apply(paths, configuration.id()).approval;
         force = false;
     }
 }
 
-/// Stores the VM's approval mode and, when it runs, applies it on a background thread
+/// Stores the computer's approval mode and, when it runs, applies it on a background thread
 /// (returned for tests): the change returns at once and the state says `pending` until
-/// the apply ends. A stopped VM picks it up at its next boot.
+/// the apply ends. A stopped computer picks it up at its next boot.
 pub(crate) fn apply_approval_with(
     runner: SharedRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     approval: Approval,
     running: bool,
 ) -> Result<Option<std::thread::JoinHandle<()>>, RuntimeError> {
@@ -1681,7 +1685,7 @@ pub(crate) fn apply_approval_with(
         &runtime::OPERATIONS,
         runner,
         paths,
-        machine,
+        configuration,
         approval,
         running,
     )
@@ -1691,11 +1695,11 @@ fn apply_approval_in(
     gate: &'static runtime::operation_gate::OperationGate,
     runner: SharedRunner,
     paths: &RuntimePaths,
-    machine: &MachineConfiguration,
+    configuration: &ComputerConfiguration,
     approval: Approval,
     running: bool,
 ) -> Result<Option<std::thread::JoinHandle<()>>, RuntimeError> {
-    let policy = set_approval(paths, machine.id(), approval)?;
+    let policy = set_approval(paths, configuration.id(), approval)?;
     if !running || !policy.needs_apply() {
         return Ok(None);
     }
@@ -1703,7 +1707,7 @@ fn apply_approval_in(
         gate,
         runner,
         paths,
-        machine.name(),
+        configuration.name(),
         Trigger::Change,
     ))
 }
@@ -1714,8 +1718,8 @@ pub(crate) fn install(app: &AppHandle) {
     let Ok(root) = chatgpt_app::storage_root(app) else {
         return;
     };
-    // Cheap (two directories), and a VM created right after launch needs it. A failure
-    // here is retried before every preparation attempt and when a VM needs the folder.
+    // Cheap (two directories), and a computer created right after launch needs it. A failure
+    // here is retried before every preparation attempt and when a computer needs the folder.
     if let Err(error) = register_published(&root) {
         eprintln!("ChatGPT app folder unavailable: {}", error.message);
     }

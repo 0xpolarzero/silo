@@ -1,11 +1,11 @@
-//! Ordered admission for operations that change VM runtime state on this computer.
+//! Ordered admission for operations that change computer runtime state on this device.
 //!
-//! Callers wait their turn instead of failing with "busy". Work on different VMs
-//! runs concurrently; computer-wide work waits for everything else. Admission is
-//! first-come, first-served among conflicting requests, so a waiting computer-wide
-//! operation is never starved by a stream of per-VM operations.
+//! Callers wait their turn instead of failing with "busy". Work on different computers
+//! runs concurrently; device-wide work waits for everything else. Admission is
+//! first-come, first-served among conflicting requests, so a waiting device-wide
+//! operation is never starved by a stream of per-computer operations.
 //!
-//! This is the sole in-process gate for VM-changing work. It does not replace the
+//! This is the sole in-process gate for computer-changing work. It does not replace the
 //! OS file lock that coordinates cooperating runtime processes, nor short data locks.
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, VecDeque};
@@ -17,19 +17,19 @@ use serde::Serialize;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Scope {
-    /// Changes shared state: VM inventory, host networking, runtime generation, updates.
-    Computer,
-    /// Changes one VM's runtime or guest state only. Keyed by the stable VM id so a
-    /// rename never lets two operations on the same VM run concurrently, and so
+    /// Changes shared state: computer inventory, host networking, runtime generation, updates.
+    Device,
+    /// Changes one computer's runtime or guest state only. Keyed by the stable computer id so a
+    /// rename never lets two operations on the same computer run concurrently, and so
     /// id-addressed work (checkpoints, remote lifecycle) shares the same lane as the
     /// name-addressed lifecycle commands.
-    Vm { id: String },
+    Computer { id: String },
 }
 
 impl Scope {
     fn conflicts(&self, other: &Scope) -> bool {
         match (self, other) {
-            (Scope::Vm { id: a }, Scope::Vm { id: b }) => a == b,
+            (Scope::Computer { id: a }, Scope::Computer { id: b }) => a == b,
             _ => true,
         }
     }
@@ -55,8 +55,8 @@ impl std::fmt::Display for GateError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
             Self::AlreadyQueued => "This action is already waiting to run.",
-            Self::Nested => "Sandbox operation ordering failed.",
-            Self::Busy => "Another sandbox operation is still running.",
+            Self::Nested => "Computer operation ordering failed.",
+            Self::Busy => "Another computer operation is still running.",
             Self::Abandoned => "The operation stopped waiting for its turn.",
             Self::Cancelled => "The operation was cancelled.",
             Self::NotCancellable => "This operation can't be cancelled.",
@@ -70,7 +70,7 @@ impl std::error::Error for GateError {}
 #[derive(Clone, Copy, Debug, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum OperationKind {
-    /// Start, stop, restart, or dismiss-error on one sandbox, or a host-wide start.
+    /// Start, stop, restart, or dismiss-error on one computer, or a host-wide start.
     Lifecycle,
     CheckpointCapture,
     CheckpointRestore,
@@ -83,10 +83,10 @@ pub enum OperationKind {
     Push,
     PortPublish,
     PortRemove,
-    /// Stopping local VMs for quit or update.
+    /// Stopping local computers for quit or update.
     Shutdown,
-    /// Adding, changing, deleting, or reordering sandboxes; progress arrives as setup events.
-    MachineConfiguration,
+    /// Adding, changing, deleting, or reordering computers; progress arrives as setup events.
+    ComputerConfiguration,
     #[default]
     Other,
 }
@@ -97,11 +97,11 @@ pub struct OperationEntry {
     pub id: u64,
     pub label: String,
     pub kind: OperationKind,
-    /// Stable VM id this operation is scoped to; `None` for computer-wide operations.
-    pub vm_id: Option<String>,
-    /// VM display name captured when the operation was admitted; `None` for
-    /// computer-wide operations. For display only — ordering keys on `vm_id`.
-    pub vm_name: Option<String>,
+    /// Stable computer id this operation is scoped to; `None` for device-wide operations.
+    pub computer_id: Option<String>,
+    /// Computer display name captured when the operation was admitted; `None` for
+    /// device-wide operations. For display only — ordering keys on `computer_id`.
+    pub computer_name: Option<String>,
     /// Milliseconds since the Unix epoch when the operation started running or began waiting.
     pub since_ms: u64,
     /// Whether the user may cancel this operation now. Waiting entries are always
@@ -128,8 +128,8 @@ pub struct OperationQueue {
 struct Entry {
     id: u64,
     scope: Scope,
-    /// VM display name for per-VM entries; `None` for computer-wide entries.
-    vm_name: Option<String>,
+    /// Computer display name for per-computer entries; `None` for device-wide entries.
+    computer_name: Option<String>,
     label: String,
     kind: OperationKind,
     key: Option<String>,
@@ -150,7 +150,7 @@ struct Entry {
     /// Internal background housekeeping that must not surface in the published queue
     /// snapshot. It still holds the gate for mutual exclusion; only its visibility differs.
     hidden: bool,
-    /// Ids of the sandboxes this computer-wide operation deletes, so work running on one
+    /// Ids of the computers this device-wide operation deletes, so work running on one
     /// of them can yield to it (see `removal_queued`). Empty for everything else.
     removes: Vec<String>,
 }
@@ -161,11 +161,11 @@ impl Entry {
             id: self.id,
             label: self.label.clone(),
             kind: self.kind,
-            vm_id: match &self.scope {
-                Scope::Computer => None,
-                Scope::Vm { id } => Some(id.clone()),
+            computer_id: match &self.scope {
+                Scope::Device => None,
+                Scope::Computer { id } => Some(id.clone()),
             },
-            vm_name: self.vm_name.clone(),
+            computer_name: self.computer_name.clone(),
             since_ms: self.since_ms,
             // Waiting entries can always be cancelled; running entries only when opted in.
             cancellable: if running { self.cancellable } else { true },
@@ -181,11 +181,11 @@ struct State {
     next_id: u64,
     running: Vec<Entry>,
     waiting: VecDeque<Entry>,
-    /// Bumped whenever a visible computer-wide entry is queued, starts, or finishes.
-    computer_generation: u64,
-    /// Same, for entries scoped to one VM. Absent means never touched.
-    vm_generations: BTreeMap<String, u64>,
-    /// The last lifecycle request on each VM, including requests between retries.
+    /// Bumped whenever a visible device-wide entry is queued, starts, or finishes.
+    device_generation: u64,
+    /// Same, for entries scoped to one computer. Absent means never touched.
+    computer_generations: BTreeMap<String, u64>,
+    /// The last lifecycle request on each computer, including requests between retries.
     lifecycle_requests: BTreeMap<String, u64>,
 }
 
@@ -197,13 +197,20 @@ impl State {
             return;
         }
         match scope {
-            Scope::Computer => self.computer_generation += 1,
-            Scope::Vm { id } => *self.vm_generations.entry(id.clone()).or_default() += 1,
+            Scope::Device => self.device_generation += 1,
+            Scope::Computer { id } => {
+                *self.computer_generations.entry(id.clone()).or_default() += 1
+            }
         }
     }
 
     fn generation(&self, id: &str) -> u64 {
-        self.computer_generation + self.vm_generations.get(id).copied().unwrap_or_default()
+        self.device_generation
+            + self
+                .computer_generations
+                .get(id)
+                .copied()
+                .unwrap_or_default()
     }
 
     /// A request may run when it conflicts with no running work and no earlier waiter.
@@ -234,21 +241,21 @@ impl State {
     fn entry(
         &mut self,
         scope: Scope,
-        vm_name: Option<String>,
+        computer_name: Option<String>,
         kind: OperationKind,
         label: &str,
         key: Option<String>,
     ) -> Entry {
         self.next_id += 1;
         if kind == OperationKind::Lifecycle {
-            if let Scope::Vm { id } = &scope {
+            if let Scope::Computer { id } = &scope {
                 self.lifecycle_requests.insert(id.clone(), self.next_id);
             }
         }
         Entry {
             id: self.next_id,
             scope,
-            vm_name,
+            computer_name,
             label: label.to_owned(),
             kind,
             key,
@@ -274,15 +281,15 @@ pub(crate) struct OperationGate {
 }
 
 /// A copy of the gate's generation counters. Compares equal to a later
-/// `OperationGate::generation` only if nothing touched the VM in between.
+/// `OperationGate::generation` only if nothing touched the computer in between.
 pub(crate) struct Generations {
-    computer: u64,
-    vms: BTreeMap<String, u64>,
+    device: u64,
+    computers: BTreeMap<String, u64>,
 }
 
 impl Generations {
     pub(crate) fn of(&self, id: &str) -> u64 {
-        self.computer + self.vms.get(id).copied().unwrap_or_default()
+        self.device + self.computers.get(id).copied().unwrap_or_default()
     }
 }
 
@@ -303,24 +310,24 @@ impl<'a> Kinded<'a> {
         self
     }
 
-    /// Retry only while this remains the latest lifecycle request on its VM.
+    /// Retry only while this remains the latest lifecycle request on its computer.
     pub(crate) fn retry_after(mut self, request: Option<u64>) -> Self {
         self.retry_after = request;
         self
     }
 
-    pub(crate) fn computer(&self, label: &str) -> Result<OperationGuard<'a>, GateError> {
-        self.acquire(Scope::Computer, None, label, None)
+    pub(crate) fn device(&self, label: &str) -> Result<OperationGuard<'a>, GateError> {
+        self.acquire(Scope::Device, None, label, None)
     }
 
-    pub(crate) fn vm(
+    pub(crate) fn computer(
         &self,
         id: &str,
         name: &str,
         label: &str,
     ) -> Result<OperationGuard<'a>, GateError> {
         self.acquire(
-            Scope::Vm { id: id.to_owned() },
+            Scope::Computer { id: id.to_owned() },
             Some(name.to_owned()),
             label,
             None,
@@ -330,13 +337,13 @@ impl<'a> Kinded<'a> {
     pub(crate) fn acquire(
         &self,
         scope: Scope,
-        vm_name: Option<String>,
+        computer_name: Option<String>,
         label: &str,
         key: Option<String>,
     ) -> Result<OperationGuard<'a>, GateError> {
         self.gate.acquire_inner(
             scope,
-            vm_name,
+            computer_name,
             self.kind,
             label,
             key,
@@ -349,13 +356,13 @@ impl<'a> Kinded<'a> {
     pub(crate) fn acquire_while(
         &self,
         scope: Scope,
-        vm_name: Option<String>,
+        computer_name: Option<String>,
         label: &str,
         keep_waiting: &dyn Fn() -> bool,
     ) -> Result<OperationGuard<'a>, GateError> {
         self.gate.acquire_inner(
             scope,
-            vm_name,
+            computer_name,
             self.kind,
             label,
             None,
@@ -375,7 +382,7 @@ thread_local! {
     static RUNNING: Cell<Option<(*const OperationGate, u64)>> = const { Cell::new(None) };
     /// Depth of `uncancellable` sections on this thread.
     static MASKED: Cell<usize> = const { Cell::new(0) };
-    /// Sandboxes the next admission on this thread deletes (see `OperationGate::removing`).
+    /// Computers the next admission on this thread deletes (see `OperationGate::removing`).
     static REMOVES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -429,7 +436,7 @@ thread_local! {
 }
 
 /// Work that is only wanted if it starts while a condition holds, such as a request from
-/// another computer that must start before its deadline and while its sender is connected.
+/// another device that must start before its deadline and while its sender is connected.
 /// The first admission under it waits only while the condition holds, and is refused if it
 /// no longer holds when the turn arrives. Once any admission succeeds the work has started,
 /// so later steps and retries of the same work wait normally.
@@ -512,8 +519,8 @@ impl OperationGate {
                 next_id: 0,
                 running: Vec::new(),
                 waiting: VecDeque::new(),
-                computer_generation: 0,
-                vm_generations: BTreeMap::new(),
+                device_generation: 0,
+                computer_generations: BTreeMap::new(),
                 lifecycle_requests: BTreeMap::new(),
             }),
             changed: Condvar::new(),
@@ -533,19 +540,19 @@ impl OperationGate {
         }
     }
 
-    /// A counter that changes whenever an operation touching this VM (or computer-wide
-    /// state, which touches every VM) was queued, started, or finished. Equal values
-    /// before and after mean no Silo operation affected the VM in between.
+    /// A counter that changes whenever an operation touching this computer (or device-wide
+    /// state, which touches every computer) was queued, started, or finished. Equal values
+    /// before and after mean no Silo operation affected the computer in between.
     pub(crate) fn generation(&self, id: &str) -> u64 {
         self.lock().generation(id)
     }
 
-    /// Every VM's generation right now, for comparing across a slow read.
+    /// Every computer's generation right now, for comparing across a slow read.
     pub(crate) fn generations(&self) -> Generations {
         let state = self.lock();
         Generations {
-            computer: state.computer_generation,
-            vms: state.vm_generations.clone(),
+            device: state.device_generation,
+            computers: state.computer_generations.clone(),
         }
     }
 
@@ -610,12 +617,12 @@ impl OperationGate {
             })
     }
 
-    /// Wait for a turn to change shared computer state.
-    pub(crate) fn computer(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
-        self.kind(OperationKind::Other).computer(label)
+    /// Wait for a turn to change shared device state.
+    pub(crate) fn device(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
+        self.kind(OperationKind::Other).device(label)
     }
 
-    /// Wait for a computer-wide turn that deletes the sandboxes `ids`, so that work
+    /// Wait for a device-wide turn that deletes the computers `ids`, so that work
     /// running on one of them can see the deletion queued (`removal_queued`).
     pub(crate) fn removing(
         &self,
@@ -624,13 +631,13 @@ impl OperationGate {
     ) -> Result<OperationGuard<'_>, GateError> {
         REMOVES.with(|removes| *removes.borrow_mut() = ids.to_vec());
         let guard = self
-            .kind(OperationKind::MachineConfiguration)
-            .computer(label);
+            .kind(OperationKind::ComputerConfiguration)
+            .device(label);
         REMOVES.with(|removes| removes.borrow_mut().clear());
         guard
     }
 
-    /// Whether a deletion of sandbox `id` is waiting for its turn.
+    /// Whether a deletion of computer `id` is waiting for its turn.
     pub(crate) fn removal_queued(&self, id: &str) -> bool {
         self.lock()
             .waiting
@@ -638,43 +645,43 @@ impl OperationGate {
             .any(|entry| entry.removes.iter().any(|removed| removed == id))
     }
 
-    /// The dedup keys of lifecycle operations waiting for sandbox `id`, in admission order. A
-    /// lifecycle key is `vm:<id>:<action>`; `None` marks an entry admitted without one.
+    /// The dedup keys of lifecycle operations waiting for computer `id`, in admission order. A
+    /// lifecycle key is `computer:<id>:<action>`; `None` marks an entry admitted without one.
     pub(crate) fn waiting_lifecycle_keys(&self, id: &str) -> Vec<Option<String>> {
         self.lock()
             .waiting
             .iter()
             .filter(|entry| {
                 entry.kind == OperationKind::Lifecycle
-                    && matches!(&entry.scope, Scope::Vm { id: scoped } if scoped == id)
+                    && matches!(&entry.scope, Scope::Computer { id: scoped } if scoped == id)
             })
             .map(|entry| entry.key.clone())
             .collect()
     }
 
-    /// Wait for a turn to change one VM, identified by its stable `id`. `name` is the
+    /// Wait for a turn to change one computer, identified by its stable `id`. `name` is the
     /// current display name captured for the queue; ordering keys on `id` alone.
-    pub(crate) fn vm(
+    pub(crate) fn computer(
         &self,
         id: &str,
         name: &str,
         label: &str,
     ) -> Result<OperationGuard<'_>, GateError> {
-        self.kind(OperationKind::Other).vm(id, name, label)
+        self.kind(OperationKind::Other).computer(id, name, label)
     }
 
     /// Wait for a turn, rejecting the request when an identical `key` is already waiting.
-    /// `vm_name` is the display name for per-VM scopes (`None` for computer scope).
+    /// `computer_name` is the display name for per-computer scopes (`None` for device scope).
     pub(crate) fn acquire(
         &self,
         scope: Scope,
-        vm_name: Option<String>,
+        computer_name: Option<String>,
         label: &str,
         key: Option<String>,
     ) -> Result<OperationGuard<'_>, GateError> {
         self.acquire_inner(
             scope,
-            vm_name,
+            computer_name,
             OperationKind::Other,
             label,
             key,
@@ -689,13 +696,13 @@ impl OperationGate {
     pub(crate) fn acquire_while(
         &self,
         scope: Scope,
-        vm_name: Option<String>,
+        computer_name: Option<String>,
         label: &str,
         keep_waiting: &dyn Fn() -> bool,
     ) -> Result<OperationGuard<'_>, GateError> {
         self.acquire_inner(
             scope,
-            vm_name,
+            computer_name,
             OperationKind::Other,
             label,
             None,
@@ -709,7 +716,7 @@ impl OperationGate {
     fn acquire_inner(
         &self,
         scope: Scope,
-        vm_name: Option<String>,
+        computer_name: Option<String>,
         kind: OperationKind,
         label: &str,
         key: Option<String>,
@@ -722,7 +729,7 @@ impl OperationGate {
         }
         let mut state = self.lock();
         if kind == OperationKind::Lifecycle {
-            if let (Scope::Vm { id }, Some(request)) = (&scope, retry_after) {
+            if let (Scope::Computer { id }, Some(request)) = (&scope, retry_after) {
                 if state.lifecycle_requests.get(id) != Some(&request) {
                     return Err(GateError::Cancelled);
                 }
@@ -731,7 +738,7 @@ impl OperationGate {
         if key.is_some() && state.waiting.iter().any(|entry| entry.key == key) {
             return Err(GateError::AlreadyQueued);
         }
-        let mut entry = state.entry(scope, vm_name, kind, label, key);
+        let mut entry = state.entry(scope, computer_name, kind, label, key);
         entry.removes = REMOVES.with(|removes| std::mem::take(&mut *removes.borrow_mut()));
         entry.hidden = hidden;
         let id = entry.id;
@@ -856,16 +863,16 @@ impl OperationGate {
     pub(crate) fn try_acquire(
         &self,
         scope: Scope,
-        vm_name: Option<String>,
+        computer_name: Option<String>,
         label: &str,
     ) -> Result<OperationGuard<'_>, GateError> {
-        self.try_acquire_inner(scope, vm_name, label, false)
+        self.try_acquire_inner(scope, computer_name, label, false)
     }
 
     fn try_acquire_inner(
         &self,
         scope: Scope,
-        vm_name: Option<String>,
+        computer_name: Option<String>,
         label: &str,
         hidden: bool,
     ) -> Result<OperationGuard<'_>, GateError> {
@@ -876,7 +883,7 @@ impl OperationGate {
         if !state.free(&scope) {
             return Err(GateError::Busy);
         }
-        let mut entry = state.entry(scope, vm_name, OperationKind::Other, label, None);
+        let mut entry = state.entry(scope, computer_name, OperationKind::Other, label, None);
         entry.hidden = hidden;
         let id = entry.id;
         let token = entry.cancel.clone();
@@ -895,43 +902,43 @@ impl OperationGate {
         })
     }
 
-    pub(crate) fn try_computer(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
-        self.try_acquire(Scope::Computer, None, label)
+    pub(crate) fn try_device(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
+        self.try_acquire(Scope::Device, None, label)
     }
 
-    /// Like `try_computer`, but for internal background housekeeping: the operation still
+    /// Like `try_device`, but for internal background housekeeping: the operation still
     /// holds the gate for mutual exclusion, yet never appears in the published queue
     /// snapshot, so opportunistic maintenance cannot flash a status in the UI.
-    pub(crate) fn try_computer_hidden(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
-        self.try_acquire_inner(Scope::Computer, None, label, true)
+    pub(crate) fn try_device_hidden(&self, label: &str) -> Result<OperationGuard<'_>, GateError> {
+        self.try_acquire_inner(Scope::Device, None, label, true)
     }
 
-    /// Like `try_vm`, but hidden from the published queue snapshot (see `try_computer_hidden`).
-    pub(crate) fn try_vm_hidden(
+    /// Like `try_computer`, but hidden from the published queue snapshot (see `try_device_hidden`).
+    pub(crate) fn try_computer_hidden(
         &self,
         id: &str,
         name: &str,
         label: &str,
     ) -> Result<OperationGuard<'_>, GateError> {
         self.try_acquire_inner(
-            Scope::Vm { id: id.to_owned() },
+            Scope::Computer { id: id.to_owned() },
             Some(name.to_owned()),
             label,
             true,
         )
     }
 
-    /// Run work for one VM only when nothing conflicting for that VM is running or
-    /// waiting. For background repair that should skip busy VMs rather than queue.
+    /// Run work for one computer only when nothing conflicting for that computer is running or
+    /// waiting. For background repair that should skip busy computers rather than queue.
     /// Identified by the stable `id`; `name` is the display name for the queue.
-    pub(crate) fn try_vm(
+    pub(crate) fn try_computer(
         &self,
         id: &str,
         name: &str,
         label: &str,
     ) -> Result<OperationGuard<'_>, GateError> {
         self.try_acquire(
-            Scope::Vm { id: id.to_owned() },
+            Scope::Computer { id: id.to_owned() },
             Some(name.to_owned()),
             label,
         )
@@ -944,30 +951,30 @@ impl OperationGate {
         state.running.is_empty() && state.waiting.is_empty()
     }
 
-    /// True when no visible computer-wide operation is running or waiting. Hidden
-    /// housekeeping and per-VM work never add or remove sandboxes, so state readers
-    /// use this instead of `is_idle` and keep other sandboxes' rows current.
-    pub(crate) fn is_computer_idle(&self) -> bool {
+    /// True when no visible device-wide operation is running or waiting. Hidden
+    /// housekeeping and per-computer work never add or remove computers, so state readers
+    /// use this instead of `is_idle` and keep other computers' rows current.
+    pub(crate) fn is_device_idle(&self) -> bool {
         let state = self.lock();
         !state
             .running
             .iter()
             .chain(state.waiting.iter())
-            .any(|entry| !entry.hidden && matches!(entry.scope, Scope::Computer))
+            .any(|entry| !entry.hidden && matches!(entry.scope, Scope::Device))
     }
 
-    /// True when no operation affecting the VM with stable `id` is running or waiting.
-    pub(crate) fn is_vm_idle(&self, id: &str) -> bool {
-        self.lock().free(&Scope::Vm { id: id.to_owned() })
+    /// True when no operation affecting the computer with stable `id` is running or waiting.
+    pub(crate) fn is_computer_idle(&self, id: &str) -> bool {
+        self.lock().free(&Scope::Computer { id: id.to_owned() })
     }
 
     /// True when no visible operation other than the calling thread's own is running or
-    /// waiting for the VM with stable `id` (computer-wide work affects every VM). State
-    /// readers use this to decide whether a VM's reading is settled: hidden housekeeping
+    /// waiting for the computer with stable `id` (device-wide work affects every computer). State
+    /// readers use this to decide whether a computer's reading is settled: hidden housekeeping
     /// never makes a reading stale, and work reading state after its own change is not
     /// waiting on itself.
-    pub(crate) fn is_vm_quiet(&self, id: &str) -> bool {
-        let scope = Scope::Vm { id: id.to_owned() };
+    pub(crate) fn is_computer_quiet(&self, id: &str) -> bool {
+        let scope = Scope::Computer { id: id.to_owned() };
         let own = CURRENT.with(|current| current.borrow().clone());
         let state = self.lock();
         !state
@@ -1064,7 +1071,7 @@ impl OperationGate {
     /// Signal every waiting entry to leave the queue with `GateError::Cancelled`.
     /// Running work is left untouched. Used by Quit: once admission is refused a
     /// waiter would only be rejected when its turn came, so it is cancelled at once,
-    /// and again before Quit releases the gate so work requested before its VMs
+    /// and again before Quit releases the gate so work requested before its computers
     /// stopped never runs after a failed Quit (D-30).
     pub(crate) fn cancel_all_waiting(&self) {
         let state = self.lock();
@@ -1248,7 +1255,7 @@ impl OperationGuard<'_> {
     }
 
     /// Show `label` for this operation in the queue from now on, for example the step
-    /// a long computer-wide operation is on. Observers are notified.
+    /// a long device-wide operation is on. Observers are notified.
     pub(crate) fn relabel(&self, label: &str) {
         self.gate.relabel(self.id, label);
     }
@@ -1328,34 +1335,34 @@ mod tests {
     fn rejected_old_lifecycle_retry_does_not_supersede_the_newer_request() {
         let gate = OperationGate::new();
         let lifecycle = gate.kind(OperationKind::Lifecycle);
-        let old = lifecycle.vm("id-a", "a", "Starting a").unwrap();
+        let old = lifecycle.computer("id-a", "a", "Starting a").unwrap();
         let old_id = old.request_id();
         drop(old);
-        let new = lifecycle.vm("id-a", "a", "Stopping a").unwrap();
+        let new = lifecycle.computer("id-a", "a", "Stopping a").unwrap();
         let new_id = new.request_id();
         drop(new);
         assert!(matches!(
             gate.kind(OperationKind::Lifecycle)
                 .retry_after(Some(old_id))
-                .vm("id-a", "a", "Retrying start"),
+                .computer("id-a", "a", "Retrying start"),
             Err(GateError::Cancelled)
         ));
         let retry = gate
             .kind(OperationKind::Lifecycle)
             .retry_after(Some(new_id))
-            .vm("id-a", "a", "Retrying stop")
+            .computer("id-a", "a", "Retrying stop")
             .unwrap();
         drop(retry);
         assert!(gate.is_idle());
     }
 
     #[test]
-    fn different_vms_run_concurrently() {
+    fn different_computers_run_concurrently() {
         let gate = leak();
-        let a = gate.vm("id-a", "a", "Start a").unwrap();
+        let a = gate.computer("id-a", "a", "Start a").unwrap();
         let (sent, received) = mpsc::channel();
         thread::spawn(move || {
-            let _b = gate.vm("id-b", "b", "Start b").unwrap();
+            let _b = gate.computer("id-b", "b", "Start b").unwrap();
             sent.send(()).unwrap();
         });
         received.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1363,11 +1370,11 @@ mod tests {
     }
 
     #[test]
-    fn same_vm_waits_instead_of_failing() {
+    fn same_computer_waits_instead_of_failing() {
         let gate = leak();
-        let first = gate.vm("id-a", "a", "Start a").unwrap();
+        let first = gate.computer("id-a", "a", "Start a").unwrap();
         let handle = thread::spawn(move || {
-            let _second = gate.vm("id-a", "a", "Stop a").unwrap();
+            let _second = gate.computer("id-a", "a", "Stop a").unwrap();
         });
         wait_until(gate, |queue| {
             queue.waiting.len() == 1 && queue.waiting[0].label == "Stop a"
@@ -1378,21 +1385,21 @@ mod tests {
     }
 
     #[test]
-    fn same_vm_id_conflicts_even_when_the_name_differs() {
+    fn same_computer_id_conflicts_even_when_the_name_differs() {
         // A rename mid-flight keeps the stable id, so a second operation on the same
-        // VM waits its turn even though it carries a different display name.
+        // Computer waits its turn even though it carries a different display name.
         let gate = leak();
-        let first = gate.vm("id-a", "old-name", "Start old-name").unwrap();
+        let first = gate.computer("id-a", "old-name", "Start old-name").unwrap();
         let handle = thread::spawn(move || {
-            let _second = gate.vm("id-a", "new-name", "Stop new-name").unwrap();
+            let _second = gate.computer("id-a", "new-name", "Stop new-name").unwrap();
         });
         wait_until(gate, |queue| {
             queue.waiting.len() == 1 && queue.waiting[0].label == "Stop new-name"
         });
         // The running entry reports the id it is keyed on and the name it captured.
         let running = &gate.snapshot().running[0];
-        assert_eq!(running.vm_id.as_deref(), Some("id-a"));
-        assert_eq!(running.vm_name.as_deref(), Some("old-name"));
+        assert_eq!(running.computer_id.as_deref(), Some("id-a"));
+        assert_eq!(running.computer_name.as_deref(), Some("old-name"));
         drop(first);
         handle.join().unwrap();
         assert!(gate.is_idle());
@@ -1400,13 +1407,13 @@ mod tests {
 
     #[test]
     fn different_ids_sharing_a_name_do_not_conflict() {
-        // Two VMs that transiently share a display name still run concurrently: the
+        // Two computers that transiently share a display name still run concurrently: the
         // gate keys on id, not name.
         let gate = leak();
-        let a = gate.vm("id-a", "shared", "Start id-a").unwrap();
+        let a = gate.computer("id-a", "shared", "Start id-a").unwrap();
         let (sent, received) = mpsc::channel();
         thread::spawn(move || {
-            let _b = gate.vm("id-b", "shared", "Start id-b").unwrap();
+            let _b = gate.computer("id-b", "shared", "Start id-b").unwrap();
             sent.send(()).unwrap();
         });
         received.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -1414,14 +1421,14 @@ mod tests {
     }
 
     #[test]
-    fn computer_operation_is_not_starved_by_later_vm_work() {
+    fn device_operation_is_not_starved_by_later_computer_work() {
         let gate = leak();
         let order = Arc::new(Mutex::new(Vec::new()));
-        let a = gate.vm("id-a", "a", "Backup a").unwrap();
-        let computer = {
+        let a = gate.computer("id-a", "a", "Backup a").unwrap();
+        let device = {
             let order = order.clone();
             thread::spawn(move || {
-                let _guard = gate.computer("Update").unwrap();
+                let _guard = gate.device("Update").unwrap();
                 order.lock().unwrap().push("update");
             })
         };
@@ -1429,24 +1436,26 @@ mod tests {
         let later = {
             let order = order.clone();
             thread::spawn(move || {
-                let _guard = gate.vm("id-b", "b", "Start b").unwrap();
+                let _guard = gate.computer("id-b", "b", "Start b").unwrap();
                 order.lock().unwrap().push("start b");
             })
         };
         wait_until(gate, |queue| queue.waiting.len() == 2);
         drop(a);
-        computer.join().unwrap();
+        device.join().unwrap();
         later.join().unwrap();
         assert_eq!(*order.lock().unwrap(), ["update", "start b"]);
     }
 
     #[test]
-    fn unrelated_vm_bypasses_a_waiter_for_another_vm() {
+    fn unrelated_computer_bypasses_a_waiter_for_another_computer() {
         let gate = leak();
-        let a = gate.vm("id-a", "a", "Backup a").unwrap();
-        let waiter = thread::spawn(move || drop(gate.vm("id-a", "a", "Stop a").unwrap()));
+        let a = gate.computer("id-a", "a", "Backup a").unwrap();
+        let waiter = thread::spawn(move || drop(gate.computer("id-a", "a", "Stop a").unwrap()));
         wait_until(gate, |queue| queue.waiting.len() == 1);
-        assert!(elsewhere(move || gate.vm("id-b", "b", "Stop b").is_ok()));
+        assert!(elsewhere(move || gate
+            .computer("id-b", "b", "Stop b")
+            .is_ok()));
         drop(a);
         waiter.join().unwrap();
     }
@@ -1454,14 +1463,14 @@ mod tests {
     #[test]
     fn identical_waiting_request_is_rejected() {
         let gate = leak();
-        let running = gate.computer("Edit").unwrap();
-        let key = Some("vm:id-a:start".to_owned());
+        let running = gate.device("Edit").unwrap();
+        let key = Some("computer:id-a:start".to_owned());
         let first = {
             let key = key.clone();
             thread::spawn(move || {
                 drop(
                     gate.acquire(
-                        Scope::Vm { id: "id-a".into() },
+                        Scope::Computer { id: "id-a".into() },
                         Some("a".into()),
                         "Start a",
                         key,
@@ -1474,7 +1483,7 @@ mod tests {
         assert_eq!(
             elsewhere(move || gate
                 .acquire(
-                    Scope::Vm { id: "id-a".into() },
+                    Scope::Computer { id: "id-a".into() },
                     Some("a".into()),
                     "Start a",
                     key
@@ -1490,22 +1499,22 @@ mod tests {
     fn held_reports_whether_this_thread_holds_an_operation() {
         let gate = leak();
         assert!(!held());
-        let guard = gate.vm("id-a", "a", "Start a").unwrap();
+        let guard = gate.computer("id-a", "a", "Start a").unwrap();
         assert!(held());
         assert!(!elsewhere(held), "holding is per thread");
         drop(guard);
         assert!(!held());
-        drop(gate.try_computer_hidden("Reconciling SSH access").unwrap());
+        drop(gate.try_device_hidden("Reconciling SSH access").unwrap());
         assert!(!held());
     }
 
     #[test]
     fn nested_acquire_fails_instead_of_deadlocking() {
         let gate = leak();
-        let _outer = gate.vm("id-a", "a", "Fork a").unwrap();
-        assert_eq!(gate.computer("Inner").unwrap_err(), GateError::Nested);
+        let _outer = gate.computer("id-a", "a", "Fork a").unwrap();
+        assert_eq!(gate.device("Inner").unwrap_err(), GateError::Nested);
         assert_eq!(
-            gate.vm("id-b", "b", "Inner").unwrap_err(),
+            gate.computer("id-b", "b", "Inner").unwrap_err(),
             GateError::Nested
         );
     }
@@ -1513,33 +1522,33 @@ mod tests {
     #[test]
     fn try_acquire_skips_busy_and_waiting_work() {
         let gate = leak();
-        let a = gate.vm("id-a", "a", "Start a").unwrap();
+        let a = gate.computer("id-a", "a", "Start a").unwrap();
         assert_eq!(
-            elsewhere(move || gate.try_computer("Reclaim").unwrap_err()),
+            elsewhere(move || gate.try_device("Reclaim").unwrap_err()),
             GateError::Busy
         );
         assert!(elsewhere(move || gate
-            .try_vm("id-b", "b", "Sync b")
+            .try_computer("id-b", "b", "Sync b")
             .is_ok()));
         assert_eq!(
-            elsewhere(move || gate.try_vm("id-a", "a", "Sync a").unwrap_err()),
+            elsewhere(move || gate.try_computer("id-a", "a", "Sync a").unwrap_err()),
             GateError::Busy
         );
-        assert!(!gate.is_vm_idle("id-a"));
-        assert!(gate.is_vm_idle("id-b"));
+        assert!(!gate.is_computer_idle("id-a"));
+        assert!(gate.is_computer_idle("id-b"));
         drop(a);
-        assert!(elsewhere(move || gate.try_computer("Reclaim").is_ok()));
+        assert!(elsewhere(move || gate.try_device("Reclaim").is_ok()));
     }
 
     #[test]
     fn abandoned_waiter_leaves_the_queue_and_unblocks_later_work() {
         let gate = leak();
-        let running = gate.computer("Update").unwrap();
+        let running = gate.device("Update").unwrap();
         let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let waiter = {
             let cancelled = cancelled.clone();
             thread::spawn(move || {
-                gate.acquire_while(Scope::Computer, None, "Backup", &|| {
+                gate.acquire_while(Scope::Device, None, "Backup", &|| {
                     !cancelled.load(Ordering::SeqCst)
                 })
                 .unwrap_err()
@@ -1556,14 +1565,14 @@ mod tests {
     #[test]
     fn keep_waiting_may_read_the_gate_without_deadlocking() {
         let gate = leak();
-        let running = gate.computer("Update").unwrap();
+        let running = gate.device("Update").unwrap();
         let asked = Arc::new(AtomicUsize::new(0));
         let (done, finished) = mpsc::channel();
         {
             let asked = asked.clone();
             thread::spawn(move || {
                 // The closure reads the gate, as a future caller might (D-33).
-                let result = gate.acquire_while(Scope::Computer, None, "Backup", &|| {
+                let result = gate.acquire_while(Scope::Device, None, "Backup", &|| {
                     asked.fetch_add(1, Ordering::SeqCst);
                     gate.snapshot().waiting.len() == 1
                 });
@@ -1594,7 +1603,7 @@ mod tests {
         gate.set_listener(move || {
             counted.fetch_add(1, Ordering::SeqCst);
         });
-        drop(gate.computer("Edit").unwrap());
+        drop(gate.device("Edit").unwrap());
         assert!(calls.load(Ordering::SeqCst) >= 2);
         assert!(gate.oldest_running().is_none());
     }
@@ -1602,8 +1611,8 @@ mod tests {
     #[test]
     fn cancelling_a_waiting_entry_makes_its_waiter_return_cancelled() {
         let gate = leak();
-        let running = gate.computer("Update").unwrap();
-        let waiter = thread::spawn(move || gate.computer("Backup").unwrap_err());
+        let running = gate.device("Update").unwrap();
+        let waiter = thread::spawn(move || gate.device("Backup").unwrap_err());
         wait_until(gate, |queue| queue.waiting.len() == 1);
         let waiting_id = gate.snapshot().waiting[0].id;
         // Waiting entries always report themselves as cancellable.
@@ -1619,10 +1628,10 @@ mod tests {
     fn cancel_all_waiting_cancels_every_waiter_and_leaves_running_work() {
         let gate = leak();
         // One running entry that must be left untouched.
-        let running = gate.computer("Exporting sandbox").unwrap();
-        let first = thread::spawn(move || gate.vm("id-a", "a", "Stop a").unwrap_err());
+        let running = gate.device("Exporting computer").unwrap();
+        let first = thread::spawn(move || gate.computer("id-a", "a", "Stop a").unwrap_err());
         wait_until(gate, |queue| queue.waiting.len() == 1);
-        let second = thread::spawn(move || gate.vm("id-b", "b", "Stop b").unwrap_err());
+        let second = thread::spawn(move || gate.computer("id-b", "b", "Stop b").unwrap_err());
         wait_until(gate, |queue| queue.waiting.len() == 2);
         gate.cancel_all_waiting();
         assert_eq!(first.join().unwrap(), GateError::Cancelled);
@@ -1630,7 +1639,7 @@ mod tests {
         let queue = gate.snapshot();
         assert!(queue.waiting.is_empty());
         assert_eq!(queue.running.len(), 1);
-        assert_eq!(queue.running[0].label, "Exporting sandbox");
+        assert_eq!(queue.running[0].label, "Exporting computer");
         drop(running);
         assert!(gate.is_idle());
     }
@@ -1641,7 +1650,7 @@ mod tests {
         let (ready, started) = mpsc::channel();
         let (done, finished) = mpsc::channel();
         thread::spawn(move || {
-            let guard = gate.vm("id-a", "a", "Starting a").unwrap();
+            let guard = gate.computer("id-a", "a", "Starting a").unwrap();
             guard.allow_cancel();
             // Stand in for a runtime child: a long sleep that a polling loop kills when
             // the current operation is cancel-requested, exactly like run_msb_process.
@@ -1675,7 +1684,7 @@ mod tests {
     #[test]
     fn uncancellable_section_defers_a_cancel_until_it_returns() {
         let gate = leak();
-        let guard = gate.vm("id-a", "a", "Restarting a").unwrap();
+        let guard = gate.computer("id-a", "a", "Restarting a").unwrap();
         guard.allow_cancel();
         gate.cancel(gate.snapshot().running[0].id).unwrap();
         assert!(!uncancellable(cancel_requested));
@@ -1689,7 +1698,7 @@ mod tests {
         let (admitted, admission) = mpsc::channel();
         let (release, released) = mpsc::channel::<()>();
         let worker = thread::spawn(move || {
-            let guard = gate.vm("id-a", "a", "Starting a").unwrap();
+            let guard = gate.computer("id-a", "a", "Starting a").unwrap();
             admitted.send(()).unwrap();
             // The owner declares cancellability only after the cancel arrived.
             released.recv().unwrap();
@@ -1712,7 +1721,7 @@ mod tests {
     #[test]
     fn cancelling_a_non_cancellable_running_entry_is_rejected() {
         let gate = leak();
-        let running = gate.computer("Stopping").unwrap();
+        let running = gate.device("Stopping").unwrap();
         let id = gate.snapshot().running[0].id;
         assert!(!gate.snapshot().running[0].cancellable);
         assert_eq!(gate.cancel(id).unwrap_err(), GateError::NotCancellable);
@@ -1722,8 +1731,8 @@ mod tests {
     #[test]
     fn hidden_housekeeping_is_excluded_from_the_snapshot_but_still_exclusive() {
         let gate = leak();
-        // A hidden background reconcile holds the computer gate but never surfaces.
-        let housekeeping = gate.try_computer_hidden("Reconciling SSH access").unwrap();
+        // A hidden background reconcile holds the device gate but never surfaces.
+        let housekeeping = gate.try_device_hidden("Reconciling SSH access").unwrap();
         let snapshot = gate.snapshot();
         assert!(
             snapshot.running.is_empty(),
@@ -1733,23 +1742,21 @@ mod tests {
         // It is not idle, though: a conflicting try still finds the gate busy.
         assert!(!gate.is_idle());
         assert_eq!(
-            elsewhere(move || gate.try_computer("Reclaim").unwrap_err()),
+            elsewhere(move || gate.try_device("Reclaim").unwrap_err()),
             GateError::Busy
         );
         drop(housekeeping);
         assert!(gate.is_idle());
-        assert!(elsewhere(move || gate.try_computer("Reclaim").is_ok()));
+        assert!(elsewhere(move || gate.try_device("Reclaim").is_ok()));
     }
 
     #[test]
     fn a_visible_waiter_blocked_only_by_hidden_work_is_flagged() {
         let gate = leak();
-        // Hidden computer-wide housekeeping is running.
-        let housekeeping = gate
-            .try_computer_hidden("Cleaning up expired logs")
-            .unwrap();
-        // A user-initiated per-VM operation arrives and must wait behind it.
-        let waiter = thread::spawn(move || drop(gate.vm("id-a", "a", "Start a").unwrap()));
+        // Hidden device-wide housekeeping is running.
+        let housekeeping = gate.try_device_hidden("Cleaning up expired logs").unwrap();
+        // A user-initiated per-computer operation arrives and must wait behind it.
+        let waiter = thread::spawn(move || drop(gate.computer("id-a", "a", "Start a").unwrap()));
         wait_until(gate, |queue| {
             // The waiter is visible; the hidden blocker is not, so it is flagged instead.
             queue.waiting.len() == 1
@@ -1768,14 +1775,14 @@ mod tests {
     #[test]
     fn a_hidden_queued_operation_never_surfaces_while_waiting_or_running() {
         let gate = leak();
-        let first = gate.vm("id-a", "a", "Starting a").unwrap();
+        let first = gate.computer("id-a", "a", "Starting a").unwrap();
         let hidden = thread::spawn(move || {
             let turn = gate
                 .kind(OperationKind::Other)
                 .hidden()
-                .vm("id-a", "a", "Setting up computer use in a")
+                .computer("id-a", "a", "Setting up computer use in a")
                 .unwrap();
-            // Running, it still holds the VM's turn but is not published.
+            // Running, it still holds the computer's turn but is not published.
             assert!(gate.snapshot().running.is_empty());
             drop(turn);
         });
@@ -1785,7 +1792,7 @@ mod tests {
         assert_eq!(queue.running.len(), 1);
         assert!(queue.waiting.is_empty(), "{queue:?}");
         // A visible operation queued behind it explains the wait generically.
-        let behind = thread::spawn(move || drop(gate.vm("id-a", "a", "Stopping a").unwrap()));
+        let behind = thread::spawn(move || drop(gate.computer("id-a", "a", "Stopping a").unwrap()));
         wait_until(gate, |queue| {
             queue.waiting.len() == 1 && queue.waiting[0].blocked_by_hidden
         });
@@ -1798,8 +1805,8 @@ mod tests {
     #[test]
     fn a_waiter_blocked_by_visible_work_is_not_flagged_as_hidden() {
         let gate = leak();
-        let visible = gate.computer("Updating").unwrap();
-        let waiter = thread::spawn(move || drop(gate.vm("id-a", "a", "Start a").unwrap()));
+        let visible = gate.device("Updating").unwrap();
+        let waiter = thread::spawn(move || drop(gate.computer("id-a", "a", "Start a").unwrap()));
         wait_until(gate, |queue| {
             queue.waiting.len() == 1 && queue.waiting[0].label == "Start a"
         });
@@ -1811,12 +1818,14 @@ mod tests {
     #[test]
     fn a_later_attempt_can_continue_the_first_attempts_start_time() {
         let gate = leak();
-        let first = gate.vm("id-a", "a", "Stopping a").unwrap();
+        let first = gate.computer("id-a", "a", "Stopping a").unwrap();
         let since = first.since();
         let reported = gate.snapshot().running[0].since_ms;
         drop(first);
         thread::sleep(Duration::from_millis(5));
-        let second = gate.vm("id-a", "a", "Stopping a (attempt 2 of 3)").unwrap();
+        let second = gate
+            .computer("id-a", "a", "Stopping a (attempt 2 of 3)")
+            .unwrap();
         assert!(gate.snapshot().running[0].since_ms >= reported);
         second.continue_since(since);
         assert_eq!(gate.snapshot().running[0].since_ms, reported);
@@ -1830,7 +1839,7 @@ mod tests {
         let other = leak();
         // Outside any operation the work still runs.
         assert_eq!(gate.labelled("Setting up", || 1), 1);
-        let guard = gate.vm("a", "a", "Start a").unwrap();
+        let guard = gate.computer("a", "a", "Start a").unwrap();
         let shown = gate.labelled("Setting up the silo account in a", || {
             // Another gate's operation is not this thread's.
             other.labelled("Elsewhere", || ());
@@ -1839,7 +1848,7 @@ mod tests {
         assert_eq!(shown, "Setting up the silo account in a");
         assert_eq!(gate.snapshot().running[0].label, "Start a");
         drop(guard);
-        let _later = gate.vm("b", "b", "Start b").unwrap();
+        let _later = gate.computer("b", "b", "Start b").unwrap();
         elsewhere(move || gate.labelled("Not this thread", || ()));
         assert_eq!(gate.snapshot().running[0].label, "Start b");
     }
@@ -1854,7 +1863,7 @@ mod tests {
         });
         let guard = gate
             .kind(OperationKind::Shutdown)
-            .computer("Stopping local sandboxes")
+            .device("Stopping local computers")
             .unwrap();
         let before = calls.load(Ordering::SeqCst);
         guard.relabel("Stopping dev (1 of 2)");
@@ -1870,7 +1879,7 @@ mod tests {
     #[test]
     fn expected_duration_is_reported_in_the_queue() {
         let gate = leak();
-        let guard = gate.computer("Working").unwrap();
+        let guard = gate.device("Working").unwrap();
         guard.expect_within(Duration::from_secs(120));
         assert_eq!(gate.snapshot().running[0].expected_ms, Some(120_000));
         drop(guard);
@@ -1881,12 +1890,12 @@ mod tests {
         let gate = leak();
         let first = gate
             .kind(OperationKind::Lifecycle)
-            .vm("id-a", "a", "Start a")
+            .computer("id-a", "a", "Start a")
             .unwrap();
         let waiter = thread::spawn(move || {
             drop(
                 gate.kind(OperationKind::CheckpointCapture)
-                    .vm("id-a", "a", "Creating checkpoint")
+                    .computer("id-a", "a", "Creating checkpoint")
                     .unwrap(),
             );
         });
@@ -1899,7 +1908,7 @@ mod tests {
         assert_eq!(json["waiting"][0]["kind"], "checkpointCapture");
         drop(first);
         waiter.join().unwrap();
-        let other = gate.computer("Anything").unwrap();
+        let other = gate.device("Anything").unwrap();
         assert_eq!(
             serde_json::to_value(gate.snapshot()).unwrap()["running"][0]["kind"],
             "other"
@@ -1914,7 +1923,10 @@ mod tests {
             (OperationKind::PortPublish, "portPublish"),
             (OperationKind::PortRemove, "portRemove"),
             (OperationKind::Shutdown, "shutdown"),
-            (OperationKind::MachineConfiguration, "machineConfiguration"),
+            (
+                OperationKind::ComputerConfiguration,
+                "computerConfiguration",
+            ),
         ] {
             assert_eq!(serde_json::to_value(kind).unwrap(), name);
         }
@@ -1924,7 +1936,7 @@ mod tests {
     fn generation_changes_when_an_operation_is_queued_runs_or_finishes() {
         let gate = leak();
         let start = gate.generation("id-a");
-        let first = gate.vm("id-a", "a", "Start a").unwrap();
+        let first = gate.computer("id-a", "a", "Start a").unwrap();
         let running = gate.generation("id-a");
         assert_ne!(running, start);
         assert_eq!(gate.generation("id-b"), start.min(gate.generation("id-b")));
@@ -1939,56 +1951,54 @@ mod tests {
     }
 
     #[test]
-    fn a_vm_is_quiet_unless_visible_work_other_than_the_callers_own_touches_it() {
+    fn a_computer_is_quiet_unless_visible_work_other_than_the_callers_own_touches_it() {
         let gate = leak();
-        assert!(gate.is_vm_quiet("id-a"));
-        let hidden = gate
-            .try_computer_hidden("Cleaning up expired logs")
-            .unwrap();
+        assert!(gate.is_computer_quiet("id-a"));
+        let hidden = gate.try_device_hidden("Cleaning up expired logs").unwrap();
         assert!(
-            elsewhere(move || gate.is_vm_quiet("id-a")),
-            "hidden housekeeping never settles a VM"
+            elsewhere(move || gate.is_computer_quiet("id-a")),
+            "hidden housekeeping never settles a computer"
         );
         drop(hidden);
-        let own = gate.vm("id-a", "a", "Creating checkpoint").unwrap();
+        let own = gate.computer("id-a", "a", "Creating checkpoint").unwrap();
         assert!(
-            gate.is_vm_quiet("id-a"),
+            gate.is_computer_quiet("id-a"),
             "a thread reading after its own change"
         );
         assert!(
-            !elsewhere(move || gate.is_vm_quiet("id-a")),
-            "other readers see the VM busy"
+            !elsewhere(move || gate.is_computer_quiet("id-a")),
+            "other readers see the computer busy"
         );
         assert!(
-            elsewhere(move || gate.is_vm_quiet("id-b")),
-            "other VMs stay quiet"
+            elsewhere(move || gate.is_computer_quiet("id-b")),
+            "other computers stay quiet"
         );
         drop(own);
-        let change = gate.computer("Applying sandbox changes").unwrap();
-        assert!(gate.is_vm_quiet("id-b"));
+        let change = gate.device("Applying computer changes").unwrap();
+        assert!(gate.is_computer_quiet("id-b"));
         assert!(
-            !elsewhere(move || gate.is_vm_quiet("id-b")),
-            "computer-wide work touches every VM"
+            !elsewhere(move || gate.is_computer_quiet("id-b")),
+            "device-wide work touches every computer"
         );
         drop(change);
     }
 
     #[test]
-    fn a_computer_wide_operation_touches_every_vm_and_hidden_ones_touch_none() {
+    fn a_device_wide_operation_touches_every_computer_and_hidden_ones_touch_none() {
         let gate = leak();
         let before = gate.generation("id-a");
-        drop(gate.computer("Updating").unwrap());
+        drop(gate.device("Updating").unwrap());
         assert_ne!(gate.generation("id-a"), before);
         let other = gate.generation("id-b");
         let snapshot = gate.generations();
-        drop(gate.try_vm("id-a", "a", "Sync a").unwrap());
+        drop(gate.try_computer("id-a", "a", "Sync a").unwrap());
         assert_eq!(gate.generation("id-b"), other);
         assert_ne!(gate.generation("id-a"), snapshot.of("id-a"));
         assert_eq!(gate.generation("id-b"), snapshot.of("id-b"));
         let stable = gate.generation("id-a");
-        drop(gate.try_computer_hidden("Reconciling SSH access").unwrap());
+        drop(gate.try_device_hidden("Reconciling SSH access").unwrap());
         drop(
-            gate.try_vm_hidden("id-a", "a", "Reconciling ports on a")
+            gate.try_computer_hidden("id-a", "a", "Reconciling ports on a")
                 .unwrap(),
         );
         assert_eq!(gate.generation("id-a"), stable);
@@ -1998,7 +2008,7 @@ mod tests {
     fn activity_wakes_observers_when_a_visible_operation_finishes() {
         let gate = leak();
         let seen = gate.activity();
-        let guard = gate.vm("id-a", "a", "Start a").unwrap();
+        let guard = gate.computer("id-a", "a", "Start a").unwrap();
         assert_eq!(
             gate.wait_for_activity(seen, Duration::from_millis(20)),
             seen
@@ -2008,14 +2018,14 @@ mod tests {
         drop(guard);
         assert_ne!(waiter.join().unwrap(), seen);
         let seen = gate.activity();
-        drop(gate.try_computer_hidden("Reconciling SSH access").unwrap());
+        drop(gate.try_device_hidden("Reconciling SSH access").unwrap());
         assert_eq!(gate.activity(), seen);
     }
 
     #[test]
     fn work_that_is_no_longer_wanted_leaves_the_queue_without_starting() {
         let gate = leak();
-        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let busy = gate.computer("id-a", "a", "Long work").unwrap();
         let wanted = Arc::new(AtomicBool::new(true));
         let condition = StartCondition::new({
             let wanted = wanted.clone();
@@ -2025,7 +2035,7 @@ mod tests {
             let condition = condition.clone();
             thread::spawn(move || {
                 StartCondition::scope(Some(condition), || {
-                    gate.vm("id-a", "a", "Remote start").map(drop)
+                    gate.computer("id-a", "a", "Remote start").map(drop)
                 })
             })
         };
@@ -2040,7 +2050,7 @@ mod tests {
     #[test]
     fn a_turn_that_arrives_after_the_condition_lapsed_is_refused() {
         let gate = leak();
-        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let busy = gate.computer("id-a", "a", "Long work").unwrap();
         let wanted = Arc::new(AtomicBool::new(true));
         let condition = StartCondition::new({
             let wanted = wanted.clone();
@@ -2050,7 +2060,7 @@ mod tests {
             let condition = condition.clone();
             thread::spawn(move || {
                 StartCondition::scope(Some(condition), || {
-                    gate.vm("id-a", "a", "Remote start").map(drop)
+                    gate.computer("id-a", "a", "Remote start").map(drop)
                 })
             })
         };
@@ -2066,7 +2076,7 @@ mod tests {
         // An immediately free turn is refused as well.
         assert_eq!(
             StartCondition::scope(Some(StartCondition::new(|| false)), || gate
-                .vm("id-b", "b", "Remote start")
+                .computer("id-b", "b", "Remote start")
                 .map(drop)),
             Err(GateError::Abandoned)
         );
@@ -2077,7 +2087,7 @@ mod tests {
         let gate = leak();
         let condition = StartCondition::new(|| false);
         let result = StartCondition::scope(Some(condition.clone()), || {
-            gate.acquire_while(Scope::Computer, None, "Remote change", &|| true)
+            gate.acquire_while(Scope::Device, None, "Remote change", &|| true)
                 .map(drop)
         });
         assert_eq!(result, Err(GateError::Abandoned));
@@ -2089,7 +2099,7 @@ mod tests {
     #[test]
     fn explicit_waits_stop_when_the_remote_start_condition_expires() {
         let gate = leak();
-        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let busy = gate.computer("id-a", "a", "Long work").unwrap();
         let wanted = Arc::new(AtomicBool::new(true));
         let condition = StartCondition::new({
             let wanted = wanted.clone();
@@ -2099,7 +2109,7 @@ mod tests {
             let condition = condition.clone();
             thread::spawn(move || {
                 StartCondition::scope(Some(condition), || {
-                    gate.acquire_while(Scope::Computer, None, "Remote change", &|| true)
+                    gate.acquire_while(Scope::Device, None, "Remote change", &|| true)
                         .map(drop)
                 })
             })
@@ -2115,13 +2125,13 @@ mod tests {
     #[test]
     fn abandoning_an_explicit_wait_does_not_expire_a_valid_remote_request() {
         let gate = leak();
-        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let busy = gate.computer("id-a", "a", "Long work").unwrap();
         let condition = StartCondition::new(|| true);
         let waiter = {
             let condition = condition.clone();
             thread::spawn(move || {
                 StartCondition::scope(Some(condition), || {
-                    gate.acquire_while(Scope::Computer, None, "Remote change", &|| false)
+                    gate.acquire_while(Scope::Device, None, "Remote change", &|| false)
                         .map(drop)
                 })
             })
@@ -2141,13 +2151,13 @@ mod tests {
             move || wanted.load(Ordering::SeqCst)
         });
         StartCondition::scope(Some(condition.clone()), || {
-            drop(gate.vm("id-a", "a", "Attempt 1").unwrap());
+            drop(gate.computer("id-a", "a", "Attempt 1").unwrap());
             assert!(condition.started());
             // A later attempt of started work waits its turn even after the condition lapsed.
             wanted.store(false, Ordering::SeqCst);
             let (held, release) = (mpsc::channel(), mpsc::channel::<()>());
             let other = thread::spawn(move || {
-                let guard = gate.vm("id-a", "a", "Other").unwrap();
+                let guard = gate.computer("id-a", "a", "Other").unwrap();
                 held.0.send(()).unwrap();
                 release.1.recv().unwrap();
                 drop(guard);
@@ -2156,7 +2166,7 @@ mod tests {
             let attempt = thread::scope(|scope| {
                 let attempt = scope.spawn(|| {
                     StartCondition::scope(Some(condition.clone()), || {
-                        gate.vm("id-a", "a", "Attempt 2").map(drop)
+                        gate.computer("id-a", "a", "Attempt 2").map(drop)
                     })
                 });
                 wait_until(gate, |queue| queue.waiting.len() == 1);
@@ -2169,13 +2179,13 @@ mod tests {
         assert!(!condition.expired());
         // The condition applies only inside its scope.
         assert!(StartCondition::current().is_none());
-        drop(gate.vm("id-a", "a", "Local work").unwrap());
+        drop(gate.computer("id-a", "a", "Local work").unwrap());
     }
 
     #[test]
     fn a_waiting_step_continues_when_another_worker_has_started_the_same_request() {
         let gate = leak();
-        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let busy = gate.computer("id-a", "a", "Long work").unwrap();
         let wanted = Arc::new(AtomicBool::new(true));
         let condition = StartCondition::new({
             let wanted = wanted.clone();
@@ -2185,7 +2195,7 @@ mod tests {
             let condition = condition.clone();
             thread::spawn(move || {
                 StartCondition::scope(Some(condition), || {
-                    gate.vm("id-a", "a", "Request step A").map(drop)
+                    gate.computer("id-a", "a", "Request step A").map(drop)
                 })
             })
         };
@@ -2194,7 +2204,7 @@ mod tests {
             let condition = condition.clone();
             thread::spawn(move || {
                 StartCondition::scope(Some(condition), || {
-                    gate.vm("id-b", "b", "Request step B").map(drop)
+                    gate.computer("id-b", "b", "Request step B").map(drop)
                 })
             })
         };
@@ -2246,7 +2256,7 @@ mod contract_tests {
             PortPublish,
             PortRemove,
             Shutdown,
-            MachineConfiguration,
+            ComputerConfiguration,
             Other,
         ];
         let entries: Vec<_> = kinds
@@ -2256,8 +2266,9 @@ mod contract_tests {
                 id: index as u64 + 1,
                 label: format!("Contract operation {}", index + 1),
                 kind,
-                vm_id: (kind != Shutdown).then(|| "00000000-0000-4000-8000-000000000001".into()),
-                vm_name: (kind != Shutdown).then(|| "dev".into()),
+                computer_id: (kind != Shutdown)
+                    .then(|| "00000000-0000-4000-8000-000000000001".into()),
+                computer_name: (kind != Shutdown).then(|| "dev".into()),
                 since_ms: 1767225600000,
                 cancellable: index % 2 == 0,
                 expected_ms: (index % 2 == 0).then_some(180000),
@@ -2270,8 +2281,8 @@ mod contract_tests {
                 id: 16,
                 label: "Waiting contract operation".into(),
                 kind: Lifecycle,
-                vm_id: Some("00000000-0000-4000-8000-000000000002".into()),
-                vm_name: Some("other".into()),
+                computer_id: Some("00000000-0000-4000-8000-000000000002".into()),
+                computer_name: Some("other".into()),
                 since_ms: 1767225601000,
                 cancellable: true,
                 expected_ms: None,

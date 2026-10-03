@@ -1,10 +1,10 @@
-//! Silo VMs work as the `silo` account (UID/GID 1001, home `/home/silo`).
+//! Silo computers work as the `silo` account (UID/GID 1001, home `/home/silo`).
 //!
 //! The guest records its account in `/var/lib/silo/working-account.json`. After each
 //! boot, Silo checks that record and, when it is missing, runs the guest setup as root:
-//! a new VM gets a fresh account, and a VM from an older Silo, with agent files under
+//! a new computer gets a fresh account, and a computer from an older Silo, with agent files under
 //! root, has them copied into it. The setup writes the record last and can be repeated,
-//! so an interrupted setup finishes at the next boot. The record lives on the VM's disk,
+//! so an interrupted setup finishes at the next boot. The record lives on the computer's disk,
 //! so restores, forks and imports carry it. See docs/SiloUI-WORKING-ACCOUNT.md.
 use crate::runtime::{self, RuntimeError, RuntimePaths, RuntimeRunner};
 use serde_json::Value;
@@ -21,7 +21,7 @@ fi"#;
 const SET_UP: &str = include_str!("../guest/working-account.sh");
 const ACCOUNT: &str = include_str!("../guest/working-account.py");
 const DESKTOP_SERVICE: &str = include_str!("../guest/desktop-service.py");
-/// Moving an older VM copies its home folders and takes ownership of `/workspace`.
+/// Moving an older computer copies its home folders and takes ownership of `/workspace`.
 const SET_UP_LIMIT: &str = "30m";
 const SET_UP_TIMEOUT: Duration = Duration::from_secs(31 * 60);
 
@@ -36,8 +36,8 @@ fn exec(name: &str, limit: &str, command: &[&str]) -> Vec<String> {
         .collect()
 }
 
-/// Make a VM Silo just booted ready for the silo account. A failure leaves the VM
-/// running; the caller stops it, so a running VM always has its account.
+/// Make a computer Silo just booted ready for the silo account. A failure leaves the computer
+/// running; the caller stops it, so a running computer always has its account.
 pub(crate) fn prepare(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
@@ -78,11 +78,13 @@ fn failure(
     ) {
         return error;
     }
-    // Copying home folders fills the VM's memory with file cache; on a host short of
-    // memory the VM is killed and the command only reports its lost session.
-    if runtime::inspect_workspace(runner, paths, name).is_ok_and(|vm| vm.status == "Crashed") {
+    // Copying home folders fills the computer's memory with file cache; on a host short of
+    // memory the computer is killed and the command only reports its lost session.
+    if runtime::inspect_computer(runner, paths, name)
+        .is_ok_and(|computer| computer.status == "Crashed")
+    {
         return RuntimeError::Unavailable(format!(
-            "{name} stopped unexpectedly while Silo set up its silo account. This computer may have run out of memory: stop other sandboxes, then start it again."
+            "{name} stopped unexpectedly while Silo set up its silo account. This device may have run out of memory: stop other computers, then start it again."
         ));
     }
     match error {
@@ -116,7 +118,7 @@ fn reason(detail: &str) -> Option<&str> {
 /// The account to open `name`'s guest as, once Silo manages it and the bundled runtime
 /// supports the account.
 pub(crate) fn inspect_user(paths: &RuntimePaths, name: &str) -> Result<&'static str, String> {
-    let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, paths, name)
+    let inspected = runtime::inspect_computer(&runtime::ProcessRunner, paths, name)
         .map_err(|e| e.to_string())?;
     runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
     require_runtime(paths)?;
@@ -130,27 +132,27 @@ pub(crate) fn require_runtime(paths: &RuntimePaths) -> Result<(), String> {
         Duration::from_secs(10),
     )
     .map_err(|_| {
-        "The bundled runtime cannot open this sandbox's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo."
+        "The bundled runtime cannot open this computer's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo."
     })?;
     if output.stdout.trim() != "1" {
-        return Err("The bundled runtime cannot open this sandbox's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo.".into());
+        return Err("The bundled runtime cannot open this computer's Linux account. Relaunch Silo to rerun system checks, then repair or update Silo.".into());
     }
     Ok(())
 }
 
-/// The account another computer's Silo reports for its sandbox. Versions before the
+/// The account another device's Silo reports for its computer. Versions before the
 /// silo account report root, or nothing.
 pub(crate) fn response_user(response: &Value) -> Result<&'static str, String> {
     match response.get("user") {
         Some(Value::String(user)) if user == USER => Ok(USER),
-        _ => Err("The other computer opens this sandbox with an account this Silo does not support. Update Silo on both computers.".into()),
+        _ => Err("The other device opens this computer with an account this Silo does not support. Update Silo on both devices.".into()),
     }
 }
 
 pub(crate) fn require_client_protocol(request: &Value) -> Result<(), String> {
     if request.get("accountProtocol").and_then(Value::as_u64) != Some(1) {
         return Err(
-            "Update Silo on the connecting computer to access this sandbox's Linux account.".into(),
+            "Update Silo on the connecting device to access this computer's Linux account.".into(),
         );
     }
     Ok(())
@@ -243,7 +245,7 @@ mod tests {
             home: root.join("home"),
             storage_home: None,
             guest_image: root.join("image"),
-            metadata: root.join("machines.json"),
+            metadata: root.join("computers.json"),
             volumes: root.join("volumes"),
         }
     }
@@ -257,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vm_with_the_account_is_only_checked() {
+    fn a_computer_with_the_account_is_only_checked() {
         let guest = Guest::new("ready\n", Ok(()));
         prepare(&guest, &paths(), "dev").unwrap();
         assert_eq!(guest.commands(), ["check"]);
@@ -282,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn a_new_or_older_vm_is_set_up_as_root_with_the_bundled_scripts() {
+    fn a_new_or_older_computer_is_set_up_as_root_with_the_bundled_scripts() {
         let guest = Guest::new("missing\n", Ok(()));
         prepare(&guest, &paths(), "dev").unwrap();
         assert_eq!(guest.commands(), ["check", "set up"]);
@@ -346,7 +348,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vm_that_crashes_during_setup_points_at_memory() {
+    fn a_computer_that_crashes_during_setup_points_at_memory() {
         let mut guest = Guest::new("missing", Err(failed("connection reset")));
         guest.status = "Crashed";
         let error = prepare(&guest, &paths(), "dev").unwrap_err().to_string();
@@ -400,7 +402,7 @@ mod tests {
             home: root.join("home"),
             storage_home: None,
             guest_image: root.join("image"),
-            metadata: root.join("machines.json"),
+            metadata: root.join("computers.json"),
             volumes: root.join("volumes"),
         };
         test_runtime(&paths.executable);

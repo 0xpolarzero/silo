@@ -4,23 +4,23 @@
 //! The first launch of the upgrade settles it without the runtime and without writing to
 //! the previous generation, a pre-upgrade backup. What only the runtime can remove stays
 //! owned by the journal, which waits for the upgrade; the migration copies it with
-//! everything else and converts only the sandboxes saved in the settings. The launch after
+//! everything else and converts only the computers saved in the settings. The launch after
 //! the migration runs the ordinary recovery against the converted generation, which
 //! removes the copy and reports the result. The previous generation never changes.
 use super::*;
 use crate::backup_controller::{FirstLaunch, JournalState};
 use std::collections::BTreeMap;
 
-const VM_ID: &str = "fcfbc268-ae3f-40ff-8dfa-8af78911e52f";
+const COMPUTER_ID: &str = "fcfbc268-ae3f-40ff-8dfa-8af78911e52f";
 const IMPORT_ID: &str = "0f6d5c1a-7a63-4b0a-9a36-4a6f1d3f6e11";
 const GROUP: &str = "silo-import-0123456789abcdef0123456789abcdef";
 const SUFFIX: &str = "0123456789abcdef0123456789abcdef";
 const MEMBER: &str = "silo-backup-0-1-2";
 
-fn one_vm(name: &str, id: &str) -> runtime::MachineConfigurationRequest {
+fn one_computer(name: &str, id: &str) -> runtime::ComputerConfigurationRequest {
     serde_json::from_value(serde_json::json!({
         "schemaVersion": 1,
-        "machines": [{"kind":"vm","id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
+        "computers": [{"id":id,"name":name,"cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
     }))
     .unwrap()
 }
@@ -28,7 +28,7 @@ fn one_vm(name: &str, id: &str) -> runtime::MachineConfigurationRequest {
 /// What the previous Silo's interrupted operation left in the previous generation.
 #[derive(Clone, Copy, Default)]
 struct Leftovers {
-    /// The disk folder a released import claimed for `copy`, and the runtime's sandbox
+    /// The disk folder a released import claimed for `copy`, and the runtime's computer
     /// record created over it, in this state. A released import leaves it `Created`.
     released_import: Option<&'static str>,
     /// The native snapshot load stages of the import group.
@@ -37,14 +37,14 @@ struct Leftovers {
     capture: bool,
 }
 
-/// The runtime's database of the fixture: the sandbox records and snapshot members that
+/// The runtime's database of the fixture: the computer records and snapshot members that
 /// `msb list` and `msb snapshot list` report. A file in `microsandbox/db`, so a copy of
 /// the generation holds a copy of the database.
 fn database(storage_home: &Path) -> PathBuf {
     storage_home.join("db/fake-msb.json")
 }
 
-/// A previous generation with one saved sandbox and `leftovers`, plus the staged paths
+/// A previous generation with one saved computer and `leftovers`, plus the staged paths
 /// the converter would use.
 fn previous_generation(leftovers: Leftovers) -> (tempfile::TempDir, runtime::RuntimePaths) {
     // The runtime alias must keep Unix socket paths short, so use /tmp, not TMPDIR.
@@ -55,17 +55,21 @@ fn previous_generation(leftovers: Leftovers) -> (tempfile::TempDir, runtime::Run
     let app_data = dir.path();
     let old = app_data.join("runtime");
     fs::create_dir_all(old.join("volumes/dev")).unwrap();
-    runtime::write_metadata(&old.join("machines.json"), &one_vm("dev", VM_ID)).unwrap();
-    fs::write(old.join("volumes/dev/workspace.raw"), b"workspace").unwrap();
+    runtime::write_metadata(
+        &old.join("computers.json"),
+        &one_computer("dev", COMPUTER_ID),
+    )
+    .unwrap();
+    fs::write(old.join("volumes/dev/workspace.raw"), b"computer").unwrap();
     fs::create_dir_all(old.join("microsandbox/db")).unwrap();
     fs::write(old.join("microsandbox/db/msb.db"), b"released database").unwrap();
-    let mut sandboxes = vec![serde_json::json!(["dev", VM_ID, "Stopped"])];
+    let mut computers = vec![serde_json::json!(["dev", COMPUTER_ID, "Stopped"])];
     let mut snapshots = Vec::new();
     if let Some(status) = leftovers.released_import {
         fs::create_dir_all(old.join("volumes/copy")).unwrap();
         fs::write(old.join("volumes/copy/.silo-restore-owner"), IMPORT_ID).unwrap();
         fs::write(old.join("volumes/copy/workspace.raw"), b"partial disk").unwrap();
-        sandboxes.push(serde_json::json!(["copy", IMPORT_ID, status]));
+        computers.push(serde_json::json!(["copy", IMPORT_ID, status]));
     }
     if leftovers.load_stages {
         for stage in [
@@ -82,7 +86,7 @@ fn previous_generation(leftovers: Leftovers) -> (tempfile::TempDir, runtime::Run
     }
     fs::write(
         database(&old.join("microsandbox")),
-        serde_json::json!({"sandboxes": sandboxes, "snapshots": snapshots}).to_string(),
+        serde_json::json!({"computers": computers, "snapshots": snapshots}).to_string(),
     )
     .unwrap();
     let storage = app_data.join(CONVERTED);
@@ -93,7 +97,7 @@ fn previous_generation(leftovers: Leftovers) -> (tempfile::TempDir, runtime::Run
         home: runtime::runtime_home_alias(app_data, &storage_home),
         storage_home: Some(storage_home),
         library: app_data.join("libkrunfw"),
-        metadata: storage.join("machines.json"),
+        metadata: storage.join("computers.json"),
         volumes: storage.join("volumes"),
     };
     (dir, paths)
@@ -110,7 +114,7 @@ fn inert_paths(app_data: &Path) -> runtime::RuntimePaths {
         home: runtime::runtime_home_alias(app_data, &storage_home),
         storage_home: Some(storage_home),
         library: app_data.join("libkrunfw"),
-        metadata: old.join("machines.json"),
+        metadata: old.join("computers.json"),
         volumes: old.join("volumes"),
     })
 }
@@ -146,7 +150,7 @@ fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     entries
 }
 
-/// The staged runtime: every sandbox is stopped, and `adopt-disk` makes its disk owned.
+/// The staged runtime: every computer is stopped, and `adopt-disk` makes its disk owned.
 struct StagedRuntime {
     old_runtime: PathBuf,
     calls: Mutex<Vec<String>>,
@@ -166,7 +170,7 @@ impl runtime::RuntimeRunner for StagedRuntime {
             serde_json::json!({"guest":"/workspace","type":"DiskImage","host":self.old_runtime.join("volumes/dev/workspace.raw")})
         };
         Ok(runtime::CommandOutput {
-            stdout: serde_json::json!({"name":"dev","status":"Stopped","config":{"labels":{"silo.machine-id":VM_ID},"mounts":[mount]}}).to_string(),
+            stdout: serde_json::json!({"name":"dev","status":"Stopped","config":{"labels":{"silo.machine-id":COMPUTER_ID},"mounts":[mount]}}).to_string(),
             stderr: String::new(),
         })
     }
@@ -208,7 +212,7 @@ impl runtime::RuntimeRunner for ConvertedRuntime {
         let file = database(storage_home);
         let mut db: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         let stdout = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-            ["list", "--format", "json"] => db["sandboxes"]
+            ["list", "--format", "json"] => db["computers"]
                 .as_array()
                 .unwrap()
                 .iter()
@@ -216,28 +220,28 @@ impl runtime::RuntimeRunner for ConvertedRuntime {
                 .collect::<Vec<_>>()
                 .into(),
             ["inspect", name, "--format", "json"] => {
-                let row = db["sandboxes"]
+                let row = db["computers"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .find(|row| row[0] == *name)
-                    .expect("only a sandbox that is listed is inspected");
+                    .expect("only a computer that is listed is inspected");
                 serde_json::json!({"name": name, "status": row[2], "config": {"labels": {"silo.managed": "true", "silo.machine-id": row[1]}}})
             }
             ["remove", "--force", "--quiet", name] => {
-                let row = db["sandboxes"]
+                let row = db["computers"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .find(|row| row[0] == *name)
-                    .expect("only a sandbox that is listed is removed");
-                // The bundled runtime removes a Created sandbox like a Stopped one.
+                    .expect("only a computer that is listed is removed");
+                // The bundled runtime removes a Created computer like a Stopped one.
                 if *self.fail_remove.lock().unwrap() {
                     return Err(runtime::RuntimeError::Invalid(
                         "test removal refused".into(),
                     ));
                 }
-                db["sandboxes"]
+                db["computers"]
                     .as_array_mut()
                     .unwrap()
                     .retain(|row| row[0] != *name);
@@ -286,7 +290,7 @@ fn pending_journal(app_data: &Path, request: serde_json::Value, cancelled: bool)
             "completedLabel": "In progress",
             "size": "Unknown",
             "destination": archive.parent().unwrap(),
-            "sandboxes": ["dev"],
+            "computers": ["dev"],
         },
         "request": request,
         "cancelled": cancelled,
@@ -319,7 +323,7 @@ struct Shape {
 }
 
 fn shapes() -> Vec<Shape> {
-    let capture = serde_json::json!({"workspaceId": VM_ID, "group": "dev", "member": MEMBER});
+    let capture = serde_json::json!({"computerId": COMPUTER_ID, "group": "dev", "member": MEMBER});
     let released = Leftovers {
         released_import: Some("Created"),
         ..Leftovers::default()
@@ -344,7 +348,7 @@ fn shapes() -> Vec<Shape> {
             leftovers: released,
             outcome: "failed",
             title: "Import interrupted",
-            detail: "No sandbox was added. Import the file again.".into(),
+            detail: "No computer was added. Import the file again.".into(),
         },
         Shape {
             name: "cancelled import by the released 0.9.0 that wrote its disk",
@@ -353,16 +357,16 @@ fn shapes() -> Vec<Shape> {
             leftovers: released,
             outcome: "cancelled",
             title: "Import cancelled",
-            detail: "No sandbox was added.".into(),
+            detail: "No computer was added.".into(),
         },
         Shape {
-            name: "import by a released Silo whose sandbox the runtime can remove",
+            name: "import by a released Silo whose computer the runtime can remove",
             request: serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID}),
             cancelled: false,
             leftovers: stopped,
             outcome: "failed",
             title: "Import interrupted",
-            detail: "No sandbox was added. Import the file again.".into(),
+            detail: "No computer was added. Import the file again.".into(),
         },
         Shape {
             name: "import of a development build that loaded a snapshot group",
@@ -371,7 +375,7 @@ fn shapes() -> Vec<Shape> {
             leftovers: stages,
             outcome: "failed",
             title: "Import interrupted",
-            detail: "No sandbox was added. Import the file again.".into(),
+            detail: "No computer was added. Import the file again.".into(),
         },
         Shape {
             name: "import of a development build that journaled its identity and group",
@@ -380,7 +384,7 @@ fn shapes() -> Vec<Shape> {
             leftovers: stages,
             outcome: "failed",
             title: "Import interrupted",
-            detail: "No sandbox was added. Import the file again.".into(),
+            detail: "No computer was added. Import the file again.".into(),
         },
         Shape {
             name: "cancelled import of a development build that journaled its identity and group",
@@ -389,20 +393,20 @@ fn shapes() -> Vec<Shape> {
             leftovers: stages,
             outcome: "cancelled",
             title: "Import cancelled",
-            detail: "No sandbox was added.".into(),
+            detail: "No computer was added.".into(),
         },
         Shape {
             name: "export of a development build in the middle of a capture",
-            request: serde_json::json!({"kind":"backup","names":["dev"],"machines":[],"running":[],"pending_capture":capture}),
+            request: serde_json::json!({"kind":"backup","names":["dev"],"computers":[],"running":[],"pending_capture":capture}),
             cancelled: false,
             leftovers: capturing,
             outcome: "failed",
             title: "Export interrupted",
-            detail: "No export file was saved. Export the sandbox again.".into(),
+            detail: "No export file was saved. Export the computer again.".into(),
         },
         Shape {
             name: "cancelled export of a development build in the middle of a capture",
-            request: serde_json::json!({"kind":"backup","names":["dev"],"machines":[],"running":[],"pending_capture":capture}),
+            request: serde_json::json!({"kind":"backup","names":["dev"],"computers":[],"running":[],"pending_capture":capture}),
             cancelled: true,
             leftovers: capturing,
             outcome: "cancelled",
@@ -460,7 +464,7 @@ fn what_only_the_runtime_can_remove_is_cleaned_from_the_converted_generation_aft
             JournalState::Settled
         ));
 
-        // The migration proceeds and converts only the sandbox saved in the settings.
+        // The migration proceeds and converts only the computer saved in the settings.
         convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap();
         assert_eq!(
             *runner.calls.lock().unwrap(),
@@ -472,8 +476,8 @@ fn what_only_the_runtime_can_remove_is_cleaned_from_the_converted_generation_aft
             "{state}"
         );
         let converted = app_data.join(CONVERTED);
-        let metadata = runtime::read_metadata(&converted.join("machines.json")).unwrap();
-        assert_eq!(metadata.machines.len(), 1, "{state}");
+        let metadata = runtime::read_metadata(&converted.join("computers.json")).unwrap();
+        assert_eq!(metadata.computers.len(), 1, "{state}");
         assert_eq!(
             selected_runtime_storage(app_data).unwrap(),
             converted,
@@ -530,17 +534,17 @@ fn what_only_the_runtime_can_remove_is_cleaned_from_the_converted_generation_aft
         let db: serde_json::Value =
             serde_json::from_slice(&fs::read(database(&converted.join("microsandbox"))).unwrap())
                 .unwrap();
-        let sandboxes: Vec<_> = db["sandboxes"]
+        let computers: Vec<_> = db["computers"]
             .as_array()
             .unwrap()
             .iter()
             .map(|row| row[0].as_str().unwrap().to_owned())
             .collect();
         if shape.leftovers.released_import.is_some() {
-            // The orphan's disk and its sandbox record are gone, whether the sandbox never
+            // The orphan's disk and its computer record are gone, whether the computer never
             // started (a released import leaves it Created) or had stopped.
             assert!(!converted.join("volumes/copy").exists(), "{state}");
-            assert_eq!(sandboxes, ["dev"], "{state}: the orphan sandbox record");
+            assert_eq!(computers, ["dev"], "{state}: the orphan computer record");
             assert_eq!(
                 runtime.calls(),
                 [
@@ -551,7 +555,7 @@ fn what_only_the_runtime_can_remove_is_cleaned_from_the_converted_generation_aft
                 "{state}"
             );
         } else {
-            assert_eq!(sandboxes, ["dev"], "{state}");
+            assert_eq!(computers, ["dev"], "{state}");
         }
         if shape.leftovers.load_stages {
             for stage in [
@@ -612,7 +616,7 @@ fn what_only_the_runtime_can_remove_is_cleaned_from_the_converted_generation_aft
 fn only_what_the_journal_owns_is_cleaned_from_the_converted_generation() {
     let _test_state = crate::test_support::global_state();
     // A development build's import loaded a group. An earlier released import also left a
-    // disk folder and a sandbox record named `copy`: they are not this journal's.
+    // disk folder and a computer record named `copy`: they are not this journal's.
     let (dir, paths) = previous_generation(Leftovers {
         released_import: Some("Created"),
         load_stages: true,
@@ -647,7 +651,7 @@ fn only_what_the_journal_owns_is_cleaned_from_the_converted_generation() {
     .unwrap();
     let converted = app_data.join(CONVERTED);
     assert!(converted.join("volumes/copy/workspace.raw").exists());
-    assert!(runtime.calls().is_empty(), "no sandbox record was touched");
+    assert!(runtime.calls().is_empty(), "no computer record was touched");
     assert!(!converted
         .join(format!(
             "microsandbox/snapshots/.msb-snapshot-load-{SUFFIX}"
@@ -680,13 +684,13 @@ fn a_failed_cleanup_after_the_migration_keeps_the_journal_and_breaks_nothing() {
         FirstLaunch::AwaitingUpgrade
     ));
     convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap();
-    // The conversion verified every sandbox before it selected the generation.
+    // The conversion verified every computer before it selected the generation.
     let mut state = fresh("running", 1);
     state.migrated_count = 1;
     write(&app_data.join(FILE), &state).unwrap();
     let waiting = journal_file(app_data);
 
-    // The cleanup fails: the removal of the orphan sandbox is refused.
+    // The cleanup fails: the removal of the orphan computer is refused.
     let runtime = ConvertedRuntime::new(app_data);
     *runtime.fail_remove.lock().unwrap() = true;
     let scripts = app_data.join("scripts");
@@ -736,7 +740,7 @@ fn an_unreadable_journal_is_set_aside_and_the_migration_proceeds() {
         serde_json::json!({
             "version": version,
             "id": "5b0c8e3e-3b8e-4c4c-9a0b-1f0f5f2d2b77",
-            "archive": {"name": "dev.silo-backup", "archivePath": "/exports/dev.silo-backup", "completedLabel": "In progress", "size": "Unknown", "destination": "/exports", "sandboxes": ["dev"]},
+            "archive": {"name": "dev.silo-backup", "archivePath": "/exports/dev.silo-backup", "completedLabel": "In progress", "size": "Unknown", "destination": "/exports", "computers": ["dev"]},
             "request": {"kind": "backup", "names": ["dev"]},
             "cancelled": false,
             "terminal": null,
@@ -959,7 +963,7 @@ fn a_journal_waiting_for_the_upgrade_stays_only_in_the_converted_generation() {
     assert!(!moved.exists());
 
     // The clean generation (Continue) holds none of it, and the previous generation holds
-    // the sandboxes that were not converted: nothing is ever cleaned there, so the journal
+    // the computers that were not converted: nothing is ever cleaned there, so the journal
     // is isolated like any unfinished one.
     quarantine_previous_backup_state(app_data, CLEAN).unwrap();
     assert!(!journal.exists());
@@ -972,19 +976,19 @@ fn an_operation_that_left_nothing_for_the_runtime_is_settled_and_reported_before
     let cases = [
         (
             "export of the released 0.9.0",
-            serde_json::json!({"kind":"backup","names":["dev"],"machines":[],"running":[]}),
+            serde_json::json!({"kind":"backup","names":["dev"],"computers":[],"running":[]}),
             false,
             "failed",
             "Export interrupted before the upgrade",
-            "No export file was saved. Export the sandbox again.",
+            "No export file was saved. Export the computer again.",
         ),
         (
-            "import of the released 0.9.0 before it chose a sandbox identity",
+            "import of the released 0.9.0 before it chose a computer identity",
             serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":null}),
             false,
             "failed",
             "Import interrupted before the upgrade",
-            "No sandbox was added. Import the file again.",
+            "No computer was added. Import the file again.",
         ),
         (
             "cancelled import before it wrote anything",
@@ -992,7 +996,7 @@ fn an_operation_that_left_nothing_for_the_runtime_is_settled_and_reported_before
             true,
             "cancelled",
             "Import cancelled",
-            "No sandbox was added.",
+            "No computer was added.",
         ),
     ];
     for (state, request, cancelled, outcome, title, detail) in cases {

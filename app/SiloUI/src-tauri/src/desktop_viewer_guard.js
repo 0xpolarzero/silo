@@ -1,9 +1,9 @@
 // Runs in every frame of the guest desktop webview before its own scripts
-// (G-20). Guest pages are sandbox content, and every click on the desktop is a
-// user gesture, so they must not reach this computer's clipboard. Clipboard
+// (G-20). Guest pages are untrusted content, and every click on the desktop is a
+// user gesture, so they must not reach this device's clipboard. Clipboard
 // sharing is already off in Selkies (--enable-clipboard=false).
 (() => {
-  const refuse = () => Promise.reject(new DOMException("Sandbox desktops cannot use this computer's clipboard.", "NotAllowedError"))
+  const refuse = () => Promise.reject(new DOMException("Computer desktops cannot use this device's clipboard.", "NotAllowedError"))
   const lock = (target, name, value) => {
     try { Object.defineProperty(target, name, { value, configurable: false, writable: false }) } catch { /* already locked */ }
   }

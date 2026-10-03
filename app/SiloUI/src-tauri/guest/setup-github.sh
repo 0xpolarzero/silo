@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run only inside a managed Silo VM. No host credential is passed to this script.
+# Run only inside a managed Silo computer. No host credential is passed to this script.
 set -eu
 if ! command -v curl >/dev/null 2>&1 || ! command -v git >/dev/null 2>&1 || ! command -v gh >/dev/null 2>&1 || ! command -v git-lfs >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
